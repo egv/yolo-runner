@@ -117,3 +117,48 @@ func TestRunOpenCodeEnsuresConfigAndLogs(t *testing.T) {
 		t.Fatalf("expected OPENCODE_CONFIG_CONTENT set")
 	}
 }
+
+func TestRunOpenCodeDefaultsLogPath(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	configRoot := filepath.Join(tempDir, "config")
+	configDir := filepath.Join(configRoot, "opencode")
+
+	var capturedPath string
+	runner := func(args []string, env map[string]string, stdoutPath string) error {
+		capturedPath = stdoutPath
+		if err := os.WriteFile(stdoutPath, []byte("{\"ok\":true}\n"), 0o644); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := runOpenCode(
+		"issue-99",
+		repoRoot,
+		"prompt",
+		"",
+		configRoot,
+		configDir,
+		"",
+		runner,
+	); err != nil {
+		t.Fatalf("runOpenCode error: %v", err)
+	}
+
+	expectedPath := filepath.Join(repoRoot, "runner-logs", "opencode", "issue-99.jsonl")
+	if capturedPath != expectedPath {
+		t.Fatalf("expected log path %q, got %q", expectedPath, capturedPath)
+	}
+
+	content, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("expected log file to exist: %v", err)
+	}
+	if string(content) != "{\"ok\":true}\n" {
+		t.Fatalf("unexpected log content: %q", string(content))
+	}
+}

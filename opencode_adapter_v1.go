@@ -1,8 +1,12 @@
 package yolo_runner
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 type openCodeRunner func(args []string, env map[string]string, stdoutPath string) error
@@ -68,6 +72,9 @@ func runOpenCode(issueID string, repoRoot string, prompt string, model string, c
 			}
 		}
 	}
+	if logPath == "" {
+		logPath = filepath.Join(repoRoot, "runner-logs", "opencode", issueID+".jsonl")
+	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
@@ -75,4 +82,44 @@ func runOpenCode(issueID string, repoRoot string, prompt string, model string, c
 	args := buildOpenCodeArgs(repoRoot, prompt, model)
 	env := buildOpenCodeEnv(nil, configRoot, configDir)
 	return runner(args, env, logPath)
+}
+
+func logRunnerSummary(repoRoot string, issueID string, title string, status string, commitSha string) error {
+	logPath := filepath.Join(repoRoot, "runner-logs", "beads_yolo_runner.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	if commitSha == "" {
+		commitSha = readHeadSHA(repoRoot)
+	}
+	entry := map[string]string{
+		"timestamp":  time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		"issue_id":   issueID,
+		"title":      title,
+		"status":     status,
+		"commit_sha": commitSha,
+	}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func readHeadSHA(repoRoot string) string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repoRoot
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
