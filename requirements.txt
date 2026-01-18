@@ -1,4 +1,0 @@
-# Runtime dependencies for beads_yolo_runner.py
-# Keep minimal; prefer system-installed CLIs for bd/opencode.
-
-# (currently none)

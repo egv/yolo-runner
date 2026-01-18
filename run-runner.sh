@@ -12,7 +12,9 @@ mkdir -p runner-logs
 # If you want to pin a model for OpenCode, set it here and update beads_yolo_runner.py to forward it.
 # export OPENCODE_MODEL="openai/gpt-5.2-codex"
 
-.venv/bin/python beads_yolo_runner.py \
+uv sync
+
+uv run python beads_yolo_runner.py \
   --repo . \
   --root yolo-runner-r5w \
   2>&1 | tee runner-logs/beads_yolo_runner.run.log
