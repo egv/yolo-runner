@@ -1,3 +1,4 @@
 {"timestamp": "2026-01-18T23:26:23Z", "issue_id": "yolo-runner-r5w.12", "title": "v1: Command runner abstraction (exec wrapper + fakes)", "status": "completed", "commit_sha": "b9b58f13dde6c58ca0fd7facac97efd138829010"}
 {"timestamp": "2026-01-18T23:34:00Z", "issue_id": "yolo-runner-r5w.3", "title": "v1: Implement Beads CLI adapter", "status": "completed", "commit_sha": "73bb2438db9c4f386a86608a5c0a2b21bd1a7925"}
 {"timestamp": "2026-01-19T02:33:44Z", "issue_id": "yolo-runner-r5w.4", "title": "v1: Leaf task selection matches Python", "status": "completed", "commit_sha": "1b213a9d2f57ee23a1faa3ef9bb5fae5f12249e9"}
+{"timestamp": "2026-01-19T02:35:32Z", "issue_id": "yolo-runner-r5w.6", "title": "v1: Git CLI adapter (v1-specific)", "status": "completed", "commit_sha": "910e8a9980e6d3a78b82906147131c8f8624cdbe"}
