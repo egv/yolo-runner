@@ -1,0 +1,1 @@
+{"timestamp": "2026-01-18T23:26:23Z", "issue_id": "yolo-runner-r5w.12", "title": "v1: Command runner abstraction (exec wrapper + fakes)", "status": "completed", "commit_sha": "b9b58f13dde6c58ca0fd7facac97efd138829010"}
