@@ -43,3 +43,30 @@ func TestReadmeDocumentsBuildAndUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestReadmeDocumentsSmokeTest(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	requiredPhrases := []string{
+		"Manual Smoke Test",
+		"throwaway branch",
+		"worktree",
+		"`bd ready`",
+		"runner-logs/beads_yolo_runner.jsonl",
+		"runner-logs/opencode/",
+		"Success looks like",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(readme, phrase) {
+			t.Fatalf("expected README smoke test instructions to mention %q", phrase)
+		}
+	}
+
+	if !regexp.MustCompile(`(?i)inspect.*commit`).MatchString(readme) {
+		t.Fatalf("expected README smoke test instructions to mention inspecting the resulting commit")
+	}
+}
