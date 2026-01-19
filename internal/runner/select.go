@@ -9,7 +9,7 @@ type Issue struct {
 }
 
 func SelectFirstOpenLeafTaskID(root Issue) string {
-	if root.IssueType == "task" {
+	if isRunnableLeaf(root) {
 		if root.Status == "open" {
 			return root.ID
 		}
@@ -23,10 +23,10 @@ func selectFirstOpenLeafInChildren(children []Issue) string {
 		if item.Status != "open" {
 			continue
 		}
-		switch item.IssueType {
-		case "task":
+		if isRunnableLeaf(item) {
 			return item.ID
-		case "epic":
+		}
+		if isContainer(item) {
 			if len(item.Children) == 0 {
 				continue
 			}
@@ -37,6 +37,19 @@ func selectFirstOpenLeafInChildren(children []Issue) string {
 		}
 	}
 	return ""
+}
+
+func isContainer(issue Issue) bool {
+	return issue.IssueType == "epic" || issue.IssueType == "molecule"
+}
+
+func isRunnableLeaf(issue Issue) bool {
+	if issue.IssueType == "" {
+		return false
+	}
+	// Treat all non-container issue types as runnable leaves.
+	// Containers (epic/molecule) require child traversal.
+	return !isContainer(issue)
 }
 
 func sortedIssues(items []Issue) []Issue {

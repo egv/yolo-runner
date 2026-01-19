@@ -132,3 +132,53 @@ func TestSelectFirstOpenLeafTaskIDTaskRoot(t *testing.T) {
 		t.Fatalf("expected task-root, got %q", leafID)
 	}
 }
+
+func TestSelectFirstOpenLeafTaskIDAcceptsBugLeaf(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "bug-1",
+				IssueType: "bug",
+				Status:    "open",
+			},
+		},
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "bug-1" {
+		t.Fatalf("expected bug-1, got %q", leafID)
+	}
+}
+
+func TestSelectFirstOpenLeafTaskIDSkipsEpicAndMoleculeAsLeaves(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "epic-1",
+				IssueType: "epic",
+				Status:    "open",
+			},
+			{
+				ID:        "mol-1",
+				IssueType: "molecule",
+				Status:    "open",
+			},
+			{
+				ID:        "task-1",
+				IssueType: "task",
+				Status:    "open",
+			},
+		},
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "task-1" {
+		t.Fatalf("expected task-1, got %q", leafID)
+	}
+}
