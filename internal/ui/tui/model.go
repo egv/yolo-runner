@@ -28,7 +28,15 @@ func NewModel(now func() time.Time) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	return tickCmd()
+}
+
+type tickMsg struct{}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return tickMsg{}
+	})
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -40,9 +48,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastOutputAt = typed.EmittedAt
 	case OutputMsg:
 		m.spinnerIndex = (m.spinnerIndex + 1) % len(spinnerFrames)
-		if m.lastOutputAt.IsZero() {
-			m.lastOutputAt = m.now()
-		}
+		m.lastOutputAt = m.now()
+	case tickMsg:
+		return m, tickCmd()
 	}
 	return m, nil
 }

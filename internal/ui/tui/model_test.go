@@ -45,3 +45,57 @@ func TestSpinnerAdvancesOnOutput(t *testing.T) {
 		t.Fatalf("expected spinner to advance, got %q", second)
 	}
 }
+
+func TestModelTicksLastOutputAge(t *testing.T) {
+	now := time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC)
+	current := now
+	m := NewModel(func() time.Time { return current })
+	updated, _ := m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		Phase:     "running",
+		EmittedAt: current,
+	})
+	m = updated.(Model)
+
+	current = current.Add(3 * time.Second)
+	updated, cmd := m.Update(tickMsg{})
+	m = updated.(Model)
+
+	if cmd == nil {
+		t.Fatalf("expected tick command")
+	}
+	if !strings.Contains(m.View(), "last output 3s") {
+		t.Fatalf("expected last output age to tick, got %q", m.View())
+	}
+}
+
+func TestModelOutputResetsLastOutputAge(t *testing.T) {
+	now := time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC)
+	current := now
+	m := NewModel(func() time.Time { return current })
+	updated, _ := m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		Phase:     "running",
+		EmittedAt: current,
+	})
+	m = updated.(Model)
+
+	current = current.Add(5 * time.Second)
+	updated, _ = m.Update(OutputMsg{})
+	m = updated.(Model)
+
+	if !strings.Contains(m.View(), "last output 0s") {
+		t.Fatalf("expected last output age to reset, got %q", m.View())
+	}
+}
+
+func TestModelInitSchedulesTick(t *testing.T) {
+	m := NewModel(func() time.Time { return time.Unix(0, 0) })
+	if cmd := m.Init(); cmd == nil {
+		t.Fatalf("expected tick command")
+	}
+}
