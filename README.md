@@ -20,14 +20,31 @@ Runs OpenCode in YOLO mode against a single bead task at a time. The runner owns
 
 - `bd` (beads) CLI available and initialized.
 - `opencode` CLI available.
-- Git repo with clean working tree (recommended).
+- `git` installed and repo cloned.
+- `uv` installed for the Python runner (bootstrap only).
+- Go 1.21+ for building the runner.
+
+## Build
+
+From repo root:
+
+```
+make build
+```
+
+## Test
+
+```
+make test
+```
 
 ## Run
 
 From repo root:
 
 ```
-uv run python tools/yolo-runner/beads_yolo_runner.py --repo . --root algi-8bt
+./bin/yolo-runner --repo . --root algi-8bt --model gpt-4o
+./bin/yolo-runner --repo . --root algi-8bt --dry-run
 ```
 
 Common options:
