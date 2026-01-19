@@ -46,6 +46,13 @@ func (f *fakeBeads) UpdateStatus(id string, status string) error {
 	return nil
 }
 
+func (f *fakeBeads) UpdateStatusWithReason(id string, status string, reason string) error {
+	if f.recorder != nil {
+		f.recorder.record("beads.update:" + status + ":" + reason)
+	}
+	return nil
+}
+
 func (f *fakeBeads) Close(id string) error {
 	if f.recorder != nil {
 		f.recorder.record("beads.close")
@@ -74,13 +81,14 @@ func (f *fakePrompt) Build(issueID string, title string, description string, acc
 
 type fakeOpenCode struct {
 	recorder *callRecorder
+	err      error
 }
 
 func (f *fakeOpenCode) Run(issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string) error {
 	if f.recorder != nil {
 		f.recorder.record("opencode.run")
 	}
-	return nil
+	return f.err
 }
 
 type fakeGit struct {

@@ -72,6 +72,15 @@ func (a *Adapter) UpdateStatus(id string, status string) error {
 	return err
 }
 
+func (a *Adapter) UpdateStatusWithReason(id string, status string, reason string) error {
+	args := []string{"bd", "update", id, "--status", status}
+	if reason != "" {
+		args = append(args, "--reason", reason)
+	}
+	_, err := a.runner.Run(args...)
+	return err
+}
+
 func (a *Adapter) Close(id string) error {
 	_, err := a.runner.Run("bd", "close", id)
 	return err

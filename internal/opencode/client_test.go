@@ -69,15 +69,27 @@ func TestRunEnsuresConfigAndOverwritesLog(t *testing.T) {
 	var capturedEnv map[string]string
 	var capturedPath string
 
-	runner := func(args []string, env map[string]string, stdoutPath string) error {
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
 		capturedArgs = append([]string{}, args...)
 		capturedEnv = make(map[string]string)
 		for key, value := range env {
 			capturedEnv[key] = value
 		}
 		capturedPath = stdoutPath
-		return os.WriteFile(stdoutPath, []byte("{\"ok\":true}\n"), 0o644)
+		if err := os.WriteFile(stdoutPath, []byte("{\"ok\":true}\n"), 0o644); err != nil {
+			return nil, err
+		}
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+
+	homeDir := filepath.Join(tempDir, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
 	}
+	defaultHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { defaultHomeDir = os.UserHomeDir })
 
 	if err := Run(
 		"issue-1",
@@ -140,10 +152,22 @@ func TestRunDefaultsLogPath(t *testing.T) {
 	configDir := filepath.Join(configRoot, "opencode")
 
 	var capturedPath string
-	runner := func(args []string, env map[string]string, stdoutPath string) error {
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
 		capturedPath = stdoutPath
-		return os.WriteFile(stdoutPath, []byte("{\"ok\":true}\n"), 0o644)
+		if err := os.WriteFile(stdoutPath, []byte("{\"ok\":true}\n"), 0o644); err != nil {
+			return nil, err
+		}
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+
+	homeDir := filepath.Join(tempDir, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
 	}
+	defaultHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { defaultHomeDir = os.UserHomeDir })
 
 	if err := Run(
 		"issue-99",

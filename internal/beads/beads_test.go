@@ -65,6 +65,17 @@ func TestUpdateStatusCallsBd(t *testing.T) {
 	assertCall(t, runner.calls, []string{"bd", "update", "task-1", "--status", "blocked"})
 }
 
+func TestUpdateStatusWithReasonCallsBd(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	if err := adapter.UpdateStatusWithReason("task-1", "blocked", "no_output last_output_age=10s"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertCall(t, runner.calls, []string{"bd", "update", "task-1", "--status", "blocked", "--reason", "no_output last_output_age=10s"})
+}
+
 func TestCloseCallsBd(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := New(runner)

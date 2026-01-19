@@ -20,6 +20,7 @@ type BeadsClient interface {
 	Ready(rootID string) (Issue, error)
 	Show(id string) (Bead, error)
 	UpdateStatus(id string, status string) error
+	UpdateStatusWithReason(id string, status string, reason string) error
 	Close(id string) error
 	Sync() error
 }
@@ -98,6 +99,13 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	if err := deps.OpenCode.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath); err != nil {
+		if stall, ok := err.(*opencode.StallError); ok {
+			reason := stall.Error()
+			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
+				return "", err
+			}
+			return "blocked", err
+		}
 		return "", err
 	}
 

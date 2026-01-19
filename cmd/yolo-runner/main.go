@@ -27,7 +27,7 @@ type gitRunner interface {
 }
 
 type openCodeRunner interface {
-	Run(args []string, env map[string]string, stdoutPath string) error
+	Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error)
 }
 
 type adapterRunner struct{}
@@ -47,7 +47,7 @@ type openCodeAdapter struct {
 }
 
 func (o openCodeAdapter) Run(issueID string, repoRoot string, promptText string, model string, configRoot string, configDir string, logPath string) error {
-	return opencode.Run(issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner.Run)
+	return opencode.Run(issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner)
 }
 
 func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Writer, stderr io.Writer, beadsRunner beadsRunner, gitRunner gitRunner) int {
@@ -138,6 +138,6 @@ func (runnerLogger) AppendRunnerSummary(repoRoot string, issueID string, title s
 
 type defaultOpenCodeRunner struct{}
 
-func (defaultOpenCodeRunner) Run(args []string, env map[string]string, stdoutPath string) error {
-	return runCommandWithEnv(args, env, stdoutPath)
+func (defaultOpenCodeRunner) Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error) {
+	return startCommandWithEnv(args, env, stdoutPath)
 }

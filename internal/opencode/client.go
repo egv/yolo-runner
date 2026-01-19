@@ -5,7 +5,15 @@ import (
 	"path/filepath"
 )
 
-type Runner func(args []string, env map[string]string, stdoutPath string) error
+type Runner interface {
+	Start(args []string, env map[string]string, stdoutPath string) (Process, error)
+}
+
+type RunnerFunc func(args []string, env map[string]string, stdoutPath string) (Process, error)
+
+func (runner RunnerFunc) Start(args []string, env map[string]string, stdoutPath string) (Process, error) {
+	return runner(args, env, stdoutPath)
+}
 
 func BuildArgs(repoRoot string, prompt string, model string) []string {
 	args := []string{"opencode", "run", prompt, "--agent", "yolo", "--format", "json"}
@@ -77,5 +85,17 @@ func Run(issueID string, repoRoot string, prompt string, model string, configRoo
 
 	args := BuildArgs(repoRoot, prompt, model)
 	env := BuildEnv(nil, configRoot, configDir)
-	return runner(args, env, logPath)
+	process, err := runner.Start(args, env, logPath)
+	if err != nil {
+		return err
+	}
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:        logPath,
+		OpenCodeLogDir: filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode", "log"),
+		TailLines:      50,
+	})
+	if err := watchdog.Monitor(process); err != nil {
+		return err
+	}
+	return nil
 }
