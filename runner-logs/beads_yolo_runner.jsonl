@@ -10,3 +10,4 @@
 {"timestamp": "2026-01-19T18:54:38Z", "issue_id": "yolo-runner-127.4.9.2", "title": "Align: Keep OpenCode JSONL log clean (stderr separate)", "status": "completed", "commit_sha": "8ddf5009a52b08c204552d29fae4ed88649d8bac"}
 {"timestamp": "2026-01-19T18:55:57Z", "issue_id": "yolo-runner-127.4.9.3", "title": "Align: Document OpenCode config isolation", "status": "completed", "commit_sha": "a8a41f8235365dbe9d6175da642b6474f0c85026"}
 {"timestamp": "2026-01-19T18:59:10Z", "issue_id": "yolo-runner-127.4.1", "title": "v1.2: Add Bubble Tea dependency", "status": "completed", "commit_sha": "cc8582a8a8b0e27afcbac3d06fdce45ad5f0a170"}
+{"timestamp": "2026-01-19T19:02:37Z", "issue_id": "yolo-runner-127.4.2", "title": "v1.2: TUI model for runner status", "status": "completed", "commit_sha": "8e8cc26b9970413399f384dd498a5ce08a2d3d37"}
