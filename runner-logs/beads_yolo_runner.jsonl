@@ -3,3 +3,4 @@
 {"timestamp": "2026-01-19T03:25:13Z", "issue_id": "yolo-runner-r5w.6", "title": "v1: Git CLI adapter (v1-specific)", "status": "completed", "commit_sha": "93f7e8c7d0d5f4a0387029823ef2e42c9b4c6203"}
 {"timestamp": "2026-01-19T03:28:29Z", "issue_id": "yolo-runner-r5w.13", "title": "v1: OpenCode CLI adapter (with --model)", "status": "completed", "commit_sha": "464a3362a4fc8ed5bf46a69a25d897c850c85944"}
 {"timestamp": "2026-01-19T03:31:06Z", "issue_id": "yolo-runner-r5w.9", "title": "v1: Logging parity (runner + per-task)", "status": "completed", "commit_sha": "06f7585e8e5b9d9dc77851af3801ba9a342bda4f"}
+{"timestamp": "2026-01-19T03:50:55Z", "issue_id": "yolo-runner-r5w.7", "title": "v1: Runner run-once orchestration", "status": "completed", "commit_sha": "31d4fe0ed20e2f60f400f61a0572ef9f7bd27684"}
