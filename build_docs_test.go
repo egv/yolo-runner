@@ -115,3 +115,31 @@ func TestReadmeDocumentsTUIAndHeadless(t *testing.T) {
 		t.Fatalf("expected README to describe the headless mode")
 	}
 }
+
+func TestReadmeDocumentsInitAndAgentTroubleshooting(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	requiredPhrases := []string{
+		"yolo-runner init",
+		"agent installation",
+		"missing agent",
+		"refuses to start",
+		"Troubleshooting",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(readme, phrase) {
+			t.Fatalf("expected README to mention %q", phrase)
+		}
+	}
+
+	if !regexp.MustCompile(`(?i)init.*usage`).MatchString(readme) {
+		t.Fatalf("expected README to describe init usage")
+	}
+	if !regexp.MustCompile(`(?i)recover`).MatchString(readme) {
+		t.Fatalf("expected README to mention recovery steps")
+	}
+}

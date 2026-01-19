@@ -38,6 +38,18 @@ make build
 make test
 ```
 
+## Init
+
+The runner includes a helper to install the YOLO agent file into the OpenCode agent directory.
+
+Init usage:
+
+```
+./bin/yolo-runner init --repo .
+```
+
+This performs the agent installation step by copying `yolo.md` into `.opencode/agent/yolo.md`.
+
 ## Run
 
 From repo root:
@@ -92,6 +104,16 @@ Success looks like: the runner finishes without errors, a single commit exists f
 - **No changes after OpenCode run**: task is marked `blocked`; no commit or close.
 - **Commit fails**: runner exits with the git error; task remains in progress.
 - **OpenCode fails**: runner exits with the OpenCode error code.
+
+## Troubleshooting
+
+If the runner refuses to start, the most common cause is a missing agent file or missing `permission: allow` line in `.opencode/agent/yolo.md`. The runner validates the agent at startup and exits when the file is missing or missing agent permissions.
+
+Recovery steps:
+
+1. Run `./bin/yolo-runner init --repo .` to reinstall the agent file.
+2. Confirm `.opencode/agent/yolo.md` exists and includes `permission: allow`.
+3. Re-run the runner after the agent installation is complete.
 
 ## Notes
 
