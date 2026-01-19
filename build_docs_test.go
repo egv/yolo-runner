@@ -143,3 +143,21 @@ func TestReadmeDocumentsInitAndAgentTroubleshooting(t *testing.T) {
 		t.Fatalf("expected README to mention recovery steps")
 	}
 }
+
+func TestReadmeDocumentsMoleculeSelectionSemantics(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	if !regexp.MustCompile(`(?i)container\s+types.*epic.*molecule`).MatchString(readme) {
+		t.Fatalf("expected README to describe container types epic and molecule")
+	}
+	if !regexp.MustCompile(`(?i)traversable.*open.*in_progress`).MatchString(readme) {
+		t.Fatalf("expected README to describe traversable statuses open and in_progress")
+	}
+	if !regexp.MustCompile(`(?i)leaf.*open\s+only`).MatchString(readme) {
+		t.Fatalf("expected README to describe leaf eligibility as open only")
+	}
+}

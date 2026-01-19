@@ -74,6 +74,8 @@ The prompt includes:
 - Acceptance criteria
 - Strict TDD rules
 
+The runner selects work by traversing container types (epic, molecule). Traversable containers are in `open` or `in_progress` status, and leaf work is eligible when it is open only.
+
 The YOLO agent must only work on the prompt provided. It must not call beads commands.
 
 ## Logging
