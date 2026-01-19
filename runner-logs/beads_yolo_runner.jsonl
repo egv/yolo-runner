@@ -15,3 +15,4 @@
 {"timestamp": "2026-01-19T19:48:09Z", "issue_id": "yolo-runner-127.4.7", "title": "v1.2: Detect default root (avoid hardcoded algi-8bt)", "status": "blocked", "commit_sha": "361277ed2e0f8f9ae1a7b1adf09ae2c7168c4c26"}
 {"timestamp": "2026-01-19T19:52:41Z", "issue_id": "yolo-runner-127.4.5", "title": "v1.2: Detect OpenCode log growth for heartbeat", "status": "completed", "commit_sha": "03cc0beaae40d47e575620c0cbd3a425255c9568"}
 {"timestamp":"2026-01-19T19:28:04Z","issue_id":"yolo-runner-127.4.10","title":"v1.2: Refuse to run if YOLO agent missing","status":"completed","commit_sha":"99c95de457a573c2a086076f513573951323f0ec\n"}
+{"timestamp":"2026-01-19T19:33:33Z","issue_id":"yolo-runner-127.4.11","title":"v1.2: Add init subcommand to install YOLO agent","status":"completed","commit_sha":"4ad3d18d8368d92ec251a370d508a2ec0098e63f\n"}

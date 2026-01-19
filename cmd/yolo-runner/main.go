@@ -224,7 +224,8 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		}()
 	}
 
-	_, err := runOnce(options, deps)
+	// Loop until there are no tasks left. Blocked tasks are skipped.
+	_, err := runner.RunLoop(options, deps, 0, runOnce)
 	if program != nil {
 		program.Quit()
 	}

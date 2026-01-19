@@ -209,18 +209,27 @@ func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnc
 	for {
 		result, err := runOnce(opts, deps)
 		if err != nil {
+			// Allow the caller to keep going after a task is marked blocked.
+			// This is primarily used for stall watchdog cases where we want to
+			// continue with other tasks.
+			if result == "blocked" {
+				continue
+			}
 			return completed, err
 		}
-		if result == "completed" {
+
+		switch result {
+		case "completed":
 			completed++
-		}
-		if result == "no_tasks" {
+		case "blocked":
+			// Keep going; the next call should select a different open task.
+		case "no_tasks":
+			return completed, nil
+		default:
 			return completed, nil
 		}
+
 		if max > 0 && completed >= max {
-			return completed, nil
-		}
-		if result != "completed" {
 			return completed, nil
 		}
 	}
