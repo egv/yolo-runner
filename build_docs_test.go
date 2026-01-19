@@ -44,6 +44,25 @@ func TestReadmeDocumentsBuildAndUsage(t *testing.T) {
 	}
 }
 
+func TestReadmeDocumentsOpenCodeConfigIsolation(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	requirements := []string{
+		"XDG_CONFIG_HOME=~/.config/opencode-runner",
+		"override",
+		"inspect",
+	}
+	for _, requirement := range requirements {
+		if !strings.Contains(readme, requirement) {
+			t.Fatalf("expected README to mention %q", requirement)
+		}
+	}
+}
+
 func TestReadmeDocumentsSmokeTest(t *testing.T) {
 	content, err := os.ReadFile("README.md")
 	if err != nil {

@@ -66,6 +66,12 @@ The YOLO agent must only work on the prompt provided. It must not call beads com
 - Runner summary log: `runner-logs/beads_yolo_runner.jsonl`
 - Per-task OpenCode logs: `runner-logs/opencode/<issue-id>.jsonl`
 
+## OpenCode Config Isolation
+
+The runner sets `XDG_CONFIG_HOME=~/.config/opencode-runner` so OpenCode reads and writes config in an isolated directory instead of your default `~/.config/opencode`.
+
+If flags are added later to change the config location, use those to override the default. Otherwise inspect the effective config by checking `~/.config/opencode-runner` directly or exporting a different `XDG_CONFIG_HOME` before running the binary.
+
 ## Manual Smoke Test
 
 Use a throwaway branch or a fresh worktree so the run-once flow can safely create a commit and update beads.
