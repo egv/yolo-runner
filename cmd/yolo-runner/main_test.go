@@ -173,6 +173,57 @@ func TestRunOnceMainDefaultsConfigPaths(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainInfersRoadmapRootWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	writeIssuesFile(t, tempDir, `{"id":"roadmap-1","title":"Roadmap","issue_type":"epic","status":"open"}`)
+	runner := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !runner.called {
+		t.Fatalf("expected run once to be called")
+	}
+	if runner.opts.RootID != "roadmap-1" {
+		t.Fatalf("expected root id to be inferred, got %q", runner.opts.RootID)
+	}
+}
+
+func TestRunOnceMainMissingRootRequiresExplicitFlag(t *testing.T) {
+	tempDir := t.TempDir()
+	writeIssuesFile(t, tempDir, `{"id":"epic-1","title":"Other","issue_type":"epic","status":"open"}`)
+	runner := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir}, runner.Run, exit.Exit, stdout, stderr, beadsRunner, gitRunner)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if exit.code != 1 {
+		t.Fatalf("expected exit to be called with 1, got %d", exit.code)
+	}
+	if runner.called {
+		t.Fatalf("expected run once not to be called")
+	}
+	if !strings.Contains(stderr.String(), "--root") {
+		t.Fatalf("expected error to mention --root, got %q", stderr.String())
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "roadmap") {
+		t.Fatalf("expected error to mention roadmap, got %q", stderr.String())
+	}
+}
+
 type fakeTUIProgram struct {
 	started chan struct{}
 	quit    chan struct{}
@@ -207,6 +258,18 @@ func waitForSignal(t *testing.T, signal chan struct{}, label string) {
 		return
 	case <-time.After(200 * time.Millisecond):
 		t.Fatalf("expected %s", label)
+	}
+}
+
+func writeIssuesFile(t *testing.T, repoRoot string, payload string) {
+	t.Helper()
+	beadsDir := filepath.Join(repoRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	issuesPath := filepath.Join(beadsDir, "issues.jsonl")
+	if err := os.WriteFile(issuesPath, []byte(payload+"\n"), 0o644); err != nil {
+		t.Fatalf("write issues: %v", err)
 	}
 }
 

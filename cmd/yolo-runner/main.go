@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"yolo-runner/internal/beads"
 	"yolo-runner/internal/logging"
@@ -114,7 +118,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	fs.SetOutput(stderr)
 
 	repoRoot := fs.String("repo", ".", "Repository root path")
-	rootID := fs.String("root", "algi-8bt", "Root bead/epic ID")
+	rootID := fs.String("root", "", "Root bead/epic ID")
 	model := fs.String("model", "", "OpenCode model")
 	dryRun := fs.Bool("dry-run", false, "Print task and prompt without executing")
 	headless := fs.Bool("headless", false, "Force plain output without TUI")
@@ -144,6 +148,19 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	gitAdapter := gitadapter.New(gitRunner)
 	openCodeAdapter := openCodeAdapter{runner: defaultOpenCodeRunner{}}
 
+	resolvedRootID := *rootID
+	if resolvedRootID == "" {
+		inferredRootID, err := inferDefaultRootID(*repoRoot)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			if exit != nil {
+				exit(1)
+			}
+			return 1
+		}
+		resolvedRootID = inferredRootID
+	}
+
 	deps := runner.RunOnceDeps{
 		Beads:    beadsAdapter,
 		Prompt:   promptBuilder{},
@@ -166,7 +183,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 
 	options := runner.RunOnceOptions{
 		RepoRoot:   *repoRoot,
-		RootID:     *rootID,
+		RootID:     resolvedRootID,
 		Model:      *model,
 		ConfigRoot: resolvedConfigRoot,
 		ConfigDir:  resolvedConfigDir,
@@ -233,4 +250,45 @@ type defaultOpenCodeRunner struct{}
 
 func (defaultOpenCodeRunner) Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error) {
 	return startCommandWithEnv(args, env, stdoutPath)
+}
+
+type roadmapCandidate struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Type   string `json:"issue_type"`
+	Status string `json:"status"`
+}
+
+func inferDefaultRootID(repoRoot string) (string, error) {
+	issuesPath := filepath.Join(repoRoot, ".beads", "issues.jsonl")
+	file, err := os.Open(issuesPath)
+	if err != nil {
+		return "", errors.New("missing --root and no readable .beads/issues.jsonl; pass --root explicitly")
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	count := 0
+	var match roadmapCandidate
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var item roadmapCandidate
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			continue
+		}
+		if item.Title == "Roadmap" && item.Type == "epic" && item.Status == "open" {
+			count++
+			match = item
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", errors.New("missing --root and unable to read .beads/issues.jsonl; pass --root explicitly")
+	}
+	if count == 1 && match.ID != "" {
+		return match.ID, nil
+	}
+	return "", errors.New("missing --root and no unique Roadmap epic found; pass --root explicitly")
 }
