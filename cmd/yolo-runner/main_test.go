@@ -97,11 +97,13 @@ func (f *fakeRunOnce) Run(opts runner.RunOnceOptions, deps runner.RunOnceDeps) (
 }
 
 func TestRunOnceMainReturnsErrorCodeOnFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{err: errors.New("boom")}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
 
-	code := RunOnceMain([]string{"--repo", "/repo", "--root", "root"}, runner.Run, exit.Exit, out, out, nil, nil)
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runner.Run, exit.Exit, out, out, nil, nil)
 
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
@@ -115,18 +117,20 @@ func TestRunOnceMainReturnsErrorCodeOnFailure(t *testing.T) {
 }
 
 func TestRunOnceMainWiresDependencies(t *testing.T) {
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
 	beadsRunner := &fakeRunner{}
 	gitRunner := &fakeGitRunner{}
 
-	RunOnceMain([]string{"--repo", "/repo", "--root", "root", "--model", "model", "--dry-run"}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+	RunOnceMain([]string{"--repo", tempDir, "--root", "root", "--model", "model", "--dry-run"}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
 
 	if !runner.called {
 		t.Fatalf("expected run once to be called")
 	}
-	if runner.opts.RepoRoot != "/repo" || runner.opts.RootID != "root" || runner.opts.Model != "model" || !runner.opts.DryRun {
+	if runner.opts.RepoRoot != tempDir || runner.opts.RootID != "root" || runner.opts.Model != "model" || !runner.opts.DryRun {
 		t.Fatalf("unexpected options: %#v", runner.opts)
 	}
 	if runner.opts.Out == nil {
@@ -141,6 +145,8 @@ func TestRunOnceMainWiresDependencies(t *testing.T) {
 }
 
 func TestRunOnceMainDefaultsConfigPaths(t *testing.T) {
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
@@ -148,8 +154,9 @@ func TestRunOnceMainDefaultsConfigPaths(t *testing.T) {
 	gitRunner := &fakeGitRunner{}
 
 	t.Setenv("HOME", "/home/user")
+	t.Setenv("XDG_CONFIG_HOME", "")
 
-	RunOnceMain([]string{"--repo", "/repo", "--root", "root"}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+	RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
 
 	if !runner.called {
 		t.Fatalf("expected run once to be called")
@@ -173,9 +180,64 @@ func TestRunOnceMainDefaultsConfigPaths(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainFailsWhenYoloAgentMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	runner := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runner.Run, exit.Exit, stdout, stderr, beadsRunner, gitRunner)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if exit.code != 1 {
+		t.Fatalf("expected exit to be called with 1, got %d", exit.code)
+	}
+	if runner.called {
+		t.Fatalf("expected run once not to be called")
+	}
+	if !strings.Contains(stderr.String(), "yolo.md") {
+		t.Fatalf("expected error to mention yolo.md, got %q", stderr.String())
+	}
+}
+
+func TestRunOnceMainFailsWhenYoloAgentMissingPermission(t *testing.T) {
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\nname: yolo\n---\n")
+	runner := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runner.Run, exit.Exit, stdout, stderr, beadsRunner, gitRunner)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if exit.code != 1 {
+		t.Fatalf("expected exit to be called with 1, got %d", exit.code)
+	}
+	if runner.called {
+		t.Fatalf("expected run once not to be called")
+	}
+	if !strings.Contains(stderr.String(), "permission: allow") {
+		t.Fatalf("expected error to mention permission allow, got %q", stderr.String())
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "init") {
+		t.Fatalf("expected guidance to run init, got %q", stderr.String())
+	}
+}
+
 func TestRunOnceMainInfersRoadmapRootWhenMissing(t *testing.T) {
 	tempDir := t.TempDir()
 	writeIssuesFile(t, tempDir, `{"id":"roadmap-1","title":"Roadmap","issue_type":"epic","status":"open"}`)
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
@@ -198,6 +260,7 @@ func TestRunOnceMainInfersRoadmapRootWhenMissing(t *testing.T) {
 func TestRunOnceMainInfersRoadmapRootWhenInProgress(t *testing.T) {
 	tempDir := t.TempDir()
 	writeIssuesFile(t, tempDir, `{"id":"roadmap-2","title":"Roadmap","issue_type":"epic","status":"in_progress"}`)
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
@@ -220,6 +283,7 @@ func TestRunOnceMainInfersRoadmapRootWhenInProgress(t *testing.T) {
 func TestRunOnceMainMissingRootRequiresExplicitFlag(t *testing.T) {
 	tempDir := t.TempDir()
 	writeIssuesFile(t, tempDir, `{"id":"epic-1","title":"Other","issue_type":"epic","status":"open"}`)
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runner := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	stdout := &bytes.Buffer{}
@@ -295,6 +359,18 @@ func writeIssuesFile(t *testing.T, repoRoot string, payload string) {
 	}
 }
 
+func writeAgentFile(t *testing.T, repoRoot string, payload string) {
+	t.Helper()
+	agentDir := filepath.Join(repoRoot, ".opencode", "agent")
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent dir: %v", err)
+	}
+	agentPath := filepath.Join(agentDir, "yolo.md")
+	if err := os.WriteFile(agentPath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write agent file: %v", err)
+	}
+}
+
 func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
 	fakeProgram := newFakeTUIProgram()
 	prevIsTerminal := isTerminal
@@ -306,13 +382,15 @@ func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
 		newTUIProgram = prevNewTUIProgram
 	})
 
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runOnce := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
 	beadsRunner := &fakeRunner{}
 	gitRunner := &fakeGitRunner{}
 
-	code := RunOnceMain([]string{"--repo", "/repo", "--root", "root"}, runOnce.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce.Run, exit.Exit, out, out, beadsRunner, gitRunner)
 
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
@@ -345,6 +423,8 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 		newTUIProgram = prevNewTUIProgram
 	})
 
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
 	runOnce := &fakeRunOnce{result: "no_tasks"}
 	exit := &fakeExit{}
 	out := &bytes.Buffer{}
@@ -352,7 +432,7 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	gitRunner := &fakeGitRunner{}
 	stderr := &bytes.Buffer{}
 
-	RunOnceMain([]string{"--repo", "/repo", "--root", "root", "--headless"}, runOnce.Run, exit.Exit, out, stderr, beadsRunner, gitRunner)
+	RunOnceMain([]string{"--repo", tempDir, "--root", "root", "--headless"}, runOnce.Run, exit.Exit, out, stderr, beadsRunner, gitRunner)
 
 	if called {
 		t.Fatalf("expected TUI program not to start")

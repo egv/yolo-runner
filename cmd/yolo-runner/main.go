@@ -137,6 +137,14 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		runOnce = runner.RunOnce
 	}
 
+	if err := opencode.ValidateAgent(*repoRoot); err != nil {
+		fmt.Fprintln(stderr, err)
+		if exit != nil {
+			exit(1)
+		}
+		return 1
+	}
+
 	if beadsRunner == nil {
 		beadsRunner = adapterRunner{}
 	}
