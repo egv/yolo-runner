@@ -47,9 +47,12 @@ From repo root:
 ./bin/yolo-runner --repo . --root algi-8bt --dry-run
 ```
 
+The runner starts a TUI by default when attached to a TTY. Use `--headless` to disable the TUI and force plain log output.
+
 Common options:
 - `--max N` limit number of tasks processed
 - `--dry-run` print the task prompt without running OpenCode
+- `--headless` disable the TUI (useful for CI or non-TTY runs)
 
 ## Task Prompt
 

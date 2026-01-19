@@ -89,3 +89,29 @@ func TestReadmeDocumentsSmokeTest(t *testing.T) {
 		t.Fatalf("expected README smoke test instructions to mention inspecting the resulting commit")
 	}
 }
+
+func TestReadmeDocumentsTUIAndHeadless(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	requiredPhrases := []string{
+		"TUI",
+		"TTY",
+		"--headless",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(readme, phrase) {
+			t.Fatalf("expected README to mention %q", phrase)
+		}
+	}
+
+	if !regexp.MustCompile(`(?i)default.*tui`).MatchString(readme) {
+		t.Fatalf("expected README to describe the default TUI behavior")
+	}
+	if !regexp.MustCompile(`(?i)headless`).MatchString(readme) {
+		t.Fatalf("expected README to describe the headless mode")
+	}
+}
