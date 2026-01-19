@@ -18,3 +18,4 @@
 {"timestamp":"2026-01-19T19:33:33Z","issue_id":"yolo-runner-127.4.11","title":"v1.2: Add init subcommand to install YOLO agent","status":"completed","commit_sha":"4ad3d18d8368d92ec251a370d508a2ec0098e63f\n"}
 {"timestamp":"2026-01-19T20:02:49Z","issue_id":"yolo-runner-127.4.12","title":"v1.2: Document init + agent requirements","status":"completed","commit_sha":"c012f8bf9e9a085f2d247c4f3bf0898372b913dd\n"}
 {"timestamp":"2026-01-19T20:35:29Z","issue_id":"yolo-runner-127.4.13","title":"TUI last output age always 0s","status":"completed","commit_sha":"f184d471f5be8623869cf03208aa72287b83cd63\n"}
+{"timestamp":"2026-01-19T20:39:17Z","issue_id":"yolo-runner-127.1.2","title":"v1.1: Go runner selection supports molecules","status":"completed","commit_sha":"42dd8ab84ceed532bb763eb5dabcbe0b1f64cf2b\n"}
