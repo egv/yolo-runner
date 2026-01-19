@@ -12,7 +12,11 @@ import (
 	"yolo-runner/internal/opencode"
 	"yolo-runner/internal/prompt"
 	"yolo-runner/internal/runner"
+	"yolo-runner/internal/ui/tui"
 	gitadapter "yolo-runner/internal/vcs/git"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 )
 
 type runOnceFunc func(opts runner.RunOnceOptions, deps runner.RunOnceDeps) (string, error)
@@ -29,6 +33,60 @@ type gitRunner interface {
 
 type openCodeRunner interface {
 	Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error)
+}
+
+type tuiProgram interface {
+	Start() error
+	Send(event runner.Event)
+	Quit()
+}
+
+type tuiEmitter struct {
+	program tuiProgram
+}
+
+func (t tuiEmitter) Emit(event runner.Event) {
+	if t.program == nil {
+		return
+	}
+	go t.program.Send(event)
+}
+
+type bubbleTUIProgram struct {
+	program *tea.Program
+}
+
+func (b bubbleTUIProgram) Start() error {
+	if b.program == nil {
+		return nil
+	}
+	return b.program.Start()
+}
+
+func (b bubbleTUIProgram) Send(event runner.Event) {
+	if b.program == nil {
+		return
+	}
+	b.program.Send(event)
+}
+
+func (b bubbleTUIProgram) Quit() {
+	if b.program == nil {
+		return
+	}
+	b.program.Quit()
+}
+
+var isTerminal = func(writer io.Writer) bool {
+	if file, ok := writer.(*os.File); ok {
+		return term.IsTerminal(int(file.Fd()))
+	}
+	return false
+}
+
+var newTUIProgram = func(stdout io.Writer) tuiProgram {
+	program := tea.NewProgram(tui.NewModel(nil), tea.WithInput(nil), tea.WithOutput(stdout))
+	return bubbleTUIProgram{program: program}
 }
 
 type adapterRunner struct{}
@@ -59,6 +117,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	rootID := fs.String("root", "algi-8bt", "Root bead/epic ID")
 	model := fs.String("model", "", "OpenCode model")
 	dryRun := fs.Bool("dry-run", false, "Print task and prompt without executing")
+	headless := fs.Bool("headless", false, "Force plain output without TUI")
 	configRoot := fs.String("config-root", "", "OpenCode config root")
 	configDir := fs.String("config-dir", "", "OpenCode config dir")
 
@@ -122,7 +181,24 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		stderr = io.Discard
 	}
 
+	var program tuiProgram
+	if !*headless && isTerminal(stdout) {
+		program = newTUIProgram(stdout)
+		deps.Events = tuiEmitter{program: program}
+		go func() {
+			if err := program.Start(); err != nil {
+				fmt.Fprintln(stderr, err)
+				if exit != nil {
+					exit(1)
+				}
+			}
+		}()
+	}
+
 	_, err := runOnce(options, deps)
+	if program != nil {
+		program.Quit()
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		if exit != nil {

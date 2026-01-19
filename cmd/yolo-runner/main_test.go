@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"yolo-runner/internal/opencode"
 	"yolo-runner/internal/runner"
@@ -168,6 +170,110 @@ func TestRunOnceMainDefaultsConfigPaths(t *testing.T) {
 	}
 	if exit.code != 0 {
 		t.Fatalf("expected exit code 0, got %d", exit.code)
+	}
+}
+
+type fakeTUIProgram struct {
+	started chan struct{}
+	quit    chan struct{}
+	events  chan runner.Event
+}
+
+func newFakeTUIProgram() *fakeTUIProgram {
+	return &fakeTUIProgram{
+		started: make(chan struct{}),
+		quit:    make(chan struct{}),
+		events:  make(chan runner.Event, 1),
+	}
+}
+
+func (f *fakeTUIProgram) Start() error {
+	close(f.started)
+	return nil
+}
+
+func (f *fakeTUIProgram) Send(event runner.Event) {
+	f.events <- event
+}
+
+func (f *fakeTUIProgram) Quit() {
+	close(f.quit)
+}
+
+func waitForSignal(t *testing.T, signal chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-signal:
+		return
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected %s", label)
+	}
+}
+
+func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
+	fakeProgram := newFakeTUIProgram()
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	runOnce := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", "/repo", "--root", "root"}, runOnce.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if runOnce.deps.Events == nil {
+		t.Fatalf("expected events emitter to be set")
+	}
+	runOnce.deps.Events.Emit(runner.Event{Type: runner.EventSelectTask})
+	waitForSignal(t, fakeProgram.started, "tui start")
+	waitForSignal(t, fakeProgram.quit, "tui quit")
+	select {
+	case <-fakeProgram.events:
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected event to be forwarded to TUI")
+	}
+}
+
+func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
+	called := false
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	newTUIProgram = func(stdout io.Writer) tuiProgram {
+		called = true
+		return newFakeTUIProgram()
+	}
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	runOnce := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+	stderr := &bytes.Buffer{}
+
+	RunOnceMain([]string{"--repo", "/repo", "--root", "root", "--headless"}, runOnce.Run, exit.Exit, out, stderr, beadsRunner, gitRunner)
+
+	if called {
+		t.Fatalf("expected TUI program not to start")
+	}
+	if runOnce.deps.Events != nil {
+		t.Fatalf("expected no events emitter in headless mode")
 	}
 }
 
