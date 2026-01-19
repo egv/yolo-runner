@@ -1,11 +1,11 @@
 package runner
 
 type Issue struct {
-	ID        string
-	IssueType string
-	Status    string
-	Priority  *int
-	Children  []Issue
+	ID        string  `json:"id"`
+	IssueType string  `json:"issue_type"`
+	Status    string  `json:"status"`
+	Priority  *int    `json:"priority"`
+	Children  []Issue `json:"children"`
 }
 
 func SelectFirstOpenLeafTaskID(root Issue) string {
