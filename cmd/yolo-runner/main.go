@@ -114,6 +114,10 @@ func (o openCodeAdapter) Run(issueID string, repoRoot string, promptText string,
 }
 
 func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Writer, stderr io.Writer, beadsRunner beadsRunner, gitRunner gitRunner) int {
+	if len(args) > 0 && args[0] == "init" {
+		return InitMain(args[1:], exit, stderr)
+	}
+
 	fs := flag.NewFlagSet("yolo-runner", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -240,6 +244,34 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 
 func main() {
 	RunOnceMain(os.Args[1:], runner.RunOnce, os.Exit, os.Stdout, os.Stderr, nil, nil)
+}
+
+func InitMain(args []string, exit exitFunc, stderr io.Writer) int {
+	fs := flag.NewFlagSet("yolo-runner-init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	repoRoot := fs.String("repo", ".", "Repository root path")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, err)
+		if exit != nil {
+			exit(1)
+		}
+		return 1
+	}
+
+	if err := opencode.InitAgent(*repoRoot); err != nil {
+		fmt.Fprintln(stderr, err)
+		if exit != nil {
+			exit(1)
+		}
+		return 1
+	}
+
+	if exit != nil {
+		exit(0)
+	}
+	return 0
 }
 
 type promptBuilder struct{}

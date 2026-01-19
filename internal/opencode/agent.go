@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	agentRelativePath = ".opencode/agent/yolo.md"
+	agentRelativePath       = ".opencode/agent/yolo.md"
+	agentSourceRelativePath = "yolo.md"
 )
 
 var (
@@ -28,6 +29,22 @@ func ValidateAgent(repoRoot string) error {
 	}
 	if !hasPermissionAllow(content) {
 		return fmt.Errorf("yolo agent missing permission: allow; run opencode init")
+	}
+	return nil
+}
+
+func InitAgent(repoRoot string) error {
+	sourcePath := filepath.Join(repoRoot, agentSourceRelativePath)
+	sourceContent, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("read yolo agent template: %w", err)
+	}
+	destinationPath := filepath.Join(repoRoot, agentRelativePath)
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return fmt.Errorf("create agent dir: %w", err)
+	}
+	if err := os.WriteFile(destinationPath, sourceContent, 0o644); err != nil {
+		return fmt.Errorf("write agent file: %w", err)
 	}
 	return nil
 }
