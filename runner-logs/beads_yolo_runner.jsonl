@@ -5,3 +5,4 @@
 {"timestamp": "2026-01-19T03:31:06Z", "issue_id": "yolo-runner-r5w.9", "title": "v1: Logging parity (runner + per-task)", "status": "completed", "commit_sha": "06f7585e8e5b9d9dc77851af3801ba9a342bda4f"}
 {"timestamp": "2026-01-19T03:50:55Z", "issue_id": "yolo-runner-r5w.7", "title": "v1: Runner run-once orchestration", "status": "completed", "commit_sha": "31d4fe0ed20e2f60f400f61a0572ef9f7bd27684"}
 {"timestamp": "2026-01-19T03:53:31Z", "issue_id": "yolo-runner-r5w.8", "title": "v1: Runner loop + --max", "status": "completed", "commit_sha": "d19dd8bf68bcc563ea4c5b5e7f1f2411bdc3f1f4"}
+{"timestamp": "2026-01-19T03:55:07Z", "issue_id": "yolo-runner-r5w.10", "title": "v1: Build artifacts + docs", "status": "completed", "commit_sha": "40f1b81f58f7214842c50494e0ec363eb2395bf2"}
