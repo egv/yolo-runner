@@ -165,3 +165,29 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	return "completed", nil
 }
+
+func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnceOptions, RunOnceDeps) (string, error)) (int, error) {
+	if runOnce == nil {
+		runOnce = RunOnce
+	}
+
+	completed := 0
+	for {
+		result, err := runOnce(opts, deps)
+		if err != nil {
+			return completed, err
+		}
+		if result == "completed" {
+			completed++
+		}
+		if result == "no_tasks" {
+			return completed, nil
+		}
+		if max > 0 && completed >= max {
+			return completed, nil
+		}
+		if result != "completed" {
+			return completed, nil
+		}
+	}
+}
