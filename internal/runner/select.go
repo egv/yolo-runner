@@ -20,13 +20,16 @@ func SelectFirstOpenLeafTaskID(root Issue) string {
 
 func selectFirstOpenLeafInChildren(children []Issue) string {
 	for _, item := range sortedIssues(children) {
-		if item.Status != "open" {
+		if isRunnableLeaf(item) {
+			if item.Status == "open" {
+				return item.ID
+			}
 			continue
 		}
-		if isRunnableLeaf(item) {
-			return item.ID
-		}
 		if isContainer(item) {
+			if item.Status != "open" && item.Status != "in_progress" {
+				continue
+			}
 			if len(item.Children) == 0 {
 				continue
 			}

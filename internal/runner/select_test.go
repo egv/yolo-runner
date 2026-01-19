@@ -182,3 +182,101 @@ func TestSelectFirstOpenLeafTaskIDSkipsEpicAndMoleculeAsLeaves(t *testing.T) {
 		t.Fatalf("expected task-1, got %q", leafID)
 	}
 }
+
+func TestSelectFirstOpenLeafTaskIDMoleculeOpen(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "molecule-1",
+				IssueType: "molecule",
+				Status:    "open",
+				Priority:  intPtr(0),
+				Children: []Issue{
+					{
+						ID:        "task-1",
+						IssueType: "task",
+						Status:    "open",
+						Priority:  intPtr(0),
+					},
+				},
+			},
+		},
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "task-1" {
+		t.Fatalf("expected task-1, got %q", leafID)
+	}
+}
+
+func TestSelectFirstOpenLeafTaskIDMoleculeInProgress(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "molecule-1",
+				IssueType: "molecule",
+				Status:    "in_progress",
+				Priority:  intPtr(0),
+				Children: []Issue{
+					{
+						ID:        "task-1",
+						IssueType: "task",
+						Status:    "open",
+						Priority:  intPtr(0),
+					},
+				},
+			},
+		},
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "task-1" {
+		t.Fatalf("expected task-1, got %q", leafID)
+	}
+}
+
+func TestSelectFirstOpenLeafTaskIDSkipsEmptyMolecule(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "molecule-empty",
+				IssueType: "molecule",
+				Status:    "open",
+				Priority:  intPtr(0),
+			},
+			{
+				ID:        "task-1",
+				IssueType: "task",
+				Status:    "open",
+				Priority:  intPtr(1),
+			},
+		},
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "task-1" {
+		t.Fatalf("expected task-1, got %q", leafID)
+	}
+}
+
+func TestSelectFirstOpenLeafTaskIDLeafRequiresOpenStatus(t *testing.T) {
+	root := Issue{
+		ID:        "task-root",
+		IssueType: "task",
+		Status:    "in_progress",
+	}
+
+	leafID := SelectFirstOpenLeafTaskID(root)
+	if leafID != "" {
+		t.Fatalf("expected empty leaf, got %q", leafID)
+	}
+}
