@@ -8,3 +8,4 @@
 {"timestamp": "2026-01-19T03:55:07Z", "issue_id": "yolo-runner-r5w.10", "title": "v1: Build artifacts + docs", "status": "completed", "commit_sha": "40f1b81f58f7214842c50494e0ec363eb2395bf2"}
 {"timestamp": "2026-01-19T18:50:58Z", "issue_id": "yolo-runner-127.4.9.1", "title": "Align: Default isolated OpenCode config (XDG_CONFIG_HOME)", "status": "completed", "commit_sha": "8530779bd714e79826ded904bdc4ab6117a0f34b"}
 {"timestamp": "2026-01-19T18:54:38Z", "issue_id": "yolo-runner-127.4.9.2", "title": "Align: Keep OpenCode JSONL log clean (stderr separate)", "status": "completed", "commit_sha": "8ddf5009a52b08c204552d29fae4ed88649d8bac"}
+{"timestamp": "2026-01-19T18:55:57Z", "issue_id": "yolo-runner-127.4.9.3", "title": "Align: Document OpenCode config isolation", "status": "completed", "commit_sha": "a8a41f8235365dbe9d6175da642b6474f0c85026"}
