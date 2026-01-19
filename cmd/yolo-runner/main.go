@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"yolo-runner/internal/beads"
 	"yolo-runner/internal/logging"
@@ -58,6 +59,8 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	rootID := fs.String("root", "algi-8bt", "Root bead/epic ID")
 	model := fs.String("model", "", "OpenCode model")
 	dryRun := fs.Bool("dry-run", false, "Print task and prompt without executing")
+	configRoot := fs.String("config-root", "", "OpenCode config root")
+	configDir := fs.String("config-dir", "", "OpenCode config dir")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -90,12 +93,26 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		Logger:   runnerLogger{},
 	}
 
+	resolvedConfigRoot := *configRoot
+	resolvedConfigDir := *configDir
+	if resolvedConfigRoot == "" {
+		homeDir := os.Getenv("HOME")
+		if homeDir != "" {
+			resolvedConfigRoot = filepath.Join(homeDir, ".config", "opencode-runner")
+		}
+	}
+	if resolvedConfigDir == "" && resolvedConfigRoot != "" {
+		resolvedConfigDir = filepath.Join(resolvedConfigRoot, "opencode")
+	}
+
 	options := runner.RunOnceOptions{
-		RepoRoot: *repoRoot,
-		RootID:   *rootID,
-		Model:    *model,
-		DryRun:   *dryRun,
-		Out:      stdout,
+		RepoRoot:   *repoRoot,
+		RootID:     *rootID,
+		Model:      *model,
+		ConfigRoot: resolvedConfigRoot,
+		ConfigDir:  resolvedConfigDir,
+		DryRun:     *dryRun,
+		Out:        stdout,
 	}
 
 	if stdout == nil {
