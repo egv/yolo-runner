@@ -699,6 +699,80 @@ func TestRunOnceMainRunModePassesAfterInit(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainInitOverwritesAgentFile(t *testing.T) {
+	tempDir := t.TempDir()
+	writeRootYoloFile(t, tempDir, "root-agent")
+	writeAgentFile(t, tempDir, "stale")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exit := &fakeExit{}
+
+	code := RunOnceMain([]string{"init", "--repo", tempDir}, nil, exit.Exit, stdout, stderr, nil, nil)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if exit.code != 0 {
+		t.Fatalf("expected exit code 0, got %d", exit.code)
+	}
+	agentPath := filepath.Join(tempDir, ".opencode", "agent", "yolo.md")
+	content, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read agent file: %v", err)
+	}
+	if string(content) != "root-agent" {
+		t.Fatalf("expected agent file to be overwritten")
+	}
+}
+
+func TestRunOnceMainInitCreatesAgentDir(t *testing.T) {
+	tempDir := t.TempDir()
+	writeRootYoloFile(t, tempDir, "root-agent")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exit := &fakeExit{}
+
+	code := RunOnceMain([]string{"init", "--repo", tempDir}, nil, exit.Exit, stdout, stderr, nil, nil)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	agentPath := filepath.Join(tempDir, ".opencode", "agent", "yolo.md")
+	content, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read agent file: %v", err)
+	}
+	if string(content) != "root-agent" {
+		t.Fatalf("expected agent file to be created")
+	}
+}
+
+func TestRunOnceMainRunModePassesAfterInit(t *testing.T) {
+	tempDir := t.TempDir()
+	writeRootYoloFile(t, tempDir, "---\npermission: allow\n---\n")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exit := &fakeExit{}
+
+	code := RunOnceMain([]string{"init", "--repo", tempDir}, nil, exit.Exit, stdout, stderr, nil, nil)
+	if code != 0 {
+		t.Fatalf("expected init exit code 0, got %d", code)
+	}
+
+	runOnce := &fakeRunOnce{result: "no_tasks"}
+	code = RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce.Run, exit.Exit, stdout, stderr, nil, nil)
+
+	if code != 0 {
+		t.Fatalf("expected run mode exit code 0, got %d", code)
+	}
+	if !runOnce.called {
+		t.Fatalf("expected run once to be called")
+	}
+}
+
 func TestOpenCodeRunDefaultsCreateConfigAndEnv(t *testing.T) {
 	tempDir := t.TempDir()
 	repoRoot := filepath.Join(tempDir, "repo")
