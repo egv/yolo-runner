@@ -22,6 +22,7 @@ func TestRunOnceMarksBlockedOnStall(t *testing.T) {
 		OpenCode: &fakeOpenCode{recorder: recorder, err: stallErr},
 		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
 		Logger:   &fakeLogger{recorder: recorder},
+		Events:   &eventRecorder{},
 	}
 	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
 

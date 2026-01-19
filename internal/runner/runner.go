@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"yolo-runner/internal/opencode"
 )
@@ -50,6 +51,7 @@ type RunOnceDeps struct {
 	OpenCode OpenCodeRunner
 	Git      GitClient
 	Logger   Logger
+	Events   EventEmitter
 }
 
 type RunOnceOptions struct {
@@ -84,6 +86,8 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "", err
 	}
 
+	emitPhase(deps.Events, EventSelectTask, leafID, bead.Title)
+
 	prompt := deps.Prompt.Build(leafID, bead.Title, bead.Description, bead.AcceptanceCriteria)
 	command := opencode.BuildArgs(opts.RepoRoot, prompt, opts.Model)
 
@@ -94,10 +98,12 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "dry_run", nil
 	}
 
+	emitPhase(deps.Events, EventBeadsUpdate, leafID, bead.Title)
 	if err := deps.Beads.UpdateStatus(leafID, "in_progress"); err != nil {
 		return "", err
 	}
 
+	emitPhase(deps.Events, EventOpenCodeStart, leafID, bead.Title)
 	if err := deps.OpenCode.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath); err != nil {
 		if stall, ok := err.(*opencode.StallError); ok {
 			reason := stall.Error()
@@ -108,11 +114,14 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		}
 		return "", err
 	}
+	emitPhase(deps.Events, EventOpenCodeEnd, leafID, bead.Title)
 
+	emitPhase(deps.Events, EventGitAdd, leafID, bead.Title)
 	if err := deps.Git.AddAll(); err != nil {
 		return "", err
 	}
 
+	emitPhase(deps.Events, EventGitStatus, leafID, bead.Title)
 	dirty, err := deps.Git.IsDirty()
 	if err != nil {
 		return "", err
@@ -137,6 +146,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		commitMessage = "feat: " + strings.ToLower(bead.Title)
 	}
 
+	emitPhase(deps.Events, EventGitCommit, leafID, bead.Title)
 	if err := deps.Git.Commit(commitMessage); err != nil {
 		return "", err
 	}
@@ -149,10 +159,12 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "", err
 	}
 
+	emitPhase(deps.Events, EventBeadsClose, leafID, bead.Title)
 	if err := deps.Beads.Close(leafID); err != nil {
 		return "", err
 	}
 
+	emitPhase(deps.Events, EventBeadsVerify, leafID, bead.Title)
 	closed, err := deps.Beads.Show(leafID)
 	if err != nil {
 		return "", err
@@ -167,11 +179,25 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "blocked", nil
 	}
 
+	emitPhase(deps.Events, EventBeadsSync, leafID, bead.Title)
 	if err := deps.Beads.Sync(); err != nil {
 		return "", err
 	}
 
 	return "completed", nil
+}
+
+func emitPhase(emitter EventEmitter, eventType EventType, issueID string, title string) {
+	if emitter == nil {
+		return
+	}
+	emitter.Emit(Event{
+		Type:      eventType,
+		IssueID:   issueID,
+		Title:     title,
+		Phase:     string(eventType),
+		EmittedAt: time.Now(),
+	})
 }
 
 func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnceOptions, RunOnceDeps) (string, error)) (int, error) {

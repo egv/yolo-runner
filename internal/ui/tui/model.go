@@ -5,6 +5,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"yolo-runner/internal/runner"
 )
 
 type Model struct {
@@ -14,13 +16,6 @@ type Model struct {
 	lastOutputAt time.Time
 	now          func() time.Time
 	spinnerIndex int
-}
-
-type StatusMsg struct {
-	TaskID       string
-	TaskTitle    string
-	Phase        string
-	LastOutputAt time.Time
 }
 
 type OutputMsg struct{}
@@ -38,11 +33,11 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch typed := msg.(type) {
-	case StatusMsg:
-		m.taskID = typed.TaskID
-		m.taskTitle = typed.TaskTitle
+	case runner.Event:
+		m.taskID = typed.IssueID
+		m.taskTitle = typed.Title
 		m.phase = typed.Phase
-		m.lastOutputAt = typed.LastOutputAt
+		m.lastOutputAt = typed.EmittedAt
 	case OutputMsg:
 		m.spinnerIndex = (m.spinnerIndex + 1) % len(spinnerFrames)
 		if m.lastOutputAt.IsZero() {

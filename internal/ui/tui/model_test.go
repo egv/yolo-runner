@@ -4,16 +4,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"yolo-runner/internal/runner"
 )
 
 func TestModelRendersTaskAndPhase(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 	m := NewModel(func() time.Time { return fixedNow })
-	updated, _ := m.Update(StatusMsg{
-		TaskID:       "task-1",
-		TaskTitle:    "Example Task",
-		Phase:        "running",
-		LastOutputAt: fixedNow.Add(-5 * time.Second),
+	updated, _ := m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		Phase:     "running",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
 	})
 	m = updated.(Model)
 

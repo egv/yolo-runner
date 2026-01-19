@@ -134,6 +134,29 @@ type logEntry struct {
 	status string
 }
 
+type eventRecorder struct {
+	events []Event
+}
+
+func (e *eventRecorder) Emit(event Event) {
+	e.events = append(e.events, event)
+}
+
+func assertEvents(t *testing.T, events []Event, expected ...EventType) {
+	t.Helper()
+	if len(events) != len(expected) {
+		t.Fatalf("expected %d events, got %d", len(expected), len(events))
+	}
+	for i, event := range events {
+		if event.Type != expected[i] {
+			t.Fatalf("event %d expected %q, got %q", i, expected[i], event.Type)
+		}
+		if event.Phase == "" {
+			t.Fatalf("event %d expected phase", i)
+		}
+	}
+}
+
 func (f *fakeLogger) AppendRunnerSummary(repoRoot string, issueID string, title string, status string, commitSHA string) error {
 	if f.recorder != nil {
 		f.recorder.record("log.append:" + status)
@@ -232,6 +255,7 @@ func TestRunOnceNoChangesBlocksTask(t *testing.T) {
 		Git:      &fakeGit{recorder: recorder, dirty: false, rev: "abc123"},
 		Logger:   logger,
 	}
+
 	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
 
 	result, err := RunOnce(opts, deps)
@@ -272,13 +296,16 @@ func TestRunOnceChangesCommitCloseSync(t *testing.T) {
 		},
 	}
 	logger := &fakeLogger{recorder: recorder}
+	events := &eventRecorder{}
 	deps := RunOnceDeps{
 		Beads:    beads,
 		Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
 		OpenCode: &fakeOpenCode{recorder: recorder},
 		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
 		Logger:   logger,
+		Events:   events,
 	}
+
 	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
 
 	result, err := RunOnce(opts, deps)
@@ -309,6 +336,18 @@ func TestRunOnceChangesCommitCloseSync(t *testing.T) {
 	if len(logger.entries) != 1 || logger.entries[0].status != "completed" {
 		t.Fatalf("expected completed log entry, got %#v", logger.entries)
 	}
+	assertEvents(t, events.events,
+		EventSelectTask,
+		EventBeadsUpdate,
+		EventOpenCodeStart,
+		EventOpenCodeEnd,
+		EventGitAdd,
+		EventGitStatus,
+		EventGitCommit,
+		EventBeadsClose,
+		EventBeadsVerify,
+		EventBeadsSync,
+	)
 }
 
 func TestRunOnceUsesFallbackCommitMessage(t *testing.T) {
@@ -321,13 +360,16 @@ func TestRunOnceUsesFallbackCommitMessage(t *testing.T) {
 			{ID: "task-1", Status: "closed"},
 		},
 	}
+	logger := &fakeLogger{recorder: recorder}
 	deps := RunOnceDeps{
 		Beads:    beads,
 		Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
 		OpenCode: &fakeOpenCode{recorder: recorder},
-		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
-		Logger:   &fakeLogger{recorder: recorder},
+		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "abc123"},
+		Logger:   logger,
+		Events:   &eventRecorder{},
 	}
+
 	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
 
 	_, err := RunOnce(opts, deps)
