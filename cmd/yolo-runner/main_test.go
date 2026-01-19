@@ -195,6 +195,28 @@ func TestRunOnceMainInfersRoadmapRootWhenMissing(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainInfersRoadmapRootWhenInProgress(t *testing.T) {
+	tempDir := t.TempDir()
+	writeIssuesFile(t, tempDir, `{"id":"roadmap-2","title":"Roadmap","issue_type":"epic","status":"in_progress"}`)
+	runner := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir}, runner.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !runner.called {
+		t.Fatalf("expected run once to be called")
+	}
+	if runner.opts.RootID != "roadmap-2" {
+		t.Fatalf("expected root id to be inferred, got %q", runner.opts.RootID)
+	}
+}
+
 func TestRunOnceMainMissingRootRequiresExplicitFlag(t *testing.T) {
 	tempDir := t.TempDir()
 	writeIssuesFile(t, tempDir, `{"id":"epic-1","title":"Other","issue_type":"epic","status":"open"}`)

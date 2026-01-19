@@ -279,7 +279,7 @@ func inferDefaultRootID(repoRoot string) (string, error) {
 		if err := json.Unmarshal([]byte(line), &item); err != nil {
 			continue
 		}
-		if item.Title == "Roadmap" && item.Type == "epic" && item.Status == "open" {
+		if item.Title == "Roadmap" && item.Type == "epic" && (item.Status == "open" || item.Status == "in_progress") {
 			count++
 			match = item
 		}
