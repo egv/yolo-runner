@@ -162,6 +162,24 @@ func TestReadmeDocumentsMoleculeSelectionSemantics(t *testing.T) {
 	}
 }
 
+func TestAgentsDocumentsEpicCloseEligible(t *testing.T) {
+	content, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatalf("expected AGENTS.md to exist: %v", err)
+	}
+
+	agents := string(content)
+	requiredPhrases := []string{
+		"bd epic close-eligible",
+		"Session Completion",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(agents, phrase) {
+			t.Fatalf("expected AGENTS to mention %q", phrase)
+		}
+	}
+}
+
 func TestReadmeDocumentsConsoleOutputAndTroubleshooting(t *testing.T) {
 	content, err := os.ReadFile("README.md")
 	if err != nil {
