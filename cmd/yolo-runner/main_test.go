@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"yolo-runner/internal/opencode"
 	"yolo-runner/internal/runner"
 )
@@ -132,6 +134,9 @@ func TestRunOnceMainWiresDependencies(t *testing.T) {
 	}
 	if runner.opts.RepoRoot != tempDir || runner.opts.RootID != "root" || runner.opts.Model != "model" || !runner.opts.DryRun {
 		t.Fatalf("unexpected options: %#v", runner.opts)
+	}
+	if runner.opts.Stop == nil {
+		t.Fatalf("expected stop state to be set")
 	}
 	if runner.opts.Out == nil {
 		t.Fatalf("expected output writer")
@@ -384,7 +389,7 @@ func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -406,6 +411,9 @@ func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
 	if runOnce.deps.Events == nil {
 		t.Fatalf("expected events emitter to be set")
 	}
+	if runOnce.opts.Stop == nil {
+		t.Fatalf("expected stop state")
+	}
 	runOnce.deps.Events.Emit(runner.Event{Type: runner.EventSelectTask})
 	waitForSignal(t, fakeProgram.started, "tui start")
 	waitForSignal(t, fakeProgram.quit, "tui quit")
@@ -422,7 +430,7 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(stdout io.Writer) tuiProgram {
+	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram {
 		called = true
 		return newFakeTUIProgram()
 	}
@@ -448,6 +456,9 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	if runOnce.deps.Events != nil {
 		t.Fatalf("expected no events emitter in headless mode")
 	}
+	if runOnce.opts.Stop == nil {
+		t.Fatalf("expected stop state in headless mode")
+	}
 }
 
 func TestRunOnceMainRestoresCursorOnSuccess(t *testing.T) {
@@ -455,7 +466,7 @@ func TestRunOnceMainRestoresCursorOnSuccess(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -487,7 +498,7 @@ func TestRunOnceMainRestoresCursorOnError(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -519,7 +530,7 @@ func TestRunOnceMainRestoresCursorAfterBlockedTask(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram

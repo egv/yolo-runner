@@ -88,8 +88,8 @@ var isTerminal = func(writer io.Writer) bool {
 	return false
 }
 
-var newTUIProgram = func(stdout io.Writer) tuiProgram {
-	program := tea.NewProgram(tui.NewModel(nil), tea.WithInput(nil), tea.WithOutput(stdout))
+var newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram {
+	program := tea.NewProgram(model, tea.WithInput(nil), tea.WithOutput(stdout))
 	return bubbleTUIProgram{program: program}
 }
 
@@ -201,6 +201,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		ConfigDir:  resolvedConfigDir,
 		DryRun:     *dryRun,
 		Out:        stdout,
+		Stop:       runner.NewStopState(),
 	}
 
 	if stdout == nil {
@@ -212,7 +213,9 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 
 	var program tuiProgram
 	if !*headless && isTerminal(stdout) {
-		program = newTUIProgram(stdout)
+		stopCh := make(chan struct{})
+		options.Stop.Watch(stopCh)
+		program = newTUIProgram(tui.NewModelWithStop(nil, stopCh), stdout)
 		deps.Events = tuiEmitter{program: program}
 		go func() {
 			if err := program.Start(); err != nil {

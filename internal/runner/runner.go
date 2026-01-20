@@ -38,6 +38,10 @@ type OpenCodeRunner interface {
 	Run(issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string) error
 }
 
+type ContextOpenCodeRunner interface {
+	RunWithContext(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string) error
+}
+
 type GitClient interface {
 	AddAll() error
 	IsDirty() (bool, error)
@@ -70,6 +74,7 @@ type RunOnceOptions struct {
 	ProgressNow    func() time.Time
 	ProgressTicker ui.ProgressTicker
 	Progress       ProgressState
+	Stop           *StopState
 }
 
 type ProgressState struct {
@@ -140,6 +145,9 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	setState("bd update")
 	emitPhase(deps.Events, EventBeadsUpdate, leafID, bead.Title)
+	if opts.Stop != nil {
+		opts.Stop.MarkInProgress(leafID)
+	}
 	if err := deps.Beads.UpdateStatus(leafID, "in_progress"); err != nil {
 		return "", err
 	}
@@ -160,10 +168,18 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	})
 	progressCtx, cancelProgress := context.WithCancel(context.Background())
 	go progress.Run(progressCtx)
-	openCodeErr := deps.OpenCode.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, logPath)
+	openCodeErr := runOpenCode(opts, deps, leafID, prompt, logPath)
 	cancelProgress()
 	if openCodeErr != nil {
 		progress.Finish(openCodeErr)
+		if openCodeErr == context.Canceled && opts.Stop != nil && opts.Stop.Requested() {
+			if err := CleanupAfterStop(opts.Stop, StopCleanupConfig{
+				Beads: deps.Beads,
+			}); err != nil {
+				return "", err
+			}
+			return "stopped", openCodeErr
+		}
 		if stall, ok := openCodeErr.(*opencode.StallError); ok {
 			reason := stall.Error()
 			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
@@ -273,6 +289,22 @@ func emitPhase(emitter EventEmitter, eventType EventType, issueID string, title 
 		Phase:     string(eventType),
 		EmittedAt: time.Now(),
 	})
+}
+
+func runOpenCode(opts RunOnceOptions, deps RunOnceDeps, issueID string, prompt string, logPath string) error {
+	if opts.Stop != nil {
+		ctx := opts.Stop.Context()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if runner, ok := deps.OpenCode.(ContextOpenCodeRunner); ok {
+			return runner.RunWithContext(ctx, issueID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, logPath)
+		}
+	}
+	if deps.OpenCode == nil {
+		return nil
+	}
+	return deps.OpenCode.Run(issueID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, logPath)
 }
 
 func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnceOptions, RunOnceDeps) (string, error)) (int, error) {

@@ -20,6 +20,20 @@ func (a *Adapter) IsDirty() (bool, error) {
 	return output != "", nil
 }
 
+func (a *Adapter) StatusPorcelain() (string, error) {
+	return a.runner.Run("git", "status", "--porcelain")
+}
+
+func (a *Adapter) RestoreAll() error {
+	_, err := a.runner.Run("git", "restore", ".")
+	return err
+}
+
+func (a *Adapter) CleanAll() error {
+	_, err := a.runner.Run("git", "clean", "-fd")
+	return err
+}
+
 func (a *Adapter) AddAll() error {
 	_, err := a.runner.Run("git", "add", ".")
 	return err

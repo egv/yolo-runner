@@ -95,6 +95,40 @@ func TestRevParseHeadRunsGitRevParse(t *testing.T) {
 	assertCalls(t, runner.calls, call{name: "git", args: []string{"rev-parse", "HEAD"}})
 }
 
+func TestStatusPorcelainRunsGitStatus(t *testing.T) {
+	runner := &fakeRunner{output: " M file.go"}
+	adapter := New(runner)
+
+	status, err := adapter.StatusPorcelain()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if status != " M file.go" {
+		t.Fatalf("expected status output, got %q", status)
+	}
+	assertCalls(t, runner.calls, call{name: "git", args: []string{"status", "--porcelain"}})
+}
+
+func TestRestoreAllRunsGitRestore(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	if err := adapter.RestoreAll(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	assertCalls(t, runner.calls, call{name: "git", args: []string{"restore", "."}})
+}
+
+func TestCleanAllRunsGitClean(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	if err := adapter.CleanAll(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	assertCalls(t, runner.calls, call{name: "git", args: []string{"clean", "-fd"}})
+}
+
 func assertCalls(t *testing.T, got []call, want call) {
 	t.Helper()
 	if len(got) != 1 {

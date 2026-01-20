@@ -10,21 +10,31 @@ import (
 )
 
 type Model struct {
-	taskID       string
-	taskTitle    string
-	phase        string
-	lastOutputAt time.Time
-	now          func() time.Time
-	spinnerIndex int
+	taskID        string
+	taskTitle     string
+	phase         string
+	lastOutputAt  time.Time
+	now           func() time.Time
+	spinnerIndex  int
+	stopRequested bool
+	stopping      bool
+	stopCh        chan struct{}
+	stopNotified  bool
 }
 
 type OutputMsg struct{}
 
+type stopTickMsg struct{}
+
 func NewModel(now func() time.Time) Model {
+	return NewModelWithStop(now, nil)
+}
+
+func NewModelWithStop(now func() time.Time, stopCh chan struct{}) Model {
 	if now == nil {
 		now = time.Now
 	}
-	return Model{now: now}
+	return Model{now: now, stopCh: stopCh}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -51,6 +61,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastOutputAt = m.now()
 	case tickMsg:
 		return m, tickCmd()
+	case tea.KeyMsg:
+		if typed.Type == tea.KeyRunes && len(typed.Runes) == 1 && typed.Runes[0] == 'q' {
+			m.stopRequested = true
+			m.stopping = true
+			if m.stopCh != nil && !m.stopNotified {
+				m.stopNotified = true
+				select {
+				case <-m.stopCh:
+					// already closed
+				default:
+					close(m.stopCh)
+				}
+			}
+			return m, func() tea.Msg { return stopTickMsg{} }
+		}
+	case stopTickMsg:
+		m.stopRequested = true
+		m.stopping = true
 	}
 	return m, nil
 }
@@ -58,7 +86,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	spinner := spinnerFrames[m.spinnerIndex%len(spinnerFrames)]
 	age := m.lastOutputAge()
-	return fmt.Sprintf("%s %s - %s\nphase: %s\nlast runner event %s\n", spinner, m.taskID, m.taskTitle, m.phase, age)
+	status := ""
+	if m.stopping {
+		status = "Stopping..."
+	}
+	return fmt.Sprintf("%s %s - %s\nphase: %s\nlast runner event %s\n%sq: stop runner\n", spinner, m.taskID, m.taskTitle, m.phase, age, status)
 }
 
 func (m Model) lastOutputAge() string {
@@ -67,6 +99,14 @@ func (m Model) lastOutputAge() string {
 	}
 	age := m.now().Sub(m.lastOutputAt).Round(time.Second)
 	return fmt.Sprintf("%ds", int(age.Seconds()))
+}
+
+func (m Model) StopRequested() bool {
+	return m.stopRequested
+}
+
+func (m Model) StopChannel() chan struct{} {
+	return m.stopCh
 }
 
 var spinnerFrames = []string{"-", "\\", "|", "/"}

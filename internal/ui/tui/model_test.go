@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"yolo-runner/internal/runner"
 )
 
@@ -97,5 +99,28 @@ func TestModelInitSchedulesTick(t *testing.T) {
 	m := NewModel(func() time.Time { return time.Unix(0, 0) })
 	if cmd := m.Init(); cmd == nil {
 		t.Fatalf("expected tick command")
+	}
+}
+
+func TestModelStopKeySetsStoppingState(t *testing.T) {
+	stopCh := make(chan struct{})
+	m := NewModelWithStop(func() time.Time { return time.Unix(0, 0) }, stopCh)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+
+	if !m.StopRequested() {
+		t.Fatalf("expected stop to be requested")
+	}
+	if cmd == nil {
+		t.Fatalf("expected stop command")
+	}
+	select {
+	case <-stopCh:
+		// ok
+	default:
+		t.Fatalf("expected stop channel to close")
+	}
+	if !strings.Contains(m.View(), "Stopping...") {
+		t.Fatalf("expected stopping view, got %q", m.View())
 	}
 }
