@@ -10,16 +10,18 @@ import (
 )
 
 type Model struct {
-	taskID        string
-	taskTitle     string
-	phase         string
-	lastOutputAt  time.Time
-	now           func() time.Time
-	spinnerIndex  int
-	stopRequested bool
-	stopping      bool
-	stopCh        chan struct{}
-	stopNotified  bool
+	taskID            string
+	taskTitle         string
+	phase             string
+	progressCompleted int
+	progressTotal     int
+	lastOutputAt      time.Time
+	now               func() time.Time
+	spinnerIndex      int
+	stopRequested     bool
+	stopping          bool
+	stopCh            chan struct{}
+	stopNotified      bool
 }
 
 type OutputMsg struct{}
@@ -55,6 +57,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.taskID = typed.IssueID
 		m.taskTitle = typed.Title
 		m.phase = typed.Phase
+		m.progressCompleted = typed.ProgressCompleted
+		m.progressTotal = typed.ProgressTotal
 		m.lastOutputAt = typed.EmittedAt
 	case OutputMsg:
 		m.spinnerIndex = (m.spinnerIndex + 1) % len(spinnerFrames)
@@ -90,7 +94,11 @@ func (m Model) View() string {
 	if m.stopping {
 		status = "Stopping..."
 	}
-	return fmt.Sprintf("%s %s - %s\nphase: %s\nlast runner event %s\n%sq: stop runner\n", spinner, m.taskID, m.taskTitle, m.phase, age, status)
+	progress := ""
+	if m.progressTotal > 0 {
+		progress = fmt.Sprintf("[%d/%d] ", m.progressCompleted, m.progressTotal)
+	}
+	return fmt.Sprintf("%s %s%s - %s\nphase: %s\nlast runner event %s\n%sq: stop runner\n", spinner, progress, m.taskID, m.taskTitle, m.phase, age, status)
 }
 
 func (m Model) lastOutputAge() string {

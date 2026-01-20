@@ -18,11 +18,13 @@ const (
 )
 
 type Event struct {
-	Type      EventType `json:"type"`
-	IssueID   string    `json:"issue_id"`
-	Title     string    `json:"title"`
-	Phase     string    `json:"phase"`
-	EmittedAt time.Time `json:"emitted_at"`
+	Type              EventType `json:"type"`
+	IssueID           string    `json:"issue_id"`
+	Title             string    `json:"title"`
+	Phase             string    `json:"phase"`
+	ProgressCompleted int       `json:"progress_completed"`
+	ProgressTotal     int       `json:"progress_total"`
+	EmittedAt         time.Time `json:"emitted_at"`
 }
 
 type EventEmitter interface {

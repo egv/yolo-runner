@@ -34,6 +34,42 @@ func TestModelRendersTaskAndPhase(t *testing.T) {
 	}
 }
 
+func TestModelRendersProgressIndicator(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+	updated, _ := m.Update(runner.Event{
+		Type:              runner.EventSelectTask,
+		IssueID:           "task-1",
+		Title:             "Example Task",
+		Phase:             "running",
+		EmittedAt:         fixedNow,
+		ProgressCompleted: 1,
+		ProgressTotal:     3,
+	})
+	m = updated.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "[1/3] task-1 - Example Task") {
+		t.Fatalf("expected progress indicator in view, got %q", view)
+	}
+
+	updated, _ = m.Update(runner.Event{
+		Type:              runner.EventSelectTask,
+		IssueID:           "task-2",
+		Title:             "Next Task",
+		Phase:             "running",
+		EmittedAt:         fixedNow,
+		ProgressCompleted: 2,
+		ProgressTotal:     3,
+	})
+	m = updated.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "[2/3] task-2 - Next Task") {
+		t.Fatalf("expected updated progress indicator in view, got %q", view)
+	}
+}
+
 func TestSpinnerAdvancesOnOutput(t *testing.T) {
 	m := NewModel(func() time.Time { return time.Unix(0, 0) })
 	updated, _ := m.Update(OutputMsg{})

@@ -131,7 +131,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	fmt.Fprintf(out, "Starting [%d/%d] %s: %s\n", progressState.Completed, progressState.Total, leafID, bead.Title)
 	setState("selecting task")
 
-	emitPhase(deps.Events, EventSelectTask, leafID, bead.Title)
+	emitPhase(deps.Events, EventSelectTask, leafID, bead.Title, progressState)
 
 	prompt := deps.Prompt.Build(leafID, bead.Title, bead.Description, bead.AcceptanceCriteria)
 	command := opencode.BuildArgs(opts.RepoRoot, prompt, opts.Model)
@@ -147,7 +147,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	setState("bd update")
-	emitPhase(deps.Events, EventBeadsUpdate, leafID, bead.Title)
+	emitPhase(deps.Events, EventBeadsUpdate, leafID, bead.Title, progressState)
 	if opts.Stop != nil {
 		opts.Stop.MarkInProgress(leafID)
 	}
@@ -156,7 +156,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	setState("opencode running")
-	emitPhase(deps.Events, EventOpenCodeStart, leafID, bead.Title)
+	emitPhase(deps.Events, EventOpenCodeStart, leafID, bead.Title, progressState)
 	logPath := opts.LogPath
 
 	if logPath == "" {
@@ -198,16 +198,16 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "", openCodeErr
 	}
 	progress.Finish(nil)
-	emitPhase(deps.Events, EventOpenCodeEnd, leafID, bead.Title)
+	emitPhase(deps.Events, EventOpenCodeEnd, leafID, bead.Title, progressState)
 
 	setState("git add")
-	emitPhase(deps.Events, EventGitAdd, leafID, bead.Title)
+	emitPhase(deps.Events, EventGitAdd, leafID, bead.Title, progressState)
 	if err := deps.Git.AddAll(); err != nil {
 		return "", err
 	}
 
 	setState("git status")
-	emitPhase(deps.Events, EventGitStatus, leafID, bead.Title)
+	emitPhase(deps.Events, EventGitStatus, leafID, bead.Title, progressState)
 	dirty, err := deps.Git.IsDirty()
 	if err != nil {
 		return "", err
@@ -236,7 +236,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	setState("git commit")
-	emitPhase(deps.Events, EventGitCommit, leafID, bead.Title)
+	emitPhase(deps.Events, EventGitCommit, leafID, bead.Title, progressState)
 	if err := deps.Git.Commit(commitMessage); err != nil {
 		return "", err
 	}
@@ -250,13 +250,13 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	setState("bd close")
-	emitPhase(deps.Events, EventBeadsClose, leafID, bead.Title)
+	emitPhase(deps.Events, EventBeadsClose, leafID, bead.Title, progressState)
 	if err := deps.Beads.Close(leafID); err != nil {
 		return "", err
 	}
 
 	setState("bd verify")
-	emitPhase(deps.Events, EventBeadsVerify, leafID, bead.Title)
+	emitPhase(deps.Events, EventBeadsVerify, leafID, bead.Title, progressState)
 	closed, err := deps.Beads.Show(leafID)
 	if err != nil {
 		return "", err
@@ -274,7 +274,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	setState("bd sync")
-	emitPhase(deps.Events, EventBeadsSync, leafID, bead.Title)
+	emitPhase(deps.Events, EventBeadsSync, leafID, bead.Title, progressState)
 	if err := deps.Beads.Sync(); err != nil {
 		return "", err
 	}
@@ -284,16 +284,18 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	return "completed", nil
 }
 
-func emitPhase(emitter EventEmitter, eventType EventType, issueID string, title string) {
+func emitPhase(emitter EventEmitter, eventType EventType, issueID string, title string, progress ProgressState) {
 	if emitter == nil {
 		return
 	}
 	emitter.Emit(Event{
-		Type:      eventType,
-		IssueID:   issueID,
-		Title:     title,
-		Phase:     string(eventType),
-		EmittedAt: time.Now(),
+		Type:              eventType,
+		IssueID:           issueID,
+		Title:             title,
+		Phase:             string(eventType),
+		ProgressCompleted: progress.Completed,
+		ProgressTotal:     progress.Total,
+		EmittedAt:         time.Now(),
 	})
 }
 
