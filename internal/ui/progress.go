@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,13 +24,14 @@ type ProgressConfig struct {
 }
 
 type Progress struct {
-	config       ProgressConfig
-	spinnerIndex int
-	lastSize     int64
-	lastOutput   time.Time
-	state        string
-	finished     bool
-	mu           sync.Mutex
+	config        ProgressConfig
+	spinnerIndex  int
+	lastSize      int64
+	lastOutput    time.Time
+	state         string
+	finished      bool
+	lastRenderLen int
+	mu            sync.Mutex
 }
 
 type realProgressTicker struct {
@@ -154,7 +156,13 @@ func (p *Progress) renderLocked(now time.Time) {
 	}
 	spinner := spinnerFrames[p.spinnerIndex%len(spinnerFrames)]
 	line := fmt.Sprintf("%s %s - last output %s", spinner, p.state, age)
-	fmt.Fprintf(p.config.Writer, "\r%s", line)
+	pad := ""
+	lineLen := len(line)
+	if p.lastRenderLen > lineLen {
+		pad = strings.Repeat(" ", p.lastRenderLen-lineLen)
+	}
+	fmt.Fprintf(p.config.Writer, "\r%s%s", line, pad)
+	p.lastRenderLen = lineLen
 }
 
 func fileSize(path string) int64 {

@@ -191,6 +191,83 @@ func TestProgressSpinnerAdvancesOnNewBytes(t *testing.T) {
 	}
 }
 
+func TestProgressClearsShorterAgeLine(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "issue-3.jsonl")
+	if err := os.WriteFile(logPath, []byte("start"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	baseTime := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(logPath, baseTime, baseTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	current := baseTime
+	now := func() time.Time { return current }
+	buffer := &bytes.Buffer{}
+	ticker := newFakeProgressTicker()
+	progress := NewProgress(ProgressConfig{
+		Writer:  buffer,
+		State:   "opencode running",
+		LogPath: logPath,
+		Ticker:  ticker,
+		Now:     now,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		progress.Run(ctx)
+		close(done)
+	}()
+
+	current = baseTime.Add(12 * time.Second)
+	ticker.Tick(current)
+	firstOutput := waitForOutput(t, buffer)
+	firstLine := lastRender(firstOutput)
+	firstLen := len(firstLine)
+	if !strings.Contains(firstLine, "last output 12s") {
+		t.Fatalf("expected last output age in output, got %q", firstLine)
+	}
+
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	if _, err := file.Write([]byte("more")); err != nil {
+		_ = file.Close()
+		t.Fatalf("append log: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+
+	current = baseTime.Add(13 * time.Second)
+	if err := os.Chtimes(logPath, current, current); err != nil {
+		t.Fatalf("chtimes update: %v", err)
+	}
+	prevLen := len(firstOutput)
+	ticker.Tick(current)
+	secondOutput := waitForOutputAfter(t, buffer, prevLen)
+	secondLine := lastRender(secondOutput)
+	if !strings.Contains(secondLine, "last output 0s") {
+		t.Fatalf("expected last output age reset, got %q", secondLine)
+	}
+	if len(secondLine) < firstLen {
+		t.Fatalf("expected render to clear shorter line, got lengths %d then %d", firstLen, len(secondLine))
+	}
+
+	cancel()
+	ticker.Stop()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("progress did not stop")
+	}
+}
+
 func TestProgressFinishPrintsFinalLine(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "issue-3.jsonl")
