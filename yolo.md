@@ -15,6 +15,7 @@ tools:
   todowrite: true
   todoread: true
   webfetch: true
+permission: allow
 ---
 You are in YOLO mode - all permissions granted.
 

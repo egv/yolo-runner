@@ -1,2 +1,12 @@
 .worktrees/
 .venv/
+
+# Build artifacts
+bin/
+
+# Runtime logs and OpenCode outputs
+runner-logs/
+
+# Python cache (bootstrap runner only; never commit)
+__pycache__/
+*.pyc
