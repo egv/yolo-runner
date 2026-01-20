@@ -450,6 +450,110 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainRestoresCursorOnSuccess(t *testing.T) {
+	fakeProgram := newFakeTUIProgram()
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
+	runOnce := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce.Run, exit.Exit, out, stderr, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	waitForSignal(t, fakeProgram.started, "tui start")
+	waitForSignal(t, fakeProgram.quit, "tui quit")
+	if !strings.Contains(out.String(), "\x1b[?25h") {
+		t.Fatalf("expected cursor show sequence, got %q", out.String())
+	}
+}
+
+func TestRunOnceMainRestoresCursorOnError(t *testing.T) {
+	fakeProgram := newFakeTUIProgram()
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
+	runOnce := &fakeRunOnce{err: errors.New("boom")}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce.Run, exit.Exit, out, stderr, beadsRunner, gitRunner)
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	waitForSignal(t, fakeProgram.started, "tui start")
+	waitForSignal(t, fakeProgram.quit, "tui quit")
+	if !strings.Contains(out.String(), "\x1b[?25h") {
+		t.Fatalf("expected cursor show sequence, got %q", out.String())
+	}
+}
+
+func TestRunOnceMainRestoresCursorAfterBlockedTask(t *testing.T) {
+	fakeProgram := newFakeTUIProgram()
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	newTUIProgram = func(stdout io.Writer) tuiProgram { return fakeProgram }
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	calls := 0
+	runOnce := func(opts runner.RunOnceOptions, deps runner.RunOnceDeps) (string, error) {
+		calls++
+		if calls == 1 {
+			return "blocked", nil
+		}
+		return "no_tasks", nil
+	}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce, exit.Exit, out, stderr, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	waitForSignal(t, fakeProgram.started, "tui start")
+	waitForSignal(t, fakeProgram.quit, "tui quit")
+	if !strings.Contains(out.String(), "\x1b[?25h") {
+		t.Fatalf("expected cursor show sequence, got %q", out.String())
+	}
+}
+
 func TestRunOnceMainInitOverwritesAgentFile(t *testing.T) {
 	tempDir := t.TempDir()
 	writeRootYoloFile(t, tempDir, "root-agent")

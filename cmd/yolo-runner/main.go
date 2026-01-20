@@ -223,6 +223,9 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 			}
 		}()
 	}
+	if isTerminal(stdout) {
+		defer fmt.Fprint(stdout, "\x1b[?25h")
+	}
 
 	// Loop until there are no tasks left. Blocked tasks are skipped.
 	_, err := runner.RunLoop(options, deps, 0, runOnce)
