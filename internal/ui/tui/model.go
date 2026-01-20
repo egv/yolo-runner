@@ -58,7 +58,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	spinner := spinnerFrames[m.spinnerIndex%len(spinnerFrames)]
 	age := m.lastOutputAge()
-	return fmt.Sprintf("%s %s - %s\nphase: %s\nlast output %s\n", spinner, m.taskID, m.taskTitle, m.phase, age)
+	return fmt.Sprintf("%s %s - %s\nphase: %s\nlast runner event %s\n", spinner, m.taskID, m.taskTitle, m.phase, age)
 }
 
 func (m Model) lastOutputAge() string {

@@ -27,8 +27,8 @@ func TestModelRendersTaskAndPhase(t *testing.T) {
 	if !strings.Contains(view, "running") {
 		t.Fatalf("expected phase in view, got %q", view)
 	}
-	if !strings.Contains(view, "last output 5s") {
-		t.Fatalf("expected last output age in view, got %q", view)
+	if !strings.Contains(view, "last runner event 5s") {
+		t.Fatalf("expected last runner event age in view, got %q", view)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestModelTicksLastOutputAge(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected tick command")
 	}
-	if !strings.Contains(m.View(), "last output 3s") {
-		t.Fatalf("expected last output age to tick, got %q", m.View())
+	if !strings.Contains(m.View(), "last runner event 3s") {
+		t.Fatalf("expected last runner event age to tick, got %q", m.View())
 	}
 }
 
@@ -88,8 +88,8 @@ func TestModelOutputResetsLastOutputAge(t *testing.T) {
 	updated, _ = m.Update(OutputMsg{})
 	m = updated.(Model)
 
-	if !strings.Contains(m.View(), "last output 0s") {
-		t.Fatalf("expected last output age to reset, got %q", m.View())
+	if !strings.Contains(m.View(), "last runner event 0s") {
+		t.Fatalf("expected last runner event age to reset, got %q", m.View())
 	}
 }
 
