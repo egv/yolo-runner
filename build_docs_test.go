@@ -161,3 +161,29 @@ func TestReadmeDocumentsMoleculeSelectionSemantics(t *testing.T) {
 		t.Fatalf("expected README to describe leaf eligibility as open only")
 	}
 }
+
+func TestReadmeDocumentsConsoleOutputAndTroubleshooting(t *testing.T) {
+	content, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("expected README.md to exist: %v", err)
+	}
+
+	readme := string(content)
+	requiredPhrases := []string{
+		"Sample output",
+		"tail -f runner-logs/opencode/opencode.log",
+		"current task",
+	}
+	for _, phrase := range requiredPhrases {
+		if !strings.Contains(readme, phrase) {
+			t.Fatalf("expected README to mention %q", phrase)
+		}
+	}
+
+	if !regexp.MustCompile("```[\\s\\S]*yolo-runner[\\s\\S]*```").MatchString(readme) {
+		t.Fatalf("expected README to include a sample output snippet with yolo-runner")
+	}
+	if !regexp.MustCompile(`(?i)task.*bd show`).MatchString(readme) {
+		t.Fatalf("expected README to explain how to identify the current task")
+	}
+}

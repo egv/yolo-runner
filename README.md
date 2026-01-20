@@ -83,6 +83,21 @@ The YOLO agent must only work on the prompt provided. It must not call beads com
 - Runner summary log: `runner-logs/beads_yolo_runner.jsonl`
 - Per-task OpenCode logs: `runner-logs/opencode/<issue-id>.jsonl`
 
+## Sample output
+
+```
+$ ./bin/yolo-runner --repo . --root algi-8bt --max 1
+[runner] selected bead yolo-runner-127.2.5
+[runner] starting opencode run
+[opencode] running task yolo-runner-127.2.5
+[runner] commit created and bead closed
+```
+
+## Troubleshooting: output looks stuck
+
+- Tail the OpenCode log: `tail -f runner-logs/opencode/opencode.log`
+- Identify the current task: run `bd show <issue-id>` from the last "selected bead" line in the output
+
 ## OpenCode Config Isolation
 
 The runner sets `XDG_CONFIG_HOME=~/.config/opencode-runner` so OpenCode reads and writes config in an isolated directory instead of your default `~/.config/opencode`.
