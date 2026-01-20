@@ -9,13 +9,19 @@ import (
 )
 
 type fakeRunner struct {
-	output string
-	err    error
-	calls  [][]string
+	output  string
+	outputs []string
+	err     error
+	calls   [][]string
 }
 
 func (f *fakeRunner) Run(args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{}, args...))
+	if len(f.outputs) > 0 {
+		output := f.outputs[0]
+		f.outputs = f.outputs[1:]
+		return output, f.err
+	}
 	return f.output, f.err
 }
 
@@ -36,6 +42,61 @@ func TestReadyLoadsTree(t *testing.T) {
 	}
 
 	assertCall(t, runner.calls, []string{"bd", "ready", "--parent", "root", "--json"})
+}
+
+func TestReadyFallsBackToShowOnLeafOpen(t *testing.T) {
+	payloadReady := `[]`
+	payloadShow := `[{"id":"task-1","issue_type":"task","status":"open"}]`
+	runner := &fakeRunner{outputs: []string{payloadReady, payloadShow}}
+	adapter := New(runner)
+
+	issue, err := adapter.Ready("task-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issue.ID != "task-1" || issue.IssueType != "task" || issue.Status != "open" {
+		t.Fatalf("unexpected issue: %#v", issue)
+	}
+
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected two calls, got %d", len(runner.calls))
+	}
+	if strings.Join(runner.calls[0], " ") != "bd ready --parent task-1 --json" {
+		t.Fatalf("unexpected first call: %v", runner.calls[0])
+	}
+	if strings.Join(runner.calls[1], " ") != "bd show task-1 --json" {
+		t.Fatalf("unexpected second call: %v", runner.calls[1])
+	}
+}
+
+func TestReadyReturnsEmptyOnClosedLeaf(t *testing.T) {
+	payloadReady := `[]`
+	payloadShow := `[{"id":"task-1","issue_type":"task","status":"closed"}]`
+	runner := &fakeRunner{outputs: []string{payloadReady, payloadShow}}
+	adapter := New(runner)
+
+	issue, err := adapter.Ready("task-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issue.ID != "" {
+		t.Fatalf("expected empty issue, got %#v", issue)
+	}
+}
+
+func TestReadyReturnsEmptyOnContainerShow(t *testing.T) {
+	payloadReady := `[]`
+	payloadShow := `[{"id":"epic-1","issue_type":"epic","status":"open"}]`
+	runner := &fakeRunner{outputs: []string{payloadReady, payloadShow}}
+	adapter := New(runner)
+
+	issue, err := adapter.Ready("epic-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issue.ID != "" {
+		t.Fatalf("expected empty issue, got %#v", issue)
+	}
 }
 
 func TestShowLoadsBead(t *testing.T) {

@@ -32,9 +32,31 @@ func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
 		return runner.Issue{}, err
 	}
 	if len(issues) == 0 {
-		return runner.Issue{}, nil
+		return a.readyFallback(rootID)
 	}
 	return issues[0], nil
+}
+
+func (a *Adapter) readyFallback(rootID string) (runner.Issue, error) {
+	output, err := a.runner.Run("bd", "show", rootID, "--json")
+	if err != nil {
+		return runner.Issue{}, err
+	}
+	var issues []runner.Issue
+	if err := json.Unmarshal([]byte(output), &issues); err != nil {
+		return runner.Issue{}, err
+	}
+	if len(issues) == 0 {
+		return runner.Issue{}, nil
+	}
+	issue := issues[0]
+	if issue.Status != "open" {
+		return runner.Issue{}, nil
+	}
+	if issue.IssueType == "epic" || issue.IssueType == "molecule" {
+		return runner.Issue{}, nil
+	}
+	return issue, nil
 }
 
 type showIssue struct {
