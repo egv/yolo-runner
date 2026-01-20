@@ -44,6 +44,26 @@ func TestReadyLoadsTree(t *testing.T) {
 	assertCall(t, runner.calls, []string{"bd", "ready", "--parent", "root", "--json"})
 }
 
+func TestReadyReturnsAllIssuesForSelection(t *testing.T) {
+	payload := `[{"id":"task-1","issue_type":"task","status":"in_progress","priority":1},{"id":"task-2","issue_type":"task","status":"open","priority":2},{"id":"task-3","issue_type":"task","status":"open","priority":0}]`
+	fake := &fakeRunner{output: payload}
+	adapter := New(fake)
+
+	issue, err := adapter.Ready("root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issue.Children) != 3 {
+		t.Fatalf("expected 3 children, got %#v", issue.Children)
+	}
+	leafID := runner.SelectFirstOpenLeafTaskID(issue)
+	if leafID != "task-3" {
+		t.Fatalf("expected task-3, got %q", leafID)
+	}
+
+	assertCall(t, fake.calls, []string{"bd", "ready", "--parent", "root", "--json"})
+}
+
 func TestReadyFallsBackToShowOnLeafOpen(t *testing.T) {
 	payloadReady := `[]`
 	payloadShow := `[{"id":"task-1","issue_type":"task","status":"open"}]`

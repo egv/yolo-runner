@@ -34,7 +34,15 @@ func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
 	if len(issues) == 0 {
 		return a.readyFallback(rootID)
 	}
-	return issues[0], nil
+	if len(issues) == 1 {
+		return issues[0], nil
+	}
+	return runner.Issue{
+		ID:        rootID,
+		IssueType: "epic",
+		Status:    "open",
+		Children:  issues,
+	}, nil
 }
 
 func (a *Adapter) Tree(rootID string) (runner.Issue, error) {

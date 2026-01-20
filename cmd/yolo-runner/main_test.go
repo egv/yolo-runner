@@ -319,6 +319,7 @@ type fakeTUIProgram struct {
 	started chan struct{}
 	quit    chan struct{}
 	events  chan runner.Event
+	inputs  []tea.Msg
 }
 
 func newFakeTUIProgram() *fakeTUIProgram {
@@ -340,6 +341,10 @@ func (f *fakeTUIProgram) Send(event runner.Event) {
 
 func (f *fakeTUIProgram) Quit() {
 	close(f.quit)
+}
+
+func (f *fakeTUIProgram) SendInput(msg tea.Msg) {
+	f.inputs = append(f.inputs, msg)
 }
 
 func waitForSignal(t *testing.T, signal chan struct{}, label string) {
@@ -389,7 +394,7 @@ func TestRunOnceMainUsesTUIOnTTYByDefault(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -430,7 +435,7 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram {
+	newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram {
 		called = true
 		return newFakeTUIProgram()
 	}
@@ -461,12 +466,67 @@ func TestRunOnceMainHeadlessDisablesTUI(t *testing.T) {
 	}
 }
 
+func TestRunOnceMainTUIInputRoutesToStopState(t *testing.T) {
+	prevIsTerminal := isTerminal
+	prevNewTUIProgram := newTUIProgram
+	isTerminal = func(io.Writer) bool { return true }
+	var model tea.Model
+	newTUIProgram = func(m tea.Model, stdout io.Writer, input io.Reader) tuiProgram {
+		model = m
+		return newFakeTUIProgram()
+	}
+	t.Cleanup(func() {
+		isTerminal = prevIsTerminal
+		newTUIProgram = prevNewTUIProgram
+	})
+
+	tempDir := t.TempDir()
+	writeAgentFile(t, tempDir, "---\npermission: allow\n---\n")
+	runOnce := &fakeRunOnce{result: "no_tasks"}
+	exit := &fakeExit{}
+	out := &bytes.Buffer{}
+	beadsRunner := &fakeRunner{}
+	gitRunner := &fakeGitRunner{}
+
+	code := RunOnceMain([]string{"--repo", tempDir, "--root", "root"}, runOnce.Run, exit.Exit, out, out, beadsRunner, gitRunner)
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if runOnce.opts.Stop == nil {
+		t.Fatalf("expected stop state")
+	}
+	if model == nil {
+		t.Fatalf("expected model to be initialized")
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	updatedModel := updated.(interface{ StopChannel() chan struct{} })
+	if updatedModel.StopChannel() == nil {
+		t.Fatalf("expected stop channel")
+	}
+	select {
+	case <-updatedModel.StopChannel():
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected stop channel to close")
+	}
+	select {
+	case <-runOnce.opts.Stop.Context().Done():
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected stop context to cancel")
+	}
+	if !runOnce.opts.Stop.Requested() {
+		t.Fatalf("expected stop to be requested")
+	}
+}
+
 func TestRunOnceMainRestoresCursorOnSuccess(t *testing.T) {
 	fakeProgram := newFakeTUIProgram()
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -498,7 +558,7 @@ func TestRunOnceMainRestoresCursorOnError(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram
@@ -530,7 +590,7 @@ func TestRunOnceMainRestoresCursorAfterBlockedTask(t *testing.T) {
 	prevIsTerminal := isTerminal
 	prevNewTUIProgram := newTUIProgram
 	isTerminal = func(io.Writer) bool { return true }
-	newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram { return fakeProgram }
+	newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram { return fakeProgram }
 	t.Cleanup(func() {
 		isTerminal = prevIsTerminal
 		newTUIProgram = prevNewTUIProgram

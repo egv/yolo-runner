@@ -42,6 +42,7 @@ type openCodeRunner interface {
 type tuiProgram interface {
 	Start() error
 	Send(event runner.Event)
+	SendInput(msg tea.Msg)
 	Quit()
 }
 
@@ -74,6 +75,13 @@ func (b bubbleTUIProgram) Send(event runner.Event) {
 	b.program.Send(event)
 }
 
+func (b bubbleTUIProgram) SendInput(msg tea.Msg) {
+	if b.program == nil {
+		return
+	}
+	b.program.Send(msg)
+}
+
 func (b bubbleTUIProgram) Quit() {
 	if b.program == nil {
 		return
@@ -88,8 +96,11 @@ var isTerminal = func(writer io.Writer) bool {
 	return false
 }
 
-var newTUIProgram = func(model tea.Model, stdout io.Writer) tuiProgram {
-	program := tea.NewProgram(model, tea.WithInput(nil), tea.WithOutput(stdout))
+var newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tuiProgram {
+	if input == nil {
+		input = os.Stdin
+	}
+	program := tea.NewProgram(model, tea.WithInput(input), tea.WithOutput(stdout))
 	return bubbleTUIProgram{program: program}
 }
 
@@ -215,7 +226,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	if !*headless && isTerminal(stdout) {
 		stopCh := make(chan struct{})
 		options.Stop.Watch(stopCh)
-		program = newTUIProgram(tui.NewModelWithStop(nil, stopCh), stdout)
+		program = newTUIProgram(tui.NewModelWithStop(nil, stopCh), stdout, os.Stdin)
 		deps.Events = tuiEmitter{program: program}
 		go func() {
 			if err := program.Start(); err != nil {

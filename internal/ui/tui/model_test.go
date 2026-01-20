@@ -124,3 +124,16 @@ func TestModelStopKeySetsStoppingState(t *testing.T) {
 		t.Fatalf("expected stopping view, got %q", m.View())
 	}
 }
+
+func TestModelStopKeyClosesStopChannel(t *testing.T) {
+	stopCh := make(chan struct{})
+	m := NewModelWithStop(func() time.Time { return time.Unix(0, 0) }, stopCh)
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+
+	select {
+	case <-stopCh:
+		// ok
+	default:
+		t.Fatalf("expected stop channel to close")
+	}
+}
