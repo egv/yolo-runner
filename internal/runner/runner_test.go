@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -394,16 +395,12 @@ func TestRunOnceUsesFallbackCommitMessage(t *testing.T) {
 func TestRunOncePrintsLifecycle(t *testing.T) {
 	start := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	prevNow := now
-	times := []time.Time{start, start.Add(time.Second)}
-	now = func() time.Time {
-		if len(times) == 0 {
-			return start.Add(time.Second)
-		}
-		current := times[0]
-		times = times[1:]
-		return current
-	}
+	now = func() time.Time { return start.Add(time.Second) }
 	t.Cleanup(func() { now = prevNow })
+
+	ticker := newFakeProgressTicker()
+	openCode := &blockingOpenCode{started: make(chan struct{}), release: make(chan struct{})}
+	output := &bytes.Buffer{}
 
 	recorder := &callRecorder{}
 	beads := &fakeBeads{
@@ -414,19 +411,33 @@ func TestRunOncePrintsLifecycle(t *testing.T) {
 			{ID: "task-1", Status: "closed"},
 		},
 	}
-	output := &bytes.Buffer{}
 	deps := RunOnceDeps{
 		Beads:    beads,
 		Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
-		OpenCode: &fakeOpenCode{recorder: recorder},
+		OpenCode: openCode,
 		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
 		Logger:   &fakeLogger{recorder: recorder},
 		Events:   &eventRecorder{},
 	}
 
-	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: output}
+	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: output, ProgressTicker: ticker, LogPath: filepath.Join(t.TempDir(), "log.jsonl")}
 
-	result, err := RunOnce(opts, deps)
+	resultCh := make(chan struct{})
+	var result string
+	var err error
+	go func() {
+		result, err = RunOnce(opts, deps)
+		close(resultCh)
+	}()
+
+	<-openCode.started
+	close(openCode.release)
+	select {
+	case <-resultCh:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected RunOnce to finish")
+	}
+
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,7 +454,7 @@ func TestRunOncePrintsLifecycle(t *testing.T) {
 	if !strings.Contains(printed, "State: opencode running") {
 		t.Fatalf("expected opencode state, got %q", printed)
 	}
-	if !strings.Contains(printed, "Finished task-1: completed (1s)") {
+	if !strings.Contains(printed, "Finished task-1: completed (0s)") {
 		t.Fatalf("expected finish line with elapsed, got %q", printed)
 	}
 }
