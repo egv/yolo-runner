@@ -159,6 +159,25 @@ func TestSyncCallsBd(t *testing.T) {
 	assertCall(t, runner.calls, []string{"bd", "sync"})
 }
 
+func TestTreeLoadsIssue(t *testing.T) {
+	payload := `[{"id":"root","issue_type":"epic","status":"open","children":[{"id":"task-1","issue_type":"task","status":"open"}]}]`
+	runner := &fakeRunner{output: payload}
+	adapter := New(runner)
+
+	issue, err := adapter.Tree("root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issue.ID != "root" || issue.IssueType != "epic" {
+		t.Fatalf("unexpected issue: %#v", issue)
+	}
+	if len(issue.Children) != 1 || issue.Children[0].ID != "task-1" {
+		t.Fatalf("unexpected children: %#v", issue.Children)
+	}
+
+	assertCall(t, runner.calls, []string{"bd", "show", "root", "--json"})
+}
+
 func TestErrorsPropagate(t *testing.T) {
 	runner := &fakeRunner{err: errors.New("boom")}
 	adapter := New(runner)
@@ -170,6 +189,9 @@ func TestErrorsPropagate(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 	if err := adapter.UpdateStatus("task-1", "open"); err == nil {
+		t.Fatalf("expected error")
+	}
+	if _, err := adapter.Tree("root"); err == nil {
 		t.Fatalf("expected error")
 	}
 	if err := adapter.Close("task-1"); err == nil {

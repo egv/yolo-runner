@@ -22,6 +22,7 @@ type Bead struct {
 
 type BeadsClient interface {
 	Ready(rootID string) (Issue, error)
+	Tree(rootID string) (Issue, error)
 	Show(id string) (Bead, error)
 	UpdateStatus(id string, status string) error
 	UpdateStatusWithReason(id string, status string, reason string) error
@@ -68,6 +69,12 @@ type RunOnceOptions struct {
 	Out            io.Writer
 	ProgressNow    func() time.Time
 	ProgressTicker ui.ProgressTicker
+	Progress       ProgressState
+}
+
+type ProgressState struct {
+	Completed int
+	Total     int
 }
 
 var now = time.Now
@@ -93,6 +100,15 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "", err
 	}
 
+	progressState := opts.Progress
+	if progressState.Total == 0 {
+		tree, err := deps.Beads.Tree(opts.RootID)
+		if err != nil {
+			return "", err
+		}
+		progressState.Total = CountRunnableLeaves(tree)
+	}
+
 	leafID := SelectFirstOpenLeafTaskID(root)
 	if leafID == "" {
 		fmt.Fprintln(out, "No tasks available")
@@ -104,7 +120,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		return "", err
 	}
 
-	fmt.Fprintf(out, "Starting %s: %s\n", leafID, bead.Title)
+	fmt.Fprintf(out, "Starting [%d/%d] %s: %s\n", progressState.Completed, progressState.Total, leafID, bead.Title)
 	setState("selecting task")
 
 	emitPhase(deps.Events, EventSelectTask, leafID, bead.Title)
@@ -266,12 +282,14 @@ func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnc
 
 	completed := 0
 	for {
+		opts.Progress.Completed = completed
 		result, err := runOnce(opts, deps)
 		if err != nil {
 			// Allow the caller to keep going after a task is marked blocked.
 			// This is primarily used for stall watchdog cases where we want to
 			// continue with other tasks.
 			if result == "blocked" {
+				completed++
 				continue
 			}
 			return completed, err
@@ -281,6 +299,7 @@ func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnc
 		case "completed":
 			completed++
 		case "blocked":
+			completed++
 			// Keep going; the next call should select a different open task.
 		case "no_tasks":
 			return completed, nil

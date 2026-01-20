@@ -280,3 +280,65 @@ func TestSelectFirstOpenLeafTaskIDLeafRequiresOpenStatus(t *testing.T) {
 		t.Fatalf("expected empty leaf, got %q", leafID)
 	}
 }
+
+func TestCountRunnableLeavesNestedTree(t *testing.T) {
+	root := Issue{
+		ID:        "epic-root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{
+				ID:        "task-1",
+				IssueType: "task",
+				Status:    "open",
+			},
+			{
+				ID:        "epic-1",
+				IssueType: "epic",
+				Status:    "open",
+				Children: []Issue{
+					{
+						ID:        "bug-1",
+						IssueType: "bug",
+						Status:    "blocked",
+					},
+					{
+						ID:        "feature-1",
+						IssueType: "feature",
+						Status:    "closed",
+					},
+					{
+						ID:        "molecule-1",
+						IssueType: "molecule",
+						Status:    "open",
+						Children: []Issue{
+							{
+								ID:        "task-2",
+								IssueType: "task",
+								Status:    "open",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	count := CountRunnableLeaves(root)
+	if count != 4 {
+		t.Fatalf("expected 4 runnable leaves, got %d", count)
+	}
+}
+
+func TestCountRunnableLeavesLeafRoot(t *testing.T) {
+	root := Issue{
+		ID:        "task-root",
+		IssueType: "task",
+		Status:    "open",
+	}
+
+	count := CountRunnableLeaves(root)
+	if count != 1 {
+		t.Fatalf("expected 1 runnable leaf, got %d", count)
+	}
+}

@@ -37,6 +37,21 @@ func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
 	return issues[0], nil
 }
 
+func (a *Adapter) Tree(rootID string) (runner.Issue, error) {
+	output, err := a.runner.Run("bd", "show", rootID, "--json")
+	if err != nil {
+		return runner.Issue{}, err
+	}
+	var issues []runner.Issue
+	if err := json.Unmarshal([]byte(output), &issues); err != nil {
+		return runner.Issue{}, err
+	}
+	if len(issues) == 0 {
+		return runner.Issue{}, nil
+	}
+	return issues[0], nil
+}
+
 func (a *Adapter) readyFallback(rootID string) (runner.Issue, error) {
 	output, err := a.runner.Run("bd", "show", rootID, "--json")
 	if err != nil {

@@ -38,6 +38,9 @@ func TestRunOnceMarksBlockedOnStall(t *testing.T) {
 	if !strings.Contains(joined, "beads.update:blocked:opencode stall category=permission") {
 		t.Fatalf("expected blocked status with reason, got %v", recorder.calls)
 	}
+	if !strings.Contains(joined, "beads.tree") {
+		t.Fatalf("expected tree call, got %v", recorder.calls)
+	}
 	if !strings.Contains(err.Error(), "permission") {
 		t.Fatalf("expected error to include classification, got %q", err.Error())
 	}

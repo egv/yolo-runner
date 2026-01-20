@@ -19,12 +19,23 @@ func (r *callRecorder) record(entry string) {
 type fakeBeads struct {
 	recorder   *callRecorder
 	readyIssue Issue
+	treeIssue  Issue
 	showQueue  []Bead
 }
 
 func (f *fakeBeads) Ready(rootID string) (Issue, error) {
 	if f.recorder != nil {
 		f.recorder.record("beads.ready")
+	}
+	return f.readyIssue, nil
+}
+
+func (f *fakeBeads) Tree(rootID string) (Issue, error) {
+	if f.recorder != nil {
+		f.recorder.record("beads.tree")
+	}
+	if f.treeIssue.ID != "" || f.treeIssue.IssueType != "" || f.treeIssue.Status != "" || len(f.treeIssue.Children) > 0 {
+		return f.treeIssue, nil
 	}
 	return f.readyIssue, nil
 }
@@ -192,7 +203,7 @@ func TestRunOnceNoTasks(t *testing.T) {
 	if !strings.Contains(opts.Out.(*bytes.Buffer).String(), "No tasks available") {
 		t.Fatalf("expected no tasks message, got %q", opts.Out.(*bytes.Buffer).String())
 	}
-	if strings.Join(recorder.calls, ",") != "beads.ready" {
+	if strings.Join(recorder.calls, ",") != "beads.ready,beads.tree" {
 		t.Fatalf("unexpected calls: %v", recorder.calls)
 	}
 }
@@ -236,7 +247,7 @@ func TestRunOnceDryRun(t *testing.T) {
 	if !strings.Contains(printed, "Command: opencode run PROMPT --agent yolo --format json /repo") {
 		t.Fatalf("expected command in output, got %q", printed)
 	}
-	expectedCalls := "beads.ready,beads.show,prompt.build"
+	expectedCalls := "beads.ready,beads.tree,beads.show,prompt.build"
 	if strings.Join(recorder.calls, ",") != expectedCalls {
 		t.Fatalf("unexpected calls: %v", recorder.calls)
 	}
@@ -272,6 +283,7 @@ func TestRunOnceNoChangesBlocksTask(t *testing.T) {
 	}
 	expectedCalls := []string{
 		"beads.ready",
+		"beads.tree",
 		"beads.show",
 		"prompt.build",
 		"beads.update:in_progress",
@@ -322,6 +334,7 @@ func TestRunOnceChangesCommitCloseSync(t *testing.T) {
 	}
 	expectedCalls := []string{
 		"beads.ready",
+		"beads.tree",
 		"beads.show",
 		"prompt.build",
 		"beads.update:in_progress",
@@ -392,6 +405,40 @@ func TestRunOnceUsesFallbackCommitMessage(t *testing.T) {
 	}
 }
 
+func TestRunOncePrintsProgressCounter(t *testing.T) {
+	recorder := &callRecorder{}
+	beads := &fakeBeads{
+		recorder:   recorder,
+		readyIssue: Issue{ID: "task-1", IssueType: "task", Status: "open"},
+		showQueue: []Bead{
+			{ID: "task-1", Title: "Progress Task", Status: "open"},
+			{ID: "task-1", Status: "closed"},
+		},
+	}
+	output := &bytes.Buffer{}
+	deps := RunOnceDeps{
+		Beads:    beads,
+		Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
+		OpenCode: &fakeOpenCode{recorder: recorder},
+		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
+		Logger:   &fakeLogger{recorder: recorder},
+		Events:   &eventRecorder{},
+	}
+
+	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: output, Progress: ProgressState{Completed: 2, Total: 5}}
+
+	result, err := RunOnce(opts, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "completed" {
+		t.Fatalf("expected completed, got %q", result)
+	}
+	if !strings.Contains(output.String(), "Starting [2/5] task-1: Progress Task") {
+		t.Fatalf("expected progress counter in output, got %q", output.String())
+	}
+}
+
 func TestRunOncePrintsLifecycle(t *testing.T) {
 	start := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	prevNow := now
@@ -445,7 +492,7 @@ func TestRunOncePrintsLifecycle(t *testing.T) {
 		t.Fatalf("expected completed, got %q", result)
 	}
 	printed := output.String()
-	if !strings.Contains(printed, "Starting task-1: My Task") {
+	if !strings.Contains(printed, "Starting [0/1] task-1: My Task") {
 		t.Fatalf("expected start line, got %q", printed)
 	}
 	if !strings.Contains(printed, "State: selecting task") {

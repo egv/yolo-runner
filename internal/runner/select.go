@@ -55,6 +55,24 @@ func isRunnableLeaf(issue Issue) bool {
 	return !isContainer(issue)
 }
 
+func CountRunnableLeaves(root Issue) int {
+	if isRunnableLeaf(root) {
+		return 1
+	}
+	if isContainer(root) {
+		return countRunnableLeaves(root.Children)
+	}
+	return 0
+}
+
+func countRunnableLeaves(children []Issue) int {
+	total := 0
+	for _, item := range children {
+		total += CountRunnableLeaves(item)
+	}
+	return total
+}
+
 func sortedIssues(items []Issue) []Issue {
 	sorted := make([]Issue, len(items))
 	copy(sorted, items)
