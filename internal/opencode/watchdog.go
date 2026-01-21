@@ -65,6 +65,7 @@ type StallError struct {
 	LogPath       string
 	LastOutputAge time.Duration
 	Tail          []string
+	TailPath      string
 }
 
 func (err *StallError) Error() string {
@@ -84,7 +85,9 @@ func (err *StallError) Error() string {
 	if err.LastOutputAge > 0 {
 		parts = append(parts, fmt.Sprintf("last_output_age=%s", err.LastOutputAge))
 	}
-	if len(err.Tail) > 0 {
+	if err.TailPath != "" {
+		parts = append(parts, "opencode_tail_path="+err.TailPath)
+	} else if len(err.Tail) > 0 {
 		parts = append(parts, "opencode_tail="+strings.Join(err.Tail, " | "))
 	}
 	return strings.Join(parts, " ")
@@ -230,7 +233,24 @@ func classifyStall(config WatchdogConfig, now time.Time, lastOutput time.Time) *
 		LastOutputAge: now.Sub(lastOutput),
 		Tail:          lines,
 	}
+	if config.LogPath != "" {
+		if path, err := writeTailFile(config.LogPath, lines); err == nil {
+			stall.TailPath = path
+		}
+	}
 	return stall
+}
+
+func writeTailFile(logPath string, lines []string) (string, error) {
+	if logPath == "" || len(lines) == 0 {
+		return "", nil
+	}
+	path := logPath + ".tail.txt"
+	content := strings.Join(lines, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func latestLogPath(dir string) string {

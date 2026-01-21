@@ -223,37 +223,19 @@ func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 	opencodeLog := filepath.Join(logDir, "latest.log")
 	writeFile(t, opencodeLog, "INFO service=provider status=started\n")
 
-	base := time.Now()
-	oldTime := base.Add(-1 * time.Second)
+	oldTime := time.Now().Add(-2 * time.Second)
 	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
 		t.Fatalf("chtimes runner log: %v", err)
 	}
 
 	proc := newFakeProcess()
-	tickCh := make(chan time.Time, 1)
-	tickCh <- base
-	calls := 0
 	watchdog := NewWatchdog(WatchdogConfig{
-		LogPath:         runnerLog,
-		OpenCodeLogDir:  logDir,
-		Timeout:         10 * time.Millisecond,
-		CompletionGrace: 10 * time.Second,
-		TailLines:       50,
-		NewTicker: func(time.Duration) WatchdogTicker {
-			return newStaticTicker(tickCh)
-		},
-		After: func(time.Duration) <-chan time.Time {
-			ch := make(chan time.Time, 1)
-			ch <- base
-			return ch
-		},
-		Now: func() time.Time {
-			calls++
-			if calls == 1 {
-				return base
-			}
-			return base.Add(2 * time.Second)
-		},
+		LogPath:        runnerLog,
+		OpenCodeLogDir: logDir,
+		Timeout:        20 * time.Millisecond,
+		Interval:       5 * time.Millisecond,
+		TailLines:      50,
+		Now:            func() time.Time { return time.Now() },
 	})
 
 	errCh := make(chan error, 1)
@@ -275,6 +257,77 @@ func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "last_output_age=") {
 			t.Fatalf("expected last_output_age in error, got %q", err.Error())
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for watchdog")
+	}
+}
+
+func TestWatchdogWritesTailFile(t *testing.T) {
+	tempDir := t.TempDir()
+	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-3.jsonl")
+	writeFile(t, runnerLog, "")
+	logDir := filepath.Join(tempDir, "opencode", "log")
+	opencodeLog := filepath.Join(logDir, "latest.log")
+	writeFile(t, opencodeLog, "INFO service=permission asking\nINFO session id=ses_456\n")
+
+	base := time.Now()
+	oldTime := base.Add(-1 * time.Second)
+	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+
+	proc := newFakeProcess()
+	tickCh := make(chan time.Time, 1)
+	tickCh <- base
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  logDir,
+		Timeout:         10 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       2,
+		NewTicker: func(duration time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- base
+			return ch
+		},
+		Now: func() time.Time {
+			return base.Add(2 * time.Second)
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- watchdog.Monitor(proc)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatalf("expected error")
+		}
+		stall, ok := err.(*StallError)
+		if !ok {
+			t.Fatalf("expected StallError, got %T", err)
+		}
+		if stall.TailPath == "" {
+			t.Fatalf("expected tail path")
+		}
+		contents, readErr := os.ReadFile(stall.TailPath)
+		if readErr != nil {
+			t.Fatalf("read tail file: %v", readErr)
+		}
+		if !strings.Contains(string(contents), "service=permission") {
+			t.Fatalf("expected tail file to include log content")
+		}
+		if strings.Contains(err.Error(), "opencode_tail=") {
+			t.Fatalf("expected no opencode_tail in error string")
+		}
+		if !strings.Contains(err.Error(), "opencode_tail_path=") {
+			t.Fatalf("expected tail path in error string")
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("timed out waiting for watchdog")
