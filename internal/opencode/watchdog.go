@@ -12,6 +12,10 @@ import (
 
 const defaultWatchdogTimeout = 10 * time.Minute
 const defaultWatchdogInterval = 5 * time.Second
+
+// defaultWatchdogCompletionGrace provides a short window for OpenCode to
+// finish after we detect a timeout, so we prefer the process exit result
+// over a stall classification when they happen nearly simultaneously.
 const defaultWatchdogCompletionGrace = 25 * time.Millisecond
 const defaultWatchdogLogTail = 20
 

@@ -140,9 +140,23 @@ func sanitizeReason(reason string) string {
 	trimmed = strings.ReplaceAll(trimmed, "\n", "; ")
 	const maxLen = 500
 	if len(trimmed) > maxLen {
-		return trimmed[:maxLen]
+		return truncateRunes(trimmed, maxLen)
 	}
 	return trimmed
+}
+
+func truncateRunes(input string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range input {
+		if count == maxRunes {
+			return input[:i]
+		}
+		count++
+	}
+	return input
 }
 
 func (a *Adapter) Close(id string) error {

@@ -189,8 +189,25 @@ func TestUpdateStatusWithReasonTruncates(t *testing.T) {
 	if len(runner.calls[1]) < 5 {
 		t.Fatalf("unexpected update call: %v", runner.calls[1])
 	}
-	if got := runner.calls[1][4]; len(got) != 500 {
-		t.Fatalf("expected 500 char notes, got %d", len(got))
+	if got := runner.calls[1][4]; len([]rune(got)) != 500 {
+		t.Fatalf("expected 500 rune notes, got %d", len([]rune(got)))
+	}
+}
+
+func TestUpdateStatusWithReasonTruncatesRunes(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	reason := strings.Repeat("世", 600)
+	if err := adapter.UpdateStatusWithReason("task-1", "blocked", reason); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected two calls, got %d", len(runner.calls))
+	}
+	got := runner.calls[1][4]
+	if len([]rune(got)) != 500 {
+		t.Fatalf("expected 500 rune notes, got %d", len([]rune(got)))
 	}
 }
 
