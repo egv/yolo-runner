@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,6 +13,7 @@ import (
 type fakeProgressTicker struct {
 	ch     chan time.Time
 	closed bool
+	mu     sync.Mutex
 }
 
 func newFakeProgressTicker() *fakeProgressTicker {
@@ -23,6 +25,8 @@ func (f *fakeProgressTicker) C() <-chan time.Time {
 }
 
 func (f *fakeProgressTicker) Stop() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.closed {
 		return
 	}
@@ -31,6 +35,12 @@ func (f *fakeProgressTicker) Stop() {
 }
 
 func (f *fakeProgressTicker) Tick(now time.Time) {
+	f.mu.Lock()
+	closed := f.closed
+	f.mu.Unlock()
+	if closed {
+		return
+	}
 	f.ch <- now
 }
 
@@ -45,13 +55,57 @@ func (b *blockingOpenCode) Run(issueID string, repoRoot string, prompt string, m
 	return nil
 }
 
-func waitForOutputAfter(t *testing.T, buf *bytes.Buffer, prevLen int) string {
+type signalBuffer struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	writes chan struct{}
+}
+
+func newSignalBuffer() *signalBuffer {
+	return &signalBuffer{writes: make(chan struct{}, 1)}
+}
+
+func (b *signalBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	n, err := b.buf.Write(p)
+	b.mu.Unlock()
+	select {
+	case b.writes <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (b *signalBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *signalBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForOutputAfter(t *testing.T, buf *signalBuffer, prevLen int) string {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
 		if buf.Len() > prevLen {
 			return buf.String()
 		}
-		time.Sleep(5 * time.Millisecond)
+		if time.Now().After(deadline) {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		select {
+		case <-buf.writes:
+		case <-time.After(remaining):
+		}
 	}
 	t.Fatalf("expected output")
 	return ""
@@ -89,7 +143,7 @@ func TestRunOncePrintsOpenCodeHeartbeat(t *testing.T) {
 	ticker := newFakeProgressTicker()
 	current := baseTime
 	now := func() time.Time { return current }
-	output := &bytes.Buffer{}
+	output := newSignalBuffer()
 
 	openCode := &blockingOpenCode{started: make(chan struct{}), release: make(chan struct{})}
 	deps := RunOnceDeps{
@@ -120,8 +174,9 @@ func TestRunOncePrintsOpenCodeHeartbeat(t *testing.T) {
 
 	<-openCode.started
 	current = baseTime.Add(6 * time.Second)
+	prevLen := output.Len()
 	ticker.Tick(current)
-	firstOutput := waitForOutputAfter(t, output, len(output.String()))
+	firstOutput := waitForOutputAfter(t, output, prevLen)
 	if !strings.Contains(firstOutput, "\r") {
 		t.Fatalf("expected carriage return output, got %q", firstOutput)
 	}
@@ -148,7 +203,7 @@ func TestRunOncePrintsOpenCodeHeartbeat(t *testing.T) {
 		t.Fatalf("chtimes update: %v", err)
 	}
 
-	prevLen := len(firstOutput)
+	prevLen = output.Len()
 	ticker.Tick(current)
 	secondOutput := waitForOutputAfter(t, output, prevLen)
 	firstLine := lastRender(firstOutput)

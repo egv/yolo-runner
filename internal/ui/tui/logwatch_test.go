@@ -4,13 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
 type fakeTicker struct {
-	ch     chan time.Time
-	closed bool
+	ch   chan time.Time
+	once sync.Once
 }
 
 func newFakeTicker() *fakeTicker {
@@ -22,14 +23,17 @@ func (f *fakeTicker) C() <-chan time.Time {
 }
 
 func (f *fakeTicker) Stop() {
-	if f.closed {
-		return
-	}
-	close(f.ch)
-	f.closed = true
+	f.once.Do(func() {
+		close(f.ch)
+	})
 }
 
 func (f *fakeTicker) Tick(now time.Time) {
+	select {
+	case <-f.ch:
+		return
+	default:
+	}
 	f.ch <- now
 }
 
