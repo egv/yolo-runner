@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -54,6 +55,52 @@ func (p *delayedProcess) Kill() error {
 
 func (p *delayedProcess) finish(err error) {
 	p.waitErrCh <- err
+}
+
+type killBlockingProcess struct {
+	killed      bool
+	waitCalled  chan struct{}
+	waitErrCh   chan error
+	killCalled  chan struct{}
+	killRelease chan struct{}
+	mu          sync.Mutex
+}
+
+func newKillBlockingProcess() *killBlockingProcess {
+	return &killBlockingProcess{
+		waitCalled:  make(chan struct{}),
+		waitErrCh:   make(chan error, 1),
+		killCalled:  make(chan struct{}),
+		killRelease: make(chan struct{}),
+	}
+}
+
+func (p *killBlockingProcess) Wait() error {
+	close(p.waitCalled)
+	return <-p.waitErrCh
+}
+
+func (p *killBlockingProcess) Kill() error {
+	select {
+	case <-p.killCalled:
+	default:
+		close(p.killCalled)
+	}
+	<-p.killRelease
+	p.mu.Lock()
+	p.killed = true
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *killBlockingProcess) finish(err error) {
+	p.waitErrCh <- err
+}
+
+func (p *killBlockingProcess) isKilled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killed
 }
 
 type immediateProcess struct {
@@ -273,6 +320,75 @@ func TestWatchdogDoesNotStallWhenProcessCompletesDuringStallTickRace(t *testing.
 			t.Fatalf("expected no error, got %v", err)
 		}
 		if proc.killed {
+			t.Fatalf("expected process not to be killed")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for watchdog")
+	}
+}
+
+func TestWatchdogPrefersWaitResultOverStallKillWhenWaitCompletesDuringGrace(t *testing.T) {
+	tempDir := t.TempDir()
+	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-grace.jsonl")
+	writeFile(t, runnerLog, "")
+
+	base := time.Now()
+	oldTime := base.Add(-1 * time.Second)
+	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+
+	proc := newKillBlockingProcess()
+	tickCh := make(chan time.Time, 1)
+	allowNow := make(chan struct{})
+	calls := 0
+
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  filepath.Join(tempDir, "opencode", "log"),
+		Timeout:         10 * time.Millisecond,
+		Interval:        1 * time.Millisecond,
+		CompletionGrace: 200 * time.Millisecond,
+		TailLines:       5,
+		Tick:            tickCh,
+		Now: func() time.Time {
+			calls++
+			if calls == 1 {
+				return base
+			}
+			<-allowNow
+			return base.Add(50 * time.Millisecond)
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- watchdog.Monitor(proc)
+	}()
+
+	select {
+	case <-proc.waitCalled:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("timed out waiting for Wait to be called")
+	}
+
+	tickCh <- base.Add(1 * time.Millisecond)
+
+	select {
+	case <-proc.killCalled:
+		t.Fatalf("expected watchdog not to call Kill")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	proc.finish(nil)
+	close(allowNow)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if proc.isKilled() {
 			t.Fatalf("expected process not to be killed")
 		}
 	case <-time.After(500 * time.Millisecond):

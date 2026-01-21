@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
 
 const defaultWatchdogTimeout = 10 * time.Minute
 const defaultWatchdogInterval = 5 * time.Second
+const defaultWatchdogCompletionGrace = 25 * time.Millisecond
 const defaultWatchdogLogTail = 20
 
 var defaultHomeDir = os.UserHomeDir
@@ -29,13 +29,14 @@ type Process interface {
 }
 
 type WatchdogConfig struct {
-	LogPath        string
-	OpenCodeLogDir string
-	Timeout        time.Duration
-	Interval       time.Duration
-	TailLines      int
-	Now            func() time.Time
-	Tick           <-chan time.Time
+	LogPath         string
+	OpenCodeLogDir  string
+	Timeout         time.Duration
+	Interval        time.Duration
+	CompletionGrace time.Duration
+	TailLines       int
+	Now             func() time.Time
+	Tick            <-chan time.Time
 }
 
 type Watchdog struct {
@@ -147,16 +148,14 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 				}
 			}
 			if currentTime.Sub(lastOutput) > config.Timeout {
-				select {
-				case err := <-done:
-					return err
-				default:
+				grace := config.CompletionGrace
+				if grace <= 0 {
+					grace = defaultWatchdogCompletionGrace
 				}
-				runtime.Gosched()
 				select {
 				case err := <-done:
 					return err
-				default:
+				case <-time.After(grace):
 				}
 				stall := classifyStall(config, currentTime, lastOutput)
 				_ = process.Kill()
