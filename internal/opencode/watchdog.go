@@ -41,6 +41,7 @@ type WatchdogConfig struct {
 	CompletionGrace time.Duration
 	TailLines       int
 	Now             func() time.Time
+	After           func(time.Duration) <-chan time.Time
 	NewTicker       func(time.Duration) WatchdogTicker
 }
 
@@ -112,6 +113,9 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 			config.OpenCodeLogDir = filepath.Join(home, ".local", "share", "opencode", "log")
 		}
 	}
+	if config.After == nil {
+		config.After = time.After
+	}
 
 	lastOutput, err := fileModTime(config.LogPath)
 	if err != nil {
@@ -123,18 +127,10 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 		lastOutput = startTime
 	}
 
-	doneCh := make(chan struct{})
-	var waitErr error
+	waitErrCh := make(chan error, 1)
 	go func() {
-		waitErr = process.Wait()
-		close(doneCh)
+		waitErrCh <- process.Wait()
 	}()
-
-	select {
-	case <-doneCh:
-		return waitErr
-	default:
-	}
 
 	newTicker := config.NewTicker
 	if newTicker == nil {
@@ -146,11 +142,24 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 	defer ticker.Stop()
 	tick := ticker.C()
 
+	checkDone := func() (error, bool) {
+		select {
+		case err := <-waitErrCh:
+			return err, true
+		default:
+			return nil, false
+		}
+	}
+
 	for {
 		select {
-		case <-doneCh:
-			return waitErr
+		case err := <-waitErrCh:
+			return err
 		case <-tick:
+			if err, done := checkDone(); done {
+				return err
+			}
+
 			currentTime := config.Now()
 			currentSize := fileSize(config.LogPath)
 			if currentSize > lastSize {
@@ -161,49 +170,36 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 					lastOutput = currentTime
 				}
 			}
-			if currentTime.Sub(lastOutput) > config.Timeout {
-				select {
-				case <-doneCh:
-					return waitErr
-				default:
-				}
 
-				grace := config.CompletionGrace
-				if grace <= 0 {
-					grace = defaultWatchdogCompletionGrace
-				}
-				select {
-				case <-doneCh:
-					return waitErr
-				case <-time.After(grace):
-				}
-
-				select {
-				case <-doneCh:
-					return waitErr
-				default:
-				}
-
-				select {
-				case <-doneCh:
-					return waitErr
-				default:
-				}
-
-				stall := classifyStall(config, currentTime, lastOutput)
-
-				select {
-				case <-doneCh:
-					return waitErr
-				default:
-				}
-
-				if err := process.Kill(); err != nil {
-					return err
-				}
-
-				return stall
+			if currentTime.Sub(lastOutput) <= config.Timeout {
+				continue
 			}
+
+			if err, done := checkDone(); done {
+				return err
+			}
+
+			grace := config.CompletionGrace
+			if grace <= 0 {
+				grace = defaultWatchdogCompletionGrace
+			}
+			select {
+			case err := <-waitErrCh:
+				return err
+			case <-config.After(grace):
+			}
+
+			if err, done := checkDone(); done {
+				return err
+			}
+
+			stall := classifyStall(config, currentTime, lastOutput)
+
+			if err := process.Kill(); err != nil {
+				return err
+			}
+
+			return stall
 		}
 	}
 }

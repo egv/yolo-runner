@@ -145,14 +145,37 @@ func TestWatchdogTimeoutKillsProcessAndClassifiesPermission(t *testing.T) {
 	opencodeLog := filepath.Join(logDir, "latest.log")
 	writeFile(t, opencodeLog, "INFO service=permission asking\nINFO session id=ses_123\n")
 
+	base := time.Now()
+	oldTime := base.Add(-1 * time.Second)
+	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+
 	proc := newFakeProcess()
+	tickCh := make(chan time.Time, 1)
+	tickCh <- base
+	calls := 0
 	watchdog := NewWatchdog(WatchdogConfig{
-		LogPath:        runnerLog,
-		OpenCodeLogDir: logDir,
-		Timeout:        20 * time.Millisecond,
-		Interval:       5 * time.Millisecond,
-		TailLines:      50,
-		Now:            func() time.Time { return time.Now() },
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  logDir,
+		Timeout:         10 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       50,
+		NewTicker: func(duration time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- base
+			return ch
+		},
+		Now: func() time.Time {
+			calls++
+			if calls == 1 {
+				return base
+			}
+			return base.Add(2 * time.Second)
+		},
 	})
 
 	errCh := make(chan error, 1)
@@ -200,19 +223,37 @@ func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 	opencodeLog := filepath.Join(logDir, "latest.log")
 	writeFile(t, opencodeLog, "INFO service=provider status=started\n")
 
-	oldTime := time.Now().Add(-2 * time.Second)
+	base := time.Now()
+	oldTime := base.Add(-1 * time.Second)
 	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
 		t.Fatalf("chtimes runner log: %v", err)
 	}
 
 	proc := newFakeProcess()
+	tickCh := make(chan time.Time, 1)
+	tickCh <- base
+	calls := 0
 	watchdog := NewWatchdog(WatchdogConfig{
-		LogPath:        runnerLog,
-		OpenCodeLogDir: logDir,
-		Timeout:        20 * time.Millisecond,
-		Interval:       5 * time.Millisecond,
-		TailLines:      50,
-		Now:            func() time.Time { return time.Now() },
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  logDir,
+		Timeout:         10 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       50,
+		NewTicker: func(time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- base
+			return ch
+		},
+		Now: func() time.Time {
+			calls++
+			if calls == 1 {
+				return base
+			}
+			return base.Add(2 * time.Second)
+		},
 	})
 
 	errCh := make(chan error, 1)
@@ -247,12 +288,16 @@ func TestWatchdogDoesNotStallAfterProcessExit(t *testing.T) {
 
 	proc := &immediateProcess{}
 	watchdog := NewWatchdog(WatchdogConfig{
-		LogPath:        runnerLog,
-		OpenCodeLogDir: filepath.Join(tempDir, "opencode", "log"),
-		Timeout:        20 * time.Millisecond,
-		Interval:       5 * time.Millisecond,
-		TailLines:      50,
-		Now:            func() time.Time { return time.Now() },
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  filepath.Join(tempDir, "opencode", "log"),
+		Timeout:         20 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       50,
+		Now:             func() time.Time { return time.Now() },
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time)
+			return ch
+		},
 	})
 
 	err := watchdog.Monitor(proc)
@@ -279,20 +324,20 @@ func TestWatchdogDoesNotStallWhenProcessCompletesDuringStallTickRace(t *testing.
 	waitRelease := make(chan struct{})
 	waitErr := errors.New("exit")
 	calls := 0
-	newTicker := func(duration time.Duration) WatchdogTicker {
-		tickCh := make(chan time.Time, 1)
-		go func() {
-			tickCh <- time.Now()
-		}()
-		return newStaticTicker(tickCh)
-	}
+	tickCh := make(chan time.Time, 1)
 	watchdog := NewWatchdog(WatchdogConfig{
-		LogPath:        runnerLog,
-		OpenCodeLogDir: filepath.Join(tempDir, "opencode", "log"),
-		Timeout:        10 * time.Millisecond,
-		Interval:       1 * time.Millisecond,
-		TailLines:      5,
-		NewTicker:      newTicker,
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  filepath.Join(tempDir, "opencode", "log"),
+		Timeout:         10 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       5,
+		NewTicker: func(time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time)
+			return ch
+		},
 		Now: func() time.Time {
 			calls++
 			if calls == 1 {
@@ -314,6 +359,7 @@ func TestWatchdogDoesNotStallWhenProcessCompletesDuringStallTickRace(t *testing.
 		t.Fatalf("timed out waiting for Wait to be called")
 	}
 
+	tickCh <- base
 	proc.finish(waitErr)
 	close(waitRelease)
 
@@ -342,6 +388,10 @@ func TestWatchdogPrefersWaitResultOverStallKillWhenWaitCompletesDuringGrace(t *t
 	}
 
 	proc := newKillBlockingProcess()
+	defer func() {
+		// Ensure Kill never blocks the test, even if invoked unexpectedly.
+		close(proc.killRelease)
+	}()
 	allowNow := make(chan struct{})
 	tickCh := make(chan time.Time, 1)
 	calls := 0
@@ -355,6 +405,10 @@ func TestWatchdogPrefersWaitResultOverStallKillWhenWaitCompletesDuringGrace(t *t
 		TailLines:       5,
 		NewTicker: func(duration time.Duration) WatchdogTicker {
 			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time)
+			return ch
 		},
 		Now: func() time.Time {
 			calls++
