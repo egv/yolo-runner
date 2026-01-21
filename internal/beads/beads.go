@@ -2,6 +2,7 @@ package beads
 
 import (
 	"encoding/json"
+	"strings"
 
 	"yolo-runner/internal/runner"
 )
@@ -118,12 +119,30 @@ func (a *Adapter) UpdateStatus(id string, status string) error {
 }
 
 func (a *Adapter) UpdateStatusWithReason(id string, status string, reason string) error {
-	args := []string{"bd", "update", id, "--status", status}
-	if reason != "" {
-		args = append(args, "--reason", reason)
+	if err := a.UpdateStatus(id, status); err != nil {
+		return err
 	}
-	_, err := a.runner.Run(args...)
+	sanitized := sanitizeReason(reason)
+	if sanitized == "" {
+		return nil
+	}
+	_, err := a.runner.Run("bd", "update", id, "--notes", sanitized)
 	return err
+}
+
+func sanitizeReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, "\r\n", "\n")
+	trimmed = strings.ReplaceAll(trimmed, "\r", "\n")
+	trimmed = strings.ReplaceAll(trimmed, "\n", "; ")
+	const maxLen = 500
+	if len(trimmed) > maxLen {
+		return trimmed[:maxLen]
+	}
+	return trimmed
 }
 
 func (a *Adapter) Close(id string) error {

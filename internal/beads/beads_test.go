@@ -154,7 +154,44 @@ func TestUpdateStatusWithReasonCallsBd(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	assertCall(t, runner.calls, []string{"bd", "update", "task-1", "--status", "blocked", "--reason", "no_output last_output_age=10s"})
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected two calls, got %d", len(runner.calls))
+	}
+	assertCall(t, runner.calls[:1], []string{"bd", "update", "task-1", "--status", "blocked"})
+	assertCall(t, runner.calls[1:], []string{"bd", "update", "task-1", "--notes", "no_output last_output_age=10s"})
+}
+
+func TestUpdateStatusWithReasonSanitizesNotes(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	reason := "first line\nsecond line\r\nthird line"
+	if err := adapter.UpdateStatusWithReason("task-1", "blocked", reason); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected two calls, got %d", len(runner.calls))
+	}
+	assertCall(t, runner.calls[1:], []string{"bd", "update", "task-1", "--notes", "first line; second line; third line"})
+}
+
+func TestUpdateStatusWithReasonTruncates(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := New(runner)
+
+	long := strings.Repeat("a", 600)
+	if err := adapter.UpdateStatusWithReason("task-1", "blocked", long); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected two calls, got %d", len(runner.calls))
+	}
+	if len(runner.calls[1]) < 5 {
+		t.Fatalf("unexpected update call: %v", runner.calls[1])
+	}
+	if got := runner.calls[1][4]; len(got) != 500 {
+		t.Fatalf("expected 500 char notes, got %d", len(got))
+	}
 }
 
 func TestCloseCallsBd(t *testing.T) {
