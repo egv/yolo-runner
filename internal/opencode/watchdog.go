@@ -28,6 +28,11 @@ type Process interface {
 	Kill() error
 }
 
+type WatchdogTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
 type WatchdogConfig struct {
 	LogPath         string
 	OpenCodeLogDir  string
@@ -36,8 +41,13 @@ type WatchdogConfig struct {
 	CompletionGrace time.Duration
 	TailLines       int
 	Now             func() time.Time
-	Tick            <-chan time.Time
+	NewTicker       func(time.Duration) WatchdogTicker
 }
+
+type realWatchdogTicker struct{ ticker *time.Ticker }
+
+func (t realWatchdogTicker) C() <-chan time.Time { return t.ticker.C }
+func (t realWatchdogTicker) Stop()               { t.ticker.Stop() }
 
 type Watchdog struct {
 	config WatchdogConfig
@@ -113,29 +123,33 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 		lastOutput = startTime
 	}
 
-	done := make(chan error, 1)
+	doneCh := make(chan struct{})
+	var waitErr error
 	go func() {
-		done <- process.Wait()
+		waitErr = process.Wait()
+		close(doneCh)
 	}()
 
 	select {
-	case err := <-done:
-		return err
+	case <-doneCh:
+		return waitErr
 	default:
 	}
 
-	tick := config.Tick
-	var ticker *time.Ticker
-	if tick == nil {
-		ticker = time.NewTicker(config.Interval)
-		defer ticker.Stop()
-		tick = ticker.C
+	newTicker := config.NewTicker
+	if newTicker == nil {
+		newTicker = func(d time.Duration) WatchdogTicker {
+			return realWatchdogTicker{ticker: time.NewTicker(d)}
+		}
 	}
+	ticker := newTicker(config.Interval)
+	defer ticker.Stop()
+	tick := ticker.C()
 
 	for {
 		select {
-		case err := <-done:
-			return err
+		case <-doneCh:
+			return waitErr
 		case <-tick:
 			currentTime := config.Now()
 			currentSize := fileSize(config.LogPath)
@@ -148,17 +162,46 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 				}
 			}
 			if currentTime.Sub(lastOutput) > config.Timeout {
+				select {
+				case <-doneCh:
+					return waitErr
+				default:
+				}
+
 				grace := config.CompletionGrace
 				if grace <= 0 {
 					grace = defaultWatchdogCompletionGrace
 				}
 				select {
-				case err := <-done:
-					return err
+				case <-doneCh:
+					return waitErr
 				case <-time.After(grace):
 				}
+
+				select {
+				case <-doneCh:
+					return waitErr
+				default:
+				}
+
+				select {
+				case <-doneCh:
+					return waitErr
+				default:
+				}
+
 				stall := classifyStall(config, currentTime, lastOutput)
-				_ = process.Kill()
+
+				select {
+				case <-doneCh:
+					return waitErr
+				default:
+				}
+
+				if err := process.Kill(); err != nil {
+					return err
+				}
+
 				return stall
 			}
 		}

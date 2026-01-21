@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,15 @@ func (p *immediateProcess) Kill() error {
 	p.killed = true
 	return nil
 }
+
+type staticTicker struct{ ch <-chan time.Time }
+
+func newStaticTicker(ch <-chan time.Time) *staticTicker {
+	return &staticTicker{ch: ch}
+}
+
+func (t *staticTicker) C() <-chan time.Time { return t.ch }
+func (t *staticTicker) Stop()               {}
 
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
@@ -266,28 +276,29 @@ func TestWatchdogDoesNotStallWhenProcessCompletesDuringStallTickRace(t *testing.
 	}
 
 	proc := newDelayedProcess()
-	tickCh := make(chan time.Time, 1)
-	nowCalled := make(chan struct{}, 1)
-	allowNow := make(chan struct{})
+	waitRelease := make(chan struct{})
+	waitErr := errors.New("exit")
 	calls := 0
-
+	newTicker := func(duration time.Duration) WatchdogTicker {
+		tickCh := make(chan time.Time, 1)
+		go func() {
+			tickCh <- time.Now()
+		}()
+		return newStaticTicker(tickCh)
+	}
 	watchdog := NewWatchdog(WatchdogConfig{
 		LogPath:        runnerLog,
 		OpenCodeLogDir: filepath.Join(tempDir, "opencode", "log"),
 		Timeout:        10 * time.Millisecond,
 		Interval:       1 * time.Millisecond,
 		TailLines:      5,
-		Tick:           tickCh,
+		NewTicker:      newTicker,
 		Now: func() time.Time {
 			calls++
 			if calls == 1 {
 				return base
 			}
-			select {
-			case nowCalled <- struct{}{}:
-			default:
-			}
-			<-allowNow
+			<-waitRelease
 			return base.Add(50 * time.Millisecond)
 		},
 	})
@@ -303,21 +314,13 @@ func TestWatchdogDoesNotStallWhenProcessCompletesDuringStallTickRace(t *testing.
 		t.Fatalf("timed out waiting for Wait to be called")
 	}
 
-	tickCh <- base.Add(1 * time.Millisecond)
-
-	select {
-	case <-nowCalled:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatalf("timed out waiting for watchdog tick")
-	}
-
-	proc.finish(nil)
-	close(allowNow)
+	proc.finish(waitErr)
+	close(waitRelease)
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
+		if err != waitErr {
+			t.Fatalf("expected wait error %v, got %v", waitErr, err)
 		}
 		if proc.killed {
 			t.Fatalf("expected process not to be killed")
@@ -339,8 +342,8 @@ func TestWatchdogPrefersWaitResultOverStallKillWhenWaitCompletesDuringGrace(t *t
 	}
 
 	proc := newKillBlockingProcess()
-	tickCh := make(chan time.Time, 1)
 	allowNow := make(chan struct{})
+	tickCh := make(chan time.Time, 1)
 	calls := 0
 
 	watchdog := NewWatchdog(WatchdogConfig{
@@ -350,7 +353,9 @@ func TestWatchdogPrefersWaitResultOverStallKillWhenWaitCompletesDuringGrace(t *t
 		Interval:        1 * time.Millisecond,
 		CompletionGrace: 200 * time.Millisecond,
 		TailLines:       5,
-		Tick:            tickCh,
+		NewTicker: func(duration time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
 		Now: func() time.Time {
 			calls++
 			if calls == 1 {
