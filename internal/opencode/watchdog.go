@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -34,6 +35,7 @@ type WatchdogConfig struct {
 	Interval       time.Duration
 	TailLines      int
 	Now            func() time.Time
+	Tick           <-chan time.Time
 }
 
 type Watchdog struct {
@@ -121,14 +123,19 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 	default:
 	}
 
-	ticker := time.NewTicker(config.Interval)
-	defer ticker.Stop()
+	tick := config.Tick
+	var ticker *time.Ticker
+	if tick == nil {
+		ticker = time.NewTicker(config.Interval)
+		defer ticker.Stop()
+		tick = ticker.C
+	}
 
 	for {
 		select {
 		case err := <-done:
 			return err
-		case <-ticker.C:
+		case <-tick:
 			currentTime := config.Now()
 			currentSize := fileSize(config.LogPath)
 			if currentSize > lastSize {
@@ -140,6 +147,17 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 				}
 			}
 			if currentTime.Sub(lastOutput) > config.Timeout {
+				select {
+				case err := <-done:
+					return err
+				default:
+				}
+				runtime.Gosched()
+				select {
+				case err := <-done:
+					return err
+				default:
+				}
 				stall := classifyStall(config, currentTime, lastOutput)
 				_ = process.Kill()
 				return stall
