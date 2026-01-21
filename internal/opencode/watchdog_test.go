@@ -28,6 +28,20 @@ func (p *fakeProcess) Kill() error {
 	return nil
 }
 
+type immediateProcess struct {
+	killed  bool
+	waitErr error
+}
+
+func (p *immediateProcess) Wait() error {
+	return p.waitErr
+}
+
+func (p *immediateProcess) Kill() error {
+	p.killed = true
+	return nil
+}
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -138,5 +152,29 @@ func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("timed out waiting for watchdog")
+	}
+}
+
+func TestWatchdogDoesNotStallAfterProcessExit(t *testing.T) {
+	tempDir := t.TempDir()
+	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-3.jsonl")
+	writeFile(t, runnerLog, "{\"ok\":true}\n")
+
+	proc := &immediateProcess{}
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:        runnerLog,
+		OpenCodeLogDir: filepath.Join(tempDir, "opencode", "log"),
+		Timeout:        20 * time.Millisecond,
+		Interval:       5 * time.Millisecond,
+		TailLines:      50,
+		Now:            func() time.Time { return time.Now() },
+	})
+
+	err := watchdog.Monitor(proc)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if proc.killed {
+		t.Fatalf("expected process not to be killed")
 	}
 }

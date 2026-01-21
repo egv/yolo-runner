@@ -115,6 +115,12 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 		done <- process.Wait()
 	}()
 
+	select {
+	case err := <-done:
+		return err
+	default:
+	}
+
 	ticker := time.NewTicker(config.Interval)
 	defer ticker.Stop()
 
