@@ -87,6 +87,44 @@ func (f *fakeBeads) Sync() error {
 	return nil
 }
 
+type selectingBeads struct {
+	readyIssue Issue
+	showIDs    []string
+}
+
+func (s *selectingBeads) Ready(rootID string) (Issue, error) {
+	return s.readyIssue, nil
+}
+
+func (s *selectingBeads) Tree(rootID string) (Issue, error) {
+	return s.readyIssue, nil
+}
+
+func (s *selectingBeads) Show(id string) (Bead, error) {
+	s.showIDs = append(s.showIDs, id)
+	return Bead{ID: id, Title: "Selected", Status: "open"}, nil
+}
+
+func (s *selectingBeads) UpdateStatus(id string, status string) error {
+	return nil
+}
+
+func (s *selectingBeads) UpdateStatusWithReason(id string, status string, reason string) error {
+	return nil
+}
+
+func (s *selectingBeads) Close(id string) error {
+	return nil
+}
+
+func (s *selectingBeads) CloseEligible() error {
+	return nil
+}
+
+func (s *selectingBeads) Sync() error {
+	return nil
+}
+
 type fakePrompt struct {
 	recorder *callRecorder
 	prompt   string
@@ -257,6 +295,42 @@ func TestRunOnceDryRun(t *testing.T) {
 	expectedCalls := "beads.ready,beads.tree,beads.show,prompt.build"
 	if strings.Join(recorder.calls, ",") != expectedCalls {
 		t.Fatalf("unexpected calls: %v", recorder.calls)
+	}
+}
+
+func TestRunOnceSelectsOpenLeafFromReadyList(t *testing.T) {
+	priorityHigh := 0
+	priorityLow := 1
+	beads := &selectingBeads{readyIssue: Issue{
+		ID:        "root",
+		IssueType: "epic",
+		Status:    "open",
+		Children: []Issue{
+			{ID: "task-1", IssueType: "task", Status: "in_progress", Priority: &priorityHigh},
+			{ID: "task-2", IssueType: "task", Status: "open", Priority: &priorityLow},
+		},
+	}}
+	deps := RunOnceDeps{
+		Beads:    beads,
+		Prompt:   &fakePrompt{prompt: "PROMPT"},
+		OpenCode: &fakeOpenCode{},
+		Git:      &fakeGit{dirty: false, rev: "abc123"},
+		Logger:   &fakeLogger{},
+	}
+	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
+
+	result, err := RunOnce(opts, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "blocked" {
+		t.Fatalf("expected blocked, got %q", result)
+	}
+	if len(beads.showIDs) != 1 {
+		t.Fatalf("expected one show call, got %v", beads.showIDs)
+	}
+	if beads.showIDs[0] != "task-2" {
+		t.Fatalf("expected task-2 selection, got %q", beads.showIDs[0])
 	}
 }
 
