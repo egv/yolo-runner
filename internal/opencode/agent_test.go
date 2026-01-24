@@ -39,8 +39,11 @@ func TestValidateAgentMissingPermission(t *testing.T) {
 	if !strings.Contains(err.Error(), "permission: allow") {
 		t.Fatalf("expected error to mention permission allow, got %q", err.Error())
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "init") {
-		t.Fatalf("expected guidance to run init, got %q", err.Error())
+	if !strings.Contains(strings.ToLower(err.Error()), "yolo-runner init") {
+		t.Fatalf("expected guidance to run yolo-runner init, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), ".opencode/agent/yolo.md") {
+		t.Fatalf("expected error to mention agent file path, got %q", err.Error())
 	}
 }
 
