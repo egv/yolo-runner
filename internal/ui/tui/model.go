@@ -95,7 +95,7 @@ func (m Model) View() string {
 	age := m.lastOutputAge()
 	status := ""
 	if m.stopping {
-		status = "Stopping..."
+		status = "Stopping...\n"
 	}
 	progress := ""
 	if m.progressTotal > 0 {

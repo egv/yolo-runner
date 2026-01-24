@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/anomalyco/yolo-runner/internal/runner"
 )
 
@@ -97,5 +99,29 @@ func TestModelInitSchedulesTick(t *testing.T) {
 	m := NewModel(func() time.Time { return time.Unix(0, 0) })
 	if cmd := m.Init(); cmd == nil {
 		t.Fatalf("expected tick command")
+	}
+}
+
+func TestModelShowsQuitHintOnStart(t *testing.T) {
+	m := NewModel(func() time.Time { return time.Unix(0, 0) })
+	view := m.View()
+	if !strings.Contains(view, "\nq: stop runner\n") {
+		t.Fatalf("expected quit hint in view, got %q", view)
+	}
+	if strings.Contains(view, "Stopping...") {
+		t.Fatalf("did not expect stopping status in view, got %q", view)
+	}
+}
+
+func TestModelShowsQuitHintWhileStopping(t *testing.T) {
+	m := NewModel(func() time.Time { return time.Unix(0, 0) })
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "Stopping...") {
+		t.Fatalf("expected stopping status in view, got %q", view)
+	}
+	if !strings.Contains(view, "\nq: stop runner\n") {
+		t.Fatalf("expected quit hint in view, got %q", view)
 	}
 }
