@@ -1,2 +1,3 @@
 {"timestamp": "2026-01-18T22:23:14Z", "issue_id": "yolo-runner-r5w.2", "title": "v1: Initialize Go module + CLI flags", "status": "completed", "commit_sha": "b311c540ba4e6968a90d2c93171a5a2634e3effb"}
 {"timestamp":"2026-01-24T13:39:35Z","issue_id":"yolo-runner-127.6.10","title":"Selection bug: runner only considers first bd ready item (can miss higher-priority open leaves)","status":"completed","commit_sha":"c412577585e60156093bb1c564331e73e67b4080\n"}
+{"timestamp":"2026-01-24T13:44:30Z","issue_id":"yolo-runner-127.6.17","title":"Runner output shifts and overlaps command lines","status":"completed","commit_sha":"e8db5ceb955a681f4f8d0dfe16fc46f482d99946\n"}
