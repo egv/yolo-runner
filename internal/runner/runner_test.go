@@ -125,6 +125,51 @@ func (s *selectingBeads) Sync() error {
 	return nil
 }
 
+type queuedBeads struct {
+	readyQueue []Issue
+	readyCalls int
+	showIDs    []string
+}
+
+func (q *queuedBeads) Ready(rootID string) (Issue, error) {
+	q.readyCalls++
+	if len(q.readyQueue) == 0 {
+		return Issue{}, nil
+	}
+	issue := q.readyQueue[0]
+	q.readyQueue = q.readyQueue[1:]
+	return issue, nil
+}
+
+func (q *queuedBeads) Tree(rootID string) (Issue, error) {
+	return Issue{}, nil
+}
+
+func (q *queuedBeads) Show(id string) (Bead, error) {
+	q.showIDs = append(q.showIDs, id)
+	return Bead{ID: id, Title: "Queued", Status: "open"}, nil
+}
+
+func (q *queuedBeads) UpdateStatus(id string, status string) error {
+	return nil
+}
+
+func (q *queuedBeads) UpdateStatusWithReason(id string, status string, reason string) error {
+	return nil
+}
+
+func (q *queuedBeads) Close(id string) error {
+	return nil
+}
+
+func (q *queuedBeads) CloseEligible() error {
+	return nil
+}
+
+func (q *queuedBeads) Sync() error {
+	return nil
+}
+
 type fakePrompt struct {
 	recorder *callRecorder
 	prompt   string
@@ -331,6 +376,62 @@ func TestRunOnceSelectsOpenLeafFromReadyList(t *testing.T) {
 	}
 	if beads.showIDs[0] != "task-2" {
 		t.Fatalf("expected task-2 selection, got %q", beads.showIDs[0])
+	}
+}
+
+func TestRunOnceReevaluatesReadyListAndPriorities(t *testing.T) {
+	priorityHigh := 0
+	priorityLow := 2
+	beads := &queuedBeads{readyQueue: []Issue{
+		{
+			ID:        "root",
+			IssueType: "epic",
+			Status:    "open",
+			Children: []Issue{
+				{ID: "task-1", IssueType: "task", Status: "in_progress", Priority: &priorityHigh},
+				{ID: "task-2", IssueType: "task", Status: "open", Priority: &priorityLow},
+			},
+		},
+		{
+			ID:        "root",
+			IssueType: "epic",
+			Status:    "open",
+			Children: []Issue{
+				{ID: "task-3", IssueType: "task", Status: "open", Priority: &priorityHigh},
+				{ID: "task-4", IssueType: "task", Status: "open", Priority: &priorityLow},
+			},
+		},
+	}}
+	deps := RunOnceDeps{
+		Beads:    beads,
+		Prompt:   &fakePrompt{prompt: "PROMPT"},
+		OpenCode: &fakeOpenCode{},
+		Git:      &fakeGit{dirty: false, rev: "abc123"},
+		Logger:   &fakeLogger{},
+	}
+	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}, Progress: ProgressState{Total: 2}}
+
+	for i := 0; i < 2; i++ {
+		result, err := RunOnce(opts, deps)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "blocked" {
+			t.Fatalf("expected blocked, got %q", result)
+		}
+	}
+
+	if beads.readyCalls != 2 {
+		t.Fatalf("expected 2 ready calls, got %d", beads.readyCalls)
+	}
+	if len(beads.showIDs) != 2 {
+		t.Fatalf("expected 2 show calls, got %v", beads.showIDs)
+	}
+	if beads.showIDs[0] != "task-2" {
+		t.Fatalf("expected task-2 selection, got %q", beads.showIDs[0])
+	}
+	if beads.showIDs[1] != "task-3" {
+		t.Fatalf("expected task-3 selection, got %q", beads.showIDs[1])
 	}
 }
 
