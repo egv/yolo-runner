@@ -6,6 +6,7 @@ bin/
 
 # Runtime logs and OpenCode outputs
 runner-logs/
+.serena/
 
 # Python cache (bootstrap runner only; never commit)
 __pycache__/
