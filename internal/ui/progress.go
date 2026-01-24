@@ -63,7 +63,9 @@ func NewProgress(config ProgressConfig) *Progress {
 	lastOutput := config.Now()
 	if config.LogPath != "" {
 		if modTime, err := fileModTime(config.LogPath); err == nil {
-			lastOutput = modTime
+			if !modTime.Before(lastOutput) {
+				lastOutput = modTime
+			}
 		}
 	}
 	return &Progress{

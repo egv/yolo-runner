@@ -117,6 +117,56 @@ func TestProgressRendersHeartbeatWithStateAndAge(t *testing.T) {
 	}
 }
 
+func TestProgressResetsStaleLastOutputOnStart(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "issue-stale.jsonl")
+	if err := os.WriteFile(logPath, []byte("start"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	baseTime := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+	staleTime := baseTime.Add(-2 * time.Hour)
+	if err := os.Chtimes(logPath, staleTime, staleTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	current := baseTime
+	now := func() time.Time { return current }
+	buffer := &bytes.Buffer{}
+	ticker := newFakeProgressTicker()
+	progress := NewProgress(ProgressConfig{
+		Writer:  buffer,
+		State:   "opencode running",
+		LogPath: logPath,
+		Ticker:  ticker,
+		Now:     now,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		progress.Run(ctx)
+		close(done)
+	}()
+
+	current = baseTime
+	ticker.Tick(current)
+	output := waitForOutput(t, buffer)
+	line := lastRender(output)
+	if !strings.Contains(line, "last output 0s") {
+		t.Fatalf("expected stale last output reset to 0s, got %q", line)
+	}
+
+	cancel()
+	ticker.Stop()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("progress did not stop")
+	}
+}
+
 func TestProgressSpinnerAdvancesOnNewBytes(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "issue-2.jsonl")
