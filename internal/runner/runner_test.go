@@ -298,6 +298,53 @@ func TestRunOnceNoTasks(t *testing.T) {
 	}
 }
 
+func TestRunOnceRootLeafClosedOrBlockedPrintsMessage(t *testing.T) {
+	cases := []struct {
+		status string
+	}{
+		{status: "closed"},
+		{status: "blocked"},
+	}
+
+	for _, testCase := range cases {
+		recorder := &callRecorder{}
+		beads := &fakeBeads{
+			recorder:   recorder,
+			readyIssue: Issue{},
+			treeIssue: Issue{
+				ID:        "task-root",
+				IssueType: "task",
+				Status:    testCase.status,
+			},
+		}
+		deps := RunOnceDeps{
+			Beads:    beads,
+			Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
+			OpenCode: &fakeOpenCode{recorder: recorder},
+			Git:      &fakeGit{recorder: recorder},
+			Logger:   &fakeLogger{recorder: recorder},
+		}
+		output := &bytes.Buffer{}
+		opts := RunOnceOptions{RepoRoot: "/repo", RootID: "task-root", Out: output}
+
+		result, err := RunOnce(opts, deps)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result != "no_tasks" {
+			t.Fatalf("expected no_tasks, got %q", result)
+		}
+		printed := output.String()
+		expectedMessage := "Root issue task-root is " + testCase.status
+		if !strings.Contains(printed, expectedMessage) {
+			t.Fatalf("expected message %q, got %q", expectedMessage, printed)
+		}
+		if strings.Join(recorder.calls, ",") != "beads.ready,beads.tree" {
+			t.Fatalf("unexpected calls: %v", recorder.calls)
+		}
+	}
+}
+
 func TestRunOnceDryRun(t *testing.T) {
 	recorder := &callRecorder{}
 	beads := &fakeBeads{

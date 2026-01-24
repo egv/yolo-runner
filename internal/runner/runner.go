@@ -90,6 +90,19 @@ var now = time.Now
 
 const maxStallReasonLength = 512
 
+func sanitizeStallReason(reason string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '|', '\t', '\n', '\r':
+			return ' '
+		}
+		if r < 32 {
+			return ' '
+		}
+		return r
+	}, reason)
+}
+
 type cleanupGit struct {
 	ctx       context.Context
 	statusFn  func(context.Context) (string, error)
@@ -178,16 +191,30 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	progressState := opts.Progress
+	var tree Issue
+	treeLoaded := false
 	if progressState.Total == 0 && deps.Beads != nil {
-		tree, err := deps.Beads.Tree(opts.RootID)
+		tree, err = deps.Beads.Tree(opts.RootID)
 		if err != nil {
 			return "", err
 		}
+		treeLoaded = true
 		progressState.Total = CountRunnableLeaves(tree)
 	}
 
 	leafID := SelectFirstOpenLeafTaskID(root)
 	if leafID == "" {
+		if !treeLoaded && deps.Beads != nil {
+			tree, err = deps.Beads.Tree(opts.RootID)
+			if err != nil {
+				return "", err
+			}
+			treeLoaded = true
+		}
+		if treeLoaded && isRunnableLeaf(tree) && (tree.Status == "closed" || tree.Status == "blocked") {
+			fmt.Fprintf(out, "Root issue %s is %s; no work to run\n", tree.ID, tree.Status)
+			return "no_tasks", nil
+		}
 		fmt.Fprintln(out, "No tasks available")
 		return "no_tasks", nil
 	}
@@ -258,14 +285,16 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		cancelProgress()
 		progress.Finish(openCodeErr)
 		if stall, ok := openCodeErr.(*opencode.StallError); ok {
-			reason := stall.Error()
+			reason := sanitizeStallReason(stall.Error())
 			if len(reason) > maxStallReasonLength {
 				reason = reason[:maxStallReasonLength]
 			}
 			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
 				shortReason := fmt.Sprintf("opencode stall category=%s", stall.Category)
 				if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", shortReason); err != nil {
-					return "", err
+					if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+						return "", err
+					}
 				}
 			}
 			return "blocked", openCodeErr
