@@ -1,10 +1,13 @@
 package opencode
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildArgsWithoutModel(t *testing.T) {
@@ -193,5 +196,41 @@ func TestRunDefaultsLogPath(t *testing.T) {
 	}
 	if string(content) != "{\"ok\":true}\n" {
 		t.Fatalf("unexpected log content: %q", string(content))
+	}
+}
+
+func TestRunWithContextCancelsProcess(t *testing.T) {
+	tempDir := t.TempDir()
+	configRoot := filepath.Join(tempDir, "config")
+	configDir := filepath.Join(configRoot, "opencode")
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	proc := newFakeProcess()
+	started := make(chan struct{})
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		close(started)
+		return proc, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWithContext(ctx, "issue-1", "/repo", "prompt", "", configRoot, configDir, logPath, runner)
+	}()
+
+	<-started
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context canceled, got %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected RunWithContext to return")
+	}
+
+	if !proc.killed {
+		t.Fatalf("expected process to be killed")
 	}
 }

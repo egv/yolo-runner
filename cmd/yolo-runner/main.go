@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -122,6 +123,10 @@ type openCodeAdapter struct {
 
 func (o openCodeAdapter) Run(issueID string, repoRoot string, promptText string, model string, configRoot string, configDir string, logPath string) error {
 	return opencode.Run(issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner)
+}
+
+func (o openCodeAdapter) RunWithContext(ctx context.Context, issueID string, repoRoot string, promptText string, model string, configRoot string, configDir string, logPath string) error {
+	return opencode.RunWithContext(ctx, issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner)
 }
 
 func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Writer, stderr io.Writer, beadsRunner beadsRunner, gitRunner gitRunner) int {

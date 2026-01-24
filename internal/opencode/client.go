@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 )
@@ -98,4 +99,59 @@ func Run(issueID string, repoRoot string, prompt string, model string, configRoo
 		return err
 	}
 	return nil
+}
+
+func RunWithContext(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if runner == nil {
+		return nil
+	}
+	if configRoot != "" {
+		if err := os.MkdirAll(configRoot, 0o755); err != nil {
+			return err
+		}
+	}
+	if configDir != "" {
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			return err
+		}
+		configFile := filepath.Join(configDir, "opencode.json")
+		if _, err := os.Stat(configFile); os.IsNotExist(err) {
+			if err := os.WriteFile(configFile, []byte("{}"), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	if logPath == "" {
+		logPath = filepath.Join(repoRoot, "runner-logs", "opencode", issueID+".jsonl")
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+
+	args := BuildArgs(repoRoot, prompt, model)
+	env := BuildEnv(nil, configRoot, configDir)
+	process, err := runner.Start(args, env, logPath)
+	if err != nil {
+		return err
+	}
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:        logPath,
+		OpenCodeLogDir: filepath.Join(os.Getenv("HOME"), ".local", "share", "opencode", "log"),
+		TailLines:      50,
+	})
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- watchdog.Monitor(process)
+	}()
+
+	select {
+	case err := <-resultCh:
+		return err
+	case <-ctx.Done():
+		_ = process.Kill()
+		return ctx.Err()
+	}
 }

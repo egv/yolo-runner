@@ -19,6 +19,8 @@ type fakeRunner struct {
 	calls []string
 }
 
+var _ runner.OpenCodeContextRunner = openCodeAdapter{}
+
 func (f *fakeRunner) Run(args ...string) (string, error) {
 	f.calls = append(f.calls, strings.Join(args, " "))
 	return "", nil
