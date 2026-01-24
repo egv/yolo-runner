@@ -121,7 +121,7 @@ func (p *Progress) Finish(err error) {
 		return
 	}
 	p.finished = true
-	fmt.Fprint(p.config.Writer, "\nOpenCode finished\n")
+	fmt.Fprint(p.config.Writer, "\r\nOpenCode finished\n")
 }
 
 func (p *Progress) render(now time.Time) {

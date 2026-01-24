@@ -291,3 +291,29 @@ func TestProgressFinishPrintsFinalLine(t *testing.T) {
 		t.Fatalf("expected finished line, got %q", output)
 	}
 }
+
+func TestProgressFinishResetsLinePosition(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "issue-4.jsonl")
+	if err := os.WriteFile(logPath, []byte("start"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	current := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { return current }
+	buffer := &bytes.Buffer{}
+	progress := NewProgress(ProgressConfig{
+		Writer:  buffer,
+		State:   "opencode running",
+		LogPath: logPath,
+		Now:     now,
+	})
+
+	progress.renderLocked(current)
+	progress.Finish(nil)
+
+	output := buffer.String()
+	if !strings.Contains(output, "\r\nOpenCode finished\n") {
+		t.Fatalf("expected finish to start on new line, got %q", output)
+	}
+}
