@@ -60,13 +60,13 @@ func RunACPClient(
 		address = parsed.Host
 	}
 
-	conn, err := net.Dial("tcp", address)
+	conn, err := dialACP(ctx, address)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	client := &acpClient{handler: handler, onUpdate: onUpdate}
+	client := &acpClient{handler: handler, onUpdate: onUpdate, questionResponses: make(chan string, 1)}
 	connection := acp.NewClientSideConnection(client, conn, conn)
 
 	errCh := make(chan error, 1)
@@ -95,7 +95,7 @@ func RunACPClient(
 		return err
 	}
 
-	client.promptFn = func(text string) error {
+	promptFn := func(text string) error {
 		_, err := connection.Prompt(ctx, &acp.PromptRequest{
 			SessionId: session.SessionId,
 			Prompt: []acp.ContentBlock{
@@ -123,6 +123,9 @@ func RunACPClient(
 	if err != nil {
 		return err
 	}
+	if err := sendQuestionResponses(ctx, promptFn, client.questionResponses); err != nil {
+		return err
+	}
 	_ = conn.Close()
 
 	if err := <-errCh; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
@@ -132,10 +135,45 @@ func RunACPClient(
 	return nil
 }
 
+func dialACP(ctx context.Context, address string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, "tcp", address)
+}
+
+func sendQuestionResponses(ctx context.Context, promptFn func(string) error, responses <-chan string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if promptFn == nil || responses == nil {
+		return nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case response, ok := <-responses:
+			if !ok {
+				return nil
+			}
+			if response == "" {
+				continue
+			}
+			if err := promptFn(response); err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+}
+
 type acpClient struct {
-	handler  *ACPHandler
-	onUpdate func(*acp.SessionNotification)
-	promptFn func(string) error
+	handler           *ACPHandler
+	onUpdate          func(*acp.SessionNotification)
+	questionResponses chan string
 }
 
 func (c *acpClient) SessionUpdate(ctx context.Context, params *acp.SessionNotification) error {
@@ -158,9 +196,10 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 		if c != nil && c.handler != nil {
 			response = c.handler.HandleQuestion(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
 		}
-		if response != "" && c != nil && c.promptFn != nil {
-			if err := c.promptFn(response); err != nil {
-				return nil, err
+		if response != "" && c != nil && c.questionResponses != nil {
+			select {
+			case c.questionResponses <- response:
+			default:
 			}
 		}
 		return &acp.RequestPermissionResponse{

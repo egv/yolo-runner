@@ -64,14 +64,10 @@ func TestACPClientCancelsQuestionPermission(t *testing.T) {
 	}
 }
 
-func TestACPClientQuestionSendsPrompt(t *testing.T) {
-	var gotPrompt string
+func TestACPClientQuestionQueuesResponse(t *testing.T) {
 	client := &acpClient{
-		handler: NewACPHandler("issue-1", "log", nil),
-		promptFn: func(prompt string) error {
-			gotPrompt = prompt
-			return nil
-		},
+		handler:           NewACPHandler("issue-1", "log", nil),
+		questionResponses: make(chan string, 1),
 	}
 	questionKind := acp.ToolKind("question")
 
@@ -93,8 +89,37 @@ func TestACPClientQuestionSendsPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if gotPrompt != "decide yourself" {
-		t.Fatalf("expected prompt to be sent, got %q", gotPrompt)
+	select {
+	case got := <-client.questionResponses:
+		if got != "decide yourself" {
+			t.Fatalf("expected queued response, got %q", got)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected queued response")
+	}
+}
+
+func TestSendQuestionResponsesDrainsQueue(t *testing.T) {
+	responses := make(chan string, 2)
+	responses <- "first"
+	responses <- "second"
+
+	var got []string
+	promptFn := func(text string) error {
+		got = append(got, text)
+		return nil
+	}
+
+	if err := sendQuestionResponses(context.Background(), promptFn, responses); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(responses) != 0 {
+		t.Fatalf("expected queue to be drained, got %d", len(responses))
+	}
+
+	if !reflect.DeepEqual(got, []string{"first", "second"}) {
+		t.Fatalf("unexpected prompts: %#v", got)
 	}
 }
 
@@ -200,6 +225,19 @@ func TestRunACPClientReturnsAfterPrompt(t *testing.T) {
 		}
 	case <-time.After(timeout):
 		t.Fatalf("expected server connection to close")
+	}
+}
+
+func TestDialACPRespectsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := dialACP(ctx, "127.0.0.1:0")
+	if err == nil {
+		t.Fatalf("expected error from canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
 	}
 }
 
