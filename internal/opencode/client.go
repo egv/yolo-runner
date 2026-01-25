@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/logging"
+	acp "github.com/ironpark/acp-go"
 )
 
 type Runner interface {
@@ -152,13 +153,24 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 				return err
 			}
 			handler := NewACPHandler(issueID, logPath, func(logPath string, issueID string, requestType string, decision string) error {
+				if line := formatACPRequest(requestType, decision); line != "" {
+					fmt.Fprintf(os.Stderr, "ACP[%s] %s\n", issueID, line)
+				}
 				return logging.AppendACPRequest(logPath, logging.ACPRequestEntry{
 					IssueID:     issueID,
 					RequestType: requestType,
 					Decision:    decision,
 				})
 			})
-			return RunACPClient(ctx, endpoint, repoRoot, prompt, handler, nil)
+			onUpdate := func(note *acp.SessionNotification) {
+				if note == nil {
+					return
+				}
+				if line := formatSessionUpdate(&note.Update); line != "" {
+					fmt.Fprintf(os.Stderr, "ACP[%s] %s\n", issueID, line)
+				}
+			}
+			return RunACPClient(ctx, endpoint, repoRoot, prompt, handler, onUpdate)
 		})
 	}
 
