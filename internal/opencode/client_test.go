@@ -236,20 +236,29 @@ func TestRunWithContextCancelsProcess(t *testing.T) {
 }
 
 func TestRunUsesACPClient(t *testing.T) {
-	called := false
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	called := make(chan struct{}, 1)
 	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
 		proc := newFakeProcess()
 		close(proc.waitCh)
 		return proc, nil
 	})
 	acpClient := ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
-		called = true
+		called <- struct{}{}
 		return nil
 	})
-	if err := RunWithACP(context.Background(), "issue-1", "/repo", "prompt", "", "", "", "", runner, acpClient); err != nil {
+	if err := RunWithACP(context.Background(), "issue-1", repoRoot, "prompt", "", "", "", logPath, runner, acpClient); err != nil {
 		t.Fatalf("RunWithACP error: %v", err)
 	}
-	if !called {
+	select {
+	case <-called:
+	default:
 		t.Fatalf("expected ACP client to be called")
 	}
 }
