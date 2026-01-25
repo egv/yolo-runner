@@ -123,6 +123,22 @@ func (c *acpClient) SessionUpdate(ctx context.Context, params *acp.SessionNotifi
 }
 
 func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPermissionRequest) (*acp.RequestPermissionResponse, error) {
+	isQuestion := false
+	if params.ToolCall.Kind != nil && strings.EqualFold(string(*params.ToolCall.Kind), "question") {
+		isQuestion = true
+	}
+	if strings.Contains(strings.ToLower(params.ToolCall.Title), "question") {
+		isQuestion = true
+	}
+	if isQuestion {
+		if c != nil && c.handler != nil {
+			c.handler.HandleQuestion(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
+		}
+		return &acp.RequestPermissionResponse{
+			Outcome: acp.NewRequestPermissionOutcomeCancelled(),
+		}, nil
+	}
+
 	decision := ACPDecisionAllow
 	if c != nil && c.handler != nil {
 		decision = c.handler.HandlePermission(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
