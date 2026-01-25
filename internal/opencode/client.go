@@ -16,22 +16,21 @@ func (runner RunnerFunc) Start(args []string, env map[string]string, stdoutPath 
 	return runner(args, env, stdoutPath)
 }
 
-type ACPClient interface {
-	Run(ctx context.Context, issueID string, logPath string) error
-}
-
-type ACPClientFunc func(ctx context.Context, issueID string, logPath string) error
-
-func (client ACPClientFunc) Run(ctx context.Context, issueID string, logPath string) error {
-	return client(ctx, issueID, logPath)
-}
-
 func BuildArgs(repoRoot string, prompt string, model string) []string {
 	args := []string{"opencode", "run", prompt, "--agent", "yolo", "--format", "json"}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	args = append(args, repoRoot)
+	return args
+}
+
+func RedactArgs(args []string) []string {
+	if len(args) >= 3 && args[0] == "opencode" && args[1] == "run" {
+		redacted := append([]string{}, args...)
+		redacted[2] = "<prompt redacted>"
+		return redacted
+	}
 	return args
 }
 
@@ -164,30 +163,4 @@ func RunWithContext(ctx context.Context, issueID string, repoRoot string, prompt
 		_ = process.Kill()
 		return ctx.Err()
 	}
-}
-
-func RunWithACP(
-	ctx context.Context,
-	issueID string,
-	repoRoot string,
-	prompt string,
-	model string,
-	configRoot string,
-	configDir string,
-	logPath string,
-	runner Runner,
-	acpClient ACPClient,
-) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if logPath == "" {
-		logPath = filepath.Join(repoRoot, "runner-logs", "opencode", issueID+".jsonl")
-	}
-	if acpClient != nil {
-		if err := acpClient.Run(ctx, issueID, logPath); err != nil {
-			return err
-		}
-	}
-	return RunWithContext(ctx, issueID, repoRoot, prompt, model, configRoot, configDir, logPath, runner)
 }
