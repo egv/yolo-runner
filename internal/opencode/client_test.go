@@ -278,6 +278,37 @@ func TestRunWithACPWaitsForProcessExit(t *testing.T) {
 	}
 }
 
+func TestRunWithACPReadyTimeout(t *testing.T) {
+	prevTimeout := acpReadyTimeout
+	acpReadyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { acpReadyTimeout = prevTimeout })
+
+	tempDir := t.TempDir()
+	configRoot := filepath.Join(tempDir, "config")
+	configDir := filepath.Join(configRoot, "opencode")
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWithACP(context.Background(), "issue-1", tempDir, "prompt", "", configRoot, configDir, logPath, runner, nil)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expected context deadline exceeded, got %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("expected RunWithACP to return")
+	}
+}
+
 func TestWaitForACPReadyRetries(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

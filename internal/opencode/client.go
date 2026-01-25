@@ -37,6 +37,8 @@ const (
 	acpShutdownGrace   = 2 * time.Second
 )
 
+var acpReadyTimeout = 2 * time.Second
+
 func BuildArgs(repoRoot string, prompt string, model string) []string {
 	args := []string{"opencode", "run", prompt, "--agent", "yolo", "--format", "json"}
 	if model != "" {
@@ -135,7 +137,9 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 
 	if acpClient == nil {
 		acpClient = ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
-			if err := waitForACPReady(ctx, endpoint, acpReadyRetryDelay); err != nil {
+			readyCtx, cancel := context.WithTimeout(ctx, acpReadyTimeout)
+			defer cancel()
+			if err := waitForACPReady(readyCtx, endpoint, acpReadyRetryDelay); err != nil {
 				return err
 			}
 			handler := NewACPHandler(issueID, logPath, func(logPath string, issueID string, requestType string, decision string) error {
