@@ -66,8 +66,7 @@ func TestACPClientCancelsQuestionPermission(t *testing.T) {
 
 func TestACPClientQuestionQueuesResponse(t *testing.T) {
 	client := &acpClient{
-		handler:           NewACPHandler("issue-1", "log", nil),
-		questionResponses: make(chan string, 1),
+		handler: NewACPHandler("issue-1", "log", nil),
 	}
 	questionKind := acp.ToolKind("question")
 
@@ -89,21 +88,47 @@ func TestACPClientQuestionQueuesResponse(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	select {
-	case got := <-client.questionResponses:
-		if got != "decide yourself" {
-			t.Fatalf("expected queued response, got %q", got)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatalf("expected queued response")
+	responses := client.drainQuestionResponses()
+	if !reflect.DeepEqual(responses, []string{"decide yourself"}) {
+		t.Fatalf("expected queued response, got %#v", responses)
+	}
+}
+
+func TestACPClientQueuesMultipleQuestionResponses(t *testing.T) {
+	client := &acpClient{
+		handler: NewACPHandler("issue-1", "log", nil),
+	}
+	questionKind := acp.ToolKind("question")
+	request := &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("tool-1"),
+			Title:      "Need input",
+			Kind:       &questionKind,
+		},
+		Options: []acp.PermissionOption{
+			{
+				Kind:     acp.PermissionOptionKindAllowOnce,
+				Name:     "Allow",
+				OptionId: acp.PermissionOptionId("allow"),
+			},
+		},
+	}
+
+	if _, err := client.RequestPermission(context.Background(), request); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := client.RequestPermission(context.Background(), request); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	responses := client.drainQuestionResponses()
+	if !reflect.DeepEqual(responses, []string{"decide yourself", "decide yourself"}) {
+		t.Fatalf("expected queued responses, got %#v", responses)
 	}
 }
 
 func TestSendQuestionResponsesDrainsQueue(t *testing.T) {
-	responses := make(chan string, 2)
-	responses <- "first"
-	responses <- "second"
-	close(responses)
+	responses := []string{"first", "second"}
 
 	var got []string
 	promptFn := func(text string) error {
@@ -115,23 +140,13 @@ func TestSendQuestionResponsesDrainsQueue(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(responses) != 0 {
-		t.Fatalf("expected queue to be drained, got %d", len(responses))
-	}
-
 	if !reflect.DeepEqual(got, []string{"first", "second"}) {
 		t.Fatalf("unexpected prompts: %#v", got)
 	}
 }
 
-func TestSendQuestionResponsesWaitsForLateResponse(t *testing.T) {
-	responses := make(chan string, 1)
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		responses <- "late"
-		close(responses)
-	}()
+func TestSendQuestionResponsesSendsInOrder(t *testing.T) {
+	responses := []string{"first", "second", "third"}
 
 	var got []string
 	promptFn := func(text string) error {
@@ -139,14 +154,11 @@ func TestSendQuestionResponsesWaitsForLateResponse(t *testing.T) {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	if err := sendQuestionResponses(ctx, promptFn, responses); err != nil {
+	if err := sendQuestionResponses(context.Background(), promptFn, responses); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !reflect.DeepEqual(got, []string{"late"}) {
+	if !reflect.DeepEqual(got, []string{"first", "second", "third"}) {
 		t.Fatalf("unexpected prompts: %#v", got)
 	}
 }

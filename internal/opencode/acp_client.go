@@ -67,7 +67,7 @@ func RunACPClient(
 	}
 	defer conn.Close()
 
-	client := &acpClient{handler: handler, onUpdate: onUpdate, questionResponses: make(chan string, 1)}
+	client := &acpClient{handler: handler, onUpdate: onUpdate}
 	connection := acp.NewClientSideConnection(client, conn, conn)
 
 	errCh := make(chan error, 1)
@@ -125,7 +125,7 @@ func RunACPClient(
 		return err
 	}
 	client.closeQuestionResponses()
-	if err := sendQuestionResponses(ctx, promptFn, client.questionResponses); err != nil {
+	if err := sendQuestionResponses(ctx, promptFn, client.drainQuestionResponses()); err != nil {
 		return err
 	}
 	_ = conn.Close()
@@ -145,35 +145,33 @@ func dialACP(ctx context.Context, address string) (net.Conn, error) {
 	return dialer.DialContext(ctx, "tcp", address)
 }
 
-func sendQuestionResponses(ctx context.Context, promptFn func(string) error, responses <-chan string) error {
+func sendQuestionResponses(ctx context.Context, promptFn func(string) error, responses []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if promptFn == nil || responses == nil {
+	if promptFn == nil || len(responses) == 0 {
 		return nil
 	}
-	for {
+	for _, response := range responses {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case response, ok := <-responses:
-			if !ok {
-				return nil
-			}
-			if response == "" {
-				continue
-			}
-			if err := promptFn(response); err != nil {
-				return err
-			}
+		default:
+		}
+		if response == "" {
+			continue
+		}
+		if err := promptFn(response); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 type acpClient struct {
 	handler                 *ACPHandler
 	onUpdate                func(*acp.SessionNotification)
-	questionResponses       chan string
+	questionResponses       []string
 	questionResponsesMu     sync.Mutex
 	questionResponsesClosed bool
 }
@@ -199,14 +197,7 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 			response = c.handler.HandleQuestion(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
 		}
 		if response != "" && c != nil {
-			c.questionResponsesMu.Lock()
-			if !c.questionResponsesClosed && c.questionResponses != nil {
-				select {
-				case c.questionResponses <- response:
-				default:
-				}
-			}
-			c.questionResponsesMu.Unlock()
+			c.enqueueQuestionResponse(response)
 		}
 		return &acp.RequestPermissionResponse{
 			Outcome: acp.NewRequestPermissionOutcomeCancelled(),
@@ -254,9 +245,32 @@ func (c *acpClient) closeQuestionResponses() {
 		return
 	}
 	c.questionResponsesClosed = true
-	if c.questionResponses != nil {
-		close(c.questionResponses)
+}
+
+func (c *acpClient) enqueueQuestionResponse(response string) {
+	if c == nil || response == "" {
+		return
 	}
+	c.questionResponsesMu.Lock()
+	defer c.questionResponsesMu.Unlock()
+	if c.questionResponsesClosed {
+		return
+	}
+	c.questionResponses = append(c.questionResponses, response)
+}
+
+func (c *acpClient) drainQuestionResponses() []string {
+	if c == nil {
+		return nil
+	}
+	c.questionResponsesMu.Lock()
+	defer c.questionResponsesMu.Unlock()
+	if len(c.questionResponses) == 0 {
+		return nil
+	}
+	responses := append([]string(nil), c.questionResponses...)
+	c.questionResponses = nil
+	return responses
 }
 
 func (c *acpClient) ReadTextFile(ctx context.Context, params *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
