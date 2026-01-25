@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -34,11 +34,8 @@ func (client ACPClientFunc) Run(ctx context.Context, issueID string, logPath str
 }
 
 const (
-	acpReadyRetryDelay = 10 * time.Millisecond
-	acpShutdownGrace   = 2 * time.Second
+	acpShutdownGrace = 2 * time.Second
 )
-
-var acpReadyTimeout = 2 * time.Second
 
 func BuildArgs(repoRoot string, prompt string, model string) []string {
 	args := []string{"opencode", "run", prompt, "--agent", "yolo", "--format", "json"}
@@ -128,17 +125,7 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		return err
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return err
-	}
-
-	endpoint := fmt.Sprintf("127.0.0.1:%d", port)
-	args := BuildACPArgs(repoRoot, port)
+	args := BuildACPArgs(repoRoot)
 	env := BuildEnv(nil, configRoot, configDir)
 	process, err := runner.Start(args, env, logPath)
 	if err != nil {
@@ -146,12 +133,15 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 	}
 
 	if acpClient == nil {
+		type stdioProcess interface {
+			Stdin() io.WriteCloser
+			Stdout() io.ReadCloser
+		}
+		stdio, ok := process.(stdioProcess)
+		if !ok {
+			return errors.New("opencode runner does not expose stdin/stdout for ACP")
+		}
 		acpClient = ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
-			readyCtx, cancel := context.WithTimeout(ctx, acpReadyTimeout)
-			defer cancel()
-			if err := waitForACPReady(readyCtx, endpoint, acpReadyRetryDelay); err != nil {
-				return err
-			}
 			handler := NewACPHandler(issueID, logPath, func(logPath string, issueID string, requestType string, decision string) error {
 				if line := formatACPRequest(requestType, decision); line != "" {
 					fmt.Fprintf(os.Stderr, "ACP[%s] %s\n", issueID, line)
@@ -170,7 +160,7 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 					fmt.Fprintf(os.Stderr, "ACP[%s] %s\n", issueID, line)
 				}
 			}
-			return RunACPClient(ctx, endpoint, repoRoot, prompt, handler, onUpdate)
+			return RunACPClient(ctx, stdio.Stdin(), stdio.Stdout(), repoRoot, prompt, handler, onUpdate)
 		})
 	}
 
@@ -202,26 +192,4 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		return errors.Join(runErr, shutdownErr)
 	}
 	return shutdownErr
-}
-
-func waitForACPReady(ctx context.Context, endpoint string, retryDelay time.Duration) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if retryDelay <= 0 {
-		retryDelay = acpReadyRetryDelay
-	}
-	for {
-		var dialer net.Dialer
-		conn, err := dialer.DialContext(ctx, "tcp", endpoint)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(retryDelay):
-		}
-	}
 }

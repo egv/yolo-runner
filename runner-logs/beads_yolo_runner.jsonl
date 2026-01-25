@@ -7,3 +7,4 @@
 {"timestamp": "2026-01-25T01:28:02Z", "issue_id": "yolo-runner-127.5", "title": "Runner workflow: run bd epic close-eligible to reduce bd ready noise", "status": "completed", "commit_sha": "3d2fa0ccc4b3f3cf836cd594c0497ce5ed431a25"}
 {"timestamp": "2026-01-25T01:34:51Z", "issue_id": "yolo-runner-127.6.1", "title": "Runner: if --root is an open leaf, execute it directly", "status": "completed", "commit_sha": "3d6290eea132fe32e14caae9bf0e190958f02aea"}
 {"timestamp": "2026-01-25T01:41:28Z", "issue_id": "yolo-runner-127.6.5", "title": "Nice-to-have: show progress [x/y] tasks executed/remaining", "status": "completed", "commit_sha": "14c5cc44cf499a11fc60a94c150287e69f914ca2"}
+{"timestamp": "2026-01-25T01:47:13Z", "issue_id": "yolo-runner-127.6.6", "title": "Add stop-runner key (q) with graceful shutdown + cleanup", "status": "completed", "commit_sha": "9094d741611062698950fb7c08768d160d690568"}

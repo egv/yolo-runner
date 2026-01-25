@@ -230,8 +230,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	if opts.DryRun {
 		fmt.Fprintf(out, "Task: %s - %s\n", leafID, bead.Title)
-		fmt.Fprintln(out, prompt)
-		fmt.Fprintf(out, "Command: %s\n", strings.Join(command, " "))
+		fmt.Fprintf(out, "Command: %s\n", strings.Join(opencode.RedactArgs(command), " "))
 		return "dry_run", nil
 	}
 

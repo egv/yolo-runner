@@ -2,9 +2,9 @@ package opencode
 
 import "testing"
 
-func TestBuildACPArgsIncludesPortAndCwd(t *testing.T) {
-	args := BuildACPArgs("/repo", 4567)
-	expected := []string{"opencode", "acp", "--port", "4567", "--cwd", "/repo"}
+func TestBuildACPArgsIncludesPrintLogsAndCwd(t *testing.T) {
+	args := BuildACPArgs("/repo")
+	expected := []string{"opencode", "acp", "--print-logs", "--cwd", "/repo"}
 	if len(args) != len(expected) {
 		t.Fatalf("unexpected args length: %v", args)
 	}

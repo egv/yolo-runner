@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -214,33 +213,25 @@ func TestACPClientSelectsAllowOption(t *testing.T) {
 }
 
 func TestRunACPClientReturnsAfterPrompt(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	defer listener.Close()
+	clientToAgentReader, clientToAgentWriter := io.Pipe()
+	agentToClientReader, agentToClientWriter := io.Pipe()
 
-	acceptedConn := make(chan net.Conn, 1)
 	serverErr := make(chan error, 1)
 	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			serverErr <- err
-			return
-		}
-		acceptedConn <- conn
 		agent := &testACPAgent{}
-		agentConn := acp.NewAgentSideConnection(agent, conn, conn)
-		serverErr <- agentConn.Start(context.Background())
+		agentConn := acp.NewAgentSideConnection(agent, clientToAgentReader, agentToClientWriter)
+		err := agentConn.Start(context.Background())
+		_ = agentToClientWriter.Close()
+		serverErr <- err
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	timeout := 500 * time.Millisecond
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- RunACPClient(ctx, listener.Addr().String(), t.TempDir(), "hi", nil, nil)
+		runErr <- RunACPClient(ctx, clientToAgentWriter, agentToClientReader, t.TempDir(), "hi", nil, nil)
 	}()
 
 	select {
@@ -249,11 +240,6 @@ func TestRunACPClientReturnsAfterPrompt(t *testing.T) {
 			t.Fatalf("expected RunACPClient to return without error, got %v", err)
 		}
 	case <-time.After(timeout):
-		select {
-		case conn := <-acceptedConn:
-			_ = conn.Close()
-		default:
-		}
 		cancel()
 		t.Fatalf("expected RunACPClient to return within %s", timeout)
 	}
@@ -265,19 +251,6 @@ func TestRunACPClientReturnsAfterPrompt(t *testing.T) {
 		}
 	case <-time.After(timeout):
 		t.Fatalf("expected server connection to close")
-	}
-}
-
-func TestDialACPRespectsContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := dialACP(ctx, "127.0.0.1:0")
-	if err == nil {
-		t.Fatalf("expected error from canceled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled error, got %v", err)
 	}
 }
 

@@ -3,7 +3,6 @@ package opencode
 import (
 	"context"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,11 +289,7 @@ func TestRunWithACPWaitsForProcessExit(t *testing.T) {
 	}
 }
 
-func TestRunWithACPReadyTimeout(t *testing.T) {
-	prevTimeout := acpReadyTimeout
-	acpReadyTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { acpReadyTimeout = prevTimeout })
-
+func TestRunWithACPRequiresStdioProcessForDefaultClient(t *testing.T) {
 	tempDir := t.TempDir()
 	configRoot := filepath.Join(tempDir, "config")
 	configDir := filepath.Join(configRoot, "opencode")
@@ -306,57 +301,12 @@ func TestRunWithACPReadyTimeout(t *testing.T) {
 		return proc, nil
 	})
 
-	done := make(chan error, 1)
-	go func() {
-		done <- RunWithACP(context.Background(), "issue-1", tempDir, "prompt", "", configRoot, configDir, logPath, runner, nil)
-	}()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("expected context deadline exceeded, got %v", err)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatalf("expected RunWithACP to return")
+	err := RunWithACP(context.Background(), "issue-1", tempDir, "prompt", "", configRoot, configDir, logPath, runner, nil)
+	if err == nil {
+		t.Fatalf("expected error")
 	}
-}
-
-func TestWaitForACPReadyRetries(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	ready := make(chan struct{})
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		delayedListener, listenErr := net.Listen("tcp", addr)
-		if listenErr != nil {
-			return
-		}
-		defer delayedListener.Close()
-		close(ready)
-		conn, acceptErr := delayedListener.Accept()
-		if acceptErr == nil {
-			_ = conn.Close()
-		}
-	}()
-
-	if err := waitForACPReady(ctx, addr, 10*time.Millisecond); err != nil {
-		t.Fatalf("waitForACPReady error: %v", err)
-	}
-
-	select {
-	case <-ready:
-	default:
-		t.Fatalf("expected listener to start")
+	if !strings.Contains(err.Error(), "stdin/stdout") {
+		t.Fatalf("expected stdin/stdout error, got %v", err)
 	}
 }
 

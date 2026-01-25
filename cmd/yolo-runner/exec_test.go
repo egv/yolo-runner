@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,16 +19,25 @@ func TestStartCommandWithEnvSeparatesStdoutAndStderr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startCommandWithEnv error: %v", err)
 	}
+
+	stdio, ok := process.(interface {
+		Stdout() io.ReadCloser
+	})
+	if !ok {
+		_ = process.Kill()
+		_ = process.Wait()
+		t.Fatalf("expected process to expose stdout")
+	}
+
+	stdoutContent, err := io.ReadAll(stdio.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
 	if err := process.Wait(); err != nil {
 		t.Fatalf("process wait error: %v", err)
 	}
-
-	stdoutContent, err := os.ReadFile(stdoutPath)
-	if err != nil {
-		t.Fatalf("read stdout log: %v", err)
-	}
 	if string(stdoutContent) != "{\"ok\":true}\n" {
-		t.Fatalf("unexpected stdout log: %q", string(stdoutContent))
+		t.Fatalf("unexpected stdout: %q", string(stdoutContent))
 	}
 
 	stderrPath := strings.TrimSuffix(stdoutPath, ".jsonl") + ".stderr.log"
@@ -37,6 +47,52 @@ func TestStartCommandWithEnvSeparatesStdoutAndStderr(t *testing.T) {
 	}
 	if string(stderrContent) != "stderr-line\n" {
 		t.Fatalf("unexpected stderr log: %q", string(stderrContent))
+	}
+
+	fileContent, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read stdout log: %v", err)
+	}
+	if len(fileContent) != 0 {
+		t.Fatalf("expected stdout log file to be empty, got %q", string(fileContent))
+	}
+}
+
+func TestStartCommandWithEnvExposesStdio(t *testing.T) {
+	tempDir := t.TempDir()
+	stdoutPath := filepath.Join(tempDir, "output.jsonl")
+	args := []string{"/bin/cat"}
+
+	process, err := startCommandWithEnv(args, nil, stdoutPath)
+	if err != nil {
+		t.Fatalf("startCommandWithEnv error: %v", err)
+	}
+
+	stdio, ok := process.(interface {
+		Stdin() io.WriteCloser
+		Stdout() io.ReadCloser
+	})
+	if !ok {
+		_ = process.Kill()
+		_ = process.Wait()
+		t.Fatalf("expected process to expose stdin/stdout")
+	}
+
+	if _, err := io.WriteString(stdio.Stdin(), "hello\n"); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	_ = stdio.Stdin().Close()
+
+	output, err := io.ReadAll(stdio.Stdout())
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if string(output) != "hello\n" {
+		t.Fatalf("unexpected stdout: %q", string(output))
+	}
+
+	if err := process.Wait(); err != nil {
+		t.Fatalf("process wait error: %v", err)
 	}
 }
 

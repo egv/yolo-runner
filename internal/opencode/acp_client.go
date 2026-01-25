@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -46,7 +44,8 @@ func (h *ACPHandler) HandleQuestion(ctx context.Context, requestID string, promp
 
 func RunACPClient(
 	ctx context.Context,
-	endpoint string,
+	stdin io.WriteCloser,
+	stdout io.ReadCloser,
 	repoRoot string,
 	prompt string,
 	handler *ACPHandler,
@@ -56,26 +55,18 @@ func RunACPClient(
 		ctx = context.Background()
 	}
 
-	address := endpoint
-	if parsed, err := url.Parse(endpoint); err == nil && parsed.Host != "" {
-		address = parsed.Host
+	if stdin == nil || stdout == nil {
+		return errors.New("acp client requires stdin and stdout")
 	}
-
-	conn, err := dialACP(ctx, address)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
 	client := &acpClient{handler: handler, onUpdate: onUpdate}
-	connection := acp.NewClientSideConnection(client, conn, conn)
+	connection := acp.NewClientSideConnection(client, stdin, stdout)
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- connection.Start(ctx)
 	}()
 
-	_, err = connection.Initialize(ctx, &acp.InitializeRequest{
+	_, err := connection.Initialize(ctx, &acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersion(acp.CurrentProtocolVersion),
 		ClientCapabilities: &acp.ClientCapabilities{
 			Fs: &acp.FileSystemCapability{
@@ -128,21 +119,13 @@ func RunACPClient(
 	if err := sendQuestionResponses(ctx, promptFn, client.drainQuestionResponses()); err != nil {
 		return err
 	}
-	_ = conn.Close()
+	_ = stdin.Close()
 
-	if err := <-errCh; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+	if err := <-errCh; err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 
 	return nil
-}
-
-func dialACP(ctx context.Context, address string) (net.Conn, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", address)
 }
 
 func sendQuestionResponses(ctx context.Context, promptFn func(string) error, responses []string) error {

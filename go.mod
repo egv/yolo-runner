@@ -8,6 +8,8 @@ require (
 	golang.org/x/term v0.39.0
 )
 
+replace github.com/ironpark/acp-go => ./third_party/acp-go
+
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect

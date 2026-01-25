@@ -79,21 +79,33 @@ func runCommandWithOutput(out io.Writer, args ...string) (string, error) {
 
 type cmdProcess struct {
 	cmd        *exec.Cmd
-	stdoutFile *os.File
 	stderrFile *os.File
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
 	exitCode   int
 	startTime  time.Time
 	out        io.Writer
 	command    string
 }
 
+func (process cmdProcess) Stdin() io.WriteCloser {
+	return process.stdin
+}
+
+func (process cmdProcess) Stdout() io.ReadCloser {
+	return process.stdout
+}
+
 func (process cmdProcess) Wait() error {
 	err := process.cmd.Wait()
-	if process.stdoutFile != nil {
-		_ = process.stdoutFile.Close()
-	}
 	if process.stderrFile != nil {
 		_ = process.stderrFile.Close()
+	}
+	if process.stdin != nil {
+		_ = process.stdin.Close()
+	}
+	if process.stdout != nil {
+		_ = process.stdout.Close()
 	}
 	printOutcome(process.out, err, now().Sub(process.startTime), process.command)
 	return err
@@ -101,20 +113,26 @@ func (process cmdProcess) Wait() error {
 
 func (process cmdProcess) Kill() error {
 	if process.cmd.Process == nil {
-		if process.stdoutFile != nil {
-			_ = process.stdoutFile.Close()
-		}
 		if process.stderrFile != nil {
 			_ = process.stderrFile.Close()
+		}
+		if process.stdin != nil {
+			_ = process.stdin.Close()
+		}
+		if process.stdout != nil {
+			_ = process.stdout.Close()
 		}
 		return nil
 	}
 	err := process.cmd.Process.Kill()
-	if process.stdoutFile != nil {
-		_ = process.stdoutFile.Close()
-	}
 	if process.stderrFile != nil {
 		_ = process.stderrFile.Close()
+	}
+	if process.stdin != nil {
+		_ = process.stdin.Close()
+	}
+	if process.stdout != nil {
+		_ = process.stdout.Close()
 	}
 	return err
 }
@@ -136,20 +154,33 @@ func startCommandWithEnvOutput(out io.Writer, args []string, env map[string]stri
 		printOutcome(out, err, now().Sub(start), strings.Join(args, " "))
 		return nil, err
 	}
+	_ = stdoutFile.Close()
 	stderrPath := strings.TrimSuffix(stdoutPath, ".jsonl") + ".stderr.log"
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
-		_ = stdoutFile.Close()
 		printOutcome(out, err, now().Sub(start), strings.Join(args, " "))
 		return nil, err
 	}
-	cmd.Stdout = stdoutFile
 	cmd.Stderr = stderrFile
-	if err := cmd.Start(); err != nil {
-		_ = stdoutFile.Close()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
 		_ = stderrFile.Close()
 		printOutcome(out, err, now().Sub(start), strings.Join(args, " "))
 		return nil, err
 	}
-	return cmdProcess{cmd: cmd, stdoutFile: stdoutFile, stderrFile: stderrFile, startTime: start, out: out, command: strings.Join(args, " ")}, nil
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		_ = stdoutPipe.Close()
+		_ = stderrFile.Close()
+		printOutcome(out, err, now().Sub(start), strings.Join(args, " "))
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdinPipe.Close()
+		_ = stdoutPipe.Close()
+		_ = stderrFile.Close()
+		printOutcome(out, err, now().Sub(start), strings.Join(args, " "))
+		return nil, err
+	}
+	return cmdProcess{cmd: cmd, stderrFile: stderrFile, stdin: stdinPipe, stdout: stdoutPipe, startTime: start, out: out, command: strings.Join(args, " ")}, nil
 }

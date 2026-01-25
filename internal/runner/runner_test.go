@@ -347,14 +347,16 @@ func TestRunOnceRootLeafClosedOrBlockedPrintsMessage(t *testing.T) {
 
 func TestRunOnceDryRun(t *testing.T) {
 	recorder := &callRecorder{}
+	description := "Desc"
+	acceptance := "Acceptance"
 	beads := &fakeBeads{
 		recorder:   recorder,
 		readyIssue: Issue{ID: "task-1", IssueType: "task", Status: "open"},
 		showQueue: []Bead{{
 			ID:                 "task-1",
 			Title:              "Test Task",
-			Description:        "Desc",
-			AcceptanceCriteria: "Acceptance",
+			Description:        description,
+			AcceptanceCriteria: acceptance,
 		}},
 	}
 	output := &bytes.Buffer{}
@@ -378,10 +380,16 @@ func TestRunOnceDryRun(t *testing.T) {
 	if !strings.Contains(printed, "Task: task-1 - Test Task") {
 		t.Fatalf("expected task line in output, got %q", printed)
 	}
-	if !strings.Contains(printed, "PROMPT") {
-		t.Fatalf("expected prompt in output, got %q", printed)
+	if strings.Contains(printed, "PROMPT") {
+		t.Fatalf("did not expect prompt in output, got %q", printed)
 	}
-	if !strings.Contains(printed, "Command: opencode run PROMPT --agent yolo --format json /repo") {
+	if strings.Contains(printed, description) {
+		t.Fatalf("did not expect description in output, got %q", printed)
+	}
+	if strings.Contains(printed, acceptance) {
+		t.Fatalf("did not expect acceptance in output, got %q", printed)
+	}
+	if !strings.Contains(printed, "Command: opencode run <prompt redacted> --agent yolo --format json /repo") {
 		t.Fatalf("expected command in output, got %q", printed)
 	}
 	expectedCalls := "beads.ready,beads.tree,beads.show,prompt.build"
