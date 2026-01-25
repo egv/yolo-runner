@@ -234,3 +234,22 @@ func TestRunWithContextCancelsProcess(t *testing.T) {
 		t.Fatalf("expected process to be killed")
 	}
 }
+
+func TestRunUsesACPClient(t *testing.T) {
+	called := false
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+	acpClient := ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		called = true
+		return nil
+	})
+	if err := RunWithACP(context.Background(), "issue-1", "/repo", "prompt", "", "", "", "", runner, acpClient); err != nil {
+		t.Fatalf("RunWithACP error: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected ACP client to be called")
+	}
+}
