@@ -118,15 +118,16 @@ func (adapterGitRunner) Run(name string, args ...string) (string, error) {
 }
 
 type openCodeAdapter struct {
-	runner openCodeRunner
+	runner    openCodeRunner
+	acpClient opencode.ACPClient
 }
 
 func (o openCodeAdapter) Run(issueID string, repoRoot string, promptText string, model string, configRoot string, configDir string, logPath string) error {
-	return opencode.Run(issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner)
+	return opencode.RunWithACP(context.Background(), issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner, o.acpClient)
 }
 
 func (o openCodeAdapter) RunWithContext(ctx context.Context, issueID string, repoRoot string, promptText string, model string, configRoot string, configDir string, logPath string) error {
-	return opencode.RunWithContext(ctx, issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner)
+	return opencode.RunWithACP(ctx, issueID, repoRoot, promptText, model, configRoot, configDir, logPath, o.runner, o.acpClient)
 }
 
 func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Writer, stderr io.Writer, beadsRunner beadsRunner, gitRunner gitRunner) int {

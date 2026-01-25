@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -584,7 +585,12 @@ func TestOpenCodeRunDefaultsCreateConfigAndEnv(t *testing.T) {
 	t.Setenv("HOME", tempDir)
 
 	openCodeRunner := &fakeOpenCodeRunner{}
-	openCodeAdapter := openCodeAdapter{runner: openCodeRunner}
+	acpCalled := false
+	acpClient := opencode.ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		acpCalled = true
+		return nil
+	})
+	openCodeAdapter := openCodeAdapter{runner: openCodeRunner, acpClient: acpClient}
 
 	configRoot := filepath.Join(tempDir, ".config", "opencode-runner")
 	configDir := filepath.Join(configRoot, "opencode")
@@ -592,6 +598,9 @@ func TestOpenCodeRunDefaultsCreateConfigAndEnv(t *testing.T) {
 
 	if err := openCodeAdapter.Run("issue-1", repoRoot, "prompt", "", configRoot, configDir, logPath); err != nil {
 		t.Fatalf("open code run error: %v", err)
+	}
+	if !acpCalled {
+		t.Fatalf("expected acp client to be called")
 	}
 
 	configFile := filepath.Join(configDir, "opencode.json")
