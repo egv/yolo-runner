@@ -57,7 +57,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runner.Event:
 		m.taskID = typed.IssueID
 		m.taskTitle = typed.Title
-		m.phase = typed.Phase
+		// Convert phase string back to EventType and map to user-friendly label
+		m.phase = getPhaseLabel(typed.Type)
 		m.progressCompleted = typed.ProgressCompleted
 		m.progressTotal = typed.ProgressTotal
 		m.lastOutputAt = typed.EmittedAt
@@ -89,6 +90,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stopping = true
 	}
 	return m, nil
+}
+
+// getPhaseLabel maps event types to user-friendly labels
+func getPhaseLabel(eventType runner.EventType) string {
+	switch eventType {
+	case runner.EventSelectTask:
+		return "getting task info"
+	case runner.EventBeadsUpdate:
+		return "updating task status"
+	case runner.EventOpenCodeStart:
+		return "starting opencode"
+	case runner.EventOpenCodeEnd:
+		return "opencode finished"
+	case runner.EventGitAdd:
+		return "adding changes"
+	case runner.EventGitStatus:
+		return "checking status"
+	case runner.EventGitCommit:
+		return "committing changes"
+	case runner.EventBeadsClose:
+		return "closing task"
+	case runner.EventBeadsVerify:
+		return "verifying closure"
+	case runner.EventBeadsSync:
+		return "syncing beads"
+	default:
+		return string(eventType)
+	}
 }
 
 func (m Model) View() string {

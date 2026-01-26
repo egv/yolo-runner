@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/anomalyco/yolo-runner/internal/beads"
+	"github.com/anomalyco/yolo-runner/internal/exec"
 	"github.com/anomalyco/yolo-runner/internal/logging"
 	"github.com/anomalyco/yolo-runner/internal/opencode"
 	"github.com/anomalyco/yolo-runner/internal/prompt"
@@ -105,16 +106,26 @@ var newTUIProgram = func(model tea.Model, stdout io.Writer, input io.Reader) tui
 	return bubbleTUIProgram{program: program}
 }
 
-type adapterRunner struct{}
-
-func (adapterRunner) Run(args ...string) (string, error) {
-	return runCommand(args...)
+type adapterRunner struct {
+	runner *exec.CommandRunner
 }
 
-type adapterGitRunner struct{}
+func (a adapterRunner) Run(args ...string) (string, error) {
+	if a.runner == nil {
+		return runCommand(args...)
+	}
+	return a.runner.Run(args...)
+}
 
-func (adapterGitRunner) Run(name string, args ...string) (string, error) {
-	return runCommand(append([]string{name}, args...)...)
+type adapterGitRunner struct {
+	runner *gitadapter.GitCommandAdapter
+}
+
+func (a adapterGitRunner) Run(name string, args ...string) (string, error) {
+	if a.runner == nil {
+		return runCommand(append([]string{name}, args...)...)
+	}
+	return a.runner.Run(name, args...)
 }
 
 type openCodeAdapter struct {
@@ -167,10 +178,14 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	}
 
 	if beadsRunner == nil {
-		beadsRunner = adapterRunner{}
+		logDir := filepath.Join(*repoRoot, "runner-logs")
+		beadsRunner = adapterRunner{runner: exec.NewCommandRunner(logDir, stdout)}
 	}
 	if gitRunner == nil {
-		gitRunner = adapterGitRunner{}
+		logDir := filepath.Join(*repoRoot, "runner-logs")
+		commandRunner := exec.NewCommandRunner(logDir, stdout)
+		gitCommandAdapter := gitadapter.NewGitCommandAdapter(commandRunner)
+		gitRunner = adapterGitRunner{runner: gitCommandAdapter}
 	}
 
 	beadsAdapter := beads.New(beadsRunner)

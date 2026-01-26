@@ -13,3 +13,4 @@
 {"timestamp":"2026-01-26T14:10:25Z","issue_id":"yolo-runner-127.4.14","title":"v1.3: Aggregate agent message chunks","status":"completed","commit_sha":"b8318dbe86f79ff5e4c81df9775e4d446c093ff1\n"}
 {"timestamp":"2026-01-26T14:29:53Z","issue_id":"yolo-runner-127.4.15","title":"v1.3: Tool call status badges","status":"blocked","commit_sha":"1466216549f9768c5188dd21dd864a133e045694\n"}
 {"timestamp":"2026-01-26T14:57:35Z","issue_id":"yolo-runner-127.4.17","title":"v1.3: Spinner independent of output","status":"completed","commit_sha":"2301f8c034d37cb86b5ba92b497d4e5335cf5c99\n"}
+{"timestamp":"2026-01-26T16:24:27Z","issue_id":"yolo-runner-127.4.16","title":"v1.3: Statusbar for spinner + last output","status":"completed","commit_sha":"15eb33577323aff449d92d120c0f9330487d2b32\n"}
