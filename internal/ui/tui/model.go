@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -93,15 +94,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	spinner := spinnerFrames[m.spinnerIndex%len(spinnerFrames)]
 	age := m.lastOutputAge()
-	status := ""
+	
+	var parts []string
+	
+	// Main task info
+	if m.taskID != "" || m.taskTitle != "" {
+		progress := ""
+		if m.progressTotal > 0 {
+			progress = fmt.Sprintf("[%d/%d] ", m.progressCompleted, m.progressTotal)
+		}
+		parts = append(parts, fmt.Sprintf("%s %s%s - %s", spinner, progress, m.taskID, m.taskTitle))
+	}
+	
+	// Status bar with spinner, state, and age
+	statusBarParts := []string{spinner}
+	if m.phase != "" {
+		statusBarParts = append(statusBarParts, m.phase)
+	}
+	if m.taskID != "" {
+		statusBarParts = append(statusBarParts, fmt.Sprintf("%s", m.taskID))
+	}
+	statusBarParts = append(statusBarParts, fmt.Sprintf("(%s)", age))
+	
+	statusBar := strings.Join(statusBarParts, " ")
+	parts = append(parts, statusBar)
+	
+	// Stopping status
 	if m.stopping {
-		status = "Stopping...\n"
+		parts = append(parts, "Stopping...")
 	}
-	progress := ""
-	if m.progressTotal > 0 {
-		progress = fmt.Sprintf("[%d/%d] ", m.progressCompleted, m.progressTotal)
-	}
-	return fmt.Sprintf("%s %s%s - %s\nphase: %s\nlast output %s\n%sq: stop runner\n", spinner, progress, m.taskID, m.taskTitle, m.phase, age, status)
+	
+	// Quit hint
+	parts = append(parts, "q: stop runner")
+	
+	return strings.Join(parts, "\n") + "\n"
 }
 
 func (m Model) lastOutputAge() string {
