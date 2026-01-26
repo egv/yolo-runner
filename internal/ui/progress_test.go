@@ -389,3 +389,78 @@ func TestProgressFinishResetsLinePosition(t *testing.T) {
 		t.Fatalf("expected cursor show sequence, got %q", output)
 	}
 }
+
+func TestProgressSpinnerAdvancesOnTimer(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "issue-timer.jsonl")
+	if err := os.WriteFile(logPath, []byte("start"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	baseTime := time.Date(2026, 1, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(logPath, baseTime, baseTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	current := baseTime
+	now := func() time.Time { return current }
+	buffer := &bytes.Buffer{}
+	ticker := newFakeProgressTicker()
+	progress := NewProgress(ProgressConfig{
+		Writer:  buffer,
+		State:   "opencode running",
+		LogPath: logPath,
+		Ticker:  ticker,
+		Now:     now,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		progress.Run(ctx)
+		close(done)
+	}()
+
+	// First tick - should show initial spinner
+	current = baseTime
+	ticker.Tick(current)
+	firstOutput := waitForOutput(t, buffer)
+	firstLen := len(firstOutput)
+	firstLine := lastRender(firstOutput)
+
+	// Second tick - should advance spinner even without log file growth
+	current = baseTime.Add(1 * time.Second)
+	ticker.Tick(current)
+	secondOutput := waitForOutputAfter(t, buffer, firstLen)
+	secondLine := lastRender(secondOutput)
+
+	// Verify spinner advanced
+	if firstLine == secondLine {
+		t.Fatalf("expected spinner to advance on timer, got same line: %q", secondLine)
+	}
+	if len(firstLine) == 0 || len(secondLine) == 0 {
+		t.Fatalf("expected rendered output")
+	}
+	if firstLine[0] == secondLine[0] {
+		t.Fatalf("expected spinner char to change on timer, got %q then %q", firstLine[0], secondLine[0])
+	}
+
+	// Third tick - should advance spinner again
+	current = baseTime.Add(2 * time.Second)
+	ticker.Tick(current)
+	thirdOutput := waitForOutputAfter(t, buffer, len(secondOutput))
+	thirdLine := lastRender(thirdOutput)
+
+	if secondLine[0] == thirdLine[0] {
+		t.Fatalf("expected spinner char to change again on timer, got %q then %q", secondLine[0], thirdLine[0])
+	}
+
+	cancel()
+	ticker.Stop()
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("progress did not stop")
+	}
+}

@@ -140,11 +140,13 @@ func (p *Progress) renderLocked(now time.Time) {
 	if p.finished {
 		return
 	}
+	// Always advance spinner on timer tick
+	p.spinnerIndex = (p.spinnerIndex + 1) % len(spinnerFrames)
+	
 	if p.config.LogPath != "" {
 		currentSize := fileSize(p.config.LogPath)
 		if currentSize > p.lastSize {
 			p.lastSize = currentSize
-			p.spinnerIndex = (p.spinnerIndex + 1) % len(spinnerFrames)
 			if modTime, err := fileModTime(p.config.LogPath); err == nil {
 				p.lastOutput = modTime
 			} else {
