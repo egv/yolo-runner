@@ -510,7 +510,6 @@ func TestModelViewportAboveStatusBar(t *testing.T) {
 	}
 }
 
-
 func TestModelResizesCorrectly(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 	m := NewModel(func() time.Time { return fixedNow })
@@ -586,5 +585,82 @@ func TestModelUsesLipglossForLayout(t *testing.T) {
 		if !strings.Contains(view, comp) {
 			t.Fatalf("expected view to contain %q, got: %q", comp, view)
 		}
+	}
+}
+
+func TestModelRendersAgentThoughtsAsMarkdown(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	// Send an event with agent thoughts in markdown format
+	updated, _ := m.Update(runner.Event{
+		Type:      runner.EventOpenCodeStart,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
+		Thought:   "## Analysis\n\nThis is a **bold** statement with *italics*.\n\n- Item 1\n- Item 2",
+	})
+	m = updated.(Model)
+
+	view := m.View()
+
+	// Verify that markdown content is rendered in the view
+	// Markdown headers should be rendered with special styling or just as text
+	if !strings.Contains(view, "Analysis") {
+		t.Fatalf("expected markdown header 'Analysis' in view, got: %q", view)
+	}
+
+	// The viewport should contain to markdown content
+	if !strings.Contains(view, "This is a") {
+		t.Fatalf("expected markdown content in view, got: %q", view)
+	}
+}
+
+func TestModelUsesStatusBarComponent(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	// Verify that the model has a statusbar component
+	if m.statusbar.View() == "" {
+		t.Fatal("expected statusbar component to be initialized")
+	}
+
+	// Update model with event
+	updated, _ := m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
+	})
+	m = updated.(Model)
+
+	view := m.View()
+
+	// Verify that the statusbar component's View() is being used
+	// The statusbar should be rendered with lipgloss styling
+	if !strings.Contains(view, "task-1") {
+		t.Fatalf("expected statusbar to render task ID, got: %q", view)
+	}
+
+	// Verify statusbar is at the bottom
+	lines := strings.Split(strings.TrimSpace(view), "\n")
+	if len(lines) < 2 {
+		t.Fatal("expected multiple lines in view")
+	}
+
+	// Statusbar should be near the bottom (before quit hint)
+	statusBarFound := false
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(lines[i], "q: stop runner") {
+			// Statusbar should be before quit hint
+			if i > 0 && strings.Contains(lines[i-1], "task-1") {
+				statusBarFound = true
+			}
+			break
+		}
+	}
+
+	if !statusBarFound {
+		t.Fatalf("expected statusbar to be positioned before quit hint at bottom, got view: %q", view)
 	}
 }

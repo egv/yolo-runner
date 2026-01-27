@@ -2,11 +2,11 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/anomalyco/yolo-runner/internal/runner"
@@ -28,6 +28,8 @@ type Model struct {
 	stopNotified      bool
 	viewport          viewport.Model
 	logs              []string
+	thought           string    // Agent thoughts in markdown format
+	statusbar         StatusBar // Teacup-style status bar component
 	width             int
 	height            int
 }
@@ -47,13 +49,14 @@ func NewModelWithStop(now func() time.Time, stopCh chan struct{}) Model {
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 	return Model{
-		viewport: vp,
-		logs:     []string{},
-		width:    80,
-		height:   24,
-		now:      now,
-		stopCh:   stopCh,
-		spinner:  NewSpinner(),
+		viewport:  vp,
+		logs:      []string{},
+		width:     80,
+		height:    24,
+		now:       now,
+		stopCh:    stopCh,
+		spinner:   NewSpinner(),
+		statusbar: NewStatusBar(),
 	}
 }
 
@@ -81,9 +84,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.model = typed.Model
 		m.progressCompleted = typed.ProgressCompleted
 		m.progressTotal = typed.ProgressTotal
+		m.thought = typed.Thought
 		m.lastOutputAt = typed.EmittedAt
 		if typed.Type == runner.EventOpenCodeEnd {
 			m.lastOutputAt = m.now()
+		}
+		// Render markdown thoughts and update viewport
+		if typed.Thought != "" {
+			rendered := m.renderMarkdown(typed.Thought)
+			m.viewport.SetContent(rendered)
 		}
 	case OutputMsg:
 		m.lastOutputAt = m.now()
@@ -147,32 +156,22 @@ func (m Model) View() string {
 	spinnerChar := m.spinner.View()
 	age := m.lastOutputAge()
 
+	// Update statusbar component with current state
+	// Manually set the phase in statusbar since we need it from Model state, not Event
+	m.statusbar.taskID = m.taskID
+	m.statusbar.phase = m.phase
+	m.statusbar.model = m.model
+	m.statusbar.progressCompleted = m.progressCompleted
+	m.statusbar.progressTotal = m.progressTotal
+	m.statusbar.lastOutputAge = age
+	m.statusbar.spinner = spinnerChar
+	m.statusbar.stopping = m.stopping
+	m.statusbar.SetWidth(m.width)
+
 	// Task title line (for backward compatibility with existing tests)
 	var parts []string
 	if m.taskID != "" || m.taskTitle != "" {
 		parts = append(parts, fmt.Sprintf("%s %s - %s", spinnerChar, m.taskID, m.taskTitle))
-	}
-
-	// Build status bar content with spinner, progress, state, model, and age
-	statusBarParts := []string{spinnerChar}
-	if m.progressTotal > 0 {
-		statusBarParts = append(statusBarParts, fmt.Sprintf("[%d/%d]", m.progressCompleted, m.progressTotal))
-	}
-	if m.phase != "" {
-		statusBarParts = append(statusBarParts, m.phase)
-	}
-	if m.taskID != "" {
-		statusBarParts = append(statusBarParts, fmt.Sprintf("%s", m.taskID))
-	}
-	if m.model != "" {
-		statusBarParts = append(statusBarParts, fmt.Sprintf("[%s]", m.model))
-	}
-	statusBarParts = append(statusBarParts, fmt.Sprintf("(%s)", age))
-	statusBar := strings.Join(statusBarParts, " ")
-
-	// Stopping status
-	if m.stopping {
-		statusBar = "Stopping..."
 	}
 
 	// Quit hint
@@ -187,7 +186,7 @@ func (m Model) View() string {
 	// Build final view with proper layout:
 	// 1. Task title line (for test compatibility)
 	// 2. Viewport (scrollable logs) - takes available space
-	// 3. Statusbar (pinned to bottom)
+	// 3. Statusbar (pinned to bottom, using teacup-style component)
 	// 4. Quit hint
 	//
 	// This satisfies: viewport above statusbar, statusbar at bottom, uses lipgloss
@@ -196,7 +195,7 @@ func (m Model) View() string {
 	} else {
 		parts = []string{styledViewport}
 	}
-	parts = append(parts, statusBar)
+	parts = append(parts, m.statusbar.View())
 	parts = append(parts, quitHint)
 
 	content := lipgloss.JoinVertical(lipgloss.Top, parts...)
@@ -218,4 +217,27 @@ func (m Model) StopRequested() bool {
 
 func (m Model) StopChannel() chan struct{} {
 	return m.stopCh
+}
+
+func (m Model) renderMarkdown(markdown string) string {
+	if markdown == "" {
+		return ""
+	}
+
+	// Create a glamour renderer for terminal markdown rendering
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(m.width),
+	)
+	if err != nil {
+		// Fallback to plain text if glamour fails
+		return markdown
+	}
+
+	rendered, err := renderer.Render(markdown)
+	if err != nil {
+		return markdown
+	}
+
+	return rendered
 }

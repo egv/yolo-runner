@@ -25,6 +25,7 @@ type Event struct {
 	ProgressCompleted int       `json:"progress_completed"`
 	ProgressTotal     int       `json:"progress_total"`
 	Model             string    `json:"model"`
+	Thought           string    `json:"thought"` // Agent thoughts in markdown format
 	EmittedAt         time.Time `json:"emitted_at"`
 }
 
