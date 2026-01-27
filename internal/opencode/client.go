@@ -135,7 +135,7 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		return err
 	}
 
-	args := BuildACPArgs(repoRoot)
+	args := BuildACPArgsWithModel(repoRoot, model)
 	env := BuildEnv(nil, configRoot, configDir, model)
 	process, err := runner.Start(args, env, logPath)
 	if err != nil {

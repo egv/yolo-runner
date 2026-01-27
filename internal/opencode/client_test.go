@@ -348,3 +348,68 @@ func TestRunUsesACPClient(t *testing.T) {
 		t.Fatalf("expected ACP client to be called")
 	}
 }
+
+func TestRunWithACPIncludesModelInArgs(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	var capturedArgs []string
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		capturedArgs = append([]string{}, args...)
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+	acpClient := ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		return nil
+	})
+	if err := RunWithACP(context.Background(), "issue-1", repoRoot, "prompt", "zai-coding-plan/glm-4.7", "", "", logPath, runner, acpClient); err != nil {
+		t.Fatalf("RunWithACP error: %v", err)
+	}
+
+	// Check that --model is in the args
+	foundModel := false
+	for i, arg := range capturedArgs {
+		if arg == "--model" && i+1 < len(capturedArgs) && capturedArgs[i+1] == "zai-coding-plan/glm-4.7" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Fatalf("expected --model flag with value in args: %v", capturedArgs)
+	}
+}
+
+func TestRunWithACPNoModelWhenEmpty(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	var capturedArgs []string
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		capturedArgs = append([]string{}, args...)
+		proc := newFakeProcess()
+		close(proc.waitCh)
+		return proc, nil
+	})
+	acpClient := ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		return nil
+	})
+	if err := RunWithACP(context.Background(), "issue-1", repoRoot, "prompt", "", "", "", logPath, runner, acpClient); err != nil {
+		t.Fatalf("RunWithACP error: %v", err)
+	}
+
+	// Check that --model is NOT in the args when model is empty
+	for _, arg := range capturedArgs {
+		if arg == "--model" {
+			t.Fatalf("did not expect --model in args when model is empty: %v", capturedArgs)
+		}
+	}
+}

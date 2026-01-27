@@ -51,7 +51,9 @@ func (f *fakeOpenCodeRunLogger) Run(issueID string, repoRoot string, prompt stri
 }
 
 type fakeOpenCodeRunner struct {
-	env map[string]string
+	env      map[string]string
+	args     []string
+	original opencode.Runner
 }
 
 type fakeOpenCodeProcess struct{}
@@ -61,6 +63,7 @@ func (fakeOpenCodeProcess) Wait() error { return nil }
 func (fakeOpenCodeProcess) Kill() error { return nil }
 
 func (f *fakeOpenCodeRunner) Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error) {
+	f.args = args
 	f.env = env
 	return fakeOpenCodeProcess{}, nil
 }
@@ -619,5 +622,88 @@ func TestOpenCodeRunDefaultsCreateConfigAndEnv(t *testing.T) {
 	}
 	if openCodeRunner.env["OPENCODE_CONFIG_CONTENT"] != "{}" {
 		t.Fatalf("expected OPENCODE_CONFIG_CONTENT set")
+	}
+}
+
+func TestOpenCodeRunWithModelInACPMode(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+
+	openCodeRunner := &fakeOpenCodeRunner{}
+	acpCalled := false
+	acpClient := opencode.ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		acpCalled = true
+		return nil
+	})
+	openCodeAdapter := openCodeAdapter{runner: openCodeRunner, acpClient: acpClient}
+
+	configRoot := filepath.Join(tempDir, ".config", "opencode-runner")
+	configDir := filepath.Join(configRoot, "opencode")
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	if err := openCodeAdapter.Run("issue-1", repoRoot, "prompt", "zai-coding-plan/glm-4.7", configRoot, configDir, logPath); err != nil {
+		t.Fatalf("open code run error: %v", err)
+	}
+	if !acpCalled {
+		t.Fatalf("expected acp client to be called")
+	}
+
+	// Check that --model flag is in args
+	foundModel := false
+	for i, arg := range openCodeRunner.args {
+		if arg == "--model" && i+1 < len(openCodeRunner.args) && openCodeRunner.args[i+1] == "zai-coding-plan/glm-4.7" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Fatalf("expected --model flag with value in args: %v", openCodeRunner.args)
+	}
+
+	// Check that model is also set in OPENCODE_CONFIG_CONTENT
+	if openCodeRunner.env["OPENCODE_CONFIG_CONTENT"] != "{\"model\":\"zai-coding-plan/glm-4.7\"}" {
+		t.Fatalf("expected OPENCODE_CONFIG_CONTENT with model, got %q", openCodeRunner.env["OPENCODE_CONFIG_CONTENT"])
+	}
+}
+
+func TestOpenCodeRunWithEmptyModelInACPMode(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+
+	openCodeRunner := &fakeOpenCodeRunner{}
+	acpCalled := false
+	acpClient := opencode.ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		acpCalled = true
+		return nil
+	})
+	openCodeAdapter := openCodeAdapter{runner: openCodeRunner, acpClient: acpClient}
+
+	configRoot := filepath.Join(tempDir, ".config", "opencode-runner")
+	configDir := filepath.Join(configRoot, "opencode")
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-1.jsonl")
+
+	if err := openCodeAdapter.Run("issue-1", repoRoot, "prompt", "", configRoot, configDir, logPath); err != nil {
+		t.Fatalf("open code run error: %v", err)
+	}
+	if !acpCalled {
+		t.Fatalf("expected acp client to be called")
+	}
+
+	// Check that --model flag is NOT in args when model is empty
+	for _, arg := range openCodeRunner.args {
+		if arg == "--model" {
+			t.Fatalf("did not expect --model in args when model is empty: %v", openCodeRunner.args)
+		}
+	}
+
+	// Check that OPENCODE_CONFIG_CONTENT is empty object when model is empty
+	if openCodeRunner.env["OPENCODE_CONFIG_CONTENT"] != "{}" {
+		t.Fatalf("expected OPENCODE_CONFIG_CONTENT to be empty, got %q", openCodeRunner.env["OPENCODE_CONFIG_CONTENT"])
 	}
 }
