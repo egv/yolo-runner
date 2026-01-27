@@ -58,7 +58,7 @@ func TestAggregateAgentMessageChunks_Verification(t *testing.T) {
 		// Chunk with newline - should emit single aggregated line
 		chunk3 := acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText(" this\n"))
 		result3 := aggregator.ProcessUpdate(&chunk3)
-		expected := "agent_thought \"Thinking about this\\n\""
+		expected := "agent_thought \"Thinking about this \""
 		if result3 != expected {
 			t.Errorf("Expected aggregated message %q, got %q", expected, result3)
 		}

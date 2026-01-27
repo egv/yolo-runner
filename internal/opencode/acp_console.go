@@ -39,7 +39,10 @@ func formatSessionUpdate(update *acp.SessionUpdate) string {
 		return formatMessage("user_message", &message.Content)
 	}
 	if thought := update.GetAgentthoughtchunk(); thought != nil {
-		return formatMessage("agent_thought", &thought.Content)
+		// Normalize agent thought text by stripping newlines
+		normalizedText := normalizeAgentThoughtText(thought.Content.GetText().Text)
+		normalizedContent := acp.NewContentBlockText(normalizedText)
+		return formatMessage("agent_thought", &normalizedContent)
 	}
 	if plan := update.GetPlan(); plan != nil {
 		return fmt.Sprintf("plan entries=%d", len(plan.Entries))
@@ -118,4 +121,16 @@ func truncateACPText(text string, limit int) string {
 		return text
 	}
 	return text[:limit]
+}
+
+
+
+
+// normalizeAgentThoughtText strips newlines and carriage returns from agent thought text
+// and replaces them with spaces to prevent breaking TUI layout
+func normalizeAgentThoughtText(text string) string {
+	// Replace all newlines and carriage returns with spaces
+	// This handles \n, \r, and \r\n (Windows line endings)
+	text = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(text)
+	return text
 }

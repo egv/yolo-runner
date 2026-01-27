@@ -145,7 +145,9 @@ func (a *AgentMessageAggregator) processAgentThoughtChunk(content *acp.ContentBl
 		a.agentThoughtBuffer.Reset()
 		a.agentThoughtBuffer.WriteString(remaining)
 
-		contentBlock := acp.NewContentBlockText(output)
+		// Normalize the text by replacing newlines and carriage returns with spaces
+		normalizedOutput := normalizeAgentThoughtText(output)
+		contentBlock := acp.NewContentBlockText(normalizedOutput)
 		return formatMessage("agent_thought", &contentBlock)
 	}
 

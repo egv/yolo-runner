@@ -157,7 +157,7 @@ func TestAgentMessageAggregator_AggregatesAgentThoughtChunks(t *testing.T) {
 	// Send second agent thought chunk with newline - should trigger output
 	update2 := acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText(" done\n"))
 	got2 := aggregator.ProcessUpdate(&update2)
-	expected := "agent_thought \"Thinking done\\n\""
+	expected := "agent_thought \"Thinking done \""
 	if got2 != expected {
 		t.Fatalf("expected aggregated agent thought: %q, got: %q", expected, got2)
 	}
@@ -181,7 +181,7 @@ func TestAgentMessageAggregator_MultipleAgentThoughtChunksBeforeNewline(t *testi
 
 	update3 := acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText(" Step3\n"))
 	got3 := aggregator.ProcessUpdate(&update3)
-	expected := "agent_thought \"Step1 Step2 Step3\\n\""
+	expected := "agent_thought \"Step1 Step2 Step3 \""
 	if got3 != expected {
 		t.Fatalf("expected aggregated agent thought: %q, got: %q", expected, got3)
 	}
@@ -230,7 +230,7 @@ func TestAgentMessageAggregator_SeparateBuffersForEachMessageType(t *testing.T) 
 	// Complete agent thought with newline
 	thought2 := acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText(" complete\n"))
 	got6 := aggregator.ProcessUpdate(&thought2)
-	expected6 := "agent_thought \"Thought complete\\n\""
+	expected6 := "agent_thought \"Thought complete \""
 	if got6 != expected6 {
 		t.Fatalf("expected aggregated agent thought: %q, got: %q", expected6, got6)
 	}

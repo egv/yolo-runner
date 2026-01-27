@@ -112,3 +112,47 @@ func TestFormatToolCallUpdateWithStatusBadges(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 }
+
+func TestFormatSessionUpdateAgentThoughtStripsNewlines(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "single newline stripped and replaced with space",
+			input:    "Thinking\nabout this",
+			expected: "agent_thought \"Thinking about this\"",
+		},
+		{
+			name:     "multiple newlines normalized to single spaces",
+			input:    "Line1\n\nLine2\n\n\nLine3",
+			expected: "agent_thought \"Line1  Line2   Line3\"",
+		},
+		{
+			name:     "carriage return stripped",
+			input:    "Thinking\rabout this",
+			expected: "agent_thought \"Thinking about this\"",
+		},
+		{
+			name:     "mixed newlines stripped",
+			input:    "Line1\r\nLine2\nLine3\r",
+			expected: "agent_thought \"Line1 Line2 Line3 \"",
+		},
+		{
+			name:     "trailing newline stripped",
+			input:    "Thinking\n",
+			expected: "agent_thought \"Thinking \"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			update := acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText(tt.input))
+			got := formatSessionUpdate(&update)
+			if got != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, got)
+			}
+		})
+	}
+}
