@@ -197,6 +197,88 @@ func TestLogBubbleStore_UpsertToolCallUpdate(t *testing.T) {
 
 // TestLogBubbleStore_AddLogEntry tests that regular log entries
 // can be added to the store
+
+// TestLogBubbleStore_OrderingStabilityWithUpdate tests that updating a tool call
+// bubble using UpsertToolCallUpdate maintains its position in the ordering
+func TestLogBubbleStore_OrderingStabilityWithUpdate(t *testing.T) {
+	store := NewLogBubbleStore()
+
+	// Create first tool call using ToolCall
+	pendingStatus := acp.ToolCallStatusPending
+	toolCall1 := &acp.ToolCall{
+		ToolCallId: "tool-1",
+		Title:      "First Tool Call",
+		Status:     &pendingStatus,
+	}
+
+	store.UpsertToolCall(toolCall1)
+
+	// Create second tool call using ToolCall
+	toolCall2 := &acp.ToolCall{
+		ToolCallId: "tool-2",
+		Title:      "Second Tool Call",
+		Status:     &pendingStatus,
+	}
+
+	store.UpsertToolCall(toolCall2)
+
+	// Create third tool call using ToolCall
+	toolCall3 := &acp.ToolCall{
+		ToolCallId: "tool-3",
+		Title:      "Third Tool Call",
+		Status:     &pendingStatus,
+	}
+
+	store.UpsertToolCall(toolCall3)
+
+	bubbles := store.GetBubbles()
+	if len(bubbles) != 3 {
+		t.Fatalf("expected 3 bubbles, got %d", len(bubbles))
+	}
+
+	// Verify initial ordering
+	if !containsString(bubbles[0], "tool-1") {
+		t.Errorf("expected first bubble to be tool-1, got: %s", bubbles[0])
+	}
+	if !containsString(bubbles[1], "tool-2") {
+		t.Errorf("expected second bubble to be tool-2, got: %s", bubbles[1])
+	}
+	if !containsString(bubbles[2], "tool-3") {
+		t.Errorf("expected third bubble to be tool-3, got: %s", bubbles[2])
+	}
+
+	// Update the second tool call using UpsertToolCallUpdate - it should stay in position
+	inProgressStatus := acp.ToolCallStatusInProgress
+	toolCall2Update := &acp.ToolCallUpdate{
+		ToolCallId: "tool-2",
+		Title:      "Second Tool Call Updated",
+		Status:     &inProgressStatus,
+	}
+
+	store.UpsertToolCallUpdate(toolCall2Update)
+
+	bubbles = store.GetBubbles()
+	if len(bubbles) != 3 {
+		t.Fatalf("expected 3 bubbles after update, got %d", len(bubbles))
+	}
+
+	// Verify ordering is stable (tool-2 still in middle)
+	// Note: tool_call_update format doesn't include the id, so we verify
+	// by checking that the bubble is still in position 1 with updated content
+	if !containsString(bubbles[0], "tool-1") {
+		t.Errorf("expected first bubble to still be tool-1, got: %s", bubbles[0])
+	}
+	if !containsString(bubbles[1], "Second Tool Call Updated") {
+		t.Errorf("expected second bubble to be updated with new title, got: %s", bubbles[1])
+	}
+	if !containsString(bubbles[1], "tool_call_update") {
+		t.Errorf("expected second bubble to have tool_call_update format, got: %s", bubbles[1])
+	}
+	if !containsString(bubbles[2], "tool-3") {
+		t.Errorf("expected third bubble to still be tool-3, got: %s", bubbles[2])
+	}
+}
+
 func TestLogBubbleStore_AddLogEntry(t *testing.T) {
 	store := NewLogBubbleStore()
 
