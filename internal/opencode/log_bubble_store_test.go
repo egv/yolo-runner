@@ -295,6 +295,94 @@ func TestLogBubbleStore_AddLogEntry(t *testing.T) {
 	}
 }
 
+// TestLogBubbleStore_MixedEntriesWithUpdate tests that tool call bubbles
+// can be upserted correctly even when interleaved with regular log entries
+func TestLogBubbleStore_MixedEntriesWithUpdate(t *testing.T) {
+	store := NewLogBubbleStore()
+
+	// Add a regular log entry first
+	store.AddLogEntry("Task started")
+
+	// Create first tool call
+	pendingStatus := acp.ToolCallStatusPending
+	toolCall1 := &acp.ToolCall{
+		ToolCallId: "tool-1",
+		Title:      "First Tool",
+		Status:     &pendingStatus,
+	}
+	store.UpsertToolCall(toolCall1)
+
+	// Add another regular log entry
+	store.AddLogEntry("Processing...")
+
+	// Create second tool call
+	toolCall2 := &acp.ToolCall{
+		ToolCallId: "tool-2",
+		Title:      "Second Tool",
+		Status:     &pendingStatus,
+	}
+	store.UpsertToolCall(toolCall2)
+
+	// Add one more regular log entry
+	store.AddLogEntry("Almost done")
+
+	bubbles := store.GetBubbles()
+	if len(bubbles) != 5 {
+		t.Fatalf("expected 5 bubbles, got %d", len(bubbles))
+	}
+
+	// Verify initial ordering: log, tool1, log, tool2, log
+	if bubbles[0] != "Task started" {
+		t.Errorf("expected bubble[0] to be 'Task started', got: %s", bubbles[0])
+	}
+	if !containsString(bubbles[1], "tool-1") {
+		t.Errorf("expected bubble[1] to be tool-1, got: %s", bubbles[1])
+	}
+	if bubbles[2] != "Processing..." {
+		t.Errorf("expected bubble[2] to be 'Processing...', got: %s", bubbles[2])
+	}
+	if !containsString(bubbles[3], "tool-2") {
+		t.Errorf("expected bubble[3] to be tool-2, got: %s", bubbles[3])
+	}
+	if bubbles[4] != "Almost done" {
+		t.Errorf("expected bubble[4] to be 'Almost done', got: %s", bubbles[4])
+	}
+
+	// Update first tool call - it should stay in position 1
+	inProgressStatus := acp.ToolCallStatusInProgress
+	toolCall1Update := &acp.ToolCall{
+		ToolCallId: "tool-1",
+		Title:      "First Tool Updated",
+		Status:     &inProgressStatus,
+	}
+	store.UpsertToolCall(toolCall1Update)
+
+	bubbles = store.GetBubbles()
+	if len(bubbles) != 5 {
+		t.Fatalf("expected 5 bubbles after update, got %d", len(bubbles))
+	}
+
+	// Verify ordering is maintained with regular log entries
+	if bubbles[0] != "Task started" {
+		t.Errorf("expected bubble[0] to still be 'Task started', got: %s", bubbles[0])
+	}
+	if !containsString(bubbles[1], "tool-1") {
+		t.Errorf("expected bubble[1] to still be tool-1, got: %s", bubbles[1])
+	}
+	if !containsString(bubbles[1], "First Tool Updated") {
+		t.Errorf("expected bubble[1] to be updated, got: %s", bubbles[1])
+	}
+	if bubbles[2] != "Processing..." {
+		t.Errorf("expected bubble[2] to still be 'Processing...', got: %s", bubbles[2])
+	}
+	if !containsString(bubbles[3], "tool-2") {
+		t.Errorf("expected bubble[3] to still be tool-2, got: %s", bubbles[3])
+	}
+	if bubbles[4] != "Almost done" {
+		t.Errorf("expected bubble[4] to still be 'Almost done', got: %s", bubbles[4])
+	}
+}
+
 // Helper function to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsSubstring(s, substr))
