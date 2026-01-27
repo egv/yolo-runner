@@ -7,11 +7,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	acp "github.com/ironpark/acp-go"
 )
 
 const verificationPrompt = "Verify task completion: run required tests if not already run, then reply with DONE or NOT DONE."
+const verificationIdleDelay = 200 * time.Millisecond
 
 type ACPDecision string
 
@@ -104,6 +106,7 @@ func RunACPClient(
 		if err := promptFn(text); err != nil {
 			return "", err
 		}
+		client.waitForCaptureIdle(ctx, verificationIdleDelay)
 		response := client.stopCapture()
 		if err := sendQuestionResponses(ctx, promptFn, client.drainQuestionResponses()); err != nil {
 			return "", err
@@ -199,6 +202,8 @@ type acpClient struct {
 	captureMu               sync.Mutex
 	captureBuffer           strings.Builder
 	captureEnabled          bool
+	captureStartedAt        time.Time
+	captureLastUpdate       time.Time
 }
 
 func (c *acpClient) SessionUpdate(ctx context.Context, params *acp.SessionNotification) error {
@@ -271,6 +276,8 @@ func (c *acpClient) startCapture() {
 	defer c.captureMu.Unlock()
 	c.captureBuffer.Reset()
 	c.captureEnabled = true
+	c.captureStartedAt = time.Now()
+	c.captureLastUpdate = time.Time{}
 }
 
 func (c *acpClient) stopCapture() string {
@@ -287,6 +294,8 @@ func (c *acpClient) captureMessage(params *acp.SessionNotification) {
 	if c == nil || params == nil {
 		return
 	}
+	c.captureMu.Lock()
+	defer c.captureMu.Unlock()
 	if !c.captureEnabled {
 		return
 	}
@@ -303,10 +312,36 @@ func (c *acpClient) captureMessage(params *acp.SessionNotification) {
 	if content == "" {
 		return
 	}
-	c.captureMu.Lock()
-	defer c.captureMu.Unlock()
-	if c.captureEnabled {
-		c.captureBuffer.WriteString(content)
+	c.captureBuffer.WriteString(content)
+	c.captureLastUpdate = time.Now()
+}
+
+func (c *acpClient) waitForCaptureIdle(ctx context.Context, idle time.Duration) {
+	if c == nil || idle <= 0 {
+		return
+	}
+	start := time.Now()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.captureMu.Lock()
+			last := c.captureLastUpdate
+			started := c.captureStartedAt
+			c.captureMu.Unlock()
+			if !last.IsZero() {
+				if time.Since(last) >= idle {
+					return
+				}
+				continue
+			}
+			if time.Since(started) >= idle && time.Since(start) >= idle {
+				return
+			}
+		}
 	}
 }
 

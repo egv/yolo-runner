@@ -312,11 +312,43 @@ func TestRunACPClientSendsVerificationPrompt(t *testing.T) {
 	}
 }
 
+func TestRunACPClientHandlesDelayedVerification(t *testing.T) {
+	clientToAgentReader, clientToAgentWriter := io.Pipe()
+	agentToClientReader, agentToClientWriter := io.Pipe()
+
+	serverErr := make(chan error, 1)
+	agent := &testACPAgent{verifyResult: "DONE", verifyDelay: 100 * time.Millisecond}
+	go func() {
+		agentConn := acp.NewAgentSideConnection(agent, clientToAgentReader, agentToClientWriter)
+		agent.client = agentConn.Client()
+		err := agentConn.Start(context.Background())
+		_ = agentToClientWriter.Close()
+		serverErr <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	if err := RunACPClient(ctx, clientToAgentWriter, agentToClientReader, t.TempDir(), "do work", nil, nil); err != nil {
+		t.Fatalf("RunACPClient error: %v", err)
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("unexpected server error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected server connection to close")
+	}
+}
+
 type testACPAgent struct {
 	client       acp.Client
 	prompts      []string
 	promptCount  int
 	verifyResult string
+	verifyDelay  time.Duration
 	mu           sync.Mutex
 }
 
@@ -361,10 +393,16 @@ func (a *testACPAgent) Prompt(ctx context.Context, params *acp.PromptRequest) (*
 		if response == "" {
 			response = "DONE"
 		}
-		_ = a.client.SessionUpdate(ctx, &acp.SessionNotification{
-			SessionId: params.SessionId,
-			Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText(response)),
-		})
+		delay := a.verifyDelay
+		go func() {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			_ = a.client.SessionUpdate(context.Background(), &acp.SessionNotification{
+				SessionId: params.SessionId,
+				Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText(response)),
+			})
+		}()
 	}
 	return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 }
