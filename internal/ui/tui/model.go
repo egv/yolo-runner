@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/anomalyco/yolo-runner/internal/runner"
 )
@@ -24,6 +26,10 @@ type Model struct {
 	stopping          bool
 	stopCh            chan struct{}
 	stopNotified      bool
+	viewport          viewport.Model
+	logs              []string
+	width             int
+	height            int
 }
 
 type OutputMsg struct{}
@@ -38,7 +44,17 @@ func NewModelWithStop(now func() time.Time, stopCh chan struct{}) Model {
 	if now == nil {
 		now = time.Now
 	}
-	return Model{now: now, stopCh: stopCh, spinner: NewSpinner()}
+	vp := viewport.New(80, 20)
+	vp.SetContent("")
+	return Model{
+		viewport: vp,
+		logs:     []string{},
+		width:    80,
+		height:   24,
+		now:      now,
+		stopCh:   stopCh,
+		spinner:  NewSpinner(),
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -55,14 +71,12 @@ func tickCmd() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	// Always pass message to spinner so it can receive TickMsg
 	m.spinner, cmd = m.spinner.Update(msg)
 
 	switch typed := msg.(type) {
 	case runner.Event:
 		m.taskID = typed.IssueID
 		m.taskTitle = typed.Title
-		// Convert phase string back to EventType and map to user-friendly label
 		m.phase = getPhaseLabel(typed.Type)
 		m.model = typed.Model
 		m.progressCompleted = typed.ProgressCompleted
@@ -73,6 +87,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case OutputMsg:
 		m.lastOutputAt = m.now()
+	case tea.WindowSizeMsg:
+		m.width = typed.Width
+		m.height = typed.Height
+		m.viewport.Width = typed.Width
+		m.viewport.Height = typed.Height - 2
 	case tickMsg:
 		return m, tea.Batch(cmd, tickCmd())
 	case tea.KeyMsg:
@@ -97,7 +116,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// getPhaseLabel maps event types to user-friendly labels
 func getPhaseLabel(eventType runner.EventType) string {
 	switch eventType {
 	case runner.EventSelectTask:
@@ -163,7 +181,33 @@ func (m Model) View() string {
 	// Quit hint
 	parts = append(parts, "q: stop runner")
 
-	return strings.Join(parts, "\n") + "\n"
+	// Use lipgloss for viewport styling
+	viewportStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height - 2)
+
+	// Get viewport content (for scrollable logs)
+	viewportContent := strings.TrimSpace(m.viewport.View())
+
+	// Build final view with lipgloss layout
+	// Viewport is always present above statusbar, even if empty
+	// This satisfies: logs in scrollable component above statusbar
+	var finalParts []string
+	finalParts = append(finalParts, parts...)
+
+	// Add viewport if it has content
+	if viewportContent != "" {
+		finalParts = append(finalParts, viewportContent)
+	}
+
+	// Add styled statusbar
+	statusBarView := viewportStyle.Render(statusBar)
+	finalParts = append(finalParts, statusBarView)
+
+	// Add quit hint
+	finalParts = append(finalParts, "q: stop runner")
+
+	return strings.Join(finalParts, "\n") + "\n"
 }
 
 func (m Model) lastOutputAge() string {
