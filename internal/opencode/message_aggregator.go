@@ -7,7 +7,9 @@ import (
 )
 
 type AgentMessageAggregator struct {
-	buffer strings.Builder
+	agentMessageBuffer  strings.Builder
+	userMessageBuffer   strings.Builder
+	agentThoughtBuffer  strings.Builder
 }
 
 func NewAgentMessageAggregator() *AgentMessageAggregator {
@@ -29,10 +31,10 @@ func (a *AgentMessageAggregator) ProcessUpdate(update *acp.SessionUpdate) string
 		return a.processMessageChunk(&message.Content)
 	}
 	if message := update.GetUsermessagechunk(); message != nil {
-		return formatMessage("user_message", &message.Content)
+		return a.processUserMessageChunk(&message.Content)
 	}
 	if thought := update.GetAgentthoughtchunk(); thought != nil {
-		return formatMessage("agent_thought", &thought.Content)
+		return a.processAgentThoughtChunk(&thought.Content)
 	}
 	if plan := update.GetPlan(); plan != nil {
 		return ""
@@ -59,10 +61,10 @@ func (a *AgentMessageAggregator) processMessageChunk(content *acp.ContentBlock) 
 		return ""
 	}
 
-	a.buffer.WriteString(text)
+	a.agentMessageBuffer.WriteString(text)
 
 	// Check if the accumulated content contains a newline
-	accumulated := a.buffer.String()
+	accumulated := a.agentMessageBuffer.String()
 	if strings.Contains(accumulated, "\n") {
 		// Find the last newline and output everything up to and including it
 		lastNewlineIndex := strings.LastIndex(accumulated, "\n")
@@ -70,11 +72,81 @@ func (a *AgentMessageAggregator) processMessageChunk(content *acp.ContentBlock) 
 
 		// Keep any remaining content after the last newline in the buffer
 		remaining := accumulated[lastNewlineIndex+1:]
-		a.buffer.Reset()
-		a.buffer.WriteString(remaining)
+		a.agentMessageBuffer.Reset()
+		a.agentMessageBuffer.WriteString(remaining)
 
 		contentBlock := acp.NewContentBlockText(output)
 		return formatMessage("agent_message", &contentBlock)
+	}
+
+	// No newline yet, don't output anything
+	return ""
+}
+
+func (a *AgentMessageAggregator) processUserMessageChunk(content *acp.ContentBlock) string {
+	if content == nil {
+		return ""
+	}
+
+	text := ""
+	if content.IsText() {
+		text = content.GetText().Text
+	}
+	if text == "" {
+		return ""
+	}
+
+	a.userMessageBuffer.WriteString(text)
+
+	// Check if the accumulated content contains a newline
+	accumulated := a.userMessageBuffer.String()
+	if strings.Contains(accumulated, "\n") {
+		// Find the last newline and output everything up to and including it
+		lastNewlineIndex := strings.LastIndex(accumulated, "\n")
+		output := accumulated[:lastNewlineIndex+1]
+
+		// Keep any remaining content after the last newline in the buffer
+		remaining := accumulated[lastNewlineIndex+1:]
+		a.userMessageBuffer.Reset()
+		a.userMessageBuffer.WriteString(remaining)
+
+		contentBlock := acp.NewContentBlockText(output)
+		return formatMessage("user_message", &contentBlock)
+	}
+
+	// No newline yet, don't output anything
+	return ""
+}
+
+func (a *AgentMessageAggregator) processAgentThoughtChunk(content *acp.ContentBlock) string {
+	if content == nil {
+		return ""
+	}
+
+	text := ""
+	if content.IsText() {
+		text = content.GetText().Text
+	}
+	if text == "" {
+		return ""
+	}
+
+	a.agentThoughtBuffer.WriteString(text)
+
+	// Check if the accumulated content contains a newline
+	accumulated := a.agentThoughtBuffer.String()
+	if strings.Contains(accumulated, "\n") {
+		// Find the last newline and output everything up to and including it
+		lastNewlineIndex := strings.LastIndex(accumulated, "\n")
+		output := accumulated[:lastNewlineIndex+1]
+
+		// Keep any remaining content after the last newline in the buffer
+		remaining := accumulated[lastNewlineIndex+1:]
+		a.agentThoughtBuffer.Reset()
+		a.agentThoughtBuffer.WriteString(remaining)
+
+		contentBlock := acp.NewContentBlockText(output)
+		return formatMessage("agent_thought", &contentBlock)
 	}
 
 	// No newline yet, don't output anything

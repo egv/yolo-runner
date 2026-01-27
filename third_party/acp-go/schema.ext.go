@@ -19,6 +19,30 @@ func NewSessionUpdateAgentMessageChunk(content ContentBlock) SessionUpdate {
 	}
 }
 
+
+
+// NewSessionUpdateUserMessageChunk creates a SessionUpdate with user message chunk
+func NewSessionUpdateUserMessageChunk(content ContentBlock) SessionUpdate {
+	return SessionUpdate{
+		discriminator: "user_message_chunk",
+		usermessagechunk: &SessionUpdateUsermessagechunk{
+			Content:       content,
+			SessionUpdate: "user_message_chunk",
+		},
+	}
+}
+
+// NewSessionUpdateAgentThoughtChunk creates a SessionUpdate with agent thought chunk
+func NewSessionUpdateAgentThoughtChunk(content ContentBlock) SessionUpdate {
+	return SessionUpdate{
+		discriminator: "agent_thought_chunk",
+		agentthoughtchunk: &SessionUpdateAgentthoughtchunk{
+			Content:       content,
+			SessionUpdate: "agent_thought_chunk",
+		},
+	}
+}
+
 // NewSessionUpdateToolCall creates a SessionUpdate with tool call
 func NewSessionUpdateToolCall(toolCallId ToolCallId, title string, kind *ToolKind, status *ToolCallStatus, locations []ToolCallLocation, rawInput interface{}) SessionUpdate {
 	var rawInputJSON json.RawMessage
