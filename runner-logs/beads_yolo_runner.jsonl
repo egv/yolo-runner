@@ -18,3 +18,4 @@
 {"timestamp":"2026-01-26T20:32:26Z","issue_id":"yolo-runner-127.4.19","title":"v1.3: Statusbar shows progress [x/y]","status":"completed","commit_sha":"3ce6f9eda0b5c6daab43b4fed775d99f4b21aa8e\n"}
 {"timestamp":"2026-01-26T23:37:32Z","issue_id":"yolo-runner-127.4.20","title":"Bug: progress counter exceeds total","status":"completed","commit_sha":"d3fb143d9223390d7dc708fa4757e8606bf7e83a\n"}
 {"timestamp":"2026-01-27T08:42:50Z","issue_id":"yolo-runner-127.4.15","title":"v1.3: Tool call status badges","status":"completed","commit_sha":"5fba82e93c03e713936bb34af7f7573230c48e9e\n"}
+{"timestamp":"2026-01-27T10:12:31Z","issue_id":"yolo-runner-127.4.23","title":"v1.3: Honor --model in ACP mode","status":"blocked","commit_sha":"e7bf153f457bb199bcfd4aae52ec9cfb2ed617b4\n"}
