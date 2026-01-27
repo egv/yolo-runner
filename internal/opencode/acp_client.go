@@ -209,10 +209,19 @@ func parseVerificationResponse(text string) (bool, bool) {
 		return false, false
 	}
 	normalized := strings.ToLower(text)
-	if strings.Contains(normalized, "not done") || strings.Contains(normalized, "not complete") {
+	if strings.Contains(normalized, "not done") || strings.Contains(normalized, "not complete") || strings.Contains(normalized, "incomplete") {
+		return false, true
+	}
+	if strings.Contains(normalized, "did not") || strings.Contains(normalized, "didn't") || strings.Contains(normalized, "failed") || strings.Contains(normalized, "fail") {
 		return false, true
 	}
 	if strings.Contains(normalized, "done") {
+		return true, true
+	}
+	if strings.Contains(normalized, "complete") {
+		return true, true
+	}
+	if strings.Contains(normalized, "pass") {
 		return true, true
 	}
 	return false, false

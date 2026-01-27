@@ -157,6 +157,21 @@ func TestParseVerificationResponse(t *testing.T) {
 		t.Fatalf("expected NOT DONE to fail, got ok=%v verified=%v", ok, verified)
 	}
 
+	verified, ok = parseVerificationResponse("All tests pass")
+	if !ok || !verified {
+		t.Fatalf("expected pass to verify, got ok=%v verified=%v", ok, verified)
+	}
+
+	verified, ok = parseVerificationResponse("Task appears complete")
+	if !ok || !verified {
+		t.Fatalf("expected complete to verify, got ok=%v verified=%v", ok, verified)
+	}
+
+	verified, ok = parseVerificationResponse("Tests failed")
+	if !ok || verified {
+		t.Fatalf("expected failed to be NOT DONE, got ok=%v verified=%v", ok, verified)
+	}
+
 	verified, ok = parseVerificationResponse("still working")
 	if ok || verified {
 		t.Fatalf("expected unknown response to be unrecognized")
