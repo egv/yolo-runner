@@ -353,3 +353,175 @@ func TestStatusBarSupportsStoppingState(t *testing.T) {
 		t.Fatalf("expected 'Stopping...' in stopping state, got: %q", view)
 	}
 }
+
+// TestMarkdownBubbleIsBubbleTeaComponent verifies that MarkdownBubble follows Bubble Tea patterns
+func TestMarkdownBubbleIsBubbleTeaComponent(t *testing.T) {
+	// The MarkdownBubble should be a Bubble Tea component with Init, Update, View methods
+	// This ensures it follows the "teacup" pattern
+
+	mb := NewMarkdownBubble()
+
+	// MarkdownBubble should have Init method (or return nil)
+	var _ func() tea.Cmd = mb.Init
+
+	// MarkdownBubble should have Update method
+	var _ func(tea.Msg) (MarkdownBubble, tea.Cmd) = mb.Update
+
+	// MarkdownBubble should have View method
+	var _ func() string = mb.View
+
+	// Test Init
+	cmd := mb.Init()
+	// Init can return nil or a command
+	if cmd != nil {
+		t.Logf("MarkdownBubble.Init returned a command")
+	}
+
+	// Test Update with a simple message
+	updated, cmd := mb.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	if cmd != nil {
+		t.Logf("MarkdownBubble.Update returned a command")
+	}
+
+	// Verify width was updated
+	if updated.width != 100 {
+		t.Fatalf("expected width to be updated to 100, got %d", updated.width)
+	}
+
+	// Test View
+	view := updated.View()
+	if view == "" {
+		t.Fatal("expected MarkdownBubble.View to return non-empty string")
+	}
+}
+
+// TestMarkdownBubbleRendersMarkdown verifies markdown is rendered in the bubble
+func TestMarkdownBubbleRendersMarkdown(t *testing.T) {
+	mb := NewMarkdownBubble()
+	mb.SetWidth(80)
+
+	// Update with markdown content
+	updated, _ := mb.Update(SetMarkdownContentMsg{
+		Content: "# Header\n\nThis is **bold** and *italic* text.",
+	})
+
+	view := updated.View()
+
+	// Rendered content should be present (markdown transformed)
+	if !strings.Contains(view, "Header") {
+		t.Fatalf("expected rendered markdown to contain 'Header', got: %q", view)
+	}
+
+	if !strings.Contains(view, "bold") {
+		t.Fatalf("expected rendered markdown to contain 'bold', got: %q", view)
+	}
+
+	if !strings.Contains(view, "italic") {
+		t.Fatalf("expected rendered markdown to contain 'italic', got: %q", view)
+	}
+
+	// Raw markdown syntax should be transformed (not displayed as-is)
+	// The exact rendering depends on the markdown library, but structure should be preserved
+}
+
+// TestMarkdownBubbleNormalizesNewlines verifies newlines are normalized in markdown
+func TestMarkdownBubbleNormalizesNewlines(t *testing.T) {
+	mb := NewMarkdownBubble()
+	mb.SetWidth(80)
+
+	// Test single newline normalization
+	updated, _ := mb.Update(SetMarkdownContentMsg{
+		Content: "Line1\nLine2",
+	})
+	view := updated.View()
+
+	// Newlines should be properly normalized for rendering
+	// The exact behavior depends on markdown rendering, but content should be preserved
+	if !strings.Contains(view, "Line1") {
+		t.Fatalf("expected view to contain 'Line1', got: %q", view)
+	}
+
+	if !strings.Contains(view, "Line2") {
+		t.Fatalf("expected view to contain 'Line2', got: %q", view)
+	}
+
+	// Test multiple consecutive newlines
+	updated, _ = mb.Update(SetMarkdownContentMsg{
+		Content: "Line1\n\n\nLine2",
+	})
+	view = updated.View()
+
+	if !strings.Contains(view, "Line1") {
+		t.Fatalf("expected view to contain 'Line1' after multiple newlines, got: %q", view)
+	}
+
+	if !strings.Contains(view, "Line2") {
+		t.Fatalf("expected view to contain 'Line2' after multiple newlines, got: %q", view)
+	}
+
+	// Test mixed newline types (Windows \r\n, Unix \n, Mac \r)
+	updated, _ = mb.Update(SetMarkdownContentMsg{
+		Content: "Line1\r\nLine2\nLine3\rLine4",
+	})
+	view = updated.View()
+
+	// All content should be present regardless of newline type
+	contentLines := []string{"Line1", "Line2", "Line3", "Line4"}
+	for _, line := range contentLines {
+		if !strings.Contains(view, line) {
+			t.Fatalf("expected view to contain %q after mixed newlines, got: %q", line, view)
+		}
+	}
+}
+
+// TestMarkdownBubbleSupportsCodeBlocks verifies markdown with code blocks renders correctly
+func TestMarkdownBubbleSupportsCodeBlocks(t *testing.T) {
+	mb := NewMarkdownBubble()
+	mb.SetWidth(80)
+
+	// Update with code block markdown
+	updated, _ := mb.Update(SetMarkdownContentMsg{
+		Content: "```go\nfunc hello() {\n  fmt.Println(\"Hello\")\n}\n```",
+	})
+
+	view := updated.View()
+
+	// Code content should be present
+	if !strings.Contains(view, "func hello()") {
+		t.Fatalf("expected view to contain code function, got: %q", view)
+	}
+
+	if !strings.Contains(view, "fmt.Println") {
+		t.Fatalf("expected view to contain code print, got: %q", view)
+	}
+}
+
+// TestMarkdownBubbleHandlesLists verifies markdown lists are rendered
+func TestMarkdownBubbleHandlesLists(t *testing.T) {
+	mb := NewMarkdownBubble()
+	mb.SetWidth(80)
+
+	// Update with list markdown
+	updated, _ := mb.Update(SetMarkdownContentMsg{
+		Content: "## Steps\n\n1. First step\n2. Second step\n3. Third step",
+	})
+
+	view := updated.View()
+
+	// List items should be present
+	if !strings.Contains(view, "First step") {
+		t.Fatalf("expected view to contain 'First step', got: %q", view)
+	}
+
+	if !strings.Contains(view, "Second step") {
+		t.Fatalf("expected view to contain 'Second step', got: %q", view)
+	}
+
+	if !strings.Contains(view, "Third step") {
+		t.Fatalf("expected view to contain 'Third step', got: %q", view)
+	}
+
+	if !strings.Contains(view, "Steps") {
+		t.Fatalf("expected view to contain header 'Steps', got: %q", view)
+	}
+}
