@@ -7,9 +7,9 @@ import (
 )
 
 type AgentMessageAggregator struct {
-	agentMessageBuffer  strings.Builder
-	userMessageBuffer   strings.Builder
-	agentThoughtBuffer  strings.Builder
+	agentMessageBuffer strings.Builder
+	userMessageBuffer  strings.Builder
+	agentThoughtBuffer strings.Builder
 }
 
 func NewAgentMessageAggregator() *AgentMessageAggregator {

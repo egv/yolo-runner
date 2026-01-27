@@ -19,8 +19,6 @@ func NewSessionUpdateAgentMessageChunk(content ContentBlock) SessionUpdate {
 	}
 }
 
-
-
 // NewSessionUpdateUserMessageChunk creates a SessionUpdate with user message chunk
 func NewSessionUpdateUserMessageChunk(content ContentBlock) SessionUpdate {
 	return SessionUpdate{
@@ -51,7 +49,7 @@ func NewSessionUpdateToolCall(toolCallId ToolCallId, title string, kind *ToolKin
 			rawInputJSON = bytes
 		}
 	}
-	
+
 	return SessionUpdate{
 		discriminator: "tool_call",
 		toolcall: &SessionUpdateToolcall{
@@ -74,7 +72,7 @@ func NewSessionUpdateToolCallUpdate(toolCallId ToolCallId, status *ToolCallStatu
 			rawOutputJSON = bytes
 		}
 	}
-	
+
 	return SessionUpdate{
 		discriminator: "tool_call_update",
 		toolcallupdate: &SessionUpdateToolcallupdate{

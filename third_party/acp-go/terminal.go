@@ -37,12 +37,12 @@ func (t *TerminalHandle) CurrentOutput(ctx context.Context) (*TerminalOutputResp
 		SessionId:  t.sessionID,
 		TerminalId: t.ID,
 	}
-	
+
 	data, err := t.conn.SendRequest(ctx, ClientMethods.TerminalOutput, params)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var response TerminalOutputResponse
 	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, err
@@ -57,12 +57,12 @@ func (t *TerminalHandle) WaitForExit(ctx context.Context) (*WaitForTerminalExitR
 		SessionId:  t.sessionID,
 		TerminalId: t.ID,
 	}
-	
+
 	data, err := t.conn.SendRequest(ctx, ClientMethods.TerminalWaitForExit, params)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var response WaitForTerminalExitResponse
 	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (t *TerminalHandle) Kill(ctx context.Context) error {
 		SessionId:  t.sessionID,
 		TerminalId: t.ID,
 	}
-	
+
 	_, err := t.conn.SendRequest(ctx, ClientMethods.TerminalKill, params)
 	return err
 }
@@ -105,7 +105,7 @@ func (t *TerminalHandle) Release(ctx context.Context) error {
 		SessionId:  t.sessionID,
 		TerminalId: t.ID,
 	}
-	
+
 	_, err := t.conn.SendRequest(ctx, ClientMethods.TerminalRelease, params)
 	return err
 }

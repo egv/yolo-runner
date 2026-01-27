@@ -70,9 +70,9 @@ func TestIntegration_AllRequirementsWorkTogether(t *testing.T) {
 	var cmd tea.Cmd
 	var updatedModel tea.Model = model
 	updatedModel, cmd = updatedModel.Update(runner.Event{
-		Type: "select_task",
+		Type:    "select_task",
 		IssueID: "task-1",
-		Title: "Example Task",
+		Title:   "Example Task",
 	})
 	model = updatedModel.(tui.Model)
 	_ = cmd // Suppress unused variable warning
@@ -93,11 +93,11 @@ func TestIntegration_AllRequirementsWorkTogether(t *testing.T) {
 		var updatedModel tea.Model = model
 		updatedModel, _ = updatedModel.Update(runner.Event{
 			Type:    runner.EventType(test.eventType),
-			IssueID:  "task-1",
+			IssueID: "task-1",
 			Title:   "Example Task",
 		})
 		model = updatedModel.(tui.Model)
-		
+
 		view := model.View()
 
 		if !containsView(view, test.expectedLabel) {
