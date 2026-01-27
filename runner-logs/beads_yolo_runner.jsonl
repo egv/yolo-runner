@@ -16,3 +16,4 @@
 {"timestamp":"2026-01-26T16:24:27Z","issue_id":"yolo-runner-127.4.16","title":"v1.3: Statusbar for spinner + last output","status":"completed","commit_sha":"15eb33577323aff449d92d120c0f9330487d2b32\n"}
 {"timestamp":"2026-01-26T20:14:44Z","issue_id":"yolo-runner-127.4.18","title":"v1.3: Route bd/command output to logs","status":"blocked","commit_sha":"af278621ca71c6b183f9af8c15c72b237e0d8fa1\n"}
 {"timestamp":"2026-01-26T20:32:26Z","issue_id":"yolo-runner-127.4.19","title":"v1.3: Statusbar shows progress [x/y]","status":"completed","commit_sha":"3ce6f9eda0b5c6daab43b4fed775d99f4b21aa8e\n"}
+{"timestamp":"2026-01-26T23:37:32Z","issue_id":"yolo-runner-127.4.20","title":"Bug: progress counter exceeds total","status":"completed","commit_sha":"d3fb143d9223390d7dc708fa4757e8606bf7e83a\n"}
