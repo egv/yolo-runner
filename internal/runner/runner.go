@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -267,6 +268,20 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	if openCodeErr != nil {
 		cancelProgress()
 		progress.Finish(openCodeErr)
+		var verificationErr *opencode.VerificationError
+		if errors.As(openCodeErr, &verificationErr) {
+			reason := "verification not confirmed"
+			if verificationErr != nil && verificationErr.Reason != "" {
+				reason = verificationErr.Reason
+			}
+			reason = sanitizeStallReason(reason)
+			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
+				if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+					return "", err
+				}
+			}
+			return "blocked", openCodeErr
+		}
 		if stall, ok := openCodeErr.(*opencode.StallError); ok {
 			reason := sanitizeStallReason(stall.Error())
 			if len(reason) > maxStallReasonLength {

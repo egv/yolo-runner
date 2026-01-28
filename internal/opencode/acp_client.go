@@ -13,6 +13,7 @@ import (
 )
 
 const verificationPrompt = "Verify task completion: run required tests if not already run, then reply with DONE or NOT DONE."
+const verificationFailureReason = "verification did not confirm completion"
 const verificationIdleDelay = 200 * time.Millisecond
 
 type ACPDecision string
@@ -167,7 +168,7 @@ func RunACPClient(
 			return err
 		}
 		if !verified {
-			return errors.New("verification did not confirm completion")
+			return &VerificationError{Reason: verificationFailureReason}
 		}
 	}
 

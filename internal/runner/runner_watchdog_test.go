@@ -136,6 +136,41 @@ func TestRunOnceStallReasonTruncatesLongTail(t *testing.T) {
 	}
 }
 
+func TestRunOnceMarksBlockedOnVerificationFailure(t *testing.T) {
+	recorder := &callRecorder{}
+	beads := &fakeBeads{
+		recorder:   recorder,
+		readyIssue: Issue{ID: "task-1", IssueType: "task", Status: "open"},
+		showQueue:  []Bead{{ID: "task-1", Title: "Verify Task"}},
+	}
+	verifyErr := &opencode.VerificationError{Reason: "verification did not confirm completion"}
+	deps := RunOnceDeps{
+		Beads:    beads,
+		Prompt:   &fakePrompt{recorder: recorder, prompt: "PROMPT"},
+		OpenCode: &fakeOpenCode{recorder: recorder, err: verifyErr},
+		Git:      &fakeGit{recorder: recorder, dirty: true, rev: "deadbeef"},
+		Logger:   &fakeLogger{recorder: recorder},
+		Events:   &eventRecorder{},
+	}
+	opts := RunOnceOptions{RepoRoot: "/repo", RootID: "root", Out: &bytes.Buffer{}}
+
+	result, err := RunOnce(opts, deps)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if result != "blocked" {
+		t.Fatalf("expected blocked, got %q", result)
+	}
+
+	joined := strings.Join(recorder.calls, ",")
+	if !strings.Contains(joined, "beads.update:blocked:verification did not confirm completion") {
+		t.Fatalf("expected blocked status with reason, got %v", recorder.calls)
+	}
+	if !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("expected error to include verification, got %q", err.Error())
+	}
+}
+
 func TestRunOnceStallReasonSanitizesUnsafeChars(t *testing.T) {
 	recorder := &callRecorder{}
 	beads := &fakeBeads{
