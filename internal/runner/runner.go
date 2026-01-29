@@ -55,12 +55,19 @@ type Logger interface {
 }
 
 type RunOnceDeps struct {
+	// Legacy interfaces for backward compatibility
 	Beads    BeadsClient
-	Prompt   PromptBuilder
 	OpenCode OpenCodeRunner
-	Git      GitClient
-	Logger   Logger
-	Events   EventEmitter
+
+	// New interface-driven dependencies
+	TaskTracker TaskTracker
+	CodingAgent CodingAgent
+
+	// Other dependencies
+	Prompt PromptBuilder
+	Git    GitClient
+	Logger Logger
+	Events EventEmitter
 }
 
 type RunOnceOptions struct {
@@ -164,13 +171,54 @@ func progressTickerFrom(fn func() (<-chan time.Time, func())) ui.ProgressTicker 
 	return progressTickerAdapter{ch: ch, stop: stop}
 }
 
+// Helper functions to use new interfaces when available, falling back to legacy interfaces
+func getTaskTracker(deps RunOnceDeps) TaskTracker {
+	if deps.TaskTracker != nil {
+		return deps.TaskTracker
+	}
+	return nil
+}
+
+func getLegacyBeadsClient(deps RunOnceDeps) BeadsClient {
+	if deps.Beads != nil {
+		return deps.Beads
+	}
+	if deps.TaskTracker != nil {
+		return NewTaskTrackerAdapter(deps.TaskTracker)
+	}
+	return nil
+}
+
+func getCodingAgent(deps RunOnceDeps) CodingAgent {
+	if deps.CodingAgent != nil {
+		return deps.CodingAgent
+	}
+	return nil
+}
+
+func getLegacyOpenCodeRunner(deps RunOnceDeps) OpenCodeRunner {
+	if deps.OpenCode != nil {
+		return deps.OpenCode
+	}
+	if deps.CodingAgent != nil {
+		return NewCodingAgentAdapter(deps.CodingAgent)
+	}
+	return nil
+}
+
 func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	out := opts.Out
 	if out == nil {
 		out = io.Discard
 	}
 
-	root, err := deps.Beads.Ready(opts.RootID)
+	// Use legacy interface for backward compatibility
+	beadsClient := getLegacyBeadsClient(deps)
+	if beadsClient == nil {
+		return "", fmt.Errorf("no task tracker available")
+	}
+
+	root, err := beadsClient.Ready(opts.RootID)
 	if err != nil {
 		return "", err
 	}
@@ -178,8 +226,8 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	progressState := opts.Progress
 	var tree Issue
 	treeLoaded := false
-	if progressState.Total == 0 && deps.Beads != nil {
-		tree, err = deps.Beads.Tree(opts.RootID)
+	if progressState.Total == 0 && beadsClient != nil {
+		tree, err = beadsClient.Tree(opts.RootID)
 		if err != nil {
 			return "", err
 		}
@@ -189,8 +237,8 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	leafID := SelectFirstOpenLeafTaskID(root)
 	if leafID == "" {
-		if !treeLoaded && deps.Beads != nil {
-			tree, err = deps.Beads.Tree(opts.RootID)
+		if !treeLoaded && beadsClient != nil {
+			tree, err = beadsClient.Tree(opts.RootID)
 			if err != nil {
 				return "", err
 			}
@@ -206,7 +254,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	startTime := now()
 
-	bead, err := deps.Beads.Show(leafID)
+	bead, err := beadsClient.Show(leafID)
 	if err != nil {
 		return "", err
 	}
@@ -241,7 +289,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 	setState("selecting task")
 	emitPhase(deps.Events, EventBeadsUpdate, leafID, bead.Title, currentProgress, "")
-	if err := deps.Beads.UpdateStatus(leafID, "in_progress"); err != nil {
+	if err := beadsClient.UpdateStatus(leafID, "in_progress"); err != nil {
 		return "", err
 	}
 
@@ -260,10 +308,16 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	emitPhase(deps.Events, EventOpenCodeStart, leafID, bead.Title, currentProgress, opts.Model)
 	var openCodeErr error
-	if runnerWithContext, ok := deps.OpenCode.(OpenCodeContextRunner); ok {
+	// Use legacy interface for backward compatibility
+	openCodeRunner := getLegacyOpenCodeRunner(deps)
+	if openCodeRunner == nil {
+		return "", fmt.Errorf("no coding agent available")
+	}
+
+	if runnerWithContext, ok := openCodeRunner.(OpenCodeContextRunner); ok {
 		openCodeErr = runnerWithContext.RunWithContext(stopCtx, leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath)
 	} else {
-		openCodeErr = deps.OpenCode.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath)
+		openCodeErr = openCodeRunner.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath)
 	}
 	if openCodeErr != nil {
 		cancelProgress()
@@ -275,8 +329,8 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 				reason = verificationErr.Reason
 			}
 			reason = sanitizeStallReason(reason)
-			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
-				if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+			if err := beadsClient.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
+				if err := beadsClient.UpdateStatus(leafID, "blocked"); err != nil {
 					return "", err
 				}
 			}
@@ -287,10 +341,10 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 			if len(reason) > maxStallReasonLength {
 				reason = reason[:maxStallReasonLength]
 			}
-			if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
+			if err := beadsClient.UpdateStatusWithReason(leafID, "blocked", reason); err != nil {
 				shortReason := fmt.Sprintf("opencode stall category=%s", stall.Category)
-				if err := deps.Beads.UpdateStatusWithReason(leafID, "blocked", shortReason); err != nil {
-					if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+				if err := beadsClient.UpdateStatusWithReason(leafID, "blocked", shortReason); err != nil {
+					if err := beadsClient.UpdateStatus(leafID, "blocked"); err != nil {
 						return "", err
 					}
 				}
@@ -299,7 +353,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		}
 		if stopState.Requested() {
 			if err := CleanupAfterStop(stopState, StopCleanupConfig{
-				Beads:   deps.Beads,
+				Beads:   beadsClient,
 				Git:     cleanupGit{ctx: stopCtx, statusFn: opts.StatusPorcelain, restoreFn: opts.GitRestoreAll, cleanFn: opts.GitCleanAll},
 				Out:     out,
 				Confirm: opts.CleanupConfirm,
@@ -314,7 +368,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	progress.Finish(nil)
 	if stopState.Requested() {
 		if err := CleanupAfterStop(stopState, StopCleanupConfig{
-			Beads:   deps.Beads,
+			Beads:   beadsClient,
 			Git:     cleanupGit{ctx: stopCtx, statusFn: opts.StatusPorcelain, restoreFn: opts.GitRestoreAll, cleanFn: opts.GitCleanAll},
 			Out:     out,
 			Confirm: opts.CleanupConfirm,
@@ -348,7 +402,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		if err := deps.Logger.AppendRunnerSummary(opts.RepoRoot, leafID, bead.Title, "blocked", commitSHA); err != nil {
 			return "", err
 		}
-		if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+		if err := beadsClient.UpdateStatus(leafID, "blocked"); err != nil {
 			return "", err
 		}
 		return "blocked", nil
@@ -373,12 +427,12 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 	}
 
 	emitPhase(deps.Events, EventBeadsClose, leafID, bead.Title, currentProgress, "")
-	if err := deps.Beads.Close(leafID); err != nil {
+	if err := beadsClient.Close(leafID); err != nil {
 		return "", err
 	}
 
 	emitPhase(deps.Events, EventBeadsVerify, leafID, bead.Title, currentProgress, "")
-	closed, err := deps.Beads.Show(leafID)
+	closed, err := beadsClient.Show(leafID)
 	if err != nil {
 		return "", err
 	}
@@ -386,14 +440,14 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		if err := deps.Logger.AppendRunnerSummary(opts.RepoRoot, leafID, bead.Title, "blocked", commitSHA); err != nil {
 			return "", err
 		}
-		if err := deps.Beads.UpdateStatus(leafID, "blocked"); err != nil {
+		if err := beadsClient.UpdateStatus(leafID, "blocked"); err != nil {
 			return "", err
 		}
 		return "blocked", nil
 	}
 
 	emitPhase(deps.Events, EventBeadsSync, leafID, bead.Title, currentProgress, "")
-	if err := deps.Beads.Sync(); err != nil {
+	if err := beadsClient.Sync(); err != nil {
 		return "", err
 	}
 
@@ -444,8 +498,9 @@ func RunLoop(opts RunOnceOptions, deps RunOnceDeps, max int, runOnce func(RunOnc
 			completed++
 			// Keep going; the next call should select a different open task.
 		case "no_tasks":
-			if deps.Beads != nil {
-				if err := deps.Beads.CloseEligible(); err != nil {
+			beadsClient := getLegacyBeadsClient(deps)
+			if beadsClient != nil {
+				if err := beadsClient.CloseEligible(); err != nil {
 					return completed, err
 				}
 			}
