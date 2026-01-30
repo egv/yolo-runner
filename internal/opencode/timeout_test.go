@@ -25,6 +25,8 @@ func (m *MockProcess) Wait() error {
 
 func (m *MockProcess) Kill() error {
 	m.killCalled = true
+	// Close waitCh to unblock any Wait() calls
+	close(m.waitCh)
 	if m.killCh != nil {
 		return <-m.killCh
 	}
@@ -95,7 +97,7 @@ func TestOpenCodeTimeoutDetection(t *testing.T) {
 	logPath := t.TempDir() + "/test.log"
 
 	// This should timeout and return an error, not hang forever
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	// Should fail due to timeout
 	if err == nil {
@@ -116,7 +118,8 @@ func TestOpenCodeTimeoutDetection(t *testing.T) {
 // TestSerenaInitializationFailure tests that Serena language server initialization failures are propagated immediately
 func TestSerenaInitializationFailure(t *testing.T) {
 	// Create a mock process that writes Serena initialization error to stderr
-	errorLog := t.TempDir() + "/stderr.log"
+	logPath := t.TempDir() + "/test.log"
+	errorLog := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
 	stderrFile, err := os.Create(errorLog)
 	if err != nil {
 		t.Fatalf("failed to create stderr log: %v", err)
@@ -144,10 +147,8 @@ func TestSerenaInitializationFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	logPath := t.TempDir() + "/test.log"
-
 	// This should fail immediately due to Serena initialization failure
-	err = RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err = RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	if err == nil {
 		t.Fatal("expected error due to Serena initialization failure, got nil")
@@ -179,7 +180,7 @@ func TestOpenCodeHealthCheck(t *testing.T) {
 	logPath := t.TempDir() + "/test.log"
 
 	// Should detect lack of progress and fail
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	if err == nil {
 		t.Fatal("expected error due to no progress, got nil")
@@ -211,7 +212,7 @@ func TestKillStuckSubprocesses(t *testing.T) {
 	logPath := t.TempDir() + "/test.log"
 
 	// Should attempt to kill the stuck process
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")
@@ -229,6 +230,7 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 		name            string
 		timeoutMs       int
 		processBehavior func(*MockProcess)
+		acpClient       ACPClient
 		expectedError   string
 	}{
 		{
@@ -237,7 +239,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 			processBehavior: func(mp *MockProcess) {
 				// Process never responds
 			},
-			expectedError: "stall",
+			acpClient:       &mockACPClient{}, // Blocks until context is canceled
+			expectedError:   "stall",
 		},
 		{
 			name:      "completes_before_timeout",
@@ -246,7 +249,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 				// Process completes successfully
 				mp.waitCh <- nil
 			},
-			expectedError: "", // Should not error
+			acpClient:       ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
+			expectedError:   "", // Should not error
 		},
 		{
 			name:      "fails_immediately",
@@ -255,7 +259,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 				// Process fails immediately with Serena error
 				mp.waitCh <- errors.New("language server manager is not initialized")
 			},
-			expectedError: "language server manager is not initialized",
+			acpClient:       ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
+			expectedError:   "language server manager is not initialized",
 		},
 	}
 
@@ -279,7 +284,7 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 
 			logPath := t.TempDir() + "/test.log"
 
-			err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+			err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, tc.acpClient)
 
 			if tc.expectedError == "" {
 				if err != nil {
@@ -322,7 +327,7 @@ func TestClearErrorMessageLogging(t *testing.T) {
 
 	logPath := t.TempDir() + "/test.log"
 
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	// Restore stderr and capture output
 	w.Close()
@@ -345,4 +350,20 @@ func TestClearErrorMessageLogging(t *testing.T) {
 	if !strings.Contains(err.Error(), "language server manager is not initialized") {
 		t.Fatalf("expected Serena initialization error in return value, got: %v", err)
 	}
+}
+
+// mockACPClient is a simple mock ACP client that can be configured to return immediately
+// or simulate specific behaviors without attempting real ACP protocol initialization
+type mockACPClient struct {
+	returnImmediately bool
+	returnError     error
+}
+
+func (m *mockACPClient) Run(ctx context.Context, issueID string, logPath string) error {
+	if m.returnImmediately {
+		return m.returnError
+	}
+	// Simulate blocking until context is cancelled
+	<-ctx.Done()
+	return ctx.Err()
 }

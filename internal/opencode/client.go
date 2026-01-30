@@ -28,6 +28,7 @@ func (runner RunnerFunc) Start(args []string, env map[string]string, stdoutPath 
 
 type ACPClient interface {
 	Run(ctx context.Context, issueID string, logPath string) error
+}
 type ACPClientFunc func(ctx context.Context, issueID string, logPath string) error
 
 func (client ACPClientFunc) Run(ctx context.Context, issueID string, logPath string) error {
@@ -283,3 +284,5 @@ func writeConsoleLine(out io.Writer, line string) {
 	}
 	fmt.Fprintln(out, line)
 }
+
+
