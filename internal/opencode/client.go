@@ -8,8 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/logging"
 	acp "github.com/ironpark/acp-go"
@@ -141,6 +142,7 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 	if err != nil {
 		return err
 	}
+	process = newWaitOnceProcess(process)
 
 	if acpClient == nil {
 		type stdioProcess interface {
@@ -183,17 +185,25 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 			initTimeout = remaining
 		}
 	}
-	
+	serenaSince := time.Time{}
+
 	// Monitor for initialization failures
 	initCtx, initCancel := context.WithTimeout(ctx, initTimeout)
 	defer initCancel()
-	
+
 	// Check stderr logs for Serena initialization failures
 	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
-	go monitorInitFailures(initCtx, stderrPath, initCancel)
-	
+	serenaErrCh := make(chan error, 1)
+	if line, ok := findSerenaInitErrorSince(stderrPath, serenaSince); ok {
+		serenaErr := fmt.Errorf("serena initialization failed: %s", line)
+		writeConsoleLine(os.Stderr, serenaErr.Error())
+		serenaErrCh <- serenaErr
+	} else {
+		go monitorInitFailures(initCtx, stderrPath, serenaErrCh, serenaSince)
+	}
+
 	// Set up watchdog to detect stuck processes
-	watchdog := NewWatchdog(WatchdogConfig{
+	watchdogConfig := WatchdogConfig{
 		LogPath:         logPath,
 		Timeout:         initTimeout,
 		Interval:        1 * time.Second,
@@ -204,15 +214,15 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		NewTicker: func(d time.Duration) WatchdogTicker {
 			return realWatchdogTicker{ticker: time.NewTicker(d)}
 		},
-	})
-	
+	}
+	watchdog := NewWatchdog(watchdogConfig)
+
 	watchdogCh := make(chan error, 1)
 	go func() {
 		watchdogCh <- watchdog.Monitor(process)
 	}()
 
-
-// Run ACP client in goroutine to avoid blocking
+	// Run ACP client in goroutine to avoid blocking
 	acpErrCh := make(chan error, 1)
 	go func() {
 		acpErrCh <- acpClient.Run(ctx, issueID, logPath)
@@ -233,15 +243,32 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		if !timeout.Stop() {
 			<-timeout.C
 		}
+		if line, ok := findSerenaInitErrorSince(stderrPath, serenaSince); ok {
+			serenaErr := fmt.Errorf("serena initialization failed: %s", line)
+			writeConsoleLine(os.Stderr, serenaErr.Error())
+			return errors.Join(serenaErr, waitErr)
+		}
 	case acpErr := <-acpErrCh:
 		// ACP client completed (or failed)
 		runErr = acpErr
 		if !timeout.Stop() {
 			<-timeout.C
 		}
+	case serenaErr := <-serenaErrCh:
+		killErr = process.Kill()
+		waitErr = <-waitCh
+		return errors.Join(serenaErr, killErr, waitErr)
 	case <-ctx.Done():
 		killErr = process.Kill()
 		waitErr = <-waitCh
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			lastOutput := time.Now()
+			if modTime, err := fileModTime(watchdogConfig.LogPath); err == nil {
+				lastOutput = modTime
+			}
+			stall := classifyStall(watchdogConfig, time.Now(), lastOutput)
+			return errors.Join(stall, killErr, waitErr)
+		}
 	case watchdogErr := <-watchdogCh:
 		// Watchdog detected a stall or timeout
 		writeConsoleLine(os.Stderr, fmt.Sprintf("OpenCode stall detected: %v", watchdogErr))
@@ -267,11 +294,37 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 		waitErr = <-waitCh
 	}
 
+	if line, ok := findSerenaInitErrorSince(stderrPath, serenaSince); ok {
+		serenaErr := fmt.Errorf("serena initialization failed: %s", line)
+		writeConsoleLine(os.Stderr, serenaErr.Error())
+		return errors.Join(serenaErr, killErr, waitErr)
+	}
+
 	shutdownErr := errors.Join(killErr, waitErr)
 	if runErr != nil {
 		return errors.Join(runErr, shutdownErr)
 	}
 	return shutdownErr
+}
+
+type waitOnceProcess struct {
+	Process
+	once     sync.Once
+	waitErr  error
+	waitDone chan struct{}
+}
+
+func newWaitOnceProcess(process Process) *waitOnceProcess {
+	return &waitOnceProcess{Process: process, waitDone: make(chan struct{})}
+}
+
+func (p *waitOnceProcess) Wait() error {
+	p.once.Do(func() {
+		p.waitErr = p.Process.Wait()
+		close(p.waitDone)
+	})
+	<-p.waitDone
+	return p.waitErr
 }
 
 func writeConsoleLine(out io.Writer, line string) {
@@ -284,5 +337,3 @@ func writeConsoleLine(out io.Writer, line string) {
 	}
 	fmt.Fprintln(out, line)
 }
-
-

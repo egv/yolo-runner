@@ -26,7 +26,7 @@ func TestTimeoutMechanismIntegration(t *testing.T) {
 	defer cancel()
 
 	// This should timeout due to watchdog detecting stuck process
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, nil)
+	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{})
 
 	if err == nil {
 		t.Fatal("expected timeout error, got nil")

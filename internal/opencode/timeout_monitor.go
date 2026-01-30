@@ -3,15 +3,21 @@ package opencode
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 )
 
+const serenaInitFailureMarker = "language server manager is not initialized"
+
 // monitorInitFailures monitors stderr logs for Serena initialization failures
-// and cancels the context if detected
-func monitorInitFailures(ctx context.Context, stderrPath string, cancel context.CancelFunc) {
+// and reports the error if detected.
+func monitorInitFailures(ctx context.Context, stderrPath string, errCh chan<- error, since time.Time) {
 	if stderrPath == "" {
+		return
+	}
+	if errCh == nil {
 		return
 	}
 
@@ -23,29 +29,42 @@ func monitorInitFailures(ctx context.Context, stderrPath string, cancel context.
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if hasSerenaInitError(stderrPath) {
-				writeConsoleLine(os.Stderr, "Serena language server initialization failure detected")
-				cancel()
+			if line, ok := findSerenaInitErrorSince(stderrPath, since); ok {
+				serenaErr := fmt.Errorf("serena initialization failed: %s", line)
+				writeConsoleLine(os.Stderr, serenaErr.Error())
+				select {
+				case errCh <- serenaErr:
+				default:
+				}
 				return
 			}
 		}
 	}
 }
 
-// hasSerenaInitError checks if stderr log contains Serena initialization error
-func hasSerenaInitError(stderrPath string) bool {
+// findSerenaInitError checks if stderr log contains Serena initialization error
+// and returns the matching line if present.
+func findSerenaInitErrorSince(stderrPath string, since time.Time) (string, bool) {
+	info, err := os.Stat(stderrPath)
+	if err != nil {
+		return "", false
+	}
+	if !since.IsZero() && info.ModTime().Before(since) {
+		return "", false
+	}
+
 	file, err := os.Open(stderrPath)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "language server manager is not initialized") {
-			return true
+		if strings.Contains(line, serenaInitFailureMarker) {
+			return line, true
 		}
 	}
-	return false
+	return "", false
 }

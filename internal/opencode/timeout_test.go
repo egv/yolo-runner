@@ -95,6 +95,7 @@ func TestOpenCodeTimeoutDetection(t *testing.T) {
 
 	// Use a log path for testing
 	logPath := t.TempDir() + "/test.log"
+	_ = os.Remove(strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log")
 
 	// This should timeout and return an error, not hang forever
 	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
@@ -157,6 +158,55 @@ func TestSerenaInitializationFailure(t *testing.T) {
 	// Should detect the specific Serena initialization error
 	if !strings.Contains(err.Error(), "language server manager is not initialized") {
 		t.Fatalf("expected Serena initialization error in message, got: %v", err)
+	}
+}
+
+// TestSerenaInitializationFailureReturnsImmediately tests that Serena initialization failures
+// are detected without waiting for process completion.
+func TestSerenaInitializationFailureReturnsImmediately(t *testing.T) {
+	logPath := t.TempDir() + "/test.log"
+	errorLog := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	stderrFile, err := os.Create(errorLog)
+	if err != nil {
+		t.Fatalf("failed to create stderr log: %v", err)
+	}
+	stderrContent := "language server manager is not initialized"
+	if _, err := stderrFile.WriteString(stderrContent); err != nil {
+		t.Fatalf("failed to write to stderr: %v", err)
+	}
+	stderrFile.Close()
+
+	mockProcess := &MockProcess{
+		waitCh: make(chan error),
+		killCh: make(chan error, 1),
+		stdin:  &nopWriteCloser{},
+		stdout: &nopReadCloser{},
+	}
+	mockProcess.killCh <- nil
+
+	runner := &MockRunner{process: mockProcess}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error due to Serena initialization failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "language server manager is not initialized") {
+			t.Fatalf("expected Serena initialization error in message, got: %v", err)
+		}
+		if !mockProcess.killCalled {
+			t.Fatal("expected process to be killed on Serena initialization failure")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected RunWithACP to return immediately on Serena initialization failure")
 	}
 }
 
@@ -239,8 +289,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 			processBehavior: func(mp *MockProcess) {
 				// Process never responds
 			},
-			acpClient:       &mockACPClient{}, // Blocks until context is canceled
-			expectedError:   "stall",
+			acpClient:     &mockACPClient{}, // Blocks until context is canceled
+			expectedError: "stall",
 		},
 		{
 			name:      "completes_before_timeout",
@@ -249,8 +299,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 				// Process completes successfully
 				mp.waitCh <- nil
 			},
-			acpClient:       ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
-			expectedError:   "", // Should not error
+			acpClient:     ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
+			expectedError: "", // Should not error
 		},
 		{
 			name:      "fails_immediately",
@@ -259,8 +309,8 @@ func TestTimeoutBehaviorVerification(t *testing.T) {
 				// Process fails immediately with Serena error
 				mp.waitCh <- errors.New("language server manager is not initialized")
 			},
-			acpClient:       ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
-			expectedError:   "language server manager is not initialized",
+			acpClient:     ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error { return nil }),
+			expectedError: "language server manager is not initialized",
 		},
 	}
 
@@ -326,8 +376,18 @@ func TestClearErrorMessageLogging(t *testing.T) {
 	defer cancel()
 
 	logPath := t.TempDir() + "/test.log"
+	errorLog := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	stderrFile, err := os.Create(errorLog)
+	if err != nil {
+		t.Fatalf("failed to create stderr log: %v", err)
+	}
+	stderrContent := "language server manager is not initialized"
+	if _, err := stderrFile.WriteString(stderrContent); err != nil {
+		t.Fatalf("failed to write to stderr: %v", err)
+	}
+	stderrFile.Close()
 
-	err := RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
+	err = RunWithACP(ctx, "test-issue", "/tmp", "test prompt", "", "", "", logPath, runner, &mockACPClient{returnError: context.DeadlineExceeded})
 
 	// Restore stderr and capture output
 	w.Close()
@@ -356,7 +416,7 @@ func TestClearErrorMessageLogging(t *testing.T) {
 // or simulate specific behaviors without attempting real ACP protocol initialization
 type mockACPClient struct {
 	returnImmediately bool
-	returnError     error
+	returnError       error
 }
 
 func (m *mockACPClient) Run(ctx context.Context, issueID string, logPath string) error {
