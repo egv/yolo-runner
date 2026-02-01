@@ -34,8 +34,7 @@ func TestModelViewportHeightIsCalculatedCorrectly(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	// Viewport height should be: total height - 1 (statusbar) - 2 (log bubble border)
-	expectedViewportHeight := 24 - 1 - 2 // 24 - 3 = 21
+	_, expectedViewportHeight := logViewportSize(80, 24)
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d (fills available space), got %d", expectedViewportHeight, m.viewport.Height)
 	}
@@ -68,38 +67,32 @@ func TestModelViewportRenderedHeightMatchesExpected(t *testing.T) {
 	lines := strings.Split(view, "\n")
 
 	// Expected layout:
-	// Line 0-8: Log bubble (should be 9 lines = 10 - 1)
-	// Line 9: Statusbar
+	// Log bubble fills height minus statusbar bubble
+	// Statusbar bubble occupies the last lines
 	expectedTotalLines := 10
-	expectedViewportLines := 9 // height - 1 (log bubble height)
+	expectedViewportLines := 10 - statusbarHeight
 
 	if len(lines) != expectedTotalLines {
 		t.Fatalf("expected view to have %d lines total (height), got %d lines: %q", expectedTotalLines, len(lines), view)
 	}
 
 	// Verify viewport lines count
-	// Viewport lines should be above statusbar
-	viewportLineCount := 0
-	statusbarFound := false
-
-	for i, line := range lines {
-		if strings.Contains(line, "getting task info") && strings.Contains(line, "task-1") {
-			statusbarFound = true
-			if i != expectedTotalLines-1 {
-				t.Fatalf("expected statusbar at line %d (last), found at line %d", expectedTotalLines-1, i)
-			}
-		} else {
-			// This should be viewport content
-			viewportLineCount++
-		}
-	}
-
-	if !statusbarFound {
-		t.Fatalf("expected statusbar line not found")
-	}
-
+	viewportLineCount := len(lines) - statusbarHeight
 	if viewportLineCount != expectedViewportLines {
 		t.Fatalf("expected viewport to occupy %d lines in rendered view, got %d lines. View: %q", expectedViewportLines, viewportLineCount, view)
+	}
+
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "getting task info") && strings.Contains(line, "task-1") {
+			statusbarIndex = i
+		}
+	}
+	if statusbarIndex == -1 {
+		t.Fatalf("expected statusbar line not found")
+	}
+	if statusbarIndex != expectedTotalLines-2 {
+		t.Fatalf("expected statusbar content at line %d, found at line %d", expectedTotalLines-2, statusbarIndex)
 	}
 	if strings.Contains(view, "q: stop runner") {
 		t.Fatalf("expected quit hint to be removed from view, got: %q", view)
@@ -135,13 +128,13 @@ func TestModelLogBubbleUsesBorder(t *testing.T) {
 		t.Fatalf("expected log bubble to start with border top-left, got %q", lines[0])
 	}
 
-	logBottomLine := lines[len(lines)-2]
+	logBottomLine := lines[len(lines)-statusbarHeight-1]
 	if !strings.HasPrefix(logBottomLine, border.BottomLeft) {
 		t.Fatalf("expected log bubble bottom border before statusbar, got %q", logBottomLine)
 	}
 }
 
-// TestModelStatusBarIsExactlyOneLine verifies that the statusbar is exactly 1 line high
+// TestModelStatusBarIsExactlyOneLine verifies that the statusbar renders with its bubble height
 func TestModelStatusBarIsExactlyOneLine(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 	m := NewModel(func() time.Time { return fixedNow })
@@ -165,10 +158,10 @@ func TestModelStatusBarIsExactlyOneLine(t *testing.T) {
 	// Get the statusbar view
 	statusbarView := m.statusbar.View()
 
-	// Statusbar should be exactly 1 line
-	statusbarLines := strings.Split(strings.TrimSpace(statusbarView), "\n")
-	if len(statusbarLines) != 1 {
-		t.Fatalf("expected statusbar to be exactly 1 line, got %d lines", len(statusbarLines))
+	// Statusbar bubble should render with the configured height
+	statusbarLines := strings.Split(strings.TrimRight(statusbarView, "\n"), "\n")
+	if len(statusbarLines) != statusbarHeight {
+		t.Fatalf("expected statusbar to be %d lines, got %d lines", statusbarHeight, len(statusbarLines))
 	}
 }
 
@@ -198,20 +191,18 @@ func TestModelStatusBarPinnedToBottom(t *testing.T) {
 	view := strings.TrimSpace(m.View())
 	lines := strings.Split(view, "\n")
 
-	// The last line should be the statusbar
-	lastLine := lines[len(lines)-1]
-	if !strings.Contains(lastLine, "task-1") {
-		t.Fatalf("expected last line to be statusbar (containing task-1), got: %q", lastLine)
-	}
-
-	// Verify statusbar is always at position len(lines)-1 regardless of content
-	// by checking that the viewport content comes before it
-	for i := 0; i < len(lines)-1; i++ {
-		line := lines[i]
-		// No other line before position len(lines)-1 should contain statusbar content
-		if strings.Contains(line, "getting task info") {
-			t.Fatalf("expected statusbar content to only be at line %d, found at line %d: %q", len(lines)-1, i, line)
+	// Statusbar content should be within the last statusbarHeight lines
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusbarIndex = i
 		}
+	}
+	if statusbarIndex == -1 {
+		t.Fatalf("expected statusbar content line to be present")
+	}
+	if statusbarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar content near bottom, found at line %d", statusbarIndex)
 	}
 }
 
@@ -251,8 +242,7 @@ func TestModelViewportPositionedAboveStatusBar(t *testing.T) {
 	for i, line := range lines {
 		// Check for statusbar line (contains task ID and phase)
 		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
-			// Statusbar should be the last line
-			if i == len(lines)-1 {
+			if i >= len(lines)-statusbarHeight {
 				statusbarFound = true
 			}
 			continue
@@ -312,8 +302,7 @@ func TestModelLayoutWithDifferentWindowSizes(t *testing.T) {
 			})
 			m = updated.(Model)
 
-			// Viewport height should be: total height - 1 (statusbar) - 2 (log bubble border)
-			expectedViewportHeight := tc.height - 1 - 2
+			_, expectedViewportHeight := logViewportSize(tc.width, tc.height)
 			if m.viewport.Height != expectedViewportHeight {
 				t.Fatalf("expected viewport height to be %d for window size %dx%d, got %d",
 					expectedViewportHeight, tc.width, tc.height, m.viewport.Height)
@@ -323,10 +312,18 @@ func TestModelLayoutWithDifferentWindowSizes(t *testing.T) {
 			view := strings.TrimSpace(m.View())
 			lines := strings.Split(view, "\n")
 
-			// Last line should be statusbar
-			lastLine := lines[len(lines)-1]
-			if !strings.Contains(lastLine, "task-1") {
-				t.Fatalf("expected last line to be statusbar for size %dx%d, got: %q", tc.width, tc.height, lastLine)
+			// Statusbar content should be within the last statusbarHeight lines
+			statusbarIndex := -1
+			for i, line := range lines {
+				if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+					statusbarIndex = i
+				}
+			}
+			if statusbarIndex == -1 {
+				t.Fatalf("expected statusbar content for size %dx%d, got: %q", tc.width, tc.height, view)
+			}
+			if statusbarIndex < len(lines)-statusbarHeight {
+				t.Fatalf("expected statusbar near bottom for size %dx%d, got index %d", tc.width, tc.height, statusbarIndex)
 			}
 		})
 	}
@@ -396,8 +393,7 @@ func TestModelLayoutWithSmallWindowSize(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	// Viewport height should be: 5 - 1 (statusbar) - 2 (log bubble border) = 2 lines
-	expectedViewportHeight := 2
+	_, expectedViewportHeight := logViewportSize(40, 5)
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d for small window, got %d", expectedViewportHeight, m.viewport.Height)
 	}
@@ -411,9 +407,17 @@ func TestModelLayoutWithSmallWindowSize(t *testing.T) {
 		t.Fatalf("expected view to have %d lines for window height 5, got %d lines", 5, len(lines))
 	}
 
-	// Last line should be statusbar
-	lastLine := lines[len(lines)-1]
-	if !strings.Contains(lastLine, "task-1") {
-		t.Fatalf("expected last line to be statusbar for small window, got: %q", lastLine)
+	// Statusbar content should be within the last statusbarHeight lines
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusbarIndex = i
+		}
+	}
+	if statusbarIndex == -1 {
+		t.Fatalf("expected statusbar content for small window, got: %q", view)
+	}
+	if statusbarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar near bottom for small window, got index %d", statusbarIndex)
 	}
 }

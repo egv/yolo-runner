@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/anomalyco/yolo-runner/internal/runner"
 )
@@ -33,6 +34,26 @@ func TestStatusBarViewEmptyState(t *testing.T) {
 
 	if strings.Contains(view, "[0/0]") || strings.Contains(view, "[1/1]") {
 		t.Fatalf("did not expect progress in empty state, got: %q", view)
+	}
+}
+
+func TestStatusBarViewUsesBubbleBorder(t *testing.T) {
+	sb := NewStatusBar()
+	sb.SetWidth(40)
+
+	sb, _ = sb.Update(UpdateStatusBarMsg{Event: runner.Event{IssueID: "task-1"}})
+	view := strings.TrimRight(sb.View(), "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected statusbar to render as bubble with border, got %d lines: %q", len(lines), view)
+	}
+
+	border := lipgloss.NormalBorder()
+	if !strings.HasPrefix(lines[0], border.TopLeft) {
+		t.Fatalf("expected statusbar to start with border top-left, got %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[len(lines)-1], border.BottomLeft) {
+		t.Fatalf("expected statusbar to end with border bottom-left, got %q", lines[len(lines)-1])
 	}
 }
 

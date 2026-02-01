@@ -38,7 +38,7 @@ type Model struct {
 const (
 	defaultWidth          = 80
 	defaultHeight         = 24
-	statusbarHeight       = 1
+	statusbarHeight       = 3
 	logBubbleBorderWidth  = 2
 	logBubbleBorderHeight = 2
 )
@@ -59,14 +59,7 @@ func NewModelWithStop(now func() time.Time, stopCh chan struct{}) Model {
 	if now == nil {
 		now = time.Now
 	}
-	logViewportWidth := defaultWidth - logBubbleBorderWidth
-	if logViewportWidth < 0 {
-		logViewportWidth = 0
-	}
-	logViewportHeight := defaultHeight - statusbarHeight - logBubbleBorderHeight
-	if logViewportHeight < 0 {
-		logViewportHeight = 0
-	}
+	logViewportWidth, logViewportHeight := logViewportSize(defaultWidth, defaultHeight)
 	vp := viewport.New(logViewportWidth, logViewportHeight)
 	vp.SetContent("")
 	return Model{
@@ -136,14 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = typed.Width
 		m.height = typed.Height
-		logViewportWidth := typed.Width - logBubbleBorderWidth
-		if logViewportWidth < 0 {
-			logViewportWidth = 0
-		}
-		logViewportHeight := typed.Height - statusbarHeight - logBubbleBorderHeight
-		if logViewportHeight < 0 {
-			logViewportHeight = 0
-		}
+		logViewportWidth, logViewportHeight := logViewportSize(typed.Width, typed.Height)
 		m.viewport.Width = logViewportWidth
 		m.viewport.Height = logViewportHeight
 	case tickMsg:
@@ -275,6 +261,30 @@ func (m Model) View() string {
 	content := lipgloss.JoinVertical(lipgloss.Top, logBubbleView, statusbarView)
 
 	return content + "\n"
+}
+
+func logViewportSize(width int, height int) (int, int) {
+	logBubbleHeight := height - statusbarHeight
+	if logBubbleHeight < 0 {
+		logBubbleHeight = 0
+	}
+
+	logViewportWidth := width
+	logViewportHeight := logBubbleHeight
+
+	if logBubbleHeight > logBubbleBorderHeight {
+		logViewportWidth = width - logBubbleBorderWidth
+		logViewportHeight = logBubbleHeight - logBubbleBorderHeight
+	}
+
+	if logViewportWidth < 0 {
+		logViewportWidth = 0
+	}
+	if logViewportHeight < 0 {
+		logViewportHeight = 0
+	}
+
+	return logViewportWidth, logViewportHeight
 }
 
 func (m *Model) appendLogLines(text string) {

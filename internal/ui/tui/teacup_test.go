@@ -117,18 +117,21 @@ func TestStatusBarPinnedToBottomInLayout(t *testing.T) {
 	view := strings.TrimSpace(m.View())
 	lines := strings.Split(view, "\n")
 
-	// The statusbar should be the last line
-	statusBarLine := lines[len(lines)-1]
-	if !strings.Contains(statusBarLine, "task-1") {
-		t.Fatalf("expected statusbar line to contain task ID, got: %q", statusBarLine)
+	// Statusbar content should be within the last statusbarHeight lines
+	statusBarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusBarIndex = i
+		}
 	}
-
-	if !strings.Contains(statusBarLine, "getting task info") {
-		t.Fatalf("expected statusbar line to contain phase, got: %q", statusBarLine)
+	if statusBarIndex == -1 {
+		t.Fatalf("expected statusbar content line to contain task ID and phase")
 	}
-
-	if !strings.Contains(statusBarLine, "(5s)") {
-		t.Fatalf("expected statusbar line to contain age, got: %q", statusBarLine)
+	if statusBarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar content near bottom, found at %d", statusBarIndex)
+	}
+	if !strings.Contains(lines[statusBarIndex], "(5s)") {
+		t.Fatalf("expected statusbar line to contain age, got: %q", lines[statusBarIndex])
 	}
 }
 
@@ -295,7 +298,7 @@ func TestResizeCorrectly(t *testing.T) {
 	}
 
 	// Viewport height should account for other components (statusbar + log bubble border)
-	expectedViewportHeight := 40 - 1 - 2 // Height minus statusbar minus log bubble border
+	_, expectedViewportHeight := logViewportSize(120, 40)
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d after resize, got %d", expectedViewportHeight, m.viewport.Height)
 	}

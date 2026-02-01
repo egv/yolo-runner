@@ -74,6 +74,7 @@ func (s StatusBar) View() string {
 			Width(s.width).
 			Foreground(lipgloss.Color("#ffffff")).
 			Background(lipgloss.Color("#ff0000")).
+			Border(lipgloss.NormalBorder()).
 			Padding(0, 1)
 		return style.Render("Stopping...")
 	}
@@ -117,6 +118,7 @@ func (s StatusBar) View() string {
 		Width(s.width).
 		Foreground(lipgloss.Color("#ffffff")).
 		Background(lipgloss.Color("#1a1a1a")).
+		Border(lipgloss.NormalBorder()).
 		Padding(0, 1)
 
 	return style.Render(statusLine)

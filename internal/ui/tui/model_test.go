@@ -197,6 +197,92 @@ func TestModelStopsOnCtrlC(t *testing.T) {
 	}
 }
 
+func TestModelScrollKeepsStatusBarPinned(t *testing.T) {
+	fixedNow := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 6})
+	m = updated.(Model)
+
+	updated, _ = m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
+	})
+	m = updated.(Model)
+
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(AppendLogMsg{Line: fmt.Sprintf("log line %d", i)})
+		m = updated.(Model)
+	}
+
+	if !m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to start at bottom")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to scroll up from bottom")
+	}
+
+	view := strings.TrimSpace(m.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected view to have lines")
+	}
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusbarIndex = i
+		}
+	}
+	if statusbarIndex == -1 {
+		t.Fatalf("expected statusbar content to be present")
+	}
+	if statusbarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar to remain pinned at bottom, got index %d", statusbarIndex)
+	}
+}
+
+func TestModelScrollDoesNotJumpOnNewOutput(t *testing.T) {
+	fixedNow := time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 6})
+	m = updated.(Model)
+
+	updated, _ = m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
+	})
+	m = updated.(Model)
+
+	for i := 0; i < 12; i++ {
+		updated, _ = m.Update(AppendLogMsg{Line: fmt.Sprintf("log line %d", i)})
+		m = updated.(Model)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to scroll up from bottom")
+	}
+	beforeOffset := m.viewport.YOffset
+
+	updated, _ = m.Update(AppendLogMsg{Line: "new output line"})
+	m = updated.(Model)
+	if m.viewport.AtBottom() {
+		t.Fatalf("expected viewport to remain scrolled after new output")
+	}
+	if m.viewport.YOffset != beforeOffset {
+		t.Fatalf("expected viewport offset to remain %d, got %d", beforeOffset, m.viewport.YOffset)
+	}
+}
+
 func TestModelRendersStatusBarInSingleLine(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 	m := NewModel(func() time.Time { return fixedNow })
@@ -212,9 +298,9 @@ func TestModelRendersStatusBarInSingleLine(t *testing.T) {
 	view := m.View()
 	lines := strings.Split(strings.TrimSpace(view), "\n")
 
-	// Should have a status bar line containing spinner, phase, and last output age
-	statusBarFound := false
-	for _, line := range lines {
+	// Statusbar bubble should contain spinner, phase, and last output age
+	statusBarIndex := -1
+	for i, line := range lines {
 		if strings.Contains(line, "phase:") {
 			// This should not exist anymore - phase should be in status bar
 			t.Fatalf("phase should be in status bar, not separate line: %q", line)
@@ -223,17 +309,16 @@ func TestModelRendersStatusBarInSingleLine(t *testing.T) {
 			// This should not exist anymore - last output should be in status bar
 			t.Fatalf("last output should be in status bar, not separate line: %q", line)
 		}
-		// Check if this line contains spinner, state info, and age
-		if strings.Contains(line, "-") || strings.Contains(line, "\\") || strings.Contains(line, "|") || strings.Contains(line, "/") {
-			// Found spinner, check if it also contains phase and age info
-			if strings.Contains(line, "getting task info") && strings.Contains(line, "5s") {
-				statusBarFound = true
-			}
+		if strings.Contains(line, "getting task info") && strings.Contains(line, "5s") {
+			statusBarIndex = i
 		}
 	}
 
-	if !statusBarFound {
-		t.Fatalf("expected status bar line with spinner, phase, and age, got view: %q", view)
+	if statusBarIndex == -1 {
+		t.Fatalf("expected status bar content line with phase and age, got view: %q", view)
+	}
+	if statusBarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected status bar content near bottom, got index %d", statusBarIndex)
 	}
 }
 
@@ -439,12 +524,18 @@ func TestModelStatusBarAlwaysAtBottom(t *testing.T) {
 	view := strings.TrimSpace(m.View())
 	lines := strings.Split(view, "\n")
 
-	// The last non-empty line should be the statusbar
-	lastLine := lines[len(lines)-1]
-	if strings.Contains(lastLine, "task-1") {
-		return
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusbarIndex = i
+		}
 	}
-	t.Fatalf("expected statusbar to be positioned at bottom, got view: %q", view)
+	if statusbarIndex == -1 {
+		t.Fatalf("expected statusbar to be positioned at bottom, got view: %q", view)
+	}
+	if statusbarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar to be positioned at bottom, got index %d", statusbarIndex)
+	}
 }
 
 func TestModelViewportAboveStatusBar(t *testing.T) {
@@ -525,8 +616,9 @@ func TestModelResizesCorrectly(t *testing.T) {
 		t.Fatalf("expected viewport width to be 118 after resize, got %d", m.viewport.Width)
 	}
 
-	if m.viewport.Height != 37 { // Height - 1 for statusbar - 2 for log bubble border
-		t.Fatalf("expected viewport height to be 37 after resize, got %d", m.viewport.Height)
+	_, expectedViewportHeight := logViewportSize(120, 40)
+	if m.viewport.Height != expectedViewportHeight {
+		t.Fatalf("expected viewport height to be %d after resize, got %d", expectedViewportHeight, m.viewport.Height)
 	}
 }
 
@@ -623,10 +715,17 @@ func TestModelUsesStatusBarComponent(t *testing.T) {
 		t.Fatal("expected multiple lines in view")
 	}
 
-	// Statusbar should be the bottom line
-	lastLine := lines[len(lines)-1]
-	if !strings.Contains(lastLine, "task-1") {
+	statusbarIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "task-1") && strings.Contains(line, "getting task info") {
+			statusbarIndex = i
+		}
+	}
+	if statusbarIndex == -1 {
 		t.Fatalf("expected statusbar to be positioned at bottom, got view: %q", view)
+	}
+	if statusbarIndex < len(lines)-statusbarHeight {
+		t.Fatalf("expected statusbar to be positioned at bottom, got index %d", statusbarIndex)
 	}
 }
 
