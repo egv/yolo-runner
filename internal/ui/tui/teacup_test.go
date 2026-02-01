@@ -290,12 +290,12 @@ func TestResizeCorrectly(t *testing.T) {
 		t.Fatalf("expected statusbar width to be 120 after resize, got %d", m.statusbar.width)
 	}
 
-	if m.viewport.Width != 120 {
-		t.Fatalf("expected viewport width to be 120 after resize, got %d", m.viewport.Width)
+	if m.viewport.Width != 118 {
+		t.Fatalf("expected viewport width to be 118 after resize, got %d", m.viewport.Width)
 	}
 
-	// Viewport height should account for other components (statusbar only)
-	expectedViewportHeight := 40 - 1 // Height minus statusbar
+	// Viewport height should account for other components (statusbar + log bubble border)
+	expectedViewportHeight := 40 - 1 - 2 // Height minus statusbar minus log bubble border
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d after resize, got %d", expectedViewportHeight, m.viewport.Height)
 	}

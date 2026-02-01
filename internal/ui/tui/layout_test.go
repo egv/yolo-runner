@@ -7,12 +7,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/anomalyco/yolo-runner/internal/runner"
 )
 
 // TestModelViewportHeightIsCalculatedCorrectly verifies that the viewport height
-// is calculated as window height - 1 (statusbar only)
+// is calculated as window height - 1 (statusbar) - 2 (log bubble border)
 func TestModelViewportHeightIsCalculatedCorrectly(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 	m := NewModel(func() time.Time { return fixedNow })
@@ -33,8 +34,8 @@ func TestModelViewportHeightIsCalculatedCorrectly(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	// Viewport height should be: total height - 1 (statusbar only)
-	expectedViewportHeight := 24 - 1 // 24 - 1 = 23
+	// Viewport height should be: total height - 1 (statusbar) - 2 (log bubble border)
+	expectedViewportHeight := 24 - 1 - 2 // 24 - 3 = 21
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d (fills available space), got %d", expectedViewportHeight, m.viewport.Height)
 	}
@@ -67,10 +68,10 @@ func TestModelViewportRenderedHeightMatchesExpected(t *testing.T) {
 	lines := strings.Split(view, "\n")
 
 	// Expected layout:
-	// Line 0-8: Viewport (should be 9 lines = 10 - 1)
+	// Line 0-8: Log bubble (should be 9 lines = 10 - 1)
 	// Line 9: Statusbar
 	expectedTotalLines := 10
-	expectedViewportLines := 9 // height - 1
+	expectedViewportLines := 9 // height - 1 (log bubble height)
 
 	if len(lines) != expectedTotalLines {
 		t.Fatalf("expected view to have %d lines total (height), got %d lines: %q", expectedTotalLines, len(lines), view)
@@ -102,6 +103,41 @@ func TestModelViewportRenderedHeightMatchesExpected(t *testing.T) {
 	}
 	if strings.Contains(view, "q: stop runner") {
 		t.Fatalf("expected quit hint to be removed from view, got: %q", view)
+	}
+}
+
+func TestModelLogBubbleUsesBorder(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 8})
+	m = updated.(Model)
+
+	updated, _ = m.Update(runner.Event{
+		Type:      runner.EventSelectTask,
+		IssueID:   "task-1",
+		Title:     "Example Task",
+		EmittedAt: fixedNow.Add(-5 * time.Second),
+	})
+	m = updated.(Model)
+
+	updated, _ = m.Update(AppendLogMsg{Line: "Log line"})
+	m = updated.(Model)
+
+	view := strings.TrimRight(m.View(), "\n")
+	lines := strings.Split(view, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected view to have multiple lines, got %q", view)
+	}
+
+	border := lipgloss.NormalBorder()
+	if !strings.HasPrefix(lines[0], border.TopLeft) {
+		t.Fatalf("expected log bubble to start with border top-left, got %q", lines[0])
+	}
+
+	logBottomLine := lines[len(lines)-2]
+	if !strings.HasPrefix(logBottomLine, border.BottomLeft) {
+		t.Fatalf("expected log bubble bottom border before statusbar, got %q", logBottomLine)
 	}
 }
 
@@ -179,7 +215,7 @@ func TestModelStatusBarPinnedToBottom(t *testing.T) {
 	}
 }
 
-// TestModelViewportPositionedAboveStatusBar verifies that the viewport is positioned above
+// TestModelViewportPositionedAboveStatusBar verifies that the log bubble is positioned above
 // the statusbar in the layout
 func TestModelViewportPositionedAboveStatusBar(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
@@ -208,7 +244,7 @@ func TestModelViewportPositionedAboveStatusBar(t *testing.T) {
 	view := strings.TrimSpace(m.View())
 	lines := strings.Split(view, "\n")
 
-	// Find viewport content lines (should be before statusbar)
+	// Find log bubble content lines (should be before statusbar)
 	viewportContentFound := false
 	statusbarFound := false
 
@@ -222,7 +258,7 @@ func TestModelViewportPositionedAboveStatusBar(t *testing.T) {
 			continue
 		}
 
-		// Check for viewport content
+		// Check for log bubble content
 		if strings.Contains(line, "Log line") {
 			// Viewport content should be before statusbar
 			if !statusbarFound {
@@ -241,7 +277,7 @@ func TestModelViewportPositionedAboveStatusBar(t *testing.T) {
 }
 
 // TestModelLayoutWithDifferentWindowSizes verifies that the layout works correctly
-// for different window sizes, with viewport always filling available space
+// for different window sizes, with log bubble always filling available space
 func TestModelLayoutWithDifferentWindowSizes(t *testing.T) {
 	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
 
@@ -276,8 +312,8 @@ func TestModelLayoutWithDifferentWindowSizes(t *testing.T) {
 			})
 			m = updated.(Model)
 
-			// Viewport height should be: total height - 1
-			expectedViewportHeight := tc.height - 1
+			// Viewport height should be: total height - 1 (statusbar) - 2 (log bubble border)
+			expectedViewportHeight := tc.height - 1 - 2
 			if m.viewport.Height != expectedViewportHeight {
 				t.Fatalf("expected viewport height to be %d for window size %dx%d, got %d",
 					expectedViewportHeight, tc.width, tc.height, m.viewport.Height)
@@ -360,8 +396,8 @@ func TestModelLayoutWithSmallWindowSize(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	// Viewport height should be: 5 - 1 = 4 lines
-	expectedViewportHeight := 4
+	// Viewport height should be: 5 - 1 (statusbar) - 2 (log bubble border) = 2 lines
+	expectedViewportHeight := 2
 	if m.viewport.Height != expectedViewportHeight {
 		t.Fatalf("expected viewport height to be %d for small window, got %d", expectedViewportHeight, m.viewport.Height)
 	}

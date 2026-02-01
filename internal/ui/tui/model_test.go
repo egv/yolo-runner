@@ -521,12 +521,12 @@ func TestModelResizesCorrectly(t *testing.T) {
 	}
 
 	// Verify viewport was updated
-	if m.viewport.Width != 120 {
-		t.Fatalf("expected viewport width to be 120 after resize, got %d", m.viewport.Width)
+	if m.viewport.Width != 118 {
+		t.Fatalf("expected viewport width to be 118 after resize, got %d", m.viewport.Width)
 	}
 
-	if m.viewport.Height != 39 { // Height - 1 for statusbar
-		t.Fatalf("expected viewport height to be 39 after resize, got %d", m.viewport.Height)
+	if m.viewport.Height != 37 { // Height - 1 for statusbar - 2 for log bubble border
+		t.Fatalf("expected viewport height to be 37 after resize, got %d", m.viewport.Height)
 	}
 }
 
@@ -676,6 +676,32 @@ func TestModelScrollsLogViewport(t *testing.T) {
 	m = updated.(Model)
 	if m.viewport.YOffset == 0 {
 		t.Fatalf("expected viewport to scroll on key down")
+	}
+}
+
+func TestModelKeepsScrollOffsetWhenNotAtBottom(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 19, 12, 0, 10, 0, time.UTC)
+	m := NewModel(func() time.Time { return fixedNow })
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 8})
+	m = updated.(Model)
+
+	for i := 0; i < 10; i++ {
+		updated, _ = m.Update(AppendLogMsg{Line: fmt.Sprintf("log line %d", i)})
+		m = updated.(Model)
+	}
+
+	// Scroll to top to simulate user viewing history
+	m.viewport.GotoTop()
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("expected viewport to be at top, got %d", m.viewport.YOffset)
+	}
+
+	updated, _ = m.Update(AppendLogMsg{Line: "new log line"})
+	m = updated.(Model)
+
+	if m.viewport.YOffset != 0 {
+		t.Fatalf("expected viewport to keep scroll offset when not at bottom, got %d", m.viewport.YOffset)
 	}
 }
 

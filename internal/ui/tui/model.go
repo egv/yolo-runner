@@ -35,6 +35,14 @@ type Model struct {
 	height            int
 }
 
+const (
+	defaultWidth          = 80
+	defaultHeight         = 24
+	statusbarHeight       = 1
+	logBubbleBorderWidth  = 2
+	logBubbleBorderHeight = 2
+)
+
 type OutputMsg struct{}
 
 type AppendLogMsg struct {
@@ -51,13 +59,21 @@ func NewModelWithStop(now func() time.Time, stopCh chan struct{}) Model {
 	if now == nil {
 		now = time.Now
 	}
-	vp := viewport.New(80, 20)
+	logViewportWidth := defaultWidth - logBubbleBorderWidth
+	if logViewportWidth < 0 {
+		logViewportWidth = 0
+	}
+	logViewportHeight := defaultHeight - statusbarHeight - logBubbleBorderHeight
+	if logViewportHeight < 0 {
+		logViewportHeight = 0
+	}
+	vp := viewport.New(logViewportWidth, logViewportHeight)
 	vp.SetContent("")
 	return Model{
 		viewport:       vp,
 		logs:           []string{},
-		width:          80,
-		height:         24,
+		width:          defaultWidth,
+		height:         defaultHeight,
 		now:            now,
 		stopCh:         stopCh,
 		spinner:        NewSpinner(),
@@ -120,11 +136,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = typed.Width
 		m.height = typed.Height
-		m.viewport.Width = typed.Width
-		m.viewport.Height = typed.Height - 1
-		if m.viewport.Height < 0 {
-			m.viewport.Height = 0
+		logViewportWidth := typed.Width - logBubbleBorderWidth
+		if logViewportWidth < 0 {
+			logViewportWidth = 0
 		}
+		logViewportHeight := typed.Height - statusbarHeight - logBubbleBorderHeight
+		if logViewportHeight < 0 {
+			logViewportHeight = 0
+		}
+		m.viewport.Width = logViewportWidth
+		m.viewport.Height = logViewportHeight
 	case tickMsg:
 		// On tick, update statusbar with new age if we have task info
 		if m.taskID != "" {
@@ -227,18 +248,31 @@ func getEventTypeForPhase(phase string) runner.EventType {
 }
 
 func (m Model) View() string {
-	// Get viewport content (for scrollable logs)
-	// Use lipgloss to style viewport as scrollable component
-	viewportContent := m.viewport.View()
-	viewportStyle := lipgloss.NewStyle().Height(m.height - 1)
-	styledViewport := viewportStyle.Render(viewportContent)
+	logBubbleHeight := m.height - statusbarHeight
+	if logBubbleHeight < 0 {
+		logBubbleHeight = 0
+	}
 
-	// Build final view with proper layout:
-	// 1. Viewport (scrollable logs) - takes available space
-	// 2. Statusbar (pinned to bottom, using teacup-style component)
-	//
-	// This satisfies: viewport above statusbar, statusbar at bottom, uses lipgloss
-	content := lipgloss.JoinVertical(lipgloss.Top, styledViewport, m.statusbar.View())
+	statusbarView := m.statusbar.View()
+	if logBubbleHeight == 0 {
+		return statusbarView + "\n"
+	}
+
+	logBubbleView := ""
+	if logBubbleHeight <= logBubbleBorderHeight {
+		logBubbleView = lipgloss.NewStyle().
+			Width(m.width).
+			Height(logBubbleHeight).
+			Render(m.viewport.View())
+	} else {
+		logBubbleStyle := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			Width(m.viewport.Width).
+			Height(m.viewport.Height)
+		logBubbleView = logBubbleStyle.Render(m.viewport.View())
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Top, logBubbleView, statusbarView)
 
 	return content + "\n"
 }
@@ -247,6 +281,7 @@ func (m *Model) appendLogLines(text string) {
 	if text == "" {
 		return
 	}
+	wasAtBottom := m.viewport.AtBottom()
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 	lines := strings.Split(text, "\n")
@@ -254,7 +289,9 @@ func (m *Model) appendLogLines(text string) {
 		m.logs = append(m.logs, line)
 	}
 	m.viewport.SetContent(strings.Join(m.logs, "\n"))
-	m.viewport.GotoBottom()
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func formatRunnerEventLine(event runner.Event) string {
