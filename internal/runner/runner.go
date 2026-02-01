@@ -295,16 +295,22 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 
 	state := "opencode running"
 	setState(state)
-	progress := ui.NewProgress(ui.ProgressConfig{
-		Writer:  out,
-		State:   state,
-		LogPath: opts.LogPath,
-		Ticker:  progressTickerFrom(opts.ProgressTicker),
-		Now:     opts.ProgressNow,
-	})
-	progressCtx, cancelProgress := context.WithCancel(stopCtx)
-	defer cancelProgress()
-	go progress.Run(progressCtx)
+	// Only run progress heartbeat in non-TUI mode (TUI has its own spinner in statusbar)
+	var progress *ui.Progress
+	var progressCtx context.Context
+	var cancelProgress context.CancelFunc
+	if deps.Events == nil {
+		progress = ui.NewProgress(ui.ProgressConfig{
+			Writer:  out,
+			State:   state,
+			LogPath: opts.LogPath,
+			Ticker:  progressTickerFrom(opts.ProgressTicker),
+			Now:     opts.ProgressNow,
+		})
+		progressCtx, cancelProgress = context.WithCancel(stopCtx)
+		defer cancelProgress()
+		go progress.Run(progressCtx)
+	}
 
 	emitPhase(deps.Events, EventOpenCodeStart, leafID, bead.Title, currentProgress, opts.Model)
 	var openCodeErr error
@@ -320,8 +326,12 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		openCodeErr = openCodeRunner.Run(leafID, opts.RepoRoot, prompt, opts.Model, opts.ConfigRoot, opts.ConfigDir, opts.LogPath)
 	}
 	if openCodeErr != nil {
-		cancelProgress()
-		progress.Finish(openCodeErr)
+		if cancelProgress != nil {
+			cancelProgress()
+		}
+		if progress != nil {
+			progress.Finish(openCodeErr)
+		}
 		var verificationErr *opencode.VerificationError
 		if errors.As(openCodeErr, &verificationErr) {
 			reason := "verification not confirmed"
@@ -364,8 +374,12 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		}
 		return "", openCodeErr
 	}
-	cancelProgress()
-	progress.Finish(nil)
+	if cancelProgress != nil {
+		cancelProgress()
+	}
+	if progress != nil {
+		progress.Finish(nil)
+	}
 	if stopState.Requested() {
 		if err := CleanupAfterStop(stopState, StopCleanupConfig{
 			Beads:   beadsClient,
@@ -377,7 +391,7 @@ func RunOnce(opts RunOnceOptions, deps RunOnceDeps) (string, error) {
 		}
 		return "stopped", context.Canceled
 	}
-	if progressCtx.Err() == context.Canceled && stopCtx.Err() == context.Canceled {
+	if progressCtx != nil && progressCtx.Err() == context.Canceled && stopCtx.Err() == context.Canceled {
 		return "stopped", context.Canceled
 	}
 
