@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -28,15 +30,21 @@ func (cr *CommandRunner) Run(args ...string) (string, error) {
 	// Check if this is a bd or git command that should be logged
 	shouldLog := cr.shouldLogCommand(args)
 
-	var stdout, stderr strings.Builder
+	var stdoutBuf, stderrBuf strings.Builder
 	cmd := exec.Command(args[0], args[1:]...)
 
-	if shouldLog {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+	// Disable pager for commands that might use one (e.g., tk show)
+	cmd.Env = append(cmd.Environ(), "PAGER=cat")
+
+	// For tk commands, capture output silently (don't print to terminal)
+	// For other commands, both capture and print
+	if len(args) > 0 && args[0] == "tk" {
+		fmt.Fprintf(os.Stderr, "DEBUG: Suppressing tk output for %v\n", args)
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
 	} else {
-		cmd.Stdout = cr.out
-		cmd.Stderr = cr.out
+		cmd.Stdout = io.MultiWriter(&stdoutBuf, cr.out)
+		cmd.Stderr = io.MultiWriter(&stderrBuf, cr.out)
 	}
 
 	err := cmd.Run()
@@ -45,19 +53,18 @@ func (cr *CommandRunner) Run(args ...string) (string, error) {
 	// Log the command if needed
 	if shouldLog {
 		logger := logging.NewCommandLogger(cr.logDir)
-		if logErr := logger.LogCommand(args, stdout.String(), stderr.String(), err, start); logErr != nil {
+		if logErr := logger.LogCommand(args, stdoutBuf.String(), stderrBuf.String(), err, start); logErr != nil {
 			// If logging fails, we still return the command result
 			// but we could also choose to return the logging error
 		}
-
-		// Don't output command details to stdout for logged commands
-		return stdout.String(), err
 	}
 
-	// For non-logged commands (like opencode), use the original behavior
-	printCommand(cr.out, args)
-	printOutcome(cr.out, err, elapsed, strings.Join(args, " "))
-	return stdout.String(), err
+	// Print command outcome (only for non-tk commands, or if there's an error)
+	if len(args) == 0 || args[0] != "tk" || err != nil {
+		printCommand(cr.out, args)
+		printOutcome(cr.out, err, elapsed, strings.Join(args, " "))
+	}
+	return stdoutBuf.String(), err
 }
 
 func (cr *CommandRunner) shouldLogCommand(args []string) bool {

@@ -193,7 +193,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 	// Detect which task tracker to use: tk first, then beads
 	var taskTrackerAdapter runner.BeadsClient
 	var trackerType string
-	
+
 	// Allow override via environment variable for testing
 	if os.Getenv("YOLO_RUNNER_TASK_TRACKER") == "beads" {
 		taskTrackerAdapter = beads.New(beadsRunner)
@@ -211,7 +211,7 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		}
 		return 1
 	}
-	
+
 	gitAdapter := gitadapter.New(gitRunner)
 	openCodeAdapter := openCodeAdapter{runner: defaultOpenCodeRunner{}}
 
@@ -435,7 +435,7 @@ func inferRootIDFromTK(repoRoot string) (string, error) {
 	if err != nil {
 		return "", errors.New("missing --root and unable to list tk tickets; pass --root explicitly")
 	}
-	
+
 	lines := strings.Split(string(output), "\n")
 	var candidates []string
 	for _, line := range lines {
@@ -446,7 +446,7 @@ func inferRootIDFromTK(repoRoot string) (string, error) {
 			}
 		}
 	}
-	
+
 	if len(candidates) == 1 {
 		return candidates[0], nil
 	}
