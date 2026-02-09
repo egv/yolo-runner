@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,4 +63,54 @@ func TestRunMainRejectsNonPositiveConcurrency(t *testing.T) {
 	if called {
 		t.Fatalf("expected run function not to be called for invalid concurrency")
 	}
+}
+
+func TestRunMainPrintsActionableTaxonomyMessageOnRunError(t *testing.T) {
+	run := func(context.Context, runConfig) error {
+		return errors.New("git checkout task/t-1 failed")
+	}
+
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", "/repo", "--root", "root-1"}, run)
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if !strings.Contains(errText, "Category: git/vcs") {
+		t.Fatalf("expected category in stderr, got %q", errText)
+	}
+	if !strings.Contains(errText, "Cause: git checkout task/t-1 failed") {
+		t.Fatalf("expected cause in stderr, got %q", errText)
+	}
+	if !strings.Contains(errText, "Next step:") {
+		t.Fatalf("expected next step in stderr, got %q", errText)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = original
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	return string(data)
 }

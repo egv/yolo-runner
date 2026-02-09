@@ -63,7 +63,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		runnerTimeout: *runnerTimeout,
 		eventsPath:    *events,
 	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
 	}
 	return 0
