@@ -12,16 +12,16 @@ func TestTaskManagerSetTaskDataUsesAddNote(t *testing.T) {
 	r := &fakeRunner{responses: map[string]string{}}
 	m := NewTaskManager(r)
 
-	err := m.SetTaskData(context.Background(), "t-1", map[string]string{"blocked_reason": "timeout", "retry_count": "2"})
+	err := m.SetTaskData(context.Background(), "t-1", map[string]string{"triage_status": "blocked", "triage_reason": "timeout"})
 	if err != nil {
 		t.Fatalf("set task data failed: %v", err)
 	}
 
-	if !r.called("tk add-note t-1 blocked_reason=timeout") {
-		t.Fatalf("expected blocked_reason note call, got %v", r.calls)
+	if !r.called("tk add-note t-1 triage_reason=timeout") {
+		t.Fatalf("expected triage_reason note call, got %v", r.calls)
 	}
-	if !r.called("tk add-note t-1 retry_count=2") {
-		t.Fatalf("expected retry_count note call, got %v", r.calls)
+	if !r.called("tk add-note t-1 triage_status=blocked") {
+		t.Fatalf("expected triage_status note call, got %v", r.calls)
 	}
 }
 
@@ -63,7 +63,7 @@ func TestTaskManagerNextTasksSkipsTerminalFailedTasks(t *testing.T) {
 			`{"id":"root.2","status":"open","type":"task","priority":2,"parent":"root","title":"B"}`,
 		"tk ready":       "root.1 [open] - A\nroot.2 [open] - B\n",
 		"tk blocked":     "",
-		"tk show root.1": "notes:\n- terminal_state=failed\n",
+		"tk show root.1": "notes:\n- triage_status=failed\n",
 		"tk show root.2": "notes:\n- something=else\n",
 	}}
 	m := NewTaskManager(r)

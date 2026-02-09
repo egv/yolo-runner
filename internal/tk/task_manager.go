@@ -105,5 +105,5 @@ func (m *TaskManager) isTerminalFailed(taskID string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(out, "terminal_state=failed")
+	return strings.Contains(out, "triage_status=failed") || strings.Contains(out, "terminal_state=failed")
 }
