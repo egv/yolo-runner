@@ -122,6 +122,35 @@ func (g TaskGraph) ReadySet() []string {
 	return ready
 }
 
+func (g *TaskGraph) ReserveReady(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	ready := g.ReadySet()
+	if len(ready) > limit {
+		ready = ready[:limit]
+	}
+
+	for _, taskID := range ready {
+		node := g.nodes[taskID]
+		node.State = TaskStateRunning
+		g.nodes[taskID] = node
+	}
+
+	return ready
+}
+
+func (g *TaskGraph) SetState(taskID string, state TaskState) error {
+	node, exists := g.nodes[taskID]
+	if !exists {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	node.State = state
+	g.nodes[taskID] = node
+	return nil
+}
+
 func (g TaskGraph) InspectNode(taskID string) (NodeInspection, error) {
 	node, exists := g.nodes[taskID]
 	if !exists {

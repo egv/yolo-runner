@@ -117,3 +117,36 @@ func TestTaskGraphInspectNodeReportsDeterministicReadinessAndTerminalState(t *te
 		})
 	}
 }
+
+func TestTaskGraphReserveReadyGatesDependentTasksUntilAllDependenciesSucceed(t *testing.T) {
+	graph, err := NewTaskGraph([]TaskNode{
+		{ID: "1", State: TaskStatePending},
+		{ID: "2", State: TaskStatePending},
+		{ID: "3", State: TaskStatePending, DependsOn: []string{"1", "2"}},
+	})
+	if err != nil {
+		t.Fatalf("NewTaskGraph() error = %v", err)
+	}
+
+	if got := graph.ReserveReady(10); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("ReserveReady() = %v, want [1 2]", got)
+	}
+
+	if got := graph.ReserveReady(10); len(got) != 0 {
+		t.Fatalf("ReserveReady() should not return running tasks, got %v", got)
+	}
+
+	if err := graph.SetState("1", TaskStateSucceeded); err != nil {
+		t.Fatalf("SetState(1) error = %v", err)
+	}
+	if got := graph.ReserveReady(10); len(got) != 0 {
+		t.Fatalf("ReserveReady() should gate task 3 until all deps complete, got %v", got)
+	}
+
+	if err := graph.SetState("2", TaskStateSucceeded); err != nil {
+		t.Fatalf("SetState(2) error = %v", err)
+	}
+	if got := graph.ReserveReady(10); !reflect.DeepEqual(got, []string{"3"}) {
+		t.Fatalf("ReserveReady() = %v, want [3]", got)
+	}
+}
