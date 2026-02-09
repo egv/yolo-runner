@@ -62,9 +62,13 @@ func findSerenaInitErrorSince(stderrPath string, since time.Time) (string, bool)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, serenaInitFailureMarker) {
+		if strings.Contains(line, serenaInitFailureMarker) && !isACPToolOutputLine(line) {
 			return line, true
 		}
 	}
 	return "", false
+}
+
+func isACPToolOutputLine(line string) bool {
+	return strings.Contains(line, "service=acp-agent")
 }
