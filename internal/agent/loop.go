@@ -140,10 +140,12 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 					return summary, err
 				}
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
+				blockedData := map[string]string{"triage_status": "blocked"}
 				if result.Reason != "" {
-					if err := l.tasks.SetTaskData(ctx, task.ID, map[string]string{"blocked_reason": result.Reason}); err != nil {
-						return summary, err
-					}
+					blockedData["triage_reason"] = result.Reason
+				}
+				if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
+					return summary, err
 				}
 				summary.Blocked++
 			case contracts.RunnerResultFailed:
@@ -157,9 +159,9 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 					}
 					continue
 				}
-				failedData := map[string]string{"terminal_state": "failed"}
+				failedData := map[string]string{"triage_status": "failed"}
 				if result.Reason != "" {
-					failedData["failed_reason"] = result.Reason
+					failedData["triage_reason"] = result.Reason
 				}
 				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 					return summary, err
@@ -170,9 +172,9 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
 				summary.Failed++
 			default:
-				failedData := map[string]string{"terminal_state": "failed"}
+				failedData := map[string]string{"triage_status": "failed"}
 				if result.Reason != "" {
-					failedData["failed_reason"] = result.Reason
+					failedData["triage_reason"] = result.Reason
 				}
 				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 					return summary, err

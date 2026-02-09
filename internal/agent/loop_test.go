@@ -64,8 +64,11 @@ func TestLoopMarksFailedAfterRetryExhausted(t *testing.T) {
 	if mgr.statusByID["t-1"] != contracts.TaskStatusFailed {
 		t.Fatalf("expected failed status, got %s", mgr.statusByID["t-1"])
 	}
-	if got := mgr.dataByID["t-1"]["terminal_state"]; got != "failed" {
-		t.Fatalf("expected terminal_state=failed, got %q", got)
+	if got := mgr.dataByID["t-1"]["triage_status"]; got != "failed" {
+		t.Fatalf("expected triage_status=failed, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "second" {
+		t.Fatalf("expected triage_reason=second, got %q", got)
 	}
 }
 
@@ -84,8 +87,11 @@ func TestLoopMarksBlockedWithReason(t *testing.T) {
 	if mgr.statusByID["t-1"] != contracts.TaskStatusBlocked {
 		t.Fatalf("expected blocked status, got %s", mgr.statusByID["t-1"])
 	}
-	if got := mgr.dataByID["t-1"]["blocked_reason"]; got != "needs manual input" {
-		t.Fatalf("expected blocked reason to be saved, got %q", got)
+	if got := mgr.dataByID["t-1"]["triage_status"]; got != "blocked" {
+		t.Fatalf("expected triage_status=blocked, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "needs manual input" {
+		t.Fatalf("expected triage_reason to be saved, got %q", got)
 	}
 }
 
