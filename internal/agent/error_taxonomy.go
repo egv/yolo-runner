@@ -19,7 +19,7 @@ var errorTaxonomy = []struct {
 	{match: containsAny("chdir", "no such file", "repository does not exist", "clone"), class: errorClass{category: "filesystem_clone", remediation: "Confirm repository path exists, clone/fetch repository data, and retry from repo root."}},
 	{match: containsAny("task lock", "already locked", "resource busy", "lock held"), class: errorClass{category: "lock_contention", remediation: "Wait for other workers to finish or release stale lock, then retry."}},
 	{match: containsAny("tk ", "ticket", "task tracker", ".tickets"), class: errorClass{category: "tracker", remediation: "Verify tk CLI availability and task metadata, then rerun task selection."}},
-	{match: containsAny("git", "checkout", "branch", "rebase", "not a git repository"), class: errorClass{category: "git/vcs", remediation: "Fix repository state (clean worktree, valid branch, fetch updates) and rerun."}},
+	{match: containsAny("git", "checkout", "branch", "rebase", "not a git repository", "worktree", "dirty", "local changes", "would be overwritten by checkout"), class: errorClass{category: "git/vcs", remediation: "Fix repository state (clean worktree, valid branch, fetch updates) and rerun."}},
 }
 
 func FormatActionableError(err error) string {

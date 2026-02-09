@@ -21,6 +21,7 @@ func TestFormatActionableErrorIncludesCategoryCauseAndNextStep(t *testing.T) {
 		{name: "auth profile config", err: errors.New("auth token missing for profile default"), category: "auth_profile_config"},
 		{name: "filesystem clone", err: errors.New("chdir /missing/repo: no such file or directory"), category: "filesystem_clone"},
 		{name: "lock contention", err: errors.New("task lock already held by another worker"), category: "lock_contention"},
+		{name: "dirty worktree", err: errors.New("worktree is dirty: commit or stash changes"), category: "git/vcs"},
 	}
 
 	for _, tc := range tests {
