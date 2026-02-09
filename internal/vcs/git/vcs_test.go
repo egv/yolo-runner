@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -43,6 +44,26 @@ func TestCreateTaskBranchFromMain(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"checkout", "-b", "task/task-123"}}) {
 		t.Fatalf("unexpected second call: %#v", r.calls[1])
+	}
+}
+
+func TestCreateTaskBranchFallsBackToCheckoutExistingBranch(t *testing.T) {
+	r := &branchExistsRunner{}
+	a := NewVCSAdapter(r)
+
+	branch, err := a.CreateTaskBranch(context.Background(), "task-123")
+	if err != nil {
+		t.Fatalf("expected fallback checkout to succeed: %v", err)
+	}
+	if branch != "task/task-123" {
+		t.Fatalf("unexpected branch %q", branch)
+	}
+
+	if len(r.calls) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(r.calls))
+	}
+	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"checkout", "task/task-123"}}) {
+		t.Fatalf("expected fallback checkout, got %#v", r.calls[2])
 	}
 }
 
@@ -116,4 +137,16 @@ func assertVCSCall(t *testing.T, got []call, want call) {
 	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("expected %#v, got %#v", want, got[0])
 	}
+}
+
+type branchExistsRunner struct {
+	calls []call
+}
+
+func (r *branchExistsRunner) Run(name string, args ...string) (string, error) {
+	r.calls = append(r.calls, call{name: name, args: append([]string{}, args...)})
+	if len(args) >= 3 && args[0] == "checkout" && args[1] == "-b" {
+		return "", errors.New("fatal: a branch named already exists")
+	}
+	return "", nil
 }

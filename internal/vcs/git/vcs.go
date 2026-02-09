@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -24,7 +25,10 @@ func (a *VCSAdapter) CreateTaskBranch(ctx context.Context, taskID string) (strin
 		return "", err
 	}
 	if _, err := a.runner.Run("git", "checkout", "-b", branch); err != nil {
-		return "", err
+		if _, checkoutErr := a.runner.Run("git", "checkout", branch); checkoutErr != nil {
+			return "", errors.Join(err, checkoutErr)
+		}
+		return branch, nil
 	}
 	return branch, nil
 }
