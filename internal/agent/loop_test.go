@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +123,7 @@ func TestLoopCreatesAndChecksOutTaskBranchBeforeRun(t *testing.T) {
 }
 
 type fakeTaskManager struct {
+	mu         sync.Mutex
 	queue      []contracts.Task
 	statusByID map[string]contracts.TaskStatus
 	dataByID   map[string]map[string]string
@@ -135,15 +138,20 @@ func newFakeTaskManager(tasks ...contracts.Task) *fakeTaskManager {
 }
 
 func (f *fakeTaskManager) NextTasks(context.Context, string) ([]contracts.TaskSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var tasks []contracts.TaskSummary
 	for _, task := range f.queue {
 		if f.statusByID[task.ID] == contracts.TaskStatusOpen {
-			return []contracts.TaskSummary{{ID: task.ID, Title: task.Title}}, nil
+			tasks = append(tasks, contracts.TaskSummary{ID: task.ID, Title: task.Title})
 		}
 	}
-	return nil, nil
+	return tasks, nil
 }
 
 func (f *fakeTaskManager) GetTask(_ context.Context, taskID string) (contracts.Task, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, task := range f.queue {
 		if task.ID == taskID {
 			copy := task
@@ -155,11 +163,15 @@ func (f *fakeTaskManager) GetTask(_ context.Context, taskID string) (contracts.T
 }
 
 func (f *fakeTaskManager) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.statusByID[taskID] = status
 	return nil
 }
 
 func (f *fakeTaskManager) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.dataByID[taskID] == nil {
 		f.dataByID[taskID] = map[string]string{}
 	}
@@ -417,6 +429,56 @@ func TestLoopEmitsLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestLoopHonorsConcurrencyLimit(t *testing.T) {
+	mgr := newFakeTaskManager(
+		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-2", Title: "Task 2", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-3", Title: "Task 3", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-4", Title: "Task 4", Status: contracts.TaskStatusOpen},
+	)
+	run := &blockingRunner{
+		release: make(chan struct{}),
+	}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", RequireReview: false, Concurrency: 2})
+
+	resultCh := make(chan struct {
+		summary contracts.LoopSummary
+		err     error
+	}, 1)
+	go func() {
+		summary, err := loop.Run(context.Background())
+		resultCh <- struct {
+			summary contracts.LoopSummary
+			err     error
+		}{summary: summary, err: err}
+	}()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if atomic.LoadInt32(&run.maxActive) >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expected at least 2 concurrent executions, got %d", atomic.LoadInt32(&run.maxActive))
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	close(run.release)
+	result := <-resultCh
+	if result.err != nil {
+		t.Fatalf("loop failed: %v", result.err)
+	}
+	if result.summary.Completed != 4 {
+		t.Fatalf("expected all tasks completed, got %#v", result.summary)
+	}
+	if got := atomic.LoadInt32(&run.maxActive); got > 2 {
+		t.Fatalf("expected max active executions <= 2, got %d", got)
+	}
+}
+
 func hasEventType(events []contracts.Event, eventType contracts.EventType) bool {
 	for _, event := range events {
 		if event.Type == eventType {
@@ -431,4 +493,26 @@ type recordingSink struct{ events []contracts.Event }
 func (r *recordingSink) Emit(_ context.Context, event contracts.Event) error {
 	r.events = append(r.events, event)
 	return nil
+}
+
+type blockingRunner struct {
+	release   chan struct{}
+	active    int32
+	maxActive int32
+}
+
+func (b *blockingRunner) Run(_ context.Context, _ contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	active := atomic.AddInt32(&b.active, 1)
+	for {
+		maxActive := atomic.LoadInt32(&b.maxActive)
+		if active <= maxActive {
+			break
+		}
+		if atomic.CompareAndSwapInt32(&b.maxActive, maxActive, active) {
+			break
+		}
+	}
+	<-b.release
+	atomic.AddInt32(&b.active, -1)
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 }

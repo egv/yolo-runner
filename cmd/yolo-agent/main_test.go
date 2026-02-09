@@ -15,7 +15,7 @@ func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
 		return nil
 	}
 
-	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--model", "openai/gpt-5.3-codex", "--max", "2", "--dry-run", "--runner-timeout", "30s", "--events", "/repo/runner-logs/agent.events.jsonl"}, run)
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--model", "openai/gpt-5.3-codex", "--max", "2", "--concurrency", "3", "--dry-run", "--runner-timeout", "30s", "--events", "/repo/runner-logs/agent.events.jsonl"}, run)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
@@ -33,6 +33,9 @@ func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
 	}
 	if got.eventsPath != "/repo/runner-logs/agent.events.jsonl" {
 		t.Fatalf("expected events path to be parsed, got %q", got.eventsPath)
+	}
+	if got.concurrency != 3 {
+		t.Fatalf("expected concurrency=3, got %d", got.concurrency)
 	}
 }
 

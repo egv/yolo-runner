@@ -13,6 +13,7 @@ type LoopOptions struct {
 	ParentID       string
 	MaxRetries     int
 	MaxTasks       int
+	Concurrency    int
 	DryRun         bool
 	Stop           <-chan struct{}
 	RepoRoot       string
@@ -36,14 +37,11 @@ func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events c
 
 func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 	summary := contracts.LoopSummary{}
-	for {
-		if l.stopRequested() {
-			return summary, nil
-		}
-		if l.options.MaxTasks > 0 && summary.TotalProcessed() >= l.options.MaxTasks {
-			return summary, nil
-		}
+	if l.options.Concurrency <= 0 {
+		l.options.Concurrency = 1
+	}
 
+	if l.options.DryRun {
 		next, err := l.tasks.NextTasks(ctx, l.options.ParentID)
 		if err != nil {
 			return summary, err
@@ -51,141 +49,212 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 		if len(next) == 0 {
 			return summary, nil
 		}
-
-		taskID := next[0].ID
-		task, err := l.tasks.GetTask(ctx, taskID)
+		task, err := l.tasks.GetTask(ctx, next[0].ID)
 		if err != nil {
 			return summary, err
 		}
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
+		summary.Skipped++
+		return summary, nil
+	}
 
-		if l.options.DryRun {
-			summary.Skipped++
+	type taskResult struct {
+		taskID  string
+		summary contracts.LoopSummary
+		err     error
+	}
+
+	results := make(chan taskResult, l.options.Concurrency)
+	inFlight := map[string]struct{}{}
+
+	for {
+		if l.stopRequested() && len(inFlight) == 0 {
+			return summary, nil
+		}
+		if l.options.MaxTasks > 0 && summary.TotalProcessed() >= l.options.MaxTasks && len(inFlight) == 0 {
 			return summary, nil
 		}
 
-		taskBranch := ""
-		if l.options.VCS != nil {
-			if err := l.options.VCS.EnsureMain(ctx); err != nil {
-				return summary, err
+		for len(inFlight) < l.options.Concurrency {
+			if l.options.MaxTasks > 0 && summary.TotalProcessed()+len(inFlight) >= l.options.MaxTasks {
+				break
 			}
-			branch, err := l.options.VCS.CreateTaskBranch(ctx, task.ID)
+
+			next, err := l.tasks.NextTasks(ctx, l.options.ParentID)
 			if err != nil {
 				return summary, err
 			}
-			taskBranch = branch
-			if err := l.options.VCS.Checkout(ctx, branch); err != nil {
-				return summary, err
+			if len(next) == 0 {
+				break
 			}
+
+			taskID := ""
+			for _, candidate := range next {
+				if _, running := inFlight[candidate.ID]; !running {
+					taskID = candidate.ID
+					break
+				}
+			}
+			if taskID == "" {
+				break
+			}
+
+			inFlight[taskID] = struct{}{}
+			go func(id string) {
+				resultSummary, taskErr := l.runTask(ctx, id)
+				results <- taskResult{taskID: id, summary: resultSummary, err: taskErr}
+			}(taskID)
 		}
 
-		retries := 0
-		for {
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusInProgress); err != nil {
-				return summary, err
-			}
+		if len(inFlight) == 0 {
+			return summary, nil
+		}
 
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.RunnerModeImplement), Timestamp: time.Now().UTC()})
-			result, err := l.runner.Run(ctx, contracts.RunnerRequest{
+		result := <-results
+		delete(inFlight, result.taskID)
+		if result.err != nil {
+			return summary, result.err
+		}
+		summary.Completed += result.summary.Completed
+		summary.Blocked += result.summary.Blocked
+		summary.Failed += result.summary.Failed
+		summary.Skipped += result.summary.Skipped
+	}
+}
+
+func (l *Loop) runTask(ctx context.Context, taskID string) (contracts.LoopSummary, error) {
+	summary := contracts.LoopSummary{}
+
+	task, err := l.tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return summary, err
+	}
+	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
+
+	taskBranch := ""
+	if l.options.VCS != nil {
+		if err := l.options.VCS.EnsureMain(ctx); err != nil {
+			return summary, err
+		}
+		branch, err := l.options.VCS.CreateTaskBranch(ctx, task.ID)
+		if err != nil {
+			return summary, err
+		}
+		taskBranch = branch
+		if err := l.options.VCS.Checkout(ctx, branch); err != nil {
+			return summary, err
+		}
+	}
+
+	retries := 0
+	for {
+		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusInProgress); err != nil {
+			return summary, err
+		}
+
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.RunnerModeImplement), Timestamp: time.Now().UTC()})
+		result, err := l.runner.Run(ctx, contracts.RunnerRequest{
+			TaskID:   task.ID,
+			ParentID: l.options.ParentID,
+			Mode:     contracts.RunnerModeImplement,
+			RepoRoot: l.options.RepoRoot,
+			Model:    l.options.Model,
+			Timeout:  l.options.RunnerTimeout,
+			Prompt:   buildPrompt(task, contracts.RunnerModeImplement),
+		})
+		if err != nil {
+			return summary, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(result.Status), Timestamp: time.Now().UTC()})
+
+		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, Timestamp: time.Now().UTC()})
+			reviewResult, reviewErr := l.runner.Run(ctx, contracts.RunnerRequest{
 				TaskID:   task.ID,
 				ParentID: l.options.ParentID,
-				Mode:     contracts.RunnerModeImplement,
+				Mode:     contracts.RunnerModeReview,
 				RepoRoot: l.options.RepoRoot,
 				Model:    l.options.Model,
 				Timeout:  l.options.RunnerTimeout,
-				Prompt:   buildPrompt(task, contracts.RunnerModeImplement),
+				Prompt:   buildPrompt(task, contracts.RunnerModeReview),
 			})
-			if err != nil {
+			if reviewErr != nil {
+				return summary, reviewErr
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
+			if reviewResult.Status != contracts.RunnerResultCompleted {
+				result = reviewResult
+			}
+		}
+
+		switch result.Status {
+		case contracts.RunnerResultCompleted:
+			if l.options.MergeOnSuccess && l.options.VCS != nil && taskBranch != "" {
+				if err := l.options.VCS.MergeToMain(ctx, taskBranch); err != nil {
+					return summary, err
+				}
+				if err := l.options.VCS.PushMain(ctx); err != nil {
+					return summary, err
+				}
+			}
+			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(result.Status), Timestamp: time.Now().UTC()})
-
-			if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, Timestamp: time.Now().UTC()})
-				reviewResult, reviewErr := l.runner.Run(ctx, contracts.RunnerRequest{
-					TaskID:   task.ID,
-					ParentID: l.options.ParentID,
-					Mode:     contracts.RunnerModeReview,
-					RepoRoot: l.options.RepoRoot,
-					Model:    l.options.Model,
-					Timeout:  l.options.RunnerTimeout,
-					Prompt:   buildPrompt(task, contracts.RunnerModeReview),
-				})
-				if reviewErr != nil {
-					return summary, reviewErr
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
-				if reviewResult.Status != contracts.RunnerResultCompleted {
-					result = reviewResult
-				}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
+			summary.Completed++
+			return summary, nil
+		case contracts.RunnerResultBlocked:
+			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
+				return summary, err
 			}
-
-			switch result.Status {
-			case contracts.RunnerResultCompleted:
-				if l.options.MergeOnSuccess && l.options.VCS != nil && taskBranch != "" {
-					if err := l.options.VCS.MergeToMain(ctx, taskBranch); err != nil {
-						return summary, err
-					}
-					if err := l.options.VCS.PushMain(ctx); err != nil {
-						return summary, err
-					}
-				}
-				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
-					return summary, err
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
-				summary.Completed++
-			case contracts.RunnerResultBlocked:
-				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
-					return summary, err
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
-				blockedData := map[string]string{"triage_status": "blocked"}
-				if result.Reason != "" {
-					blockedData["triage_reason"] = result.Reason
-				}
-				if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
-					return summary, err
-				}
-				summary.Blocked++
-			case contracts.RunnerResultFailed:
-				retries++
-				if retries <= l.options.MaxRetries {
-					if err := l.tasks.SetTaskData(ctx, task.ID, map[string]string{"retry_count": fmt.Sprintf("%d", retries)}); err != nil {
-						return summary, err
-					}
-					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusOpen); err != nil {
-						return summary, err
-					}
-					continue
-				}
-				failedData := map[string]string{"triage_status": "failed"}
-				if result.Reason != "" {
-					failedData["triage_reason"] = result.Reason
-				}
-				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
-					return summary, err
-				}
-				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
-					return summary, err
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
-				summary.Failed++
-			default:
-				failedData := map[string]string{"triage_status": "failed"}
-				if result.Reason != "" {
-					failedData["triage_reason"] = result.Reason
-				}
-				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
-					return summary, err
-				}
-				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
-					return summary, err
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
-				summary.Failed++
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
+			blockedData := map[string]string{"triage_status": "blocked"}
+			if result.Reason != "" {
+				blockedData["triage_reason"] = result.Reason
 			}
-			break
+			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
+				return summary, err
+			}
+			summary.Blocked++
+			return summary, nil
+		case contracts.RunnerResultFailed:
+			retries++
+			if retries <= l.options.MaxRetries {
+				if err := l.tasks.SetTaskData(ctx, task.ID, map[string]string{"retry_count": fmt.Sprintf("%d", retries)}); err != nil {
+					return summary, err
+				}
+				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusOpen); err != nil {
+					return summary, err
+				}
+				continue
+			}
+			failedData := map[string]string{"triage_status": "failed"}
+			if result.Reason != "" {
+				failedData["triage_reason"] = result.Reason
+			}
+			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
+				return summary, err
+			}
+			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
+				return summary, err
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			summary.Failed++
+			return summary, nil
+		default:
+			failedData := map[string]string{"triage_status": "failed"}
+			if result.Reason != "" {
+				failedData["triage_reason"] = result.Reason
+			}
+			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
+				return summary, err
+			}
+			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
+				return summary, err
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			summary.Failed++
+			return summary, nil
 		}
 	}
 }
