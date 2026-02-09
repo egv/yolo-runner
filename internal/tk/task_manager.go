@@ -3,6 +3,7 @@ package tk
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 )
@@ -35,6 +36,9 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 		if ready.ID == "" {
 			return nil, nil
 		}
+		if m.isTerminalFailed(ready.ID) {
+			return nil, nil
+		}
 		title := titles[ready.ID]
 		if title == "" {
 			title = ready.ID
@@ -44,6 +48,9 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 
 	tasks := make([]contracts.TaskSummary, 0, len(ready.Children))
 	for _, child := range ready.Children {
+		if m.isTerminalFailed(child.ID) {
+			continue
+		}
 		title := titles[child.ID]
 		if title == "" {
 			title = child.ID
@@ -88,4 +95,15 @@ func (m *TaskManager) SetTaskData(_ context.Context, taskID string, data map[str
 		}
 	}
 	return nil
+}
+
+func (m *TaskManager) isTerminalFailed(taskID string) bool {
+	if taskID == "" || m.runner == nil {
+		return false
+	}
+	out, err := m.runner.Run("tk", "show", taskID)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "terminal_state=failed")
 }

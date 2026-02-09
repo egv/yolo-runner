@@ -64,6 +64,9 @@ func TestLoopMarksFailedAfterRetryExhausted(t *testing.T) {
 	if mgr.statusByID["t-1"] != contracts.TaskStatusFailed {
 		t.Fatalf("expected failed status, got %s", mgr.statusByID["t-1"])
 	}
+	if got := mgr.dataByID["t-1"]["terminal_state"]; got != "failed" {
+		t.Fatalf("expected terminal_state=failed, got %q", got)
+	}
 }
 
 func TestLoopMarksBlockedWithReason(t *testing.T) {

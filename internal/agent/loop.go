@@ -157,12 +157,26 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 					}
 					continue
 				}
+				failedData := map[string]string{"terminal_state": "failed"}
+				if result.Reason != "" {
+					failedData["failed_reason"] = result.Reason
+				}
+				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
+					return summary, err
+				}
 				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 					return summary, err
 				}
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
 				summary.Failed++
 			default:
+				failedData := map[string]string{"terminal_state": "failed"}
+				if result.Reason != "" {
+					failedData["failed_reason"] = result.Reason
+				}
+				if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
+					return summary, err
+				}
 				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 					return summary, err
 				}

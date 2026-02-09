@@ -56,6 +56,27 @@ func TestTaskManagerSetTaskStatusUsesMappedStatusCalls(t *testing.T) {
 	}
 }
 
+func TestTaskManagerNextTasksSkipsTerminalFailedTasks(t *testing.T) {
+	r := &fakeRunner{responses: map[string]string{
+		"tk query": `{"id":"root","status":"open","type":"epic","priority":0}` + "\n" +
+			`{"id":"root.1","status":"open","type":"task","priority":1,"parent":"root","title":"A"}` + "\n" +
+			`{"id":"root.2","status":"open","type":"task","priority":2,"parent":"root","title":"B"}`,
+		"tk ready":       "root.1 [open] - A\nroot.2 [open] - B\n",
+		"tk blocked":     "",
+		"tk show root.1": "notes:\n- terminal_state=failed\n",
+		"tk show root.2": "notes:\n- something=else\n",
+	}}
+	m := NewTaskManager(r)
+
+	tasks, err := m.NextTasks(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("next tasks failed: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "root.2" {
+		t.Fatalf("expected only non-failed task, got %#v", tasks)
+	}
+}
+
 func containsPrefix(calls []string, prefix string) bool {
 	for _, call := range calls {
 		if strings.HasPrefix(call, prefix) {
