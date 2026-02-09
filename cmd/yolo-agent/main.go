@@ -44,6 +44,10 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--root is required")
 		return 1
 	}
+	if *concurrency <= 0 {
+		fmt.Fprintln(os.Stderr, "--concurrency must be greater than 0")
+		return 1
+	}
 
 	if run == nil {
 		run = defaultRun

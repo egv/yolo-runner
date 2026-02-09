@@ -45,3 +45,18 @@ func TestRunMainRequiresRoot(t *testing.T) {
 		t.Fatalf("expected exit code 1 when root missing, got %d", code)
 	}
 }
+
+func TestRunMainRejectsNonPositiveConcurrency(t *testing.T) {
+	called := false
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--concurrency", "0"}, func(context.Context, runConfig) error {
+		called = true
+		return nil
+	})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when concurrency is non-positive, got %d", code)
+	}
+	if called {
+		t.Fatalf("expected run function not to be called for invalid concurrency")
+	}
+}
