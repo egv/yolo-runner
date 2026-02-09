@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
@@ -22,6 +23,25 @@ func TestEnsureMainChecksOutMain(t *testing.T) {
 	}
 
 	assertVCSCall(t, r.calls, call{name: "git", args: []string{"checkout", "main"}})
+}
+
+func TestEnsureMainIncludesGitOutputInCheckoutFailure(t *testing.T) {
+	r := &fakeRunner{
+		output: "error: Your local changes to the following files would be overwritten by checkout",
+		err:    errors.New("exit status 1"),
+	}
+	a := NewVCSAdapter(r)
+
+	err := a.EnsureMain(context.Background())
+	if err == nil {
+		t.Fatal("expected checkout error")
+	}
+	if !contains(err.Error(), "git checkout main failed") {
+		t.Fatalf("expected command context in error, got %q", err.Error())
+	}
+	if !contains(err.Error(), "Your local changes") {
+		t.Fatalf("expected git stderr details in error, got %q", err.Error())
+	}
 }
 
 func TestCreateTaskBranchFromMain(t *testing.T) {
@@ -141,6 +161,15 @@ func assertVCSCall(t *testing.T, got []call, want call) {
 
 type branchExistsRunner struct {
 	calls []call
+}
+
+func contains(text string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *branchExistsRunner) Run(name string, args ...string) (string, error) {
