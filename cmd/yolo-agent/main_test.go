@@ -88,6 +88,29 @@ func TestRunMainPrintsActionableTaxonomyMessageOnRunError(t *testing.T) {
 	}
 }
 
+func TestRunMainHidesGenericExitStatusInActionableMessage(t *testing.T) {
+	run := func(context.Context, runConfig) error {
+		return errors.Join(
+			errors.New("git checkout main failed: error: Your local changes would be overwritten by checkout"),
+			errors.New("exit status 1"),
+		)
+	}
+
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", "/repo", "--root", "root-1"}, run)
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if strings.Contains(errText, "exit status 1") {
+		t.Fatalf("expected generic exit status to be removed, got %q", errText)
+	}
+	if !strings.Contains(errText, "Category: git/vcs") {
+		t.Fatalf("expected categorized error, got %q", errText)
+	}
+}
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr

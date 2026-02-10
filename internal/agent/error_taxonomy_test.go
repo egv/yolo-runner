@@ -66,3 +66,18 @@ func TestFormatActionableErrorDropsGenericExitStatusWhenDetailedCauseExists(t *t
 		t.Fatalf("expected detailed checkout cause in message, got %q", message)
 	}
 }
+
+func TestFormatActionableErrorNormalizesJoinedErrorsAndDropsGenericExitLine(t *testing.T) {
+	err := errors.Join(
+		errors.New("git checkout main failed: error: Your local changes would be overwritten by checkout"),
+		errors.New("exit status 1"),
+	)
+	message := FormatActionableError(err)
+
+	if strings.Contains(message, "\nexit status 1") || strings.Contains(message, "Cause: exit status 1") {
+		t.Fatalf("expected generic exit-status line to be removed, got %q", message)
+	}
+	if !strings.Contains(message, "Cause: git checkout main failed: error: Your local changes would be overwritten by checkout") {
+		t.Fatalf("expected detailed cause to be preserved, got %q", message)
+	}
+}

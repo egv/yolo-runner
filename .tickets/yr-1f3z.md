@@ -17,3 +17,13 @@ STRICT TDD: failing tests first. Persist in-flight/completed/blocked states for 
 
 Given restart after interruption, when resuming, then completed tasks are not re-run and queue continues correctly.
 
+
+## Notes
+
+**2026-02-10T00:27:10Z**
+
+auto-reset after stalled runner_started with no progress >30m
+
+**2026-02-10T00:58:53Z**
+
+auto-reset after stalled run at 00:41Z; process killed

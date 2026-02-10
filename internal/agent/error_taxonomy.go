@@ -26,9 +26,42 @@ func FormatActionableError(err error) string {
 	if err == nil {
 		return ""
 	}
-	cause := trimGenericExitStatus(err.Error())
+	cause := normalizeCause(trimGenericExitStatus(err.Error()))
 	class := classifyError(cause)
 	return "Category: " + class.category + "\nCause: " + cause + "\nNext step: " + class.remediation
+}
+
+func normalizeCause(cause string) string {
+	parts := strings.Split(cause, "\n")
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		line := strings.TrimSpace(part)
+		if line == "" || isPureExitStatusLine(line) {
+			continue
+		}
+		normalized = append(normalized, line)
+	}
+	if len(normalized) == 0 {
+		return strings.TrimSpace(cause)
+	}
+	return strings.Join(normalized, " | ")
+}
+
+func isPureExitStatusLine(line string) bool {
+	line = strings.TrimSpace(strings.ToLower(line))
+	if !strings.HasPrefix(line, "exit status ") {
+		return false
+	}
+	n := strings.TrimSpace(strings.TrimPrefix(line, "exit status "))
+	if n == "" {
+		return false
+	}
+	for _, r := range n {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func trimGenericExitStatus(cause string) string {

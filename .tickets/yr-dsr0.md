@@ -1,6 +1,6 @@
 ---
 id: yr-dsr0
-status: in_progress
+status: closed
 deps: [yr-kx2t]
 links: []
 created: 2026-02-09T23:07:07Z
