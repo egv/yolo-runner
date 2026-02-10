@@ -15,6 +15,8 @@ type Model struct {
 	root         RunState
 	runStartedAt time.Time
 	eventCount   int
+	panelCursor  int
+	panelExpand  map[string]bool
 	runParams    map[string]string
 	currentTask  string
 	currentTitle string
@@ -88,13 +90,55 @@ func NewModel(now func() time.Time) *Model {
 		now = time.Now
 	}
 	return &Model{
-		now:       now,
-		root:      RunState{Workers: map[string]WorkerState{}, Tasks: map[string]TaskState{}},
+		now:  now,
+		root: RunState{Workers: map[string]WorkerState{}, Tasks: map[string]TaskState{}},
+		panelExpand: map[string]bool{
+			"run":     true,
+			"workers": true,
+			"tasks":   false,
+		},
 		runParams: map[string]string{},
 		history:   []string{},
 		workers:   map[string]workerLane{},
 		landing:   map[string]landingState{},
 		triage:    map[string]triageState{},
+	}
+}
+
+func (m *Model) HandleKey(key string) {
+	rows := m.panelRows()
+	if len(rows) == 0 {
+		m.panelCursor = 0
+		return
+	}
+	if m.panelCursor < 0 {
+		m.panelCursor = 0
+	}
+	if m.panelCursor >= len(rows) {
+		m.panelCursor = len(rows) - 1
+	}
+	current := rows[m.panelCursor]
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "down", "j":
+		if m.panelCursor < len(rows)-1 {
+			m.panelCursor++
+		}
+	case "up", "k":
+		if m.panelCursor > 0 {
+			m.panelCursor--
+		}
+	case "enter", "space":
+		if current.hasChildren {
+			m.panelExpand[current.id] = !current.expanded
+		}
+	case "right", "l":
+		if current.hasChildren {
+			m.panelExpand[current.id] = true
+		}
+	case "left", "h":
+		if current.hasChildren {
+			m.panelExpand[current.id] = false
+		}
 	}
 }
 
@@ -267,12 +311,14 @@ func (m *Model) View() string {
 	lines := []string{
 		"Run Parameters:",
 		"Status Bar:",
+		"Panels:",
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
 		"Phase: " + emptyAsNA(m.phase),
 		"Last Output Age: " + age,
 		"Workers:",
 	}
 	lines = append(lines, renderStatusBar(m.deriveStatusMetrics())...)
+	lines = append(lines, renderPanels(m.panelRows(), m.panelCursor)...)
 	lines = append(lines, renderRunParameters(m.runParams)...)
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
@@ -282,6 +328,147 @@ func (m *Model) View() string {
 	lines = append(lines, "History:")
 	lines = append(lines, m.history...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+type panelRow struct {
+	id          string
+	indent      int
+	label       string
+	severity    string
+	hasChildren bool
+	expanded    bool
+}
+
+func (m *Model) panelRows() []panelRow {
+	metrics := m.deriveStatusMetrics()
+	rows := []panelRow{}
+	runRow := panelRow{id: "run", label: "Run", severity: metrics.runSeverity, hasChildren: true, expanded: m.isPanelExpanded("run")}
+	rows = append(rows, runRow)
+	if !runRow.expanded {
+		return rows
+	}
+
+	workersRow := panelRow{id: "workers", indent: 1, label: "Workers", severity: metrics.workerSeverity, hasChildren: true, expanded: m.isPanelExpanded("workers")}
+	tasksRow := panelRow{id: "tasks", indent: 1, label: "Tasks", severity: metrics.taskSeverity, hasChildren: true, expanded: m.isPanelExpanded("tasks")}
+	rows = append(rows, workersRow)
+
+	if workersRow.expanded {
+		for _, workerID := range sortedWorkerIDs(m.root.Workers) {
+			workerSeverity := "none"
+			for _, task := range tasksForWorker(m.root.Tasks, workerID) {
+				workerSeverity = maxSeverity(workerSeverity, deriveTaskSeverity(task))
+			}
+			workerIDRow := "worker:" + workerID
+			workerRow := panelRow{id: workerIDRow, indent: 2, label: workerID, severity: workerSeverity, hasChildren: true, expanded: m.isPanelExpanded(workerIDRow)}
+			rows = append(rows, workerRow)
+			if workerRow.expanded {
+				for _, task := range tasksForWorker(m.root.Tasks, workerID) {
+					rows = append(rows, panelRow{
+						id:          "worker:" + workerID + ":task:" + task.TaskID,
+						indent:      3,
+						label:       renderCurrentTask(task.TaskID, task.Title),
+						severity:    deriveTaskSeverity(task),
+						hasChildren: false,
+					})
+				}
+			}
+		}
+	}
+
+	rows = append(rows, tasksRow)
+
+	if tasksRow.expanded {
+		for _, taskID := range sortedTaskIDs(m.root.Tasks) {
+			task := m.root.Tasks[taskID]
+			rows = append(rows, panelRow{
+				id:          "task:" + taskID,
+				indent:      2,
+				label:       renderCurrentTask(task.TaskID, task.Title),
+				severity:    deriveTaskSeverity(task),
+				hasChildren: false,
+			})
+		}
+	}
+	return rows
+}
+
+func (m *Model) isPanelExpanded(panelID string) bool {
+	expanded, ok := m.panelExpand[panelID]
+	if ok {
+		return expanded
+	}
+	if strings.HasPrefix(panelID, "worker:") {
+		return false
+	}
+	return false
+}
+
+func renderPanels(rows []panelRow, cursor int) []string {
+	if len(rows) == 0 {
+		return []string{"- n/a"}
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	lines := make([]string, 0, len(rows))
+	for i, row := range rows {
+		marker := "  "
+		if i == cursor {
+			marker = "> "
+		}
+		glyph := "[ ]"
+		if row.hasChildren {
+			if row.expanded {
+				glyph = "[-]"
+			} else {
+				glyph = "[+]"
+			}
+		}
+		indent := strings.Repeat("  ", row.indent)
+		if i == cursor {
+			indent = ""
+		}
+		line := marker + indent + glyph + " " + row.label
+		if severity := strings.TrimSpace(row.severity); severity != "" && severity != "none" {
+			line += " severity=" + severity
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func sortedWorkerIDs(workers map[string]WorkerState) []string {
+	ids := make([]string, 0, len(workers))
+	for id := range workers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func sortedTaskIDs(tasks map[string]TaskState) []string {
+	ids := make([]string, 0, len(tasks))
+	for id := range tasks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func tasksForWorker(tasks map[string]TaskState, workerID string) []TaskState {
+	workerTasks := make([]TaskState, 0)
+	for _, task := range tasks {
+		if task.WorkerID == workerID {
+			workerTasks = append(workerTasks, task)
+		}
+	}
+	sort.Slice(workerTasks, func(i int, j int) bool {
+		return workerTasks[i].TaskID < workerTasks[j].TaskID
+	})
+	return workerTasks
 }
 
 type statusMetrics struct {

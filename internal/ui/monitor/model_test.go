@@ -188,6 +188,61 @@ func TestModelRendersStatusBarMetrics(t *testing.T) {
 	assertContains(t, view, "errors=run:warning workers:warning tasks:warning")
 }
 
+func TestModelSupportsHierarchicalPanelNavigationWithArrowAndVimKeys(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 9, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-2y0b"}, Timestamp: now.Add(-10 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-9 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-1", WorkerID: "worker-0", Message: "stalled", Timestamp: now.Add(-8 * time.Second)})
+
+	view := model.View()
+	assertContains(t, view, "Panels:")
+	assertContains(t, view, "> [-] Run")
+
+	model.HandleKey("down")
+	view = model.View()
+	assertContains(t, view, "> [-] Workers")
+
+	model.HandleKey("j")
+	view = model.View()
+	assertContains(t, view, "> [+] worker-0")
+
+	model.HandleKey("up")
+	model.HandleKey("k")
+	view = model.View()
+	assertContains(t, view, "> [-] Run")
+}
+
+func TestModelSupportsExpandCollapseViaEnterSpaceAndVimKeys(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 10, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-2y0b"}, Timestamp: now.Add(-10 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-9 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-1", WorkerID: "worker-0", Message: "stalled", Timestamp: now.Add(-8 * time.Second)})
+
+	model.HandleKey("down")
+	model.HandleKey("space")
+	view := model.View()
+	assertContains(t, view, "> [+] Workers severity=warning")
+
+	model.HandleKey("l")
+	view = model.View()
+	assertContains(t, view, "> [-] Workers severity=warning")
+	assertContains(t, view, "[+] worker-0 severity=warning")
+
+	model.HandleKey("down")
+	model.HandleKey("enter")
+	view = model.View()
+	assertContains(t, view, "> [-] worker-0 severity=warning")
+	assertContains(t, view, "task-1 - First severity=warning")
+
+	model.HandleKey("h")
+	view = model.View()
+	assertContains(t, view, "> [+] worker-0 severity=warning")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
