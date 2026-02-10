@@ -70,6 +70,32 @@ func TestModelNormalizesTriagePanelData(t *testing.T) {
 	assertContains(t, view, "task-1 - First => failed | lint failed")
 }
 
+func TestModelStoresRunParametersFromRunStartedEvent(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 4, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{
+		Type: contracts.EventTypeRunStarted,
+		Metadata: map[string]string{
+			"root_id":                "yr-2y0b",
+			"concurrency":            "2",
+			"model":                  "openai/gpt-5.3-codex",
+			"runner_timeout":         "15m0s",
+			"stream":                 "true",
+			"verbose_stream":         "false",
+			"stream_output_interval": "150ms",
+			"stream_output_buffer":   "64",
+		},
+		Timestamp: now.Add(-3 * time.Second),
+	})
+
+	view := model.View()
+	assertContains(t, view, "Run Parameters:")
+	assertContains(t, view, "root_id=yr-2y0b")
+	assertContains(t, view, "concurrency=2")
+	assertContains(t, view, "runner_timeout=15m0s")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

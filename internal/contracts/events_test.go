@@ -74,3 +74,31 @@ func TestMarshalEventJSONLIncludesParallelContextWhenPresent(t *testing.T) {
 		t.Fatalf("unexpected json line\nexpected: %s\nactual:   %s", expected, strings.TrimSpace(line))
 	}
 }
+
+func TestMarshalEventJSONLIncludesRunStartedEventMetadata(t *testing.T) {
+	e := Event{
+		Type: EventTypeRunStarted,
+		Metadata: map[string]string{
+			"root_id":                "yr-2y0b",
+			"concurrency":            "2",
+			"model":                  "openai/gpt-5.3-codex",
+			"runner_timeout":         "15m0s",
+			"stream":                 "true",
+			"verbose_stream":         "false",
+			"stream_output_buffer":   "64",
+			"stream_output_interval": "150ms",
+		},
+		Timestamp: time.Date(2026, 2, 10, 14, 0, 0, 0, time.UTC),
+	}
+
+	line, err := MarshalEventJSONL(e)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(strings.TrimSpace(line), `"type":"run_started"`) {
+		t.Fatalf("expected run_started type, got %q", strings.TrimSpace(line))
+	}
+	if !strings.Contains(strings.TrimSpace(line), `"root_id":"yr-2y0b"`) {
+		t.Fatalf("expected root_id metadata, got %q", strings.TrimSpace(line))
+	}
+}

@@ -112,6 +112,7 @@ func (s LoopSummary) TotalProcessed() int {
 type EventType string
 
 const (
+	EventTypeRunStarted            EventType = "run_started"
 	EventTypeTaskStarted           EventType = "task_started"
 	EventTypeTaskFinished          EventType = "task_finished"
 	EventTypeRunnerStarted         EventType = "runner_started"

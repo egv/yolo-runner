@@ -11,6 +11,7 @@ import (
 
 type Model struct {
 	now          func() time.Time
+	runParams    map[string]string
 	currentTask  string
 	currentTitle string
 	phase        string
@@ -46,11 +47,12 @@ func NewModel(now func() time.Time) *Model {
 		now = time.Now
 	}
 	return &Model{
-		now:     now,
-		history: []string{},
-		workers: map[string]workerLane{},
-		landing: map[string]landingState{},
-		triage:  map[string]triageState{},
+		now:       now,
+		runParams: map[string]string{},
+		history:   []string{},
+		workers:   map[string]workerLane{},
+		landing:   map[string]landingState{},
+		triage:    map[string]triageState{},
 	}
 }
 
@@ -102,6 +104,15 @@ func (m *Model) Apply(event contracts.Event) {
 			}
 		}
 	}
+	if event.Type == contracts.EventTypeRunStarted {
+		m.runParams = map[string]string{}
+		for _, key := range []string{"root_id", "concurrency", "model", "runner_timeout", "stream", "verbose_stream", "stream_output_interval", "stream_output_buffer"} {
+			value := strings.TrimSpace(event.Metadata[key])
+			if value != "" {
+				m.runParams[key] = value
+			}
+		}
+	}
 	line := renderHistoryLine(event)
 	if line != "" {
 		m.history = append(m.history, line)
@@ -118,11 +129,13 @@ func (m *Model) View() string {
 		age = fmt.Sprintf("%ds", seconds)
 	}
 	lines := []string{
+		"Run Parameters:",
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
 		"Phase: " + emptyAsNA(m.phase),
 		"Last Output Age: " + age,
 		"Workers:",
 	}
+	lines = append(lines, renderRunParameters(m.runParams)...)
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
 	lines = append(lines, renderLandingQueue(m.landing)...)
@@ -131,6 +144,22 @@ func (m *Model) View() string {
 	lines = append(lines, "History:")
 	lines = append(lines, m.history...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderRunParameters(params map[string]string) []string {
+	if len(params) == 0 {
+		return []string{"- n/a"}
+	}
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, "- "+key+"="+params[key])
+	}
+	return lines
 }
 
 func normalizeTriageStatus(value string) string {

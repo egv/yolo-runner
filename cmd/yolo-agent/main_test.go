@@ -152,6 +152,60 @@ func TestRunWithComponentsStreamWritesNDJSONToStdout(t *testing.T) {
 	_ = filepath.Join
 }
 
+func TestRunWithComponentsStreamEmitsRunStartedWithParameters(t *testing.T) {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	repoRoot := initGitRepo(t)
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	runner := &testRunner{}
+	cfg := runConfig{
+		repoRoot:             repoRoot,
+		rootID:               "yr-2y0b",
+		dryRun:               true,
+		stream:               true,
+		concurrency:          2,
+		model:                "openai/gpt-5.3-codex",
+		runnerTimeout:        15 * time.Minute,
+		verboseStream:        false,
+		streamOutputBuffer:   64,
+		streamOutputInterval: 150 * time.Millisecond,
+	}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("runWithComponents failed: %v", runErr)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, `"type":"run_started"`) {
+		t.Fatalf("expected run_started event in stdout, got %q", out)
+	}
+	if !strings.Contains(out, `"root_id":"yr-2y0b"`) {
+		t.Fatalf("expected root_id in run_started metadata, got %q", out)
+	}
+	if !strings.Contains(out, `"concurrency":"2"`) {
+		t.Fatalf("expected concurrency in run_started metadata, got %q", out)
+	}
+}
+
 func TestRunWithComponentsStreamCoalescesRunnerOutputByDefault(t *testing.T) {
 	originalStdout := os.Stdout
 	r, w, err := os.Pipe()

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -162,9 +163,31 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		MergeOnSuccess:     true,
 		CloneManager:       agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
 	})
+	if eventSink != nil {
+		_ = eventSink.Emit(ctx, contracts.Event{
+			Type:      contracts.EventTypeRunStarted,
+			TaskID:    cfg.rootID,
+			TaskTitle: "run",
+			Metadata:  buildRunStartedMetadata(cfg),
+			Timestamp: time.Now().UTC(),
+		})
+	}
 
 	_, err := loop.Run(ctx)
 	return err
+}
+
+func buildRunStartedMetadata(cfg runConfig) map[string]string {
+	return map[string]string{
+		"root_id":                cfg.rootID,
+		"concurrency":            strconv.Itoa(cfg.concurrency),
+		"model":                  cfg.model,
+		"runner_timeout":         cfg.runnerTimeout.String(),
+		"stream":                 strconv.FormatBool(cfg.stream),
+		"verbose_stream":         strconv.FormatBool(cfg.verboseStream),
+		"stream_output_interval": cfg.streamOutputInterval.String(),
+		"stream_output_buffer":   strconv.Itoa(cfg.streamOutputBuffer),
+	}
 }
 
 type mirrorEventSink struct {
