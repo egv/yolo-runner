@@ -5,9 +5,12 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anomalyco/yolo-runner/internal/contracts"
 )
 
 func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
@@ -41,6 +44,121 @@ func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
 	if got.concurrency != 3 {
 		t.Fatalf("expected concurrency=3, got %d", got.concurrency)
 	}
+	if got.stream {
+		t.Fatalf("expected stream=false by default")
+	}
+}
+
+func TestRunMainParsesStreamFlag(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--stream"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if !got.stream {
+		t.Fatalf("expected stream=true")
+	}
+}
+
+func TestResolveEventsPathDisablesDefaultFileInStreamMode(t *testing.T) {
+	got := resolveEventsPath(runConfig{repoRoot: "/repo", stream: true, eventsPath: ""})
+	if got != "" {
+		t.Fatalf("expected no default file path in stream mode, got %q", got)
+	}
+}
+
+func TestResolveEventsPathKeepsDefaultFileWhenNotStreaming(t *testing.T) {
+	got := resolveEventsPath(runConfig{repoRoot: "/repo", stream: false, eventsPath: ""})
+	expected := "/repo/runner-logs/agent.events.jsonl"
+	if got != expected {
+		t.Fatalf("expected %q, got %q", expected, got)
+	}
+}
+
+func TestRunWithComponentsStreamWritesNDJSONToStdout(t *testing.T) {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	mgr := &testTaskManager{
+		tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}},
+	}
+	runner := &testRunner{}
+	cfg := runConfig{repoRoot: t.TempDir(), rootID: "root", dryRun: true, stream: true}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("runWithComponents failed: %v", runErr)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	out := string(data)
+	if !strings.Contains(out, `"type":"task_started"`) {
+		t.Fatalf("expected task_started event in stdout, got %q", out)
+	}
+	if strings.Contains(out, "Category:") {
+		t.Fatalf("expected stdout to contain JSON events only, got %q", out)
+	}
+	_ = filepath.Join
+}
+
+type testTaskManager struct {
+	tasks []contracts.Task
+	idx   int
+}
+
+func (m *testTaskManager) NextTasks(context.Context, string) ([]contracts.TaskSummary, error) {
+	if m.idx >= len(m.tasks) {
+		return nil, nil
+	}
+	task := m.tasks[m.idx]
+	m.idx++
+	return []contracts.TaskSummary{{ID: task.ID, Title: task.Title}}, nil
+}
+
+func (m *testTaskManager) GetTask(_ context.Context, taskID string) (contracts.Task, error) {
+	for _, task := range m.tasks {
+		if task.ID == taskID {
+			return task, nil
+		}
+	}
+	return contracts.Task{}, errors.New("task not found")
+}
+
+func (m *testTaskManager) SetTaskStatus(context.Context, string, contracts.TaskStatus) error {
+	return nil
+}
+func (m *testTaskManager) SetTaskData(context.Context, string, map[string]string) error { return nil }
+
+type testRunner struct{}
+
+func (testRunner) Run(context.Context, contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 }
 
 func TestRunMainRequiresRoot(t *testing.T) {

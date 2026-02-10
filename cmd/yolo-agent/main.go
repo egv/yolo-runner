@@ -23,6 +23,7 @@ type runConfig struct {
 	maxTasks      int
 	concurrency   int
 	dryRun        bool
+	stream        bool
 	runnerTimeout time.Duration
 	eventsPath    string
 }
@@ -35,6 +36,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	max := fs.Int("max", 0, "Maximum tasks to execute")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of active task workers")
 	dryRun := fs.Bool("dry-run", false, "Dry run task loop")
+	stream := fs.Bool("stream", false, "Emit NDJSON events to stdout for piping into yolo-tui")
 	runnerTimeout := fs.Duration("runner-timeout", 0, "Per runner execution timeout")
 	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
@@ -60,6 +62,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		maxTasks:      *max,
 		concurrency:   *concurrency,
 		dryRun:        *dryRun,
+		stream:        *stream,
 		runnerTimeout: *runnerTimeout,
 		eventsPath:    *events,
 	}); err != nil {
@@ -77,9 +80,7 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	if err := os.Chdir(cfg.repoRoot); err != nil {
 		return err
 	}
-	if cfg.eventsPath == "" {
-		cfg.eventsPath = filepath.Join(cfg.repoRoot, "runner-logs", "agent.events.jsonl")
-	}
+	cfg.eventsPath = resolveEventsPath(cfg)
 
 	tkRunner := localRunner{dir: cfg.repoRoot}
 	taskManager := tk.NewTaskManager(tkRunner)
@@ -88,10 +89,29 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	return runWithComponents(ctx, cfg, taskManager, runnerAdapter, vcsAdapter)
 }
 
-func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
-	eventSink := contracts.EventSink(nil)
+func resolveEventsPath(cfg runConfig) string {
 	if cfg.eventsPath != "" {
-		eventSink = contracts.NewFileEventSink(cfg.eventsPath)
+		return cfg.eventsPath
+	}
+	if cfg.stream {
+		return ""
+	}
+	return filepath.Join(cfg.repoRoot, "runner-logs", "agent.events.jsonl")
+}
+
+func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
+	sinks := []contracts.EventSink{}
+	if cfg.stream {
+		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
+	}
+	if cfg.eventsPath != "" {
+		sinks = append(sinks, contracts.NewFileEventSink(cfg.eventsPath))
+	}
+	eventSink := contracts.EventSink(nil)
+	if len(sinks) == 1 {
+		eventSink = sinks[0]
+	} else if len(sinks) > 1 {
+		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:           cfg.rootID,
