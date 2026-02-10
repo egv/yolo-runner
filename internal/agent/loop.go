@@ -285,16 +285,28 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				return summary, err
 			}
 			if l.options.MergeOnSuccess && l.options.VCS != nil && taskBranch != "" {
+				landingState := scheduler.NewLandingQueueStateMachine(1)
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
+				_ = landingState.Apply(scheduler.LandingEventBegin)
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
 				if l.landingLock != nil {
 					l.landingLock.Lock()
 					defer l.landingLock.Unlock()
 				}
 				if err := l.options.VCS.MergeToMain(ctx, taskBranch); err != nil {
+					_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": err.Error()}, Timestamp: time.Now().UTC()})
 					return summary, err
 				}
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeMergeCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: taskBranch, Timestamp: time.Now().UTC()})
 				if err := l.options.VCS.PushMain(ctx); err != nil {
+					_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": err.Error()}, Timestamp: time.Now().UTC()})
 					return summary, err
 				}
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypePushCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
+				_ = landingState.Apply(scheduler.LandingEventSucceeded)
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
 			}
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
 				return summary, err

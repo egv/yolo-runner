@@ -245,7 +245,9 @@ type noopSink struct{}
 func (noopSink) Emit(context.Context, contracts.Event) error { return nil }
 
 type fakeVCS struct {
-	calls []string
+	calls    []string
+	mergeErr error
+	pushErr  error
 }
 
 func (f *fakeVCS) EnsureMain(context.Context) error {
@@ -267,7 +269,7 @@ func (f *fakeVCS) CommitAll(context.Context, string) (string, error) { return ""
 
 func (f *fakeVCS) MergeToMain(_ context.Context, branch string) error {
 	f.calls = append(f.calls, "merge_to_main:"+branch)
-	return nil
+	return f.mergeErr
 }
 
 func (f *fakeVCS) PushBranch(_ context.Context, branch string) error {
@@ -277,7 +279,7 @@ func (f *fakeVCS) PushBranch(_ context.Context, branch string) error {
 
 func (f *fakeVCS) PushMain(context.Context) error {
 	f.calls = append(f.calls, "push_main")
-	return nil
+	return f.pushErr
 }
 
 func TestLoopRunsReviewAfterImplementationSuccess(t *testing.T) {
@@ -707,6 +709,54 @@ func TestLoopUsesLandingLockAroundMergeAndPush(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsLandingQueueLifecycleEventsOnAutoLandSuccess(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted, ReviewReady: true}}}
+	vcs := &fakeVCS{}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", VCS: vcs, MergeOnSuccess: true, RequireReview: true})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	updates := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
+	if !hasLandingStatus(updates, "queued") {
+		t.Fatalf("expected landing queued update, got %#v", updates)
+	}
+	if !hasLandingStatus(updates, "landing") {
+		t.Fatalf("expected landing in-progress update, got %#v", updates)
+	}
+	if !hasLandingStatus(updates, "landed") {
+		t.Fatalf("expected landing landed update, got %#v", updates)
+	}
+	if !hasEventType(sink.events, contracts.EventTypeMergeCompleted) {
+		t.Fatalf("expected merge_completed event")
+	}
+	if !hasEventType(sink.events, contracts.EventTypePushCompleted) {
+		t.Fatalf("expected push_completed event")
+	}
+}
+
+func TestLoopMarksLandingQueueBlockedOnMergeFailure(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted, ReviewReady: true}}}
+	vcs := &fakeVCS{mergeErr: errors.New("merge conflict")}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", VCS: vcs, MergeOnSuccess: true, RequireReview: true})
+
+	_, err := loop.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected merge failure to bubble up")
+	}
+
+	updates := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
+	if !hasLandingStatus(updates, "blocked") {
+		t.Fatalf("expected blocked landing update, got %#v", updates)
+	}
+}
+
 func TestLoopStartsFixedWorkerPool(t *testing.T) {
 	mgr := newFakeTaskManager(
 		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
@@ -1058,6 +1108,15 @@ func eventsByType(events []contracts.Event, eventType contracts.EventType) []con
 		}
 	}
 	return result
+}
+
+func hasLandingStatus(events []contracts.Event, status string) bool {
+	for _, event := range events {
+		if event.Metadata["landing_status"] == status {
+			return true
+		}
+	}
+	return false
 }
 
 type recordingSink struct{ events []contracts.Event }
