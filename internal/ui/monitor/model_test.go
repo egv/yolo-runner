@@ -162,6 +162,32 @@ func TestModelDerivesWarningLifecycleAsActiveThenResolved(t *testing.T) {
 	}
 }
 
+func TestModelRendersStatusBarMetrics(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 8, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-2y0b"}, Timestamp: now.Add(-10 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-9 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: "task-1", WorkerID: "worker-0", Message: "completed", Timestamp: now.Add(-8 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-1", TaskTitle: "First", Message: "closed", Timestamp: now.Add(-7 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-2", TaskTitle: "Second", WorkerID: "worker-1", QueuePos: 2, Timestamp: now.Add(-6 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-2", WorkerID: "worker-1", Message: "no output", Timestamp: now.Add(-5 * time.Second)})
+
+	view := model.View()
+	assertContains(t, view, "Status Bar:")
+	assertContains(t, view, "runtime=10s")
+	assertContains(t, view, "activity=active")
+	assertContains(t, view, "completed=1")
+	assertContains(t, view, "in_progress=1")
+	assertContains(t, view, "blocked=0")
+	assertContains(t, view, "failed=0")
+	assertContains(t, view, "total=2")
+	assertContains(t, view, "queue_depth=1")
+	assertContains(t, view, "worker_utilization=50%")
+	assertContains(t, view, "throughput=")
+	assertContains(t, view, "errors=run:warning workers:warning tasks:warning")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

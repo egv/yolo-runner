@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 type Model struct {
 	now          func() time.Time
 	root         RunState
+	runStartedAt time.Time
+	eventCount   int
 	runParams    map[string]string
 	currentTask  string
 	currentTitle string
@@ -96,6 +99,7 @@ func NewModel(now func() time.Time) *Model {
 }
 
 func (m *Model) Apply(event contracts.Event) {
+	m.eventCount++
 	if event.TaskID != "" {
 		m.currentTask = event.TaskID
 	}
@@ -114,32 +118,48 @@ func (m *Model) Apply(event contracts.Event) {
 		worker := m.root.Workers[workerID]
 		worker.WorkerID = workerID
 		worker.CurrentTaskID = event.TaskID
-		worker.CurrentTask = strings.TrimSpace(event.TaskTitle)
+		if title := strings.TrimSpace(event.TaskTitle); title != "" {
+			worker.CurrentTask = title
+		}
 		worker.CurrentPhase = string(event.Type)
-		worker.CurrentQueuePos = event.QueuePos
+		if event.QueuePos > 0 {
+			worker.CurrentQueuePos = event.QueuePos
+		}
 		m.root.Workers[workerID] = worker
 	}
 
 	if strings.TrimSpace(event.TaskID) != "" {
 		task := m.root.Tasks[event.TaskID]
 		task.TaskID = event.TaskID
-		task.Title = strings.TrimSpace(event.TaskTitle)
-		task.WorkerID = strings.TrimSpace(event.WorkerID)
-		task.QueuePos = event.QueuePos
+		if title := strings.TrimSpace(event.TaskTitle); title != "" {
+			task.Title = title
+		}
+		if workerID := strings.TrimSpace(event.WorkerID); workerID != "" {
+			task.WorkerID = workerID
+		}
+		if event.QueuePos > 0 {
+			task.QueuePos = event.QueuePos
+		}
 		task.RunnerPhase = string(event.Type)
-		task.LastMessage = strings.TrimSpace(event.Message)
+		if message := strings.TrimSpace(event.Message); message != "" {
+			task.LastMessage = message
+		}
 		task.LastUpdateAt = event.Timestamp
 		applyDerivedTaskEvent(&task, event)
 		m.root.Tasks[event.TaskID] = task
 	}
 
 	if workerID := strings.TrimSpace(event.WorkerID); workerID != "" {
-		m.workers[workerID] = workerLane{
-			taskID:    event.TaskID,
-			taskTitle: event.TaskTitle,
-			phase:     string(event.Type),
-			queuePos:  event.QueuePos,
+		lane := m.workers[workerID]
+		lane.taskID = event.TaskID
+		if title := strings.TrimSpace(event.TaskTitle); title != "" {
+			lane.taskTitle = title
 		}
+		lane.phase = string(event.Type)
+		if event.QueuePos > 0 {
+			lane.queuePos = event.QueuePos
+		}
+		m.workers[workerID] = lane
 	}
 	if event.Type == contracts.EventTypeTaskFinished {
 		taskID := strings.TrimSpace(event.TaskID)
@@ -168,6 +188,11 @@ func (m *Model) Apply(event contracts.Event) {
 	}
 	if event.Type == contracts.EventTypeRunStarted {
 		m.root.RunID = strings.TrimSpace(event.Metadata["root_id"])
+		if !event.Timestamp.IsZero() {
+			m.runStartedAt = event.Timestamp
+		} else {
+			m.runStartedAt = m.now()
+		}
 		m.runParams = map[string]string{}
 		for _, key := range []string{"root_id", "concurrency", "model", "runner_timeout", "stream", "verbose_stream", "stream_output_interval", "stream_output_buffer"} {
 			value := strings.TrimSpace(event.Metadata[key])
@@ -211,9 +236,10 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 	case contracts.EventTypeRunnerFinished:
 		task.WarningActive = false
 		task.TerminalStatus = strings.TrimSpace(event.Message)
-		task.LastSeverity = "info"
+		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
 	case contracts.EventTypeTaskFinished:
 		task.TerminalStatus = strings.TrimSpace(event.Message)
+		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
 	}
 }
 
@@ -240,11 +266,13 @@ func (m *Model) View() string {
 	}
 	lines := []string{
 		"Run Parameters:",
+		"Status Bar:",
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
 		"Phase: " + emptyAsNA(m.phase),
 		"Last Output Age: " + age,
 		"Workers:",
 	}
+	lines = append(lines, renderStatusBar(m.deriveStatusMetrics())...)
 	lines = append(lines, renderRunParameters(m.runParams)...)
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
@@ -254,6 +282,158 @@ func (m *Model) View() string {
 	lines = append(lines, "History:")
 	lines = append(lines, m.history...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+type statusMetrics struct {
+	runtime           string
+	activity          string
+	completed         int
+	inProgress        int
+	blocked           int
+	failed            int
+	total             int
+	queueDepth        int
+	workerUtilization int
+	throughput        string
+	runSeverity       string
+	workerSeverity    string
+	taskSeverity      string
+}
+
+func (m *Model) deriveStatusMetrics() statusMetrics {
+	runtimeSeconds := int(m.now().Sub(m.runStartedAt).Round(time.Second).Seconds())
+	runtime := "n/a"
+	if !m.runStartedAt.IsZero() {
+		if runtimeSeconds < 0 {
+			runtimeSeconds = 0
+		}
+		runtime = fmt.Sprintf("%ds", runtimeSeconds)
+	}
+
+	metrics := statusMetrics{runtime: runtime, runSeverity: "none", workerSeverity: "none", taskSeverity: "none"}
+	for _, task := range m.root.Tasks {
+		metrics.total++
+		terminal := normalizeTerminalStatus(task.TerminalStatus)
+		if isCompletedTerminalStatus(terminal) {
+			metrics.completed++
+		} else if terminal == "blocked" {
+			metrics.blocked++
+		} else if terminal == "failed" {
+			metrics.failed++
+		} else {
+			metrics.inProgress++
+			if task.QueuePos > 0 {
+				metrics.queueDepth++
+			}
+		}
+		metrics.taskSeverity = maxSeverity(metrics.taskSeverity, deriveTaskSeverity(task))
+	}
+
+	activeWorkers := 0
+	for _, worker := range m.root.Workers {
+		severity := "none"
+		if task, ok := m.root.Tasks[worker.CurrentTaskID]; ok {
+			severity = deriveTaskSeverity(task)
+			if !isTerminalStatus(normalizeTerminalStatus(task.TerminalStatus)) {
+				activeWorkers++
+			}
+		}
+		metrics.workerSeverity = maxSeverity(metrics.workerSeverity, severity)
+	}
+	if totalWorkers := len(m.root.Workers); totalWorkers > 0 {
+		metrics.workerUtilization = int(math.Round(float64(activeWorkers*100) / float64(totalWorkers)))
+	}
+
+	activityState := "idle"
+	if metrics.inProgress > 0 {
+		activityState = "active"
+	}
+	spinner := []string{"|", "/", "-", "\\"}
+	metrics.activity = fmt.Sprintf("%s(%s)", activityState, spinner[m.eventCount%len(spinner)])
+
+	if runtimeSeconds <= 0 {
+		metrics.throughput = fmt.Sprintf("%.2f/s", float64(m.eventCount))
+	} else {
+		metrics.throughput = fmt.Sprintf("%.2f/s", float64(m.eventCount)/float64(runtimeSeconds))
+	}
+
+	metrics.runSeverity = maxSeverity(metrics.taskSeverity, metrics.workerSeverity)
+	if m.phase == string(contracts.EventTypeRunnerWarning) {
+		metrics.runSeverity = maxSeverity(metrics.runSeverity, "warning")
+	}
+	return metrics
+}
+
+func renderStatusBar(metrics statusMetrics) []string {
+	line := fmt.Sprintf("- runtime=%s activity=%s completed=%d in_progress=%d blocked=%d failed=%d total=%d queue_depth=%d worker_utilization=%d%% throughput=%s",
+		metrics.runtime,
+		metrics.activity,
+		metrics.completed,
+		metrics.inProgress,
+		metrics.blocked,
+		metrics.failed,
+		metrics.total,
+		metrics.queueDepth,
+		metrics.workerUtilization,
+		metrics.throughput,
+	)
+	errors := fmt.Sprintf("- errors=run:%s workers:%s tasks:%s", metrics.runSeverity, metrics.workerSeverity, metrics.taskSeverity)
+	return []string{line, errors}
+}
+
+func normalizeTerminalStatus(status string) string {
+	return strings.ToLower(strings.TrimSpace(status))
+}
+
+func isCompletedTerminalStatus(status string) bool {
+	return status == "completed" || status == "closed"
+}
+
+func isTerminalStatus(status string) bool {
+	return isCompletedTerminalStatus(status) || status == "blocked" || status == "failed"
+}
+
+func severityFromTerminalStatus(status string) string {
+	switch normalizeTerminalStatus(status) {
+	case "failed":
+		return "error"
+	case "blocked":
+		return "warning"
+	case "completed", "closed":
+		return "info"
+	default:
+		return "none"
+	}
+}
+
+func deriveTaskSeverity(task TaskState) string {
+	severity := strings.TrimSpace(task.LastSeverity)
+	if severity == "" || severity == "none" {
+		severity = severityFromTerminalStatus(task.TerminalStatus)
+	}
+	if task.WarningActive {
+		severity = maxSeverity(severity, "warning")
+	}
+	if severity == "" {
+		return "none"
+	}
+	return severity
+}
+
+func maxSeverity(a string, b string) string {
+	rank := map[string]int{"none": 0, "info": 1, "warning": 2, "error": 3}
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	if _, ok := rank[a]; !ok {
+		a = "none"
+	}
+	if _, ok := rank[b]; !ok {
+		b = "none"
+	}
+	if rank[a] >= rank[b] {
+		return a
+	}
+	return b
 }
 
 func renderRunParameters(params map[string]string) []string {
