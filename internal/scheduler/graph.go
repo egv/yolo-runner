@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"sort"
+	"sync"
 )
 
 type TaskState string
@@ -31,6 +32,7 @@ type TaskNode struct {
 }
 
 type TaskGraph struct {
+	mu           sync.RWMutex
 	nodes        map[string]TaskNode
 	dependencies map[string][]string
 	dependents   map[string][]string
@@ -89,14 +91,24 @@ func NewTaskGraph(nodes []TaskNode) (TaskGraph, error) {
 }
 
 func (g TaskGraph) DependenciesOf(taskID string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return append([]string(nil), g.dependencies[taskID]...)
 }
 
 func (g TaskGraph) DependentsOf(taskID string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return append([]string(nil), g.dependents[taskID]...)
 }
 
 func (g TaskGraph) ReadySet() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.readySetLocked()
+}
+
+func (g TaskGraph) readySetLocked() []string {
 	ready := make([]string, 0)
 
 	for id, node := range g.nodes {
@@ -126,8 +138,10 @@ func (g *TaskGraph) ReserveReady(limit int) []string {
 	if limit <= 0 {
 		return nil
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 
-	ready := g.ReadySet()
+	ready := g.readySetLocked()
 	if len(ready) > limit {
 		ready = ready[:limit]
 	}
@@ -142,6 +156,8 @@ func (g *TaskGraph) ReserveReady(limit int) []string {
 }
 
 func (g *TaskGraph) SetState(taskID string, state TaskState) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	node, exists := g.nodes[taskID]
 	if !exists {
 		return fmt.Errorf("task %q not found", taskID)
@@ -152,6 +168,8 @@ func (g *TaskGraph) SetState(taskID string, state TaskState) error {
 }
 
 func (g TaskGraph) InspectNode(taskID string) (NodeInspection, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	node, exists := g.nodes[taskID]
 	if !exists {
 		return NodeInspection{}, fmt.Errorf("task %q not found", taskID)
@@ -174,7 +192,7 @@ func (g TaskGraph) InspectNode(taskID string) (NodeInspection, error) {
 		State:      node.State,
 		Ready:      ready,
 		Terminal:   node.State.IsTerminal(),
-		DependsOn:  g.DependenciesOf(taskID),
-		Dependents: g.DependentsOf(taskID),
+		DependsOn:  append([]string(nil), g.dependencies[taskID]...),
+		Dependents: append([]string(nil), g.dependents[taskID]...),
 	}, nil
 }

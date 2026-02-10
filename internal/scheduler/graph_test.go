@@ -2,7 +2,10 @@ package scheduler
 
 import (
 	"reflect"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestTaskGraphBuildsReverseDependenciesDeterministically(t *testing.T) {
@@ -149,4 +152,112 @@ func TestTaskGraphReserveReadyGatesDependentTasksUntilAllDependenciesSucceed(t *
 	if got := graph.ReserveReady(10); !reflect.DeepEqual(got, []string{"3"}) {
 		t.Fatalf("ReserveReady() = %v, want [3]", got)
 	}
+}
+
+func TestTaskGraphReserveReadyStress_NoDuplicateReservations(t *testing.T) {
+	nodes := make([]TaskNode, 0, 120)
+	for i := 0; i < 120; i++ {
+		nodes = append(nodes, TaskNode{ID: taskID(i), State: TaskStatePending})
+	}
+	graph, err := NewTaskGraph(nodes)
+	if err != nil {
+		t.Fatalf("NewTaskGraph() error = %v", err)
+	}
+
+	var seenMu sync.Mutex
+	seen := map[string]int{}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				reserved := graph.ReserveReady(1)
+				if len(reserved) == 0 {
+					return
+				}
+				task := reserved[0]
+				seenMu.Lock()
+				seen[task]++
+				seenMu.Unlock()
+				if err := graph.SetState(task, TaskStateSucceeded); err != nil {
+					t.Errorf("SetState(%s) error = %v", task, err)
+					return
+				}
+				time.Sleep(time.Microsecond)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(seen) != 120 {
+		t.Fatalf("expected 120 unique reservations, got %d", len(seen))
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Fatalf("expected task %s reserved once, got %d", id, count)
+		}
+	}
+}
+
+func TestTaskGraphReserveReadyStress_RespectsDAGDependencies(t *testing.T) {
+	graph, err := NewTaskGraph([]TaskNode{
+		{ID: "a", State: TaskStatePending},
+		{ID: "b", State: TaskStatePending},
+		{ID: "c", State: TaskStatePending},
+		{ID: "d", State: TaskStatePending, DependsOn: []string{"a", "b"}},
+		{ID: "e", State: TaskStatePending, DependsOn: []string{"b", "c"}},
+		{ID: "f", State: TaskStatePending, DependsOn: []string{"d", "e"}},
+	})
+	if err != nil {
+		t.Fatalf("NewTaskGraph() error = %v", err)
+	}
+
+	var orderMu sync.Mutex
+	order := []string{}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				reserved := graph.ReserveReady(1)
+				if len(reserved) == 0 {
+					if len(graph.ReadySet()) == 0 {
+						return
+					}
+					continue
+				}
+				task := reserved[0]
+				deps := graph.DependenciesOf(task)
+				for _, dep := range deps {
+					inspection, inspectErr := graph.InspectNode(dep)
+					if inspectErr != nil {
+						t.Errorf("InspectNode(%s) error = %v", dep, inspectErr)
+						return
+					}
+					if inspection.State != TaskStateSucceeded {
+						t.Errorf("reserved %s before dependency %s succeeded (state=%s)", task, dep, inspection.State)
+						return
+					}
+				}
+				orderMu.Lock()
+				order = append(order, task)
+				orderMu.Unlock()
+				if err := graph.SetState(task, TaskStateSucceeded); err != nil {
+					t.Errorf("SetState(%s) error = %v", task, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(order) != 6 {
+		t.Fatalf("expected 6 tasks reserved, got %d (%v)", len(order), order)
+	}
+}
+
+func taskID(i int) string {
+	return "task-" + strconv.Itoa(i)
 }
