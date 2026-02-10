@@ -94,17 +94,18 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		eventSink = contracts.NewFileEventSink(cfg.eventsPath)
 	}
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
-		ParentID:       cfg.rootID,
-		MaxTasks:       cfg.maxTasks,
-		Concurrency:    cfg.concurrency,
-		DryRun:         cfg.dryRun,
-		RepoRoot:       cfg.repoRoot,
-		Model:          cfg.model,
-		RunnerTimeout:  cfg.runnerTimeout,
-		VCS:            vcs,
-		RequireReview:  true,
-		MergeOnSuccess: true,
-		CloneManager:   agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
+		ParentID:           cfg.rootID,
+		MaxTasks:           cfg.maxTasks,
+		Concurrency:        cfg.concurrency,
+		SchedulerStatePath: filepath.Join(cfg.repoRoot, ".yolo-runner", "scheduler-state.json"),
+		DryRun:             cfg.dryRun,
+		RepoRoot:           cfg.repoRoot,
+		Model:              cfg.model,
+		RunnerTimeout:      cfg.runnerTimeout,
+		VCS:                vcs,
+		RequireReview:      true,
+		MergeOnSuccess:     true,
+		CloneManager:       agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
 	})
 
 	_, err := loop.Run(ctx)

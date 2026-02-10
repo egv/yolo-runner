@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -124,10 +125,12 @@ func TestLoopCreatesAndChecksOutTaskBranchBeforeRun(t *testing.T) {
 }
 
 type fakeTaskManager struct {
-	mu         sync.Mutex
-	queue      []contracts.Task
-	statusByID map[string]contracts.TaskStatus
-	dataByID   map[string]map[string]string
+	mu             sync.Mutex
+	queue          []contracts.Task
+	statusByID     map[string]contracts.TaskStatus
+	dataByID       map[string]map[string]string
+	dependsOn      map[string][]string
+	failStatusOnce map[string]error
 }
 
 func newFakeTaskManager(tasks ...contracts.Task) *fakeTaskManager {
@@ -144,6 +147,16 @@ func (f *fakeTaskManager) NextTasks(context.Context, string) ([]contracts.TaskSu
 	var tasks []contracts.TaskSummary
 	for _, task := range f.queue {
 		if f.statusByID[task.ID] == contracts.TaskStatusOpen {
+			ready := true
+			for _, depID := range f.dependsOn[task.ID] {
+				if f.statusByID[depID] != contracts.TaskStatusClosed {
+					ready = false
+					break
+				}
+			}
+			if !ready {
+				continue
+			}
 			tasks = append(tasks, contracts.TaskSummary{ID: task.ID, Title: task.Title})
 		}
 	}
@@ -166,6 +179,13 @@ func (f *fakeTaskManager) GetTask(_ context.Context, taskID string) (contracts.T
 func (f *fakeTaskManager) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failStatusOnce != nil {
+		key := taskID + "|" + string(status)
+		if err, ok := f.failStatusOnce[key]; ok {
+			delete(f.failStatusOnce, key)
+			return err
+		}
+	}
 	f.statusByID[taskID] = status
 	return nil
 }
@@ -617,6 +637,53 @@ func TestLoopUsesIsolatedClonePerTaskAndCleansUp(t *testing.T) {
 
 	if cloneMgr.CleanupCount() != 2 {
 		t.Fatalf("expected clone cleanup for each task, got %d", cloneMgr.CleanupCount())
+	}
+}
+
+func TestLoopResumesPersistedSchedulerStateAndDoesNotRerunCompletedTask(t *testing.T) {
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, "scheduler-state.json")
+
+	mgr := newFakeTaskManager(
+		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-2", Title: "Task 2", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-3", Title: "Task 3", Status: contracts.TaskStatusOpen},
+	)
+	mgr.dependsOn = map[string][]string{
+		"t-3": {"t-1", "t-2"},
+	}
+	mgr.failStatusOnce = map[string]error{
+		"t-1|closed": errors.New("simulated interruption while closing task"),
+	}
+
+	firstRunRunner := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	firstRunLoop := NewLoop(mgr, firstRunRunner, nil, LoopOptions{ParentID: "root", SchedulerStatePath: statePath})
+
+	if _, err := firstRunLoop.Run(context.Background()); err == nil {
+		t.Fatalf("expected first run to fail due to simulated interruption")
+	}
+	if len(firstRunRunner.requests) != 1 || firstRunRunner.requests[0].TaskID != "t-1" {
+		t.Fatalf("expected first run to execute only t-1 before interruption, got %#v", firstRunRunner.requests)
+	}
+
+	secondRunRunner := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted},
+	}}
+	secondRunLoop := NewLoop(mgr, secondRunRunner, nil, LoopOptions{ParentID: "root", SchedulerStatePath: statePath})
+
+	summary, err := secondRunLoop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume run failed: %v", err)
+	}
+	if summary.Completed != 2 {
+		t.Fatalf("expected resume run to complete t-2 and t-3, got %#v", summary)
+	}
+	if len(secondRunRunner.requests) != 2 {
+		t.Fatalf("expected exactly two resumed executions, got %d", len(secondRunRunner.requests))
+	}
+	if secondRunRunner.requests[0].TaskID != "t-2" || secondRunRunner.requests[1].TaskID != "t-3" {
+		t.Fatalf("expected resumed order [t-2 t-3], got [%s %s]", secondRunRunner.requests[0].TaskID, secondRunRunner.requests[1].TaskID)
 	}
 }
 

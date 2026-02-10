@@ -26,19 +26,20 @@ type CloneManager interface {
 }
 
 type LoopOptions struct {
-	ParentID       string
-	MaxRetries     int
-	MaxTasks       int
-	Concurrency    int
-	DryRun         bool
-	Stop           <-chan struct{}
-	RepoRoot       string
-	Model          string
-	RunnerTimeout  time.Duration
-	VCS            contracts.VCS
-	RequireReview  bool
-	MergeOnSuccess bool
-	CloneManager   CloneManager
+	ParentID           string
+	MaxRetries         int
+	MaxTasks           int
+	Concurrency        int
+	SchedulerStatePath string
+	DryRun             bool
+	Stop               <-chan struct{}
+	RepoRoot           string
+	Model              string
+	RunnerTimeout      time.Duration
+	VCS                contracts.VCS
+	RequireReview      bool
+	MergeOnSuccess     bool
+	CloneManager       CloneManager
 }
 
 type Loop struct {
@@ -49,18 +50,20 @@ type Loop struct {
 	taskLock        taskLock
 	landingLock     landingLock
 	cloneManager    CloneManager
+	schedulerState  *schedulerStateStore
 	workerStartHook func(workerID int)
 }
 
 func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
 	return &Loop{
-		tasks:        tasks,
-		runner:       runner,
-		events:       events,
-		options:      options,
-		taskLock:     scheduler.NewTaskLock(),
-		landingLock:  scheduler.NewLandingLock(),
-		cloneManager: options.CloneManager,
+		tasks:          tasks,
+		runner:         runner,
+		events:         events,
+		options:        options,
+		taskLock:       scheduler.NewTaskLock(),
+		landingLock:    scheduler.NewLandingLock(),
+		cloneManager:   options.CloneManager,
+		schedulerState: newSchedulerStateStore(options.SchedulerStatePath, options.ParentID),
 	}
 }
 
@@ -85,6 +88,10 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
 		summary.Skipped++
 		return summary, nil
+	}
+
+	if err := l.recoverSchedulerState(ctx); err != nil {
+		return summary, err
 	}
 
 	type taskResult struct {
@@ -151,6 +158,10 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 			}
 			if taskID == "" {
 				break
+			}
+
+			if err := l.markTaskInFlight(taskID); err != nil {
+				return summary, err
 			}
 
 			inFlight[taskID] = struct{}{}
@@ -258,6 +269,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 
 		switch result.Status {
 		case contracts.RunnerResultCompleted:
+			if err := l.markTaskCompleted(task.ID); err != nil {
+				return summary, err
+			}
 			if l.options.MergeOnSuccess && l.options.VCS != nil && taskBranch != "" {
 				if l.landingLock != nil {
 					l.landingLock.Lock()
@@ -273,10 +287,16 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
 				return summary, err
 			}
+			if err := l.clearTaskTerminalState(task.ID); err != nil {
+				return summary, err
+			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
 			summary.Completed++
 			return summary, nil
 		case contracts.RunnerResultBlocked:
+			if err := l.markTaskBlocked(task.ID); err != nil {
+				return summary, err
+			}
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 				return summary, err
 			}
@@ -286,6 +306,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 				blockedData["triage_reason"] = result.Reason
 			}
 			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
+				return summary, err
+			}
+			if err := l.clearTaskTerminalState(task.ID); err != nil {
 				return summary, err
 			}
 			summary.Blocked++
@@ -311,6 +334,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 				return summary, err
 			}
+			if err := l.clearTaskInFlight(task.ID); err != nil {
+				return summary, err
+			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
@@ -323,6 +349,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 				return summary, err
 			}
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
+				return summary, err
+			}
+			if err := l.clearTaskInFlight(task.ID); err != nil {
 				return summary, err
 			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
