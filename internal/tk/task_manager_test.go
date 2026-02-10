@@ -77,6 +77,46 @@ func TestTaskManagerNextTasksSkipsTerminalFailedTasks(t *testing.T) {
 	}
 }
 
+func TestTaskManagerNextTasksFiltersUnsatisfiedDependencies(t *testing.T) {
+	r := &fakeRunner{responses: map[string]string{
+		"tk query": `{"id":"root","status":"open","type":"epic","priority":0}` + "\n" +
+			`{"id":"root.1","status":"open","type":"task","priority":1,"parent":"root","title":"Blocked by dep","deps":["dep.1"]}` + "\n" +
+			`{"id":"root.2","status":"open","type":"task","priority":2,"parent":"root","title":"Ready now"}` + "\n" +
+			`{"id":"dep.1","status":"open","type":"task","priority":0,"title":"Dependency"}`,
+		"tk ready":       "root.1 [open] - Blocked by dep\nroot.2 [open] - Ready now\n",
+		"tk blocked":     "",
+		"tk show root.1": "notes:\n",
+		"tk show root.2": "notes:\n",
+	}}
+	m := NewTaskManager(r)
+
+	tasks, err := m.NextTasks(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("next tasks failed: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "root.2" {
+		t.Fatalf("expected only dependency-satisfied task, got %#v", tasks)
+	}
+}
+
+func TestTaskManagerGetTaskIncludesDependencyMetadata(t *testing.T) {
+	r := &fakeRunner{responses: map[string]string{
+		"tk show t-1": "# Task 1\n",
+		"tk query": `{"id":"t-1","status":"open","type":"task","title":"Task 1","description":"do work","deps":["d-1","d-2"]}` + "\n" +
+			`{"id":"d-1","status":"closed","type":"task","title":"Dep 1"}` + "\n" +
+			`{"id":"d-2","status":"open","type":"task","title":"Dep 2"}`,
+	}}
+	m := NewTaskManager(r)
+
+	task, err := m.GetTask(context.Background(), "t-1")
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Metadata["dependencies"] != "d-1,d-2" {
+		t.Fatalf("expected dependency metadata, got %#v", task.Metadata)
+	}
+}
+
 func containsPrefix(calls []string, prefix string) bool {
 	for _, call := range calls {
 		if strings.HasPrefix(call, prefix) {

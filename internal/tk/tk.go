@@ -22,13 +22,14 @@ func New(runner Runner) *Adapter {
 }
 
 type ticket struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	Type        string `json:"type"`
-	Priority    any    `json:"priority"`
-	Parent      string `json:"parent"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"`
+	Type        string   `json:"type"`
+	Priority    any      `json:"priority"`
+	Parent      string   `json:"parent"`
+	Deps        []string `json:"deps"`
 }
 
 func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
