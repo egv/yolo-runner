@@ -53,3 +53,24 @@ func TestMarshalEventJSONLIncludesTaskTitleWhenPresent(t *testing.T) {
 		t.Fatalf("unexpected json line\nexpected: %s\nactual:   %s", expected, strings.TrimSpace(line))
 	}
 }
+
+func TestMarshalEventJSONLIncludesParallelContextWhenPresent(t *testing.T) {
+	e := Event{
+		Type:      EventTypeRunnerStarted,
+		TaskID:    "task-9",
+		TaskTitle: "Parallel execution",
+		WorkerID:  "worker-2",
+		ClonePath: "/tmp/clones/task-9",
+		QueuePos:  3,
+		Timestamp: time.Date(2026, 2, 10, 13, 5, 0, 0, time.UTC),
+	}
+
+	line, err := MarshalEventJSONL(e)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	expected := `{"type":"runner_started","task_id":"task-9","task_title":"Parallel execution","worker_id":"worker-2","clone_path":"/tmp/clones/task-9","queue_pos":3,"ts":"2026-02-10T13:05:00Z"}`
+	if strings.TrimSpace(line) != expected {
+		t.Fatalf("unexpected json line\nexpected: %s\nactual:   %s", expected, strings.TrimSpace(line))
+	}
+}

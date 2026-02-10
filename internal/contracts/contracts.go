@@ -121,6 +121,9 @@ type Event struct {
 	Type      EventType
 	TaskID    string
 	TaskTitle string
+	WorkerID  string
+	ClonePath string
+	QueuePos  int
 	Message   string
 	Metadata  map[string]string
 	Timestamp time.Time
@@ -131,6 +134,9 @@ func MarshalEventJSONL(event Event) (string, error) {
 		Type      EventType         `json:"type"`
 		TaskID    string            `json:"task_id"`
 		TaskTitle string            `json:"task_title,omitempty"`
+		WorkerID  string            `json:"worker_id,omitempty"`
+		ClonePath string            `json:"clone_path,omitempty"`
+		QueuePos  int               `json:"queue_pos,omitempty"`
 		Message   string            `json:"message,omitempty"`
 		Metadata  map[string]string `json:"metadata,omitempty"`
 		TS        string            `json:"ts"`
@@ -138,6 +144,9 @@ func MarshalEventJSONL(event Event) (string, error) {
 		Type:      event.Type,
 		TaskID:    event.TaskID,
 		TaskTitle: event.TaskTitle,
+		WorkerID:  event.WorkerID,
+		ClonePath: event.ClonePath,
+		QueuePos:  event.QueuePos,
 		Message:   event.Message,
 		Metadata:  event.Metadata,
 		TS:        event.Timestamp.UTC().Format(time.RFC3339),

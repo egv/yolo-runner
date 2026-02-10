@@ -477,6 +477,28 @@ func TestLoopEmitsLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsParallelContextInRunnerStartedEvent(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", Concurrency: 1})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	if !ok {
+		t.Fatalf("expected runner_started event")
+	}
+	if event.WorkerID == "" {
+		t.Fatalf("expected non-empty worker id")
+	}
+	if event.QueuePos != 1 {
+		t.Fatalf("expected queue position 1, got %d", event.QueuePos)
+	}
+}
+
 func TestLoopHonorsConcurrencyLimit(t *testing.T) {
 	mgr := newFakeTaskManager(
 		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
@@ -694,6 +716,15 @@ func hasEventType(events []contracts.Event, eventType contracts.EventType) bool 
 		}
 	}
 	return false
+}
+
+func findEventByType(events []contracts.Event, eventType contracts.EventType) (contracts.Event, bool) {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event, true
+		}
+	}
+	return contracts.Event{}, false
 }
 
 type recordingSink struct{ events []contracts.Event }

@@ -27,3 +27,7 @@ auto-reset after stalled runner_started with no progress >30m
 **2026-02-10T00:58:53Z**
 
 auto-reset after stalled run at 00:41Z; process killed
+
+**2026-02-10T01:45:04Z**
+
+auto-reset: ACP session reached idle but runner did not emit completion

@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
@@ -36,54 +33,30 @@ func RunMain(args []string, out io.Writer, errOut io.Writer) int {
 	}
 	defer file.Close()
 
-	model := monitor.NewModel(time.Now)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		event, parseErr := parseEvent(line)
-		if parseErr != nil {
-			fmt.Fprintln(errOut, parseErr)
-			return 1
-		}
-		model.Apply(event)
-	}
-	if err := scanner.Err(); err != nil {
+	if err := renderFromReader(file, out, errOut); err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
-	_, _ = io.WriteString(out, model.View())
 	return 0
 }
 
-func parseEvent(line []byte) (contracts.Event, error) {
-	var payload struct {
-		Type      string            `json:"type"`
-		TaskID    string            `json:"task_id"`
-		TaskTitle string            `json:"task_title"`
-		Message   string            `json:"message"`
-		Metadata  map[string]string `json:"metadata"`
-		TS        string            `json:"ts"`
-	}
-	if err := json.Unmarshal(line, &payload); err != nil {
-		return contracts.Event{}, err
-	}
-	timestamp := time.Time{}
-	if payload.TS != "" {
-		parsed, err := time.Parse(time.RFC3339, payload.TS)
-		if err != nil {
-			return contracts.Event{}, err
+func renderFromReader(reader io.Reader, out io.Writer, errOut io.Writer) error {
+	decoder := contracts.NewEventDecoder(reader)
+	model := monitor.NewModel(nil)
+	for {
+		event, err := decoder.Next()
+		if err == io.EOF {
+			break
 		}
-		timestamp = parsed
+		if err != nil {
+			return err
+		}
+		model.Apply(event)
 	}
-	return contracts.Event{
-		Type:      contracts.EventType(payload.Type),
-		TaskID:    payload.TaskID,
-		TaskTitle: payload.TaskTitle,
-		Message:   payload.Message,
-		Metadata:  payload.Metadata,
-		Timestamp: timestamp,
-	}, nil
+	_, writeErr := io.WriteString(out, model.View())
+	if writeErr != nil {
+		return writeErr
+	}
+	_ = errOut
+	return nil
 }

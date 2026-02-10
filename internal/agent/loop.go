@@ -95,14 +95,21 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 	}
 
 	type taskResult struct {
-		taskID  string
-		summary contracts.LoopSummary
-		err     error
+		taskID   string
+		workerID int
+		queuePos int
+		summary  contracts.LoopSummary
+		err      error
+	}
+	type taskJob struct {
+		taskID   string
+		queuePos int
 	}
 
 	results := make(chan taskResult, l.options.Concurrency)
-	tasksCh := make(chan string)
+	tasksCh := make(chan taskJob)
 	inFlight := map[string]struct{}{}
+	queueCounter := 0
 
 	for workerID := 0; workerID < l.options.Concurrency; workerID++ {
 		id := workerID
@@ -110,16 +117,16 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 			if l.workerStartHook != nil {
 				l.workerStartHook(id)
 			}
-			for taskID := range tasksCh {
-				func(id string) {
+			for job := range tasksCh {
+				func(taskID string, queuePos int) {
 					defer func() {
 						if l.taskLock != nil {
-							l.taskLock.Unlock(id)
+							l.taskLock.Unlock(taskID)
 						}
 					}()
-					resultSummary, taskErr := l.runTask(ctx, id)
-					results <- taskResult{taskID: id, summary: resultSummary, err: taskErr}
-				}(taskID)
+					resultSummary, taskErr := l.runTask(ctx, taskID, id, queuePos)
+					results <- taskResult{taskID: taskID, workerID: id, queuePos: queuePos, summary: resultSummary, err: taskErr}
+				}(job.taskID, job.queuePos)
 			}
 		}()
 	}
@@ -164,8 +171,9 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 				return summary, err
 			}
 
+			queueCounter++
 			inFlight[taskID] = struct{}{}
-			tasksCh <- taskID
+			tasksCh <- taskJob{taskID: taskID, queuePos: queueCounter}
 		}
 
 		if len(inFlight) == 0 {
@@ -184,14 +192,15 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 	}
 }
 
-func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.LoopSummary, err error) {
+func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePos int) (summary contracts.LoopSummary, err error) {
 	summary = contracts.LoopSummary{}
+	worker := fmt.Sprintf("worker-%d", workerID)
 
 	task, err := l.tasks.GetTask(ctx, taskID)
 	if err != nil {
 		return summary, err
 	}
-	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
+	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, QueuePos: queuePos, Message: task.Title, Timestamp: time.Now().UTC()})
 
 	taskRepoRoot := l.options.RepoRoot
 	if l.cloneManager != nil {
@@ -228,7 +237,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			return summary, err
 		}
 
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.RunnerModeImplement), Timestamp: time.Now().UTC()})
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Timestamp: time.Now().UTC()})
 		result, err := l.runner.Run(ctx, contracts.RunnerRequest{
 			TaskID:   task.ID,
 			ParentID: l.options.ParentID,
@@ -241,10 +250,10 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 		if err != nil {
 			return summary, err
 		}
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(result.Status), Timestamp: time.Now().UTC()})
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Timestamp: time.Now().UTC()})
 
 		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
 			reviewResult, reviewErr := l.runner.Run(ctx, contracts.RunnerRequest{
 				TaskID:   task.ID,
 				ParentID: l.options.ParentID,
@@ -257,7 +266,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if reviewErr != nil {
 				return summary, reviewErr
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
 			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady {
 				reviewResult.Status = contracts.RunnerResultFailed
 				reviewResult.Reason = "review verdict missing explicit pass"
@@ -290,7 +299,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.clearTaskTerminalState(task.ID); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
 			summary.Completed++
 			return summary, nil
 		case contracts.RunnerResultBlocked:
@@ -300,7 +309,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
 			blockedData := map[string]string{"triage_status": "blocked"}
 			if result.Reason != "" {
 				blockedData["triage_reason"] = result.Reason
@@ -337,7 +346,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.clearTaskInFlight(task.ID); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
 		default:
@@ -354,7 +363,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.Lo
 			if err := l.clearTaskInFlight(task.ID); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
 		}
