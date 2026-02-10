@@ -117,6 +117,51 @@ func TestModelBuildsDerivedRunWorkerTaskState(t *testing.T) {
 	}
 }
 
+func TestModelDerivesRunnerCommandAndOutputSummaries(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 6, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-2", TaskTitle: "Second", WorkerID: "worker-1", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-2", WorkerID: "worker-1", Message: "go test ./...", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-2", WorkerID: "worker-1", Message: "ok", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandFinished, TaskID: "task-2", WorkerID: "worker-1", Message: "exit=0", Timestamp: now.Add(-2 * time.Second)})
+
+	task := model.Snapshot().Root.Tasks["task-2"]
+	if task.CommandStartedCount != 1 || task.CommandFinishedCount != 1 {
+		t.Fatalf("expected command counters to be derived, got %#v", task)
+	}
+	if task.OutputCount != 1 {
+		t.Fatalf("expected output counter to be derived, got %#v", task)
+	}
+	if task.LastCommandSummary != "go test ./... -> exit=0" {
+		t.Fatalf("expected command summary, got %#v", task)
+	}
+}
+
+func TestModelDerivesWarningLifecycleAsActiveThenResolved(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 7, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-3", TaskTitle: "Third", WorkerID: "worker-2", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-3", WorkerID: "worker-2", Message: "no output for 5m", Timestamp: now.Add(-4 * time.Second)})
+	warnTask := model.Snapshot().Root.Tasks["task-3"]
+	if !warnTask.WarningActive {
+		t.Fatalf("expected warning lifecycle to be active, got %#v", warnTask)
+	}
+	if warnTask.WarningCount != 1 {
+		t.Fatalf("expected warning count=1, got %#v", warnTask)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: "task-3", WorkerID: "worker-2", Message: "completed", Timestamp: now.Add(-2 * time.Second)})
+	finishedTask := model.Snapshot().Root.Tasks["task-3"]
+	if finishedTask.WarningActive {
+		t.Fatalf("expected warning lifecycle resolved on runner finish, got %#v", finishedTask)
+	}
+	if finishedTask.TerminalStatus != "completed" {
+		t.Fatalf("expected terminal status from runner finished message, got %#v", finishedTask)
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

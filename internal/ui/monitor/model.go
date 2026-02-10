@@ -42,13 +42,22 @@ type WorkerState struct {
 }
 
 type TaskState struct {
-	TaskID       string
-	Title        string
-	WorkerID     string
-	QueuePos     int
-	RunnerPhase  string
-	LastMessage  string
-	LastUpdateAt time.Time
+	TaskID               string
+	Title                string
+	WorkerID             string
+	QueuePos             int
+	RunnerPhase          string
+	LastMessage          string
+	LastUpdateAt         time.Time
+	CommandStartedCount  int
+	CommandFinishedCount int
+	OutputCount          int
+	WarningCount         int
+	WarningActive        bool
+	TerminalStatus       string
+	LastCommandStarted   string
+	LastCommandSummary   string
+	LastSeverity         string
 }
 
 type workerLane struct {
@@ -109,17 +118,22 @@ func (m *Model) Apply(event contracts.Event) {
 		worker.CurrentPhase = string(event.Type)
 		worker.CurrentQueuePos = event.QueuePos
 		m.root.Workers[workerID] = worker
+	}
 
+	if strings.TrimSpace(event.TaskID) != "" {
 		task := m.root.Tasks[event.TaskID]
 		task.TaskID = event.TaskID
 		task.Title = strings.TrimSpace(event.TaskTitle)
-		task.WorkerID = workerID
+		task.WorkerID = strings.TrimSpace(event.WorkerID)
 		task.QueuePos = event.QueuePos
 		task.RunnerPhase = string(event.Type)
 		task.LastMessage = strings.TrimSpace(event.Message)
 		task.LastUpdateAt = event.Timestamp
+		applyDerivedTaskEvent(&task, event)
 		m.root.Tasks[event.TaskID] = task
+	}
 
+	if workerID := strings.TrimSpace(event.WorkerID); workerID != "" {
 		m.workers[workerID] = workerLane{
 			taskID:    event.TaskID,
 			taskTitle: event.TaskTitle,
@@ -165,6 +179,41 @@ func (m *Model) Apply(event contracts.Event) {
 	line := renderHistoryLine(event)
 	if line != "" {
 		m.history = append(m.history, line)
+	}
+}
+
+func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
+	if task == nil {
+		return
+	}
+	switch event.Type {
+	case contracts.EventTypeRunnerCommandStarted:
+		task.CommandStartedCount++
+		task.LastCommandStarted = strings.TrimSpace(event.Message)
+	case contracts.EventTypeRunnerCommandFinished:
+		task.CommandFinishedCount++
+		started := strings.TrimSpace(task.LastCommandStarted)
+		finished := strings.TrimSpace(event.Message)
+		switch {
+		case started != "" && finished != "":
+			task.LastCommandSummary = started + " -> " + finished
+		case finished != "":
+			task.LastCommandSummary = finished
+		case started != "":
+			task.LastCommandSummary = started
+		}
+	case contracts.EventTypeRunnerOutput:
+		task.OutputCount++
+	case contracts.EventTypeRunnerWarning:
+		task.WarningCount++
+		task.WarningActive = true
+		task.LastSeverity = "warning"
+	case contracts.EventTypeRunnerFinished:
+		task.WarningActive = false
+		task.TerminalStatus = strings.TrimSpace(event.Message)
+		task.LastSeverity = "info"
+	case contracts.EventTypeTaskFinished:
+		task.TerminalStatus = strings.TrimSpace(event.Message)
 	}
 }
 
