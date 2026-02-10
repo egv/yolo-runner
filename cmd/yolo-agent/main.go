@@ -17,15 +17,18 @@ import (
 )
 
 type runConfig struct {
-	repoRoot      string
-	rootID        string
-	model         string
-	maxTasks      int
-	concurrency   int
-	dryRun        bool
-	stream        bool
-	runnerTimeout time.Duration
-	eventsPath    string
+	repoRoot             string
+	rootID               string
+	model                string
+	maxTasks             int
+	concurrency          int
+	dryRun               bool
+	stream               bool
+	verboseStream        bool
+	streamOutputInterval time.Duration
+	streamOutputBuffer   int
+	runnerTimeout        time.Duration
+	eventsPath           string
 }
 
 func RunMain(args []string, run func(context.Context, runConfig) error) int {
@@ -37,6 +40,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	concurrency := fs.Int("concurrency", 1, "Maximum number of active task workers")
 	dryRun := fs.Bool("dry-run", false, "Dry run task loop")
 	stream := fs.Bool("stream", false, "Emit NDJSON events to stdout for piping into yolo-tui")
+	verboseStream := fs.Bool("verbose-stream", false, "Emit every runner_output event without coalescing")
+	streamOutputInterval := fs.Duration("stream-output-interval", 150*time.Millisecond, "Minimum interval between emitted runner_output events when not verbose")
+	streamOutputBuffer := fs.Int("stream-output-buffer", 64, "Maximum coalesced runner_output events retained before drop")
 	runnerTimeout := fs.Duration("runner-timeout", 0, "Per runner execution timeout")
 	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
@@ -50,21 +56,32 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--concurrency must be greater than 0")
 		return 1
 	}
+	if *streamOutputInterval <= 0 {
+		fmt.Fprintln(os.Stderr, "--stream-output-interval must be greater than 0")
+		return 1
+	}
+	if *streamOutputBuffer <= 0 {
+		fmt.Fprintln(os.Stderr, "--stream-output-buffer must be greater than 0")
+		return 1
+	}
 
 	if run == nil {
 		run = defaultRun
 	}
 
 	if err := run(context.Background(), runConfig{
-		repoRoot:      *repo,
-		rootID:        *root,
-		model:         *model,
-		maxTasks:      *max,
-		concurrency:   *concurrency,
-		dryRun:        *dryRun,
-		stream:        *stream,
-		runnerTimeout: *runnerTimeout,
-		eventsPath:    *events,
+		repoRoot:             *repo,
+		rootID:               *root,
+		model:                *model,
+		maxTasks:             *max,
+		concurrency:          *concurrency,
+		dryRun:               *dryRun,
+		stream:               *stream,
+		verboseStream:        *verboseStream,
+		streamOutputInterval: *streamOutputInterval,
+		streamOutputBuffer:   *streamOutputBuffer,
+		runnerTimeout:        *runnerTimeout,
+		eventsPath:           *events,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
@@ -102,7 +119,11 @@ func resolveEventsPath(cfg runConfig) string {
 func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
 	if cfg.stream {
-		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
+		sinks = append(sinks, contracts.NewStreamEventSinkWithOptions(os.Stdout, contracts.StreamEventSinkOptions{
+			VerboseOutput:  cfg.verboseStream,
+			OutputInterval: cfg.streamOutputInterval,
+			MaxPending:     cfg.streamOutputBuffer,
+		}))
 	}
 	if cfg.eventsPath != "" {
 		sinks = append(sinks, contracts.NewFileEventSink(cfg.eventsPath))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +71,30 @@ func TestRunMainParsesStreamFlag(t *testing.T) {
 	}
 }
 
+func TestRunMainParsesVerboseStreamFlag(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--stream", "--verbose-stream"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if !got.stream {
+		t.Fatalf("expected stream=true")
+	}
+	if !got.verboseStream {
+		t.Fatalf("expected verboseStream=true")
+	}
+}
+
 func TestResolveEventsPathDisablesDefaultFileInStreamMode(t *testing.T) {
 	got := resolveEventsPath(runConfig{repoRoot: "/repo", stream: true, eventsPath: ""})
 	if got != "" {
@@ -127,6 +152,85 @@ func TestRunWithComponentsStreamWritesNDJSONToStdout(t *testing.T) {
 	_ = filepath.Join
 }
 
+func TestRunWithComponentsStreamCoalescesRunnerOutputByDefault(t *testing.T) {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	repoRoot := initGitRepo(t)
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "runner_output", Message: "1"}, {Type: "runner_output", Message: "2"}, {Type: "runner_output", Message: "3"}, {Type: "runner_output", Message: "4"}}}
+	cfg := runConfig{repoRoot: repoRoot, rootID: "root", stream: true, streamOutputInterval: time.Hour, streamOutputBuffer: 2}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("runWithComponents failed: %v", runErr)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	out := string(data)
+	if got := strings.Count(out, `"type":"runner_output"`); got != 2 {
+		t.Fatalf("expected coalesced runner_output count=2, got %d output=%q", got, out)
+	}
+	if !strings.Contains(out, `"coalesced_outputs":"1"`) {
+		t.Fatalf("expected coalescing metadata in output, got %q", out)
+	}
+}
+
+func TestRunWithComponentsVerboseStreamEmitsAllRunnerOutput(t *testing.T) {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	repoRoot := initGitRepo(t)
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "runner_output", Message: "1"}, {Type: "runner_output", Message: "2"}, {Type: "runner_output", Message: "3"}, {Type: "runner_output", Message: "4"}}}
+	cfg := runConfig{repoRoot: repoRoot, rootID: "root", stream: true, verboseStream: true, streamOutputInterval: time.Hour, streamOutputBuffer: 2}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("runWithComponents failed: %v", runErr)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	out := string(data)
+	if got := strings.Count(out, `"type":"runner_output"`); got != 4 {
+		t.Fatalf("expected full runner_output count=4, got %d output=%q", got, out)
+	}
+}
+
 type testTaskManager struct {
 	tasks []contracts.Task
 	idx   int
@@ -159,6 +263,24 @@ type testRunner struct{}
 
 func (testRunner) Run(context.Context, contracts.RunnerRequest) (contracts.RunnerResult, error) {
 	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+type progressRunner struct {
+	updates []contracts.RunnerProgress
+	calls   int
+}
+
+func (r *progressRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.calls++
+	if request.OnProgress != nil && r.calls == 1 {
+		for _, update := range r.updates {
+			request.OnProgress(update)
+		}
+	}
+	if r.calls == 1 {
+		return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+	}
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted, ReviewReady: true}, nil
 }
 
 func TestRunMainRequiresRoot(t *testing.T) {
@@ -254,4 +376,15 @@ func captureStderr(t *testing.T, fn func()) string {
 		t.Fatalf("close reader: %v", err)
 	}
 	return string(data)
+}
+
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	cmd := exec.Command("git", "init", repoRoot)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git init failed: %v output=%s", err, string(out))
+	}
+	return repoRoot
 }
