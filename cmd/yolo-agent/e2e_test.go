@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/tk"
+	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
 )
 
 func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
@@ -56,10 +61,109 @@ func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
 	}
 }
 
+func TestE2E_StreamSmoke_ConcurrencyEmitsMultiWorkerParseableEvents(t *testing.T) {
+	if _, err := exec.LookPath("tk"); err != nil {
+		t.Skip("tk CLI is required for e2e test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required for e2e test")
+	}
+
+	repo := t.TempDir()
+	runCommand(t, repo, "git", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCommand(t, repo, "git", "add", "README.md")
+	runCommand(t, repo, "git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	runner := localRunner{dir: repo}
+	rootID := mustCreateTicket(t, runner, "Roadmap", "epic", "0", "")
+	mustCreateTicket(t, runner, "Task 1", "task", "0", rootID)
+	mustCreateTicket(t, runner, "Task 2", "task", "0", rootID)
+
+	taskManager := tk.NewTaskManager(runner)
+	fakeAgent := &parallelFakeAgentRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}, delay: 30 * time.Millisecond}
+	fakeVCS := &fakeVCS{}
+
+	originalStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = writePipe
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	runErr := runWithComponents(context.Background(), runConfig{repoRoot: repo, rootID: rootID, maxTasks: 2, concurrency: 2, stream: true}, taskManager, fakeAgent, fakeVCS)
+	if runErr != nil {
+		t.Fatalf("run failed: %v", runErr)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	raw, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := readPipe.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	decoder := contracts.NewEventDecoder(bytes.NewReader(raw))
+	model := monitor.NewModel(nil)
+	workers := map[string]struct{}{}
+	for {
+		event, err := decoder.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed to decode NDJSON stream: %v", err)
+		}
+		model.Apply(event)
+		if event.Type == contracts.EventTypeRunnerStarted && strings.TrimSpace(event.WorkerID) != "" {
+			workers[event.WorkerID] = struct{}{}
+		}
+	}
+	if len(workers) < 2 {
+		t.Fatalf("expected at least 2 workers in stream, got %d from %q", len(workers), string(raw))
+	}
+	view := model.View()
+	if !strings.Contains(view, "Workers:") {
+		t.Fatalf("expected model view to render workers section, got %q", view)
+	}
+}
+
 type fakeAgentRunner struct {
 	results  []contracts.RunnerResult
 	index    int
 	requests []contracts.RunnerRequest
+}
+
+type parallelFakeAgentRunner struct {
+	mu      sync.Mutex
+	results []contracts.RunnerResult
+	index   int
+	delay   time.Duration
+}
+
+func (f *parallelFakeAgentRunner) Run(_ context.Context, _ contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	time.Sleep(f.delay)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.index >= len(f.results) {
+		return contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: "missing result"}, nil
+	}
+	result := f.results[f.index]
+	f.index++
+	return result, nil
 }
 
 func (f *fakeAgentRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {

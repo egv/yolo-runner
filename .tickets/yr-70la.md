@@ -1,6 +1,6 @@
 ---
 id: yr-70la
-status: in_progress
+status: closed
 deps: [yr-37ot]
 links: []
 created: 2026-02-09T23:07:08Z
