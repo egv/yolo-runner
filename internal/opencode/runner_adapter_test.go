@@ -172,3 +172,23 @@ func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenStructuredVerdictFails(t *tes
 		t.Fatalf("expected ReviewReady=false when verdict is fail")
 	}
 }
+
+func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenOnlyPassFailTemplatePresent(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient) error {
+		line := "{\"message\":\"agent_message \\\"Respond with REVIEW_VERDICT: pass/fail and explain why\\\\n\\\"\"}\n"
+		return os.WriteFile(logPath, []byte(line), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false when only pass/fail template appears")
+	}
+}
