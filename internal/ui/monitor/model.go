@@ -11,6 +11,7 @@ import (
 
 type Model struct {
 	now          func() time.Time
+	root         RunState
 	runParams    map[string]string
 	currentTask  string
 	currentTitle string
@@ -20,6 +21,34 @@ type Model struct {
 	workers      map[string]workerLane
 	landing      map[string]landingState
 	triage       map[string]triageState
+}
+
+type Snapshot struct {
+	Root RunState
+}
+
+type RunState struct {
+	RunID   string
+	Workers map[string]WorkerState
+	Tasks   map[string]TaskState
+}
+
+type WorkerState struct {
+	WorkerID        string
+	CurrentTaskID   string
+	CurrentTask     string
+	CurrentPhase    string
+	CurrentQueuePos int
+}
+
+type TaskState struct {
+	TaskID       string
+	Title        string
+	WorkerID     string
+	QueuePos     int
+	RunnerPhase  string
+	LastMessage  string
+	LastUpdateAt time.Time
 }
 
 type workerLane struct {
@@ -48,6 +77,7 @@ func NewModel(now func() time.Time) *Model {
 	}
 	return &Model{
 		now:       now,
+		root:      RunState{Workers: map[string]WorkerState{}, Tasks: map[string]TaskState{}},
 		runParams: map[string]string{},
 		history:   []string{},
 		workers:   map[string]workerLane{},
@@ -72,6 +102,24 @@ func (m *Model) Apply(event contracts.Event) {
 		m.lastOutputAt = m.now()
 	}
 	if workerID := strings.TrimSpace(event.WorkerID); workerID != "" {
+		worker := m.root.Workers[workerID]
+		worker.WorkerID = workerID
+		worker.CurrentTaskID = event.TaskID
+		worker.CurrentTask = strings.TrimSpace(event.TaskTitle)
+		worker.CurrentPhase = string(event.Type)
+		worker.CurrentQueuePos = event.QueuePos
+		m.root.Workers[workerID] = worker
+
+		task := m.root.Tasks[event.TaskID]
+		task.TaskID = event.TaskID
+		task.Title = strings.TrimSpace(event.TaskTitle)
+		task.WorkerID = workerID
+		task.QueuePos = event.QueuePos
+		task.RunnerPhase = string(event.Type)
+		task.LastMessage = strings.TrimSpace(event.Message)
+		task.LastUpdateAt = event.Timestamp
+		m.root.Tasks[event.TaskID] = task
+
 		m.workers[workerID] = workerLane{
 			taskID:    event.TaskID,
 			taskTitle: event.TaskTitle,
@@ -105,6 +153,7 @@ func (m *Model) Apply(event contracts.Event) {
 		}
 	}
 	if event.Type == contracts.EventTypeRunStarted {
+		m.root.RunID = strings.TrimSpace(event.Metadata["root_id"])
 		m.runParams = map[string]string{}
 		for _, key := range []string{"root_id", "concurrency", "model", "runner_timeout", "stream", "verbose_stream", "stream_output_interval", "stream_output_buffer"} {
 			value := strings.TrimSpace(event.Metadata[key])
@@ -117,6 +166,18 @@ func (m *Model) Apply(event contracts.Event) {
 	if line != "" {
 		m.history = append(m.history, line)
 	}
+}
+
+func (m *Model) Snapshot() Snapshot {
+	workers := map[string]WorkerState{}
+	for id, worker := range m.root.Workers {
+		workers[id] = worker
+	}
+	tasks := map[string]TaskState{}
+	for id, task := range m.root.Tasks {
+		tasks[id] = task
+	}
+	return Snapshot{Root: RunState{RunID: m.root.RunID, Workers: workers, Tasks: tasks}}
 }
 
 func (m *Model) View() string {

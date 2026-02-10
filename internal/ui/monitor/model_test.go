@@ -96,6 +96,27 @@ func TestModelStoresRunParametersFromRunStartedEvent(t *testing.T) {
 	assertContains(t, view, "runner_timeout=15m0s")
 }
 
+func TestModelBuildsDerivedRunWorkerTaskState(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 5, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", Message: "completed", Timestamp: now.Add(-1 * time.Second)})
+
+	state := model.Snapshot()
+	if state.Root.Workers["worker-0"].CurrentTaskID != "task-1" {
+		t.Fatalf("expected worker current task, got %#v", state.Root.Workers["worker-0"])
+	}
+	task := state.Root.Tasks["task-1"]
+	if task.TaskID != "task-1" || task.Title != "First" {
+		t.Fatalf("unexpected task snapshot %#v", task)
+	}
+	if task.RunnerPhase != "runner_finished" {
+		t.Fatalf("expected derived runner phase runner_finished, got %q", task.RunnerPhase)
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
