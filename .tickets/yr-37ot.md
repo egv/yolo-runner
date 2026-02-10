@@ -1,6 +1,6 @@
 ---
 id: yr-37ot
-status: in_progress
+status: closed
 deps: [yr-c5hx]
 links: []
 created: 2026-02-09T23:07:08Z

@@ -50,6 +50,26 @@ func TestModelRendersLandingQueueStatesFromTaskFinishedEvents(t *testing.T) {
 	assertContains(t, view, "task-2 - Second => failed")
 }
 
+func TestModelNormalizesTriagePanelData(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 3, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{
+		Type:      contracts.EventTypeTaskDataUpdated,
+		TaskID:    "task-1",
+		TaskTitle: "First",
+		Metadata: map[string]string{
+			"triage_status": " Failed ",
+			"triage_reason": "  lint failed  ",
+		},
+		Timestamp: now.Add(-2 * time.Second),
+	})
+
+	view := model.View()
+	assertContains(t, view, "Triage:")
+	assertContains(t, view, "task-1 - First => failed | lint failed")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

@@ -573,6 +573,52 @@ func TestLoopEmitsRunnerWarningWhenNoOutputThresholdExceeded(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsTaskDataUpdatedEventForBlockedTriage(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultBlocked, Reason: "needs token"}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root"})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	events := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
+	if len(events) != 1 {
+		t.Fatalf("expected one task_data_updated event, got %d", len(events))
+	}
+	if events[0].Metadata["triage_status"] != "blocked" {
+		t.Fatalf("expected triage_status=blocked, got %#v", events[0].Metadata)
+	}
+	if events[0].Metadata["triage_reason"] != "needs token" {
+		t.Fatalf("expected triage_reason in metadata, got %#v", events[0].Metadata)
+	}
+}
+
+func TestLoopEmitsTaskDataUpdatedEventForFailedTriage(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "lint failed"}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 0})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	events := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
+	if len(events) != 1 {
+		t.Fatalf("expected one task_data_updated event, got %d", len(events))
+	}
+	if events[0].Metadata["triage_status"] != "failed" {
+		t.Fatalf("expected triage_status=failed, got %#v", events[0].Metadata)
+	}
+	if events[0].Metadata["triage_reason"] != "lint failed" {
+		t.Fatalf("expected triage_reason in metadata, got %#v", events[0].Metadata)
+	}
+}
+
 func TestLoopHonorsConcurrencyLimit(t *testing.T) {
 	mgr := newFakeTaskManager(
 		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},

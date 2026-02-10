@@ -320,6 +320,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
 				return summary, err
 			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
 			if err := l.clearTaskTerminalState(task.ID); err != nil {
 				return summary, err
 			}
@@ -343,6 +344,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 				return summary, err
 			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 				return summary, err
 			}
@@ -360,6 +362,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 				return summary, err
 			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 				return summary, err
 			}

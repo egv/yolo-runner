@@ -18,6 +18,7 @@ type Model struct {
 	history      []string
 	workers      map[string]workerLane
 	landing      map[string]landingState
+	triage       map[string]triageState
 }
 
 type workerLane struct {
@@ -33,6 +34,13 @@ type landingState struct {
 	status    string
 }
 
+type triageState struct {
+	taskID    string
+	taskTitle string
+	status    string
+	reason    string
+}
+
 func NewModel(now func() time.Time) *Model {
 	if now == nil {
 		now = time.Now
@@ -42,6 +50,7 @@ func NewModel(now func() time.Time) *Model {
 		history: []string{},
 		workers: map[string]workerLane{},
 		landing: map[string]landingState{},
+		triage:  map[string]triageState{},
 	}
 }
 
@@ -78,6 +87,21 @@ func (m *Model) Apply(event contracts.Event) {
 			}
 		}
 	}
+	if event.Type == contracts.EventTypeTaskDataUpdated {
+		taskID := strings.TrimSpace(event.TaskID)
+		if taskID != "" {
+			status := normalizeTriageStatus(event.Metadata["triage_status"])
+			reason := strings.TrimSpace(event.Metadata["triage_reason"])
+			if status != "" || reason != "" {
+				m.triage[taskID] = triageState{
+					taskID:    taskID,
+					taskTitle: strings.TrimSpace(event.TaskTitle),
+					status:    status,
+					reason:    reason,
+				}
+			}
+		}
+	}
 	line := renderHistoryLine(event)
 	if line != "" {
 		m.history = append(m.history, line)
@@ -102,9 +126,19 @@ func (m *Model) View() string {
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
 	lines = append(lines, renderLandingQueue(m.landing)...)
+	lines = append(lines, "Triage:")
+	lines = append(lines, renderTriage(m.triage)...)
 	lines = append(lines, "History:")
 	lines = append(lines, m.history...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func normalizeTriageStatus(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed
 }
 
 func renderWorkers(workers map[string]workerLane) []string {
@@ -144,6 +178,29 @@ func renderLandingQueue(landing map[string]landingState) []string {
 		entry := landing[id]
 		status := emptyAsNA(entry.status)
 		lines = append(lines, "- "+renderCurrentTask(entry.taskID, entry.taskTitle)+" => "+status)
+	}
+	return lines
+}
+
+func renderTriage(triage map[string]triageState) []string {
+	if len(triage) == 0 {
+		return []string{"- n/a"}
+	}
+	ids := make([]string, 0, len(triage))
+	for id := range triage {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		entry := triage[id]
+		status := emptyAsNA(entry.status)
+		reason := strings.TrimSpace(entry.reason)
+		line := "- " + renderCurrentTask(entry.taskID, entry.taskTitle) + " => " + status
+		if reason != "" {
+			line += " | " + reason
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }
