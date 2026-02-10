@@ -137,6 +137,44 @@ func TestRenderFromReaderIsDeterministicForSameInput(t *testing.T) {
 	}
 }
 
+func TestShouldUseFullscreenIsFalseForBufferOutput(t *testing.T) {
+	if shouldUseFullscreen(&bytes.Buffer{}) {
+		t.Fatalf("expected fullscreen mode to be disabled for non-terminal output")
+	}
+}
+
+func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
+	input := strings.NewReader("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
+		"{\"type\":\"runner_output\",\"task_id\":\"task-1\",\"message\":\"unterminated\"\n" +
+		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
+
+	ch := make(chan streamMsg, 8)
+	go decodeEvents(input, ch)
+
+	hadDecodeError := false
+	hadRunnerFinished := false
+	for msg := range ch {
+		switch typed := msg.(type) {
+		case decodeErrorMsg:
+			if typed.err == nil {
+				t.Fatalf("expected decode error payload")
+			}
+			hadDecodeError = true
+		case eventMsg:
+			if typed.event.Type == contracts.EventTypeRunnerFinished {
+				hadRunnerFinished = true
+			}
+		}
+	}
+
+	if !hadDecodeError {
+		t.Fatalf("expected decode error message in stream")
+	}
+	if !hadRunnerFinished {
+		t.Fatalf("expected stream to continue and emit runner_finished")
+	}
+}
+
 func contains(text string, sub string) bool {
 	for i := 0; i+len(sub) <= len(text); i++ {
 		if text[i:i+len(sub)] == sub {
