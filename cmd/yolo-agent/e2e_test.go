@@ -21,7 +21,7 @@ func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
 	taskID := mustCreateTicket(t, runner, "Self-host task", "task", "0", rootID)
 
 	taskManager := tk.NewTaskManager(runner)
-	fakeAgent := &fakeAgentRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted}}}
+	fakeAgent := &fakeAgentRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted, ReviewReady: true}}}
 	fakeVCS := &fakeVCS{}
 
 	err := runWithComponents(context.Background(), runConfig{repoRoot: repo, rootID: rootID, maxTasks: 1}, taskManager, fakeAgent, fakeVCS)

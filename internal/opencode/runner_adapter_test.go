@@ -3,6 +3,8 @@ package opencode
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +110,85 @@ func TestCLIRunnerAdapterMapsInitFailureToFailed(t *testing.T) {
 	}
 	if !strings.Contains(result.Reason, "serena initialization failed") {
 		t.Fatalf("expected init failure reason, got %q", result.Reason)
+	}
+}
+
+func TestCLIRunnerAdapterSetsReviewReadyFromStructuredPassVerdict(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient) error {
+		line := "{\"message\":\"agent_message \\\"REVIEW_VERDICT: pass\\\\n\\\"\"}\n"
+		return os.WriteFile(logPath, []byte(line), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if !result.ReviewReady {
+		t.Fatalf("expected ReviewReady=true when verdict is pass")
+	}
+}
+
+func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenVerdictMissing(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient) error {
+		line := "{\"message\":\"agent_message \\\"Looks good to me\\\\n\\\"\"}\n"
+		return os.WriteFile(logPath, []byte(line), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false when verdict is missing")
+	}
+}
+
+func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenStructuredVerdictFails(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient) error {
+		line := "{\"message\":\"agent_message \\\"REVIEW_VERDICT: fail\\\\n\\\"\"}\n"
+		return os.WriteFile(logPath, []byte(line), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false when verdict is fail")
+	}
+}
+
+func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenOnlyPassFailTemplatePresent(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient) error {
+		line := "{\"message\":\"agent_message \\\"Respond with REVIEW_VERDICT: pass/fail and explain why\\\\n\\\"\"}\n"
+		return os.WriteFile(logPath, []byte(line), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false when only pass/fail template appears")
 	}
 }

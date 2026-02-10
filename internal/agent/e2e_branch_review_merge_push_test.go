@@ -23,7 +23,7 @@ func TestE2EBranchReviewMergePushWithSeededTKBacklog(t *testing.T) {
 	mgr := tk.NewTaskManager(r)
 	runner := &fakeRunner{results: []contracts.RunnerResult{
 		{Status: contracts.RunnerResultCompleted},
-		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
 	}}
 	vcs := &fakeVCS{}
 	loop := NewLoop(mgr, runner, nil, LoopOptions{

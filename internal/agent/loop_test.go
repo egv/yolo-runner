@@ -243,7 +243,7 @@ func TestLoopRunsReviewAfterImplementationSuccess(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
 		{Status: contracts.RunnerResultCompleted},
-		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
 	}}
 	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true})
 
@@ -282,11 +282,38 @@ func TestLoopFailsTaskWhenReviewFails(t *testing.T) {
 	}
 }
 
+func TestLoopFailsTaskWhenReviewVerdictIsMissing(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: false},
+	}}
+	vcs := &fakeVCS{}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failed summary, got %#v", summary)
+	}
+	if mgr.statusByID["t-1"] != contracts.TaskStatusFailed {
+		t.Fatalf("expected failed task status, got %s", mgr.statusByID["t-1"])
+	}
+	if containsCall(vcs.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("did not expect merge_to_main call, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "push_main") {
+		t.Fatalf("did not expect push_main call, got %v", vcs.calls)
+	}
+}
+
 func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
 		{Status: contracts.RunnerResultCompleted},
-		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
 	}}
 	vcs := &fakeVCS{}
 	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
