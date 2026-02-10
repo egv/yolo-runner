@@ -45,6 +45,27 @@ type PerformanceSnapshot struct {
 	PanelRowsTruncated bool
 }
 
+type UIState struct {
+	CurrentTask   string
+	Phase         string
+	LastOutputAge string
+	StatusBar     []string
+	Performance   []string
+	Panels        []UIPanelLine
+	RunParams     []string
+	Workers       []string
+	Landing       []string
+	Triage        []string
+	History       []string
+}
+
+type UIPanelLine struct {
+	Text     string
+	Depth    int
+	Selected bool
+	Severity string
+}
+
 type RunState struct {
 	RunID   string
 	Workers map[string]WorkerState
@@ -394,6 +415,31 @@ func (m *Model) View() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+func (m *Model) UIState() UIState {
+	age := "n/a"
+	if !m.lastOutputAt.IsZero() {
+		seconds := int(m.now().Sub(m.lastOutputAt).Round(time.Second).Seconds())
+		if seconds < 0 {
+			seconds = 0
+		}
+		age = fmt.Sprintf("%ds", seconds)
+	}
+	perf := m.PerformanceSnapshot()
+	return UIState{
+		CurrentTask:   renderCurrentTask(m.currentTask, m.currentTitle),
+		Phase:         emptyAsNA(m.phase),
+		LastOutputAge: age,
+		StatusBar:     renderStatusBar(m.deriveStatusMetrics()),
+		Performance:   renderPerformance(perf),
+		Panels:        m.uiPanelLines(),
+		RunParams:     renderRunParameters(m.runParams),
+		Workers:       renderWorkers(m.workers),
+		Landing:       renderLandingQueue(m.landing),
+		Triage:        renderTriage(m.triage),
+		History:       append([]string{}, m.history...),
+	}
+}
+
 type panelRow struct {
 	id          string
 	indent      int
@@ -401,6 +447,44 @@ type panelRow struct {
 	severity    string
 	hasChildren bool
 	expanded    bool
+}
+
+func (m *Model) uiPanelLines() []UIPanelLine {
+	rows := m.panelRows()
+	if len(rows) == 0 {
+		return []UIPanelLine{{Text: "n/a", Depth: 0, Selected: true, Severity: "none"}}
+	}
+	cursor := m.panelCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	start, end := panelWindow(len(rows), cursor, m.viewportHeight)
+	lines := make([]UIPanelLine, 0, end-start+1)
+	for i := start; i < end; i++ {
+		row := rows[i]
+		glyph := "[ ]"
+		if row.hasChildren {
+			if row.expanded {
+				glyph = "[-]"
+			} else {
+				glyph = "[+]"
+			}
+		}
+		text := glyph + " " + row.label
+		lines = append(lines, UIPanelLine{
+			Text:     text,
+			Depth:    row.indent,
+			Selected: i == cursor,
+			Severity: row.severity,
+		})
+	}
+	if hidden := len(rows) - end; hidden > 0 {
+		lines = append(lines, UIPanelLine{Text: fmt.Sprintf("... %d more panel rows", hidden), Depth: 0, Selected: false, Severity: "none"})
+	}
+	return lines
 }
 
 func (m *Model) panelRows() []panelRow {
