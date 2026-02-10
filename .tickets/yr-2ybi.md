@@ -1,6 +1,6 @@
 ---
 id: yr-2ybi
-status: in_progress
+status: closed
 deps: [yr-xolw]
 links: []
 created: 2026-02-09T23:42:04Z
