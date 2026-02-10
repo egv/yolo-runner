@@ -1,6 +1,6 @@
 ---
 id: yr-sbkp
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-10T08:16:58Z
