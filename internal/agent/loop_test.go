@@ -829,6 +829,172 @@ func TestLoopResumesPersistedSchedulerStateAndDoesNotRerunCompletedTask(t *testi
 	}
 }
 
+func TestSchedulerStatePersistResume_HandlesInterruptionAndCorrectQueueContinuation(t *testing.T) {
+	// Given restart after interruption
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, "scheduler-state.json")
+
+	// Setup tasks with dependencies to test queue continuation
+	mgr := newFakeTaskManager(
+		contracts.Task{ID: "task-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "task-2", Title: "Task 2", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "task-3", Title: "Task 3", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "task-4", Title: "Task 4", Status: contracts.TaskStatusOpen},
+	)
+	mgr.dependsOn = map[string][]string{
+		"task-3": {"task-1", "task-2"},
+		"task-4": {"task-3"},
+	}
+
+	// Simulate interruption during task closing
+	mgr.failStatusOnce = map[string]error{
+		"task-1|closed": errors.New("simulated interruption while closing task"),
+	}
+
+	// First run: complete task-1, then get interrupted
+	firstRunRunner := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	firstRunLoop := NewLoop(mgr, firstRunRunner, nil, LoopOptions{
+		ParentID:           "root",
+		SchedulerStatePath: statePath,
+		MaxTasks:           1, // Only process one task to ensure controlled scenario
+	})
+
+	_, err := firstRunLoop.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected first run to fail due to interruption")
+	}
+
+	// Verify first run state: task-1 should be persisted as completed
+	stateStore := newSchedulerStateStore(statePath, "root")
+	snapshot, err := stateStore.Load()
+	if err != nil {
+		t.Fatalf("failed to load scheduler state: %v", err)
+	}
+
+	// task-1 should be marked as completed in persisted state
+	if _, exists := snapshot.Completed["task-1"]; !exists {
+		t.Fatalf("expected task-1 to be persisted as completed, got completed=%v, in-flight=%v",
+			snapshot.Completed, snapshot.InFlight)
+	}
+
+	// When resuming after restart
+	secondRunRunner := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted}, // task-2 should complete
+		{Status: contracts.RunnerResultCompleted}, // task-3 should complete
+		{Status: contracts.RunnerResultCompleted}, // task-4 should complete
+	}}
+	secondRunLoop := NewLoop(mgr, secondRunRunner, nil, LoopOptions{
+		ParentID:           "root",
+		SchedulerStatePath: statePath,
+		MaxRetries:         0,
+	})
+
+	// Then completed tasks are not re-run and queue continues correctly
+	summary, err := secondRunLoop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume run failed: %v", err)
+	}
+
+	// Should complete exactly 3 tasks (task-2, task-3, task-4) - task-1 should not be re-run
+	if summary.Completed != 3 {
+		t.Fatalf("expected 3 completed tasks (task-2, task-3, task-4), got %d", summary.Completed)
+	}
+
+	// Verify the correct tasks were executed in correct order
+	if len(secondRunRunner.requests) != 3 {
+		t.Fatalf("expected exactly 3 runner requests, got %d", len(secondRunRunner.requests))
+	}
+
+	expectedOrder := []string{"task-2", "task-3", "task-4"}
+	for i, expected := range expectedOrder {
+		if secondRunRunner.requests[i].TaskID != expected {
+			t.Fatalf("expected task %d to be %s, got %s", i+1, expected, secondRunRunner.requests[i].TaskID)
+		}
+	}
+
+	// Verify final state: all tasks should be closed
+	if mgr.statusByID["task-1"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected task-1 to be closed, got %s", mgr.statusByID["task-1"])
+	}
+	if mgr.statusByID["task-2"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected task-2 to be closed, got %s", mgr.statusByID["task-2"])
+	}
+	if mgr.statusByID["task-3"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected task-3 to be closed, got %s", mgr.statusByID["task-3"])
+	}
+	if mgr.statusByID["task-4"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected task-4 to be closed, got %s", mgr.statusByID["task-4"])
+	}
+}
+
+func TestSchedulerStatePersistResume_HandlesBlockedTasksCorrectly(t *testing.T) {
+	// Given restart after interruption with blocked tasks
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, "scheduler-state.json")
+
+	mgr := newFakeTaskManager(
+		contracts.Task{ID: "blocked-task", Title: "Blocked Task", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "normal-task", Title: "Normal Task", Status: contracts.TaskStatusOpen},
+	)
+
+	// Simulate interruption after blocking a task
+	mgr.failStatusOnce = map[string]error{
+		"blocked-task|blocked": errors.New("simulated interruption while blocking task"),
+	}
+
+	// First run: blocked-task gets blocked, then gets interrupted
+	firstRunRunner := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultBlocked, Reason: "needs manual intervention"}, // blocked-task gets blocked
+	}}
+	firstRunLoop := NewLoop(mgr, firstRunRunner, nil, LoopOptions{
+		ParentID:           "root",
+		SchedulerStatePath: statePath,
+		MaxTasks:           1, // Only process one task
+	})
+
+	_, err := firstRunLoop.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected first run to fail due to interruption")
+	}
+
+	// When resuming after restart
+	secondRunRunner := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted}, // normal-task should complete
+	}}
+	secondRunLoop := NewLoop(mgr, secondRunRunner, nil, LoopOptions{
+		ParentID:           "root",
+		SchedulerStatePath: statePath,
+		MaxRetries:         0,
+	})
+
+	// Then blocked tasks remain blocked and other tasks continue
+	summary, err := secondRunLoop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resume run failed: %v", err)
+	}
+
+	// Should complete exactly 1 task (normal-task) - blocked-task should not be re-run
+	if summary.Completed != 1 {
+		t.Fatalf("expected 1 completed task (normal-task), got %d", summary.Completed)
+	}
+
+	// Verify blocked task remains blocked with correct triage data
+	if mgr.statusByID["blocked-task"] != contracts.TaskStatusBlocked {
+		t.Fatalf("expected blocked-task to remain blocked, got %s", mgr.statusByID["blocked-task"])
+	}
+	if mgr.dataByID["blocked-task"]["triage_status"] != "blocked" {
+		t.Fatalf("expected blocked-task to have triage_status=blocked, got %v", mgr.dataByID["blocked-task"])
+	}
+	if mgr.dataByID["blocked-task"]["triage_reason"] != "needs manual intervention" {
+		t.Fatalf("expected blocked-task to preserve triage_reason, got %v", mgr.dataByID["blocked-task"]["triage_reason"])
+	}
+
+	// Verify normal task was completed
+	if mgr.statusByID["normal-task"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected normal-task to be closed, got %s", mgr.statusByID["normal-task"])
+	}
+}
+
 func TestSchedulerStateStoreMergesInterleavedUpdates(t *testing.T) {
 	tempDir := t.TempDir()
 	statePath := filepath.Join(tempDir, "scheduler-state.json")
