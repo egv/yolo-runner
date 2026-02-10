@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/agent"
@@ -118,6 +119,7 @@ func resolveEventsPath(cfg runConfig) string {
 
 func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
+	closers := []func(){}
 	if cfg.stream {
 		sinks = append(sinks, contracts.NewStreamEventSinkWithOptions(os.Stdout, contracts.StreamEventSinkOptions{
 			VerboseOutput:  cfg.verboseStream,
@@ -126,8 +128,20 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		}))
 	}
 	if cfg.eventsPath != "" {
-		sinks = append(sinks, contracts.NewFileEventSink(cfg.eventsPath))
+		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
+		if cfg.stream {
+			mirror := newMirrorEventSink(fileSink, cfg.streamOutputBuffer)
+			closers = append(closers, mirror.Close)
+			sinks = append(sinks, mirror)
+		} else {
+			sinks = append(sinks, fileSink)
+		}
 	}
+	defer func() {
+		for _, closeFn := range closers {
+			closeFn()
+		}
+	}()
 	eventSink := contracts.EventSink(nil)
 	if len(sinks) == 1 {
 		eventSink = sinks[0]
@@ -151,6 +165,49 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 
 	_, err := loop.Run(ctx)
 	return err
+}
+
+type mirrorEventSink struct {
+	base contracts.EventSink
+	ch   chan contracts.Event
+	wg   sync.WaitGroup
+	one  sync.Once
+}
+
+func newMirrorEventSink(base contracts.EventSink, buffer int) *mirrorEventSink {
+	if buffer <= 0 {
+		buffer = 64
+	}
+	s := &mirrorEventSink{base: base, ch: make(chan contracts.Event, buffer)}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for event := range s.ch {
+			_ = s.base.Emit(context.Background(), event)
+		}
+	}()
+	return s
+}
+
+func (s *mirrorEventSink) Emit(_ context.Context, event contracts.Event) error {
+	if s == nil || s.base == nil {
+		return nil
+	}
+	select {
+	case s.ch <- event:
+	default:
+	}
+	return nil
+}
+
+func (s *mirrorEventSink) Close() {
+	if s == nil {
+		return
+	}
+	s.one.Do(func() {
+		close(s.ch)
+		s.wg.Wait()
+	})
 }
 
 type localRunner struct{ dir string }

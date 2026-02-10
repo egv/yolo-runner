@@ -33,3 +33,5 @@ Invoking `yolo-runner` prints a compatibility notice and continues to run, so ex
 - When the buffer overflows, older pending output lines are dropped; emitted events include `metadata.coalesced_outputs` and `metadata.dropped_outputs` counters.
 
 Use `--verbose-stream` to disable coalescing and emit every `runner_output` line.
+
+When `--stream` and `--events <path>` are combined, the file sink runs as a best-effort mirror: stdout NDJSON remains primary, and mirror backpressure/errors do not block live stream delivery.

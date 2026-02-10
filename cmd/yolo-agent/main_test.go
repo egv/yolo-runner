@@ -231,6 +231,70 @@ func TestRunWithComponentsVerboseStreamEmitsAllRunnerOutput(t *testing.T) {
 	}
 }
 
+func TestRunWithComponentsStreamKeepsRunningWhenMirrorSinkFails(t *testing.T) {
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	repoRoot := initGitRepo(t)
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	runner := &testRunner{}
+
+	notDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notDir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	invalidMirrorPath := filepath.Join(notDir, "events.jsonl")
+	cfg := runConfig{repoRoot: repoRoot, rootID: "root", dryRun: true, stream: true, eventsPath: invalidMirrorPath}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("expected stream mode to continue when mirror sink fails, got: %v", runErr)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	out := string(data)
+	if !strings.Contains(out, `"type":"task_started"`) {
+		t.Fatalf("expected primary stdout stream to remain active, got %q", out)
+	}
+}
+
+func TestMirrorEventSinkEmitDoesNotBlockWhenQueueFull(t *testing.T) {
+	block := make(chan struct{})
+	wrapped := newMirrorEventSink(blockingSink{block: block}, 1)
+
+	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
+		t.Fatalf("first emit failed: %v", err)
+	}
+
+	start := time.Now()
+	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
+		t.Fatalf("second emit failed: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 20*time.Millisecond {
+		t.Fatalf("expected non-blocking emit, took %s", elapsed)
+	}
+
+	close(block)
+	wrapped.Close()
+}
+
 type testTaskManager struct {
 	tasks []contracts.Task
 	idx   int
@@ -387,4 +451,13 @@ func initGitRepo(t *testing.T) string {
 		t.Fatalf("git init failed: %v output=%s", err, string(out))
 	}
 	return repoRoot
+}
+
+type blockingSink struct {
+	block <-chan struct{}
+}
+
+func (b blockingSink) Emit(context.Context, contracts.Event) error {
+	<-b.block
+	return nil
 }
