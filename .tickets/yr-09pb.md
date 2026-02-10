@@ -1,6 +1,6 @@
 ---
 id: yr-09pb
-status: in_progress
+status: closed
 deps: [yr-o4sq]
 links: []
 created: 2026-02-10T08:17:26Z
