@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -243,10 +244,79 @@ func TestModelSupportsExpandCollapseViaEnterSpaceAndVimKeys(t *testing.T) {
 	assertContains(t, view, "> [+] worker-0 severity=warning")
 }
 
+func TestModelBoundsHistoryWithPerformanceControls(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 11, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.SetPerformanceControls(5, 256)
+
+	for i := 0; i < 20; i++ {
+		model.Apply(contracts.Event{
+			Type:      contracts.EventTypeRunnerOutput,
+			TaskID:    "task-1",
+			TaskTitle: "First",
+			Message:   fmt.Sprintf("line-%02d", i),
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	perf := model.PerformanceSnapshot()
+	if perf.HistorySize != 5 {
+		t.Fatalf("expected bounded history size 5, got %#v", perf)
+	}
+
+	view := model.View()
+	assertContains(t, view, "line-19")
+	assertNotContains(t, view, "line-00")
+}
+
+func TestModelUsesViewportAwareRenderingForLargePanelTrees(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 12, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.SetPerformanceControls(256, 120)
+	model.SetViewportHeight(12)
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-2y0b"}, Timestamp: now.Add(-10 * time.Second)})
+	for i := 0; i < 500; i++ {
+		workerID := fmt.Sprintf("worker-%d", i%10)
+		model.Apply(contracts.Event{
+			Type:      contracts.EventTypeTaskStarted,
+			TaskID:    fmt.Sprintf("task-%03d", i),
+			TaskTitle: fmt.Sprintf("Task %03d", i),
+			WorkerID:  workerID,
+			QueuePos:  i + 1,
+			Timestamp: now.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+
+	model.panelExpand["tasks"] = true
+	view := model.View()
+	perf := model.PerformanceSnapshot()
+
+	if perf.TotalPanelRows != 120 {
+		t.Fatalf("expected bounded panel rows to 120, got %#v", perf)
+	}
+	if perf.VisiblePanelRows > 12 {
+		t.Fatalf("expected viewport to cap visible rows, got %#v", perf)
+	}
+	if !perf.PanelRowsTruncated {
+		t.Fatalf("expected panel truncation marker, got %#v", perf)
+	}
+	assertContains(t, view, "Performance:")
+	assertContains(t, view, "panel_rows=12/120")
+	assertContains(t, view, "... 108 more panel rows")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
 		t.Fatalf("expected %q in %q", expected, text)
+	}
+}
+
+func assertNotContains(t *testing.T, text string, expected string) {
+	t.Helper()
+	if contains(text, expected) {
+		t.Fatalf("did not expect %q in %q", expected, text)
 	}
 }
 

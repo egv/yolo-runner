@@ -11,25 +11,38 @@ import (
 )
 
 type Model struct {
-	now          func() time.Time
-	root         RunState
-	runStartedAt time.Time
-	eventCount   int
-	panelCursor  int
-	panelExpand  map[string]bool
-	runParams    map[string]string
-	currentTask  string
-	currentTitle string
-	phase        string
-	lastOutputAt time.Time
-	history      []string
-	workers      map[string]workerLane
-	landing      map[string]landingState
-	triage       map[string]triageState
+	now                func() time.Time
+	root               RunState
+	runStartedAt       time.Time
+	eventCount         int
+	panelCursor        int
+	panelExpand        map[string]bool
+	historyLimit       int
+	panelRowLimit      int
+	viewportHeight     int
+	panelRowsCache     []panelRow
+	panelRowsDirty     bool
+	panelRowsTruncated bool
+	runParams          map[string]string
+	currentTask        string
+	currentTitle       string
+	phase              string
+	lastOutputAt       time.Time
+	history            []string
+	workers            map[string]workerLane
+	landing            map[string]landingState
+	triage             map[string]triageState
 }
 
 type Snapshot struct {
 	Root RunState
+}
+
+type PerformanceSnapshot struct {
+	HistorySize        int
+	TotalPanelRows     int
+	VisiblePanelRows   int
+	PanelRowsTruncated bool
 }
 
 type RunState struct {
@@ -97,11 +110,52 @@ func NewModel(now func() time.Time) *Model {
 			"workers": true,
 			"tasks":   false,
 		},
-		runParams: map[string]string{},
-		history:   []string{},
-		workers:   map[string]workerLane{},
-		landing:   map[string]landingState{},
-		triage:    map[string]triageState{},
+		historyLimit:   256,
+		panelRowLimit:  512,
+		viewportHeight: 32,
+		panelRowsCache: []panelRow{},
+		panelRowsDirty: true,
+		runParams:      map[string]string{},
+		history:        []string{},
+		workers:        map[string]workerLane{},
+		landing:        map[string]landingState{},
+		triage:         map[string]triageState{},
+	}
+}
+
+func (m *Model) SetPerformanceControls(historyLimit int, panelRowLimit int) {
+	if historyLimit <= 0 {
+		historyLimit = 1
+	}
+	if panelRowLimit <= 0 {
+		panelRowLimit = 1
+	}
+	m.historyLimit = historyLimit
+	m.panelRowLimit = panelRowLimit
+	if len(m.history) > m.historyLimit {
+		m.history = append([]string{}, m.history[len(m.history)-m.historyLimit:]...)
+	}
+	m.panelRowsDirty = true
+}
+
+func (m *Model) SetViewportHeight(height int) {
+	if height <= 0 {
+		height = 1
+	}
+	m.viewportHeight = height
+}
+
+func (m *Model) PerformanceSnapshot() PerformanceSnapshot {
+	rows := m.panelRows()
+	visible := len(rows)
+	if m.viewportHeight > 0 && visible > m.viewportHeight {
+		visible = m.viewportHeight
+	}
+	return PerformanceSnapshot{
+		HistorySize:        len(m.history),
+		TotalPanelRows:     len(rows),
+		VisiblePanelRows:   visible,
+		PanelRowsTruncated: m.panelRowsTruncated || len(rows) > visible,
 	}
 }
 
@@ -130,14 +184,17 @@ func (m *Model) HandleKey(key string) {
 	case "enter", "space":
 		if current.hasChildren {
 			m.panelExpand[current.id] = !current.expanded
+			m.panelRowsDirty = true
 		}
 	case "right", "l":
 		if current.hasChildren {
 			m.panelExpand[current.id] = true
+			m.panelRowsDirty = true
 		}
 	case "left", "h":
 		if current.hasChildren {
 			m.panelExpand[current.id] = false
+			m.panelRowsDirty = true
 		}
 	}
 }
@@ -248,7 +305,11 @@ func (m *Model) Apply(event contracts.Event) {
 	line := renderHistoryLine(event)
 	if line != "" {
 		m.history = append(m.history, line)
+		if len(m.history) > m.historyLimit {
+			m.history = append([]string{}, m.history[len(m.history)-m.historyLimit:]...)
+		}
 	}
+	m.panelRowsDirty = true
 }
 
 func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
@@ -311,14 +372,17 @@ func (m *Model) View() string {
 	lines := []string{
 		"Run Parameters:",
 		"Status Bar:",
+		"Performance:",
 		"Panels:",
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
 		"Phase: " + emptyAsNA(m.phase),
 		"Last Output Age: " + age,
 		"Workers:",
 	}
+	perf := m.PerformanceSnapshot()
 	lines = append(lines, renderStatusBar(m.deriveStatusMetrics())...)
-	lines = append(lines, renderPanels(m.panelRows(), m.panelCursor)...)
+	lines = append(lines, renderPerformance(perf)...)
+	lines = append(lines, renderPanels(m.panelRows(), m.panelCursor, m.viewportHeight)...)
 	lines = append(lines, renderRunParameters(m.runParams)...)
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
@@ -340,6 +404,9 @@ type panelRow struct {
 }
 
 func (m *Model) panelRows() []panelRow {
+	if !m.panelRowsDirty {
+		return m.panelRowsCache
+	}
 	metrics := m.deriveStatusMetrics()
 	rows := []panelRow{}
 	runRow := panelRow{id: "run", label: "Run", severity: metrics.runSeverity, hasChildren: true, expanded: m.isPanelExpanded("run")}
@@ -389,7 +456,17 @@ func (m *Model) panelRows() []panelRow {
 			})
 		}
 	}
-	return rows
+	m.panelRowsTruncated = false
+	if len(rows) > m.panelRowLimit {
+		rows = append([]panelRow{}, rows[:m.panelRowLimit]...)
+		m.panelRowsTruncated = true
+	}
+	m.panelRowsCache = rows
+	m.panelRowsDirty = false
+	if len(m.panelRowsCache) == 0 {
+		m.panelRowsCache = []panelRow{}
+	}
+	return m.panelRowsCache
 }
 
 func (m *Model) isPanelExpanded(panelID string) bool {
@@ -403,7 +480,7 @@ func (m *Model) isPanelExpanded(panelID string) bool {
 	return false
 }
 
-func renderPanels(rows []panelRow, cursor int) []string {
+func renderPanels(rows []panelRow, cursor int, viewportHeight int) []string {
 	if len(rows) == 0 {
 		return []string{"- n/a"}
 	}
@@ -413,8 +490,10 @@ func renderPanels(rows []panelRow, cursor int) []string {
 	if cursor >= len(rows) {
 		cursor = len(rows) - 1
 	}
-	lines := make([]string, 0, len(rows))
-	for i, row := range rows {
+	start, end := panelWindow(len(rows), cursor, viewportHeight)
+	lines := make([]string, 0, end-start+1)
+	for i := start; i < end; i++ {
+		row := rows[i]
 		marker := "  "
 		if i == cursor {
 			marker = "> "
@@ -437,7 +516,41 @@ func renderPanels(rows []panelRow, cursor int) []string {
 		}
 		lines = append(lines, line)
 	}
+	if hidden := len(rows) - end; hidden > 0 {
+		lines = append(lines, fmt.Sprintf("- ... %d more panel rows", hidden))
+	}
 	return lines
+}
+
+func panelWindow(total int, cursor int, viewportHeight int) (int, int) {
+	if viewportHeight <= 0 || viewportHeight >= total {
+		return 0, total
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	half := viewportHeight / 2
+	start := cursor - half
+	if start < 0 {
+		start = 0
+	}
+	end := start + viewportHeight
+	if end > total {
+		end = total
+		start = end - viewportHeight
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
+
+func renderPerformance(perf PerformanceSnapshot) []string {
+	line := fmt.Sprintf("- history_size=%d panel_rows=%d/%d truncated=%t", perf.HistorySize, perf.VisiblePanelRows, perf.TotalPanelRows, perf.PanelRowsTruncated)
+	return []string{line}
 }
 
 func sortedWorkerIDs(workers map[string]WorkerState) []string {
