@@ -3,7 +3,6 @@ package opencode
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,35 +67,15 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		progress(contracts.RunnerProgress{Type: progressType, Message: normalized, Timestamp: time.Now().UTC()})
 	})
 
-	result := contracts.RunnerResult{
-		LogPath:    logPath,
-		StartedAt:  start,
-		FinishedAt: time.Now().UTC(),
+	result := contracts.NormalizeBackendRunnerResult(start, time.Now().UTC(), request, err, func(classifyErr error) bool {
+		var stallErr *StallError
+		var verifyErr *VerificationError
+		return errors.As(classifyErr, &stallErr) || errors.As(classifyErr, &verifyErr)
+	})
+	result.LogPath = logPath
+	if result.Status == contracts.RunnerResultCompleted && request.Mode == contracts.RunnerModeReview {
+		result.ReviewReady = hasStructuredPassVerdict(logPath)
 	}
-
-	if err == nil {
-		result.Status = contracts.RunnerResultCompleted
-		if request.Mode == contracts.RunnerModeReview {
-			result.ReviewReady = hasStructuredPassVerdict(logPath)
-		}
-		return result, nil
-	}
-
-	var stallErr *StallError
-	var verifyErr *VerificationError
-	if errors.As(err, &stallErr) || errors.As(err, &verifyErr) {
-		result.Status = contracts.RunnerResultBlocked
-		result.Reason = err.Error()
-		return result, nil
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		result.Status = contracts.RunnerResultBlocked
-		result.Reason = fmt.Sprintf("runner timeout after %s", request.Timeout)
-		return result, nil
-	}
-
-	result.Status = contracts.RunnerResultFailed
-	result.Reason = err.Error()
 	return result, nil
 }
 
