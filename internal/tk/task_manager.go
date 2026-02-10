@@ -22,9 +22,11 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 	if err != nil {
 		return nil, err
 	}
+	ticketsByID := map[string]ticket{}
 	titles := map[string]string{}
 	for _, t := range tickets {
 		titles[t.ID] = t.Title
+		ticketsByID[t.ID] = t
 	}
 
 	ready, err := m.adapter.Ready(parentID)
@@ -51,6 +53,9 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 		if m.isTerminalFailed(child.ID) {
 			continue
 		}
+		if !dependenciesSatisfied(ticketsByID[child.ID], ticketsByID) {
+			continue
+		}
 		title := titles[child.ID]
 		if title == "" {
 			title = child.ID
@@ -71,11 +76,19 @@ func (m *TaskManager) GetTask(_ context.Context, taskID string) (contracts.Task,
 	if err != nil {
 		return contracts.Task{}, err
 	}
+	metadata := map[string]string{}
+	if deps, depsErr := m.dependenciesForTask(taskID); depsErr == nil && len(deps) > 0 {
+		metadata["dependencies"] = strings.Join(deps, ",")
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
 	return contracts.Task{
 		ID:          bead.ID,
 		Title:       bead.Title,
 		Description: bead.Description,
 		Status:      contracts.TaskStatus(bead.Status),
+		Metadata:    metadata,
 	}, nil
 }
 
@@ -106,4 +119,33 @@ func (m *TaskManager) isTerminalFailed(taskID string) bool {
 		return false
 	}
 	return strings.Contains(out, "triage_status=failed") || strings.Contains(out, "terminal_state=failed")
+}
+
+func (m *TaskManager) dependenciesForTask(taskID string) ([]string, error) {
+	tickets, err := m.adapter.queryTickets()
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tickets {
+		if t.ID == taskID {
+			return append([]string(nil), t.Deps...), nil
+		}
+	}
+	return nil, nil
+}
+
+func dependenciesSatisfied(task ticket, ticketsByID map[string]ticket) bool {
+	if len(task.Deps) == 0 {
+		return true
+	}
+	for _, depID := range task.Deps {
+		dep, ok := ticketsByID[depID]
+		if !ok {
+			continue
+		}
+		if dep.Status != "closed" {
+			return false
+		}
+	}
+	return true
 }
