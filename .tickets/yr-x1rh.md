@@ -1,6 +1,6 @@
 ---
 id: yr-x1rh
-status: in_progress
+status: closed
 deps: [yr-09pb]
 links: []
 created: 2026-02-10T08:17:26Z
