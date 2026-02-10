@@ -12,6 +12,16 @@ The repo now supports split v2 CLIs:
 
 See `MIGRATION.md` for command mapping and compatibility details.
 
+## GUI Architecture Requirements
+
+The production stdin monitor (`yolo-tui`) follows an Elm-style `Model/Update/View` architecture and uses:
+
+- Bubble Tea for event-driven terminal application state updates
+- Bubbles for reusable UI components and interaction primitives
+- Lip Gloss for deterministic styling/layout output
+
+These UI dependencies are mandatory for GUI workflow evolution and should be treated as part of the runtime contract.
+
 ## Location
 
 - Canonical script: `tools/yolo-runner/beads_yolo_runner.py`
@@ -76,6 +86,16 @@ Common options:
 - `--max N` limit number of tasks processed
 - `--dry-run` print the task prompt without running OpenCode
 - `--headless` disable the TUI (useful for CI or non-TTY runs)
+
+### Stdin GUI Operator Flow
+
+Use streaming mode to drive `yolo-tui` from stdin in real time:
+
+```
+./bin/yolo-agent --repo . --root <root-id> --model openai/gpt-5.3-codex --stream | ./bin/yolo-tui --events-stdin
+```
+
+The monitor is decoder-safe: malformed NDJSON lines are surfaced as `decode_error` warnings in the UI and stderr while valid subsequent events continue rendering.
 
 ### `--runner-timeout` profiles (`yolo-agent`)
 

@@ -20,6 +20,8 @@
 - Old TUI behavior in `yolo-runner`
 - New read-only monitor: `yolo-agent --stream ... | yolo-tui --events-stdin`
 
+The stdin monitor now tolerates malformed NDJSON lines by emitting `decode_error` warnings and continuing to render subsequent valid events.
+
 ## Compatibility Behavior
 
 Invoking `yolo-runner` prints a compatibility notice and continues to run, so existing scripts are preserved while migration proceeds.
