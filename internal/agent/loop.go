@@ -225,6 +225,10 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (contracts.LoopSummar
 				return summary, reviewErr
 			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
+			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady {
+				reviewResult.Status = contracts.RunnerResultFailed
+				reviewResult.Reason = "review verdict missing explicit pass"
+			}
 			if reviewResult.Status != contracts.RunnerResultCompleted {
 				result = reviewResult
 			}

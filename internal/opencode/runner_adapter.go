@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
@@ -19,6 +22,8 @@ type CLIRunnerAdapter struct {
 	configDir  string
 	runWithACP runWithACPFunc
 }
+
+var structuredReviewVerdictPattern = regexp.MustCompile(`(?i)\bREVIEW_VERDICT\s*:\s*(pass|fail)\b`)
 
 func NewCLIRunnerAdapter(runner Runner, acpClient ACPClient, configRoot string, configDir string) *CLIRunnerAdapter {
 	return &CLIRunnerAdapter{
@@ -60,6 +65,9 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 
 	if err == nil {
 		result.Status = contracts.RunnerResultCompleted
+		if request.Mode == contracts.RunnerModeReview {
+			result.ReviewReady = hasStructuredPassVerdict(logPath)
+		}
 		return result, nil
 	}
 
@@ -79,4 +87,23 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	result.Status = contracts.RunnerResultFailed
 	result.Reason = err.Error()
 	return result, nil
+}
+
+func hasStructuredPassVerdict(logPath string) bool {
+	if strings.TrimSpace(logPath) == "" {
+		return false
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return false
+	}
+	matches := structuredReviewVerdictPattern.FindAllStringSubmatch(string(content), -1)
+	if len(matches) == 0 {
+		return false
+	}
+	last := matches[len(matches)-1]
+	if len(last) < 2 {
+		return false
+	}
+	return strings.EqualFold(last[1], "pass")
 }
