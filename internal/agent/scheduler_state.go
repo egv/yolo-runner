@@ -24,18 +24,21 @@ type schedulerStateFile struct {
 }
 
 type schedulerParentState struct {
-	InFlight  []string `json:"in_flight,omitempty"`
-	Completed []string `json:"completed,omitempty"`
-	Blocked   []string `json:"blocked,omitempty"`
+	InFlight  []string                     `json:"in_flight,omitempty"`
+	Completed []string                     `json:"completed,omitempty"`
+	Blocked   []string                     `json:"blocked,omitempty"`
+	TaskData  map[string]map[string]string `json:"task_data,omitempty"`
 }
 
 type schedulerStateSnapshot struct {
 	InFlight  map[string]struct{}
 	Completed map[string]struct{}
 	Blocked   map[string]struct{}
+	TaskData  map[string]map[string]string
 	baseInFly map[string]struct{}
 	baseDone  map[string]struct{}
 	baseBlock map[string]struct{}
+	baseData  map[string]map[string]string
 }
 
 func newSchedulerStateStore(path string, parentID string) *schedulerStateStore {
@@ -66,7 +69,12 @@ func (l *Loop) recoverSchedulerState(ctx context.Context) error {
 		if err := l.tasks.SetTaskStatus(ctx, taskID, contracts.TaskStatusBlocked); err != nil {
 			return err
 		}
-		if err := l.tasks.SetTaskData(ctx, taskID, map[string]string{"triage_status": "blocked"}); err != nil {
+		// Restore task data if available, otherwise set default blocked status
+		taskData := map[string]string{"triage_status": "blocked"}
+		if storedData, exists := snapshot.TaskData[taskID]; exists {
+			taskData = storedData
+		}
+		if err := l.tasks.SetTaskData(ctx, taskID, taskData); err != nil {
 			return err
 		}
 		delete(snapshot.Blocked, taskID)
@@ -115,6 +123,10 @@ func (l *Loop) markTaskCompleted(taskID string) error {
 }
 
 func (l *Loop) markTaskBlocked(taskID string) error {
+	return l.markTaskBlockedWithData(taskID, nil)
+}
+
+func (l *Loop) markTaskBlockedWithData(taskID string, taskData map[string]string) error {
 	if l.schedulerState == nil {
 		return nil
 	}
@@ -125,6 +137,18 @@ func (l *Loop) markTaskBlocked(taskID string) error {
 	delete(snapshot.InFlight, taskID)
 	snapshot.Blocked[taskID] = struct{}{}
 	delete(snapshot.Completed, taskID)
+
+	// Store task data if provided
+	if taskData != nil {
+		if snapshot.TaskData == nil {
+			snapshot.TaskData = make(map[string]map[string]string)
+		}
+		snapshot.TaskData[taskID] = make(map[string]string, len(taskData))
+		for key, value := range taskData {
+			snapshot.TaskData[taskID][key] = value
+		}
+	}
+
 	return l.schedulerState.Save(snapshot)
 }
 
@@ -176,11 +200,13 @@ func (s *schedulerStateStore) Save(snapshot schedulerStateSnapshot) error {
 		InFlight:  mergeSetChanges(current.InFlight, snapshot.baseInFly, snapshot.InFlight),
 		Completed: mergeSetChanges(current.Completed, snapshot.baseDone, snapshot.Completed),
 		Blocked:   mergeSetChanges(current.Blocked, snapshot.baseBlock, snapshot.Blocked),
+		TaskData:  mergeTaskDataChanges(current.TaskData, snapshot.baseData, snapshot.TaskData),
 	}
 	state.Parents[s.parentID] = schedulerParentState{
 		InFlight:  sortedKeys(merged.InFlight),
 		Completed: sortedKeys(merged.Completed),
 		Blocked:   sortedKeys(merged.Blocked),
+		TaskData:  merged.TaskData,
 	}
 	return s.writeStateFileLocked(state)
 }
@@ -192,23 +218,28 @@ func (f schedulerStateFile) snapshotForParent(parentID string) schedulerStateSna
 			InFlight:  map[string]struct{}{},
 			Completed: map[string]struct{}{},
 			Blocked:   map[string]struct{}{},
+			TaskData:  map[string]map[string]string{},
 			baseInFly: map[string]struct{}{},
 			baseDone:  map[string]struct{}{},
 			baseBlock: map[string]struct{}{},
+			baseData:  map[string]map[string]string{},
 		}
 	}
 
 	inFlight := makeSet(parentState.InFlight)
 	completed := makeSet(parentState.Completed)
 	blocked := makeSet(parentState.Blocked)
+	taskData := cloneTaskData(parentState.TaskData)
 
 	return schedulerStateSnapshot{
 		InFlight:  inFlight,
 		Completed: completed,
 		Blocked:   blocked,
+		TaskData:  taskData,
 		baseInFly: cloneSet(inFlight),
 		baseDone:  cloneSet(completed),
 		baseBlock: cloneSet(blocked),
+		baseData:  cloneTaskData(taskData),
 	}
 }
 
@@ -276,6 +307,20 @@ func cloneSet(set map[string]struct{}) map[string]struct{} {
 	return out
 }
 
+func cloneTaskData(data map[string]map[string]string) map[string]map[string]string {
+	if len(data) == 0 {
+		return map[string]map[string]string{}
+	}
+	out := make(map[string]map[string]string, len(data))
+	for taskID, taskData := range data {
+		out[taskID] = make(map[string]string, len(taskData))
+		for key, value := range taskData {
+			out[taskID][key] = value
+		}
+	}
+	return out
+}
+
 func mergeSetChanges(current map[string]struct{}, base map[string]struct{}, next map[string]struct{}) map[string]struct{} {
 	if base == nil {
 		return cloneSet(next)
@@ -290,6 +335,36 @@ func mergeSetChanges(current map[string]struct{}, base map[string]struct{}, next
 	for key := range next {
 		if _, existed := base[key]; !existed {
 			merged[key] = struct{}{}
+		}
+	}
+	return merged
+}
+
+func mergeTaskDataChanges(current map[string]map[string]string, base map[string]map[string]string, next map[string]map[string]string) map[string]map[string]string {
+	if base == nil {
+		return cloneTaskData(next)
+	}
+
+	merged := cloneTaskData(current)
+	for taskID := range base {
+		if _, stillPresent := next[taskID]; !stillPresent {
+			delete(merged, taskID)
+		}
+	}
+	for taskID, taskData := range next {
+		if _, existed := base[taskID]; !existed {
+			merged[taskID] = make(map[string]string, len(taskData))
+			for key, value := range taskData {
+				merged[taskID][key] = value
+			}
+		} else {
+			// For existing tasks, merge the data changes
+			if merged[taskID] == nil {
+				merged[taskID] = make(map[string]string)
+			}
+			for key, value := range taskData {
+				merged[taskID][key] = value
+			}
 		}
 	}
 	return merged

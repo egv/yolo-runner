@@ -306,17 +306,17 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			summary.Completed++
 			return summary, nil
 		case contracts.RunnerResultBlocked:
-			if err := l.markTaskBlocked(task.ID); err != nil {
+			blockedData := map[string]string{"triage_status": "blocked"}
+			if result.Reason != "" {
+				blockedData["triage_reason"] = result.Reason
+			}
+			if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
 				return summary, err
 			}
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 				return summary, err
 			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
-			blockedData := map[string]string{"triage_status": "blocked"}
-			if result.Reason != "" {
-				blockedData["triage_reason"] = result.Reason
-			}
 			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
 				return summary, err
 			}
