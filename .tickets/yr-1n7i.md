@@ -1,6 +1,6 @@
 ---
 id: yr-1n7i
-status: open
+status: closed
 deps: [yr-kruo, yr-qua2]
 links: []
 created: 2026-02-10T01:46:34Z
