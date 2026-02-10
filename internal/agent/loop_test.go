@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -588,6 +589,37 @@ func TestLoopStartsFixedWorkerPool(t *testing.T) {
 	}
 }
 
+func TestLoopUsesIsolatedClonePerTaskAndCleansUp(t *testing.T) {
+	mgr := newFakeTaskManager(
+		contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen},
+		contracts.Task{ID: "t-2", Title: "Task 2", Status: contracts.TaskStatusOpen},
+	)
+	run := &repoRecordingRunner{}
+	cloneMgr := newFakeCloneManager()
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", RepoRoot: "/repo", Concurrency: 2})
+	loop.cloneManager = cloneMgr
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 2 {
+		t.Fatalf("expected two completed tasks, got %#v", summary)
+	}
+
+	repoRoots := run.RepoRootsByTask()
+	if len(repoRoots) != 2 {
+		t.Fatalf("expected runner requests for both tasks, got %#v", repoRoots)
+	}
+	if repoRoots["t-1"] == repoRoots["t-2"] {
+		t.Fatalf("expected isolated clone path per task, got shared path %q", repoRoots["t-1"])
+	}
+
+	if cloneMgr.CleanupCount() != 2 {
+		t.Fatalf("expected clone cleanup for each task, got %d", cloneMgr.CleanupCount())
+	}
+}
+
 func hasEventType(events []contracts.Event, eventType contracts.EventType) bool {
 	for _, event := range events {
 		if event.Type == eventType {
@@ -608,6 +640,61 @@ type blockingRunner struct {
 	release   chan struct{}
 	active    int32
 	maxActive int32
+}
+
+type repoRecordingRunner struct {
+	mu       sync.Mutex
+	byTaskID map[string]string
+}
+
+func (r *repoRecordingRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byTaskID == nil {
+		r.byTaskID = map[string]string{}
+	}
+	r.byTaskID[request.TaskID] = request.RepoRoot
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+func (r *repoRecordingRunner) RepoRootsByTask() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]string, len(r.byTaskID))
+	for taskID, repoRoot := range r.byTaskID {
+		out[taskID] = repoRoot
+	}
+	return out
+}
+
+type fakeCloneManager struct {
+	mu          sync.Mutex
+	cleanupByID map[string]int
+}
+
+func newFakeCloneManager() *fakeCloneManager {
+	return &fakeCloneManager{cleanupByID: map[string]int{}}
+}
+
+func (f *fakeCloneManager) CloneForTask(_ context.Context, taskID string, _ string) (string, error) {
+	return fmt.Sprintf("/tmp/clone/%s", taskID), nil
+}
+
+func (f *fakeCloneManager) Cleanup(taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanupByID[taskID]++
+	return nil
+}
+
+func (f *fakeCloneManager) CleanupCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	total := 0
+	for _, count := range f.cleanupByID {
+		total += count
+	}
+	return total
 }
 
 type denyTaskLock struct{}

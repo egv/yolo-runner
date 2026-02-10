@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,8 +16,18 @@ func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
 	if _, err := exec.LookPath("tk"); err != nil {
 		t.Skip("tk CLI is required for e2e test")
 	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required for e2e test")
+	}
 
 	repo := t.TempDir()
+	runCommand(t, repo, "git", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCommand(t, repo, "git", "add", "README.md")
+	runCommand(t, repo, "git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
 	runner := localRunner{dir: repo}
 	rootID := mustCreateTicket(t, runner, "Roadmap", "epic", "0", "")
 	taskID := mustCreateTicket(t, runner, "Self-host task", "task", "0", rootID)
@@ -38,6 +50,9 @@ func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
 	}
 	if len(fakeAgent.requests) == 0 {
 		t.Fatalf("expected runner to be invoked")
+	}
+	if fakeAgent.requests[0].RepoRoot == repo {
+		t.Fatalf("expected runner repo root to use isolated clone path, got %q", fakeAgent.requests[0].RepoRoot)
 	}
 }
 
@@ -80,4 +95,14 @@ func mustCreateTicket(t *testing.T, runner localRunner, title string, issueType 
 		t.Fatalf("create ticket failed: %v (%s)", err, out)
 	}
 	return strings.TrimSpace(out)
+}
+
+func runCommand(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v (%s)", name, args, err, string(output))
+	}
 }

@@ -20,6 +20,11 @@ type landingLock interface {
 	Unlock()
 }
 
+type CloneManager interface {
+	CloneForTask(ctx context.Context, taskID string, repoRoot string) (string, error)
+	Cleanup(taskID string) error
+}
+
 type LoopOptions struct {
 	ParentID       string
 	MaxRetries     int
@@ -33,6 +38,7 @@ type LoopOptions struct {
 	VCS            contracts.VCS
 	RequireReview  bool
 	MergeOnSuccess bool
+	CloneManager   CloneManager
 }
 
 type Loop struct {
@@ -42,17 +48,19 @@ type Loop struct {
 	options         LoopOptions
 	taskLock        taskLock
 	landingLock     landingLock
+	cloneManager    CloneManager
 	workerStartHook func(workerID int)
 }
 
 func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
 	return &Loop{
-		tasks:       tasks,
-		runner:      runner,
-		events:      events,
-		options:     options,
-		taskLock:    scheduler.NewTaskLock(),
-		landingLock: scheduler.NewLandingLock(),
+		tasks:        tasks,
+		runner:       runner,
+		events:       events,
+		options:      options,
+		taskLock:     scheduler.NewTaskLock(),
+		landingLock:  scheduler.NewLandingLock(),
+		cloneManager: options.CloneManager,
 	}
 }
 
@@ -165,14 +173,28 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 	}
 }
 
-func (l *Loop) runTask(ctx context.Context, taskID string) (contracts.LoopSummary, error) {
-	summary := contracts.LoopSummary{}
+func (l *Loop) runTask(ctx context.Context, taskID string) (summary contracts.LoopSummary, err error) {
+	summary = contracts.LoopSummary{}
 
 	task, err := l.tasks.GetTask(ctx, taskID)
 	if err != nil {
 		return summary, err
 	}
 	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
+
+	taskRepoRoot := l.options.RepoRoot
+	if l.cloneManager != nil {
+		clonePath, cloneErr := l.cloneManager.CloneForTask(ctx, task.ID, l.options.RepoRoot)
+		if cloneErr != nil {
+			return summary, cloneErr
+		}
+		taskRepoRoot = clonePath
+		defer func() {
+			if cleanupErr := l.cloneManager.Cleanup(task.ID); cleanupErr != nil && err == nil {
+				err = cleanupErr
+			}
+		}()
+	}
 
 	taskBranch := ""
 	if l.options.VCS != nil {
@@ -200,7 +222,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (contracts.LoopSummar
 			TaskID:   task.ID,
 			ParentID: l.options.ParentID,
 			Mode:     contracts.RunnerModeImplement,
-			RepoRoot: l.options.RepoRoot,
+			RepoRoot: taskRepoRoot,
 			Model:    l.options.Model,
 			Timeout:  l.options.RunnerTimeout,
 			Prompt:   buildPrompt(task, contracts.RunnerModeImplement),
@@ -216,7 +238,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string) (contracts.LoopSummar
 				TaskID:   task.ID,
 				ParentID: l.options.ParentID,
 				Mode:     contracts.RunnerModeReview,
-				RepoRoot: l.options.RepoRoot,
+				RepoRoot: taskRepoRoot,
 				Model:    l.options.Model,
 				Timeout:  l.options.RunnerTimeout,
 				Prompt:   buildPrompt(task, contracts.RunnerModeReview),

@@ -104,6 +104,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		VCS:            vcs,
 		RequireReview:  true,
 		MergeOnSuccess: true,
+		CloneManager:   agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
 	})
 
 	_, err := loop.Run(ctx)
