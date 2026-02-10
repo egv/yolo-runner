@@ -16,13 +16,33 @@ type Model struct {
 	phase        string
 	lastOutputAt time.Time
 	history      []string
+	workers      map[string]workerLane
+	landing      map[string]landingState
+}
+
+type workerLane struct {
+	taskID    string
+	taskTitle string
+	phase     string
+	queuePos  int
+}
+
+type landingState struct {
+	taskID    string
+	taskTitle string
+	status    string
 }
 
 func NewModel(now func() time.Time) *Model {
 	if now == nil {
 		now = time.Now
 	}
-	return &Model{now: now, history: []string{}}
+	return &Model{
+		now:     now,
+		history: []string{},
+		workers: map[string]workerLane{},
+		landing: map[string]landingState{},
+	}
 }
 
 func (m *Model) Apply(event contracts.Event) {
@@ -39,6 +59,24 @@ func (m *Model) Apply(event contracts.Event) {
 		m.lastOutputAt = event.Timestamp
 	} else {
 		m.lastOutputAt = m.now()
+	}
+	if workerID := strings.TrimSpace(event.WorkerID); workerID != "" {
+		m.workers[workerID] = workerLane{
+			taskID:    event.TaskID,
+			taskTitle: event.TaskTitle,
+			phase:     string(event.Type),
+			queuePos:  event.QueuePos,
+		}
+	}
+	if event.Type == contracts.EventTypeTaskFinished {
+		taskID := strings.TrimSpace(event.TaskID)
+		if taskID != "" {
+			m.landing[taskID] = landingState{
+				taskID:    taskID,
+				taskTitle: strings.TrimSpace(event.TaskTitle),
+				status:    strings.TrimSpace(event.Message),
+			}
+		}
 	}
 	line := renderHistoryLine(event)
 	if line != "" {
@@ -59,10 +97,55 @@ func (m *Model) View() string {
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
 		"Phase: " + emptyAsNA(m.phase),
 		"Last Output Age: " + age,
-		"History:",
+		"Workers:",
 	}
+	lines = append(lines, renderWorkers(m.workers)...)
+	lines = append(lines, "Landing Queue:")
+	lines = append(lines, renderLandingQueue(m.landing)...)
+	lines = append(lines, "History:")
 	lines = append(lines, m.history...)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderWorkers(workers map[string]workerLane) []string {
+	if len(workers) == 0 {
+		return []string{"- n/a"}
+	}
+	ids := make([]string, 0, len(workers))
+	for id := range workers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		lane := workers[id]
+		current := renderCurrentTask(lane.taskID, lane.taskTitle)
+		phase := emptyAsNA(strings.TrimSpace(lane.phase))
+		line := fmt.Sprintf("- %s => %s [%s]", id, current, phase)
+		if lane.queuePos > 0 {
+			line += fmt.Sprintf(" (queue=%d)", lane.queuePos)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func renderLandingQueue(landing map[string]landingState) []string {
+	if len(landing) == 0 {
+		return []string{"- n/a"}
+	}
+	ids := make([]string, 0, len(landing))
+	for id := range landing {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		entry := landing[id]
+		status := emptyAsNA(entry.status)
+		lines = append(lines, "- "+renderCurrentTask(entry.taskID, entry.taskTitle)+" => "+status)
+	}
+	return lines
 }
 
 func emptyAsNA(value string) string {
