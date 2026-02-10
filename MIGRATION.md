@@ -18,7 +18,7 @@
   - `yolo-task data --id <task> --set key=value`
 
 - Old TUI behavior in `yolo-runner`
-- New read-only monitor: `yolo-tui --events runner-logs/agent.events.jsonl`
+- New read-only monitor: `yolo-agent --stream ... | yolo-tui --events-stdin`
 
 ## Compatibility Behavior
 

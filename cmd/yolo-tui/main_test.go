@@ -3,25 +3,18 @@ package main
 import (
 	"bytes"
 	"io"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 )
 
-func TestRunMainRendersMonitorViewFromEventsFile(t *testing.T) {
-	tempDir := t.TempDir()
-	eventsPath := filepath.Join(tempDir, "events.jsonl")
+func TestRunMainRendersMonitorViewFromStdin(t *testing.T) {
 	content := "{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"message\":\"started\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
 		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"done\",\"ts\":\"2026-02-10T12:00:05Z\"}\n"
-	if err := os.WriteFile(eventsPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write events: %v", err)
-	}
-
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
-	code := RunMain([]string{"--events", eventsPath}, out, errOut)
+	code := RunMain([]string{"--events-stdin"}, strings.NewReader(content), out, errOut)
 	if code != 0 {
 		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
 	}
@@ -30,6 +23,25 @@ func TestRunMainRendersMonitorViewFromEventsFile(t *testing.T) {
 	}
 	if !contains(out.String(), "Current Task: task-1 - Readable task") {
 		t.Fatalf("expected current task in output, got %q", out.String())
+	}
+}
+
+func TestRunMainSupportsStdinByDefault(t *testing.T) {
+	content := "{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"message\":\"started\",\"ts\":\"2026-02-10T12:00:00Z\"}\n"
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	code := RunMain(nil, strings.NewReader(content), out, errOut)
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestRunMainRejectsFileFlag(t *testing.T) {
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	code := RunMain([]string{"--events", "runner-logs/agent.events.jsonl"}, strings.NewReader(""), out, errOut)
+	if code != 1 {
+		t.Fatalf("expected code 1 for unsupported --events flag, got %d", code)
 	}
 }
 
@@ -70,6 +82,20 @@ func TestRenderFromReaderParsesIncrementalEvents(t *testing.T) {
 	}
 	if !contains(out.String(), "Current Task: task-1 - Readable task") {
 		t.Fatalf("expected current task in output, got %q", out.String())
+	}
+}
+
+func TestRenderFromReaderWritesOnEachEventForLiveUpdates(t *testing.T) {
+	input := strings.NewReader("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
+		"{\"type\":\"runner_output\",\"task_id\":\"task-1\",\"message\":\"line\",\"ts\":\"2026-02-10T12:00:01Z\"}\n")
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+
+	if err := renderFromReader(input, out, errOut); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	if strings.Count(out.String(), "Current Task:") < 2 {
+		t.Fatalf("expected at least two incremental renders, got %q", out.String())
 	}
 }
 

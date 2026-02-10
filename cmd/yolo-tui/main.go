@@ -11,29 +11,26 @@ import (
 )
 
 func main() {
-	os.Exit(RunMain(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(RunMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func RunMain(args []string, out io.Writer, errOut io.Writer) int {
+func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	fs := flag.NewFlagSet("yolo-tui", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	events := fs.String("events", "", "Path to JSONL events file")
+	eventsStdin := fs.Bool("events-stdin", true, "Read NDJSON events from stdin")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
-	if *events == "" {
-		fmt.Fprintln(errOut, "--events is required")
+	if !*eventsStdin {
+		fmt.Fprintln(errOut, "--events-stdin must be enabled")
+		return 1
+	}
+	if in == nil {
+		fmt.Fprintln(errOut, "stdin reader is required")
 		return 1
 	}
 
-	file, err := os.Open(*events)
-	if err != nil {
-		fmt.Fprintln(errOut, err)
-		return 1
-	}
-	defer file.Close()
-
-	if err := renderFromReader(file, out, errOut); err != nil {
+	if err := renderFromReader(in, out, errOut); err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
@@ -43,6 +40,7 @@ func RunMain(args []string, out io.Writer, errOut io.Writer) int {
 func renderFromReader(reader io.Reader, out io.Writer, errOut io.Writer) error {
 	decoder := contracts.NewEventDecoder(reader)
 	model := monitor.NewModel(nil)
+	haveEvents := false
 	for {
 		event, err := decoder.Next()
 		if err == io.EOF {
@@ -51,11 +49,16 @@ func renderFromReader(reader io.Reader, out io.Writer, errOut io.Writer) error {
 		if err != nil {
 			return err
 		}
+		haveEvents = true
 		model.Apply(event)
+		if _, writeErr := io.WriteString(out, model.View()); writeErr != nil {
+			return writeErr
+		}
 	}
-	_, writeErr := io.WriteString(out, model.View())
-	if writeErr != nil {
-		return writeErr
+	if !haveEvents {
+		if _, writeErr := io.WriteString(out, model.View()); writeErr != nil {
+			return writeErr
+		}
 	}
 	_ = errOut
 	return nil
