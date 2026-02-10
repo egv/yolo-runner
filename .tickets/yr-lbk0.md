@@ -1,6 +1,6 @@
 ---
 id: yr-lbk0
-status: in_progress
+status: closed
 deps: [yr-0yna]
 links: []
 created: 2026-02-09T23:07:07Z
