@@ -16,7 +16,10 @@ func NewVCSAdapter(runner Runner) *VCSAdapter {
 }
 
 func (a *VCSAdapter) EnsureMain(context.Context) error {
-	_, err := a.runGit("checkout", "main")
+	if _, err := a.runGit("checkout", "main"); err != nil {
+		return err
+	}
+	_, err := a.runGit("pull", "--ff-only", "origin", "main")
 	return err
 }
 
