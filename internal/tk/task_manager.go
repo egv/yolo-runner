@@ -4,17 +4,24 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 )
 
 type TaskManager struct {
-	adapter *Adapter
-	runner  Runner
+	adapter       *Adapter
+	runner        Runner
+	terminalMu    sync.RWMutex
+	terminalState map[string]contracts.TaskStatus
 }
 
 func NewTaskManager(runner Runner) *TaskManager {
-	return &TaskManager{adapter: New(runner), runner: runner}
+	return &TaskManager{
+		adapter:       New(runner),
+		runner:        runner,
+		terminalState: map[string]contracts.TaskStatus{},
+	}
 }
 
 func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts.TaskSummary, error) {
@@ -38,7 +45,7 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 		if ready.ID == "" {
 			return nil, nil
 		}
-		if m.isTerminalFailed(ready.ID) {
+		if m.isTerminal(ready.ID) {
 			return nil, nil
 		}
 		title := titles[ready.ID]
@@ -50,7 +57,7 @@ func (m *TaskManager) NextTasks(_ context.Context, parentID string) ([]contracts
 
 	tasks := make([]contracts.TaskSummary, 0, len(ready.Children))
 	for _, child := range ready.Children {
-		if m.isTerminalFailed(child.ID) {
+		if m.isTerminal(child.ID) {
 			continue
 		}
 		if !dependenciesSatisfied(ticketsByID[child.ID], ticketsByID) {
@@ -93,7 +100,16 @@ func (m *TaskManager) GetTask(_ context.Context, taskID string) (contracts.Task,
 }
 
 func (m *TaskManager) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
-	return m.adapter.UpdateStatus(taskID, string(status))
+	if err := m.adapter.UpdateStatus(taskID, string(status)); err != nil {
+		return err
+	}
+	switch status {
+	case contracts.TaskStatusFailed, contracts.TaskStatusBlocked:
+		m.markTerminal(taskID, status)
+	default:
+		m.clearTerminal(taskID)
+	}
+	return nil
 }
 
 func (m *TaskManager) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
@@ -110,15 +126,35 @@ func (m *TaskManager) SetTaskData(_ context.Context, taskID string, data map[str
 	return nil
 }
 
-func (m *TaskManager) isTerminalFailed(taskID string) bool {
-	if taskID == "" || m.runner == nil {
+func (m *TaskManager) isTerminal(taskID string) bool {
+	if taskID == "" {
 		return false
 	}
-	out, err := m.runner.Run("tk", "show", taskID)
-	if err != nil {
+	m.terminalMu.RLock()
+	defer m.terminalMu.RUnlock()
+	state, ok := m.terminalState[taskID]
+	if !ok {
 		return false
 	}
-	return strings.Contains(out, "triage_status=failed") || strings.Contains(out, "terminal_state=failed")
+	return state == contracts.TaskStatusFailed || state == contracts.TaskStatusBlocked
+}
+
+func (m *TaskManager) markTerminal(taskID string, state contracts.TaskStatus) {
+	if taskID == "" {
+		return
+	}
+	m.terminalMu.Lock()
+	defer m.terminalMu.Unlock()
+	m.terminalState[taskID] = state
+}
+
+func (m *TaskManager) clearTerminal(taskID string) {
+	if taskID == "" {
+		return
+	}
+	m.terminalMu.Lock()
+	defer m.terminalMu.Unlock()
+	delete(m.terminalState, taskID)
 }
 
 func (m *TaskManager) dependenciesForTask(taskID string) ([]string, error) {
