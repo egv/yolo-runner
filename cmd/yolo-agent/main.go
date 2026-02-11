@@ -163,6 +163,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:           cfg.rootID,
 		MaxTasks:           cfg.maxTasks,
@@ -178,6 +179,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		RequireReview:      true,
 		MergeOnSuccess:     true,
 		CloneManager:       agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
+		VCSFactory:         vcsFactory,
 	})
 	if eventSink != nil {
 		_ = eventSink.Emit(ctx, contracts.Event{
@@ -191,6 +193,19 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 
 	_, err := loop.Run(ctx)
 	return err
+}
+
+func cloneScopedVCSFactory(cfg runConfig, vcs contracts.VCS) agent.VCSFactory {
+	if _, ok := vcs.(*gitvcs.VCSAdapter); !ok {
+		return nil
+	}
+	return func(repoRoot string) contracts.VCS {
+		targetRoot := repoRoot
+		if targetRoot == "" {
+			targetRoot = cfg.repoRoot
+		}
+		return gitvcs.NewVCSAdapter(localGitRunner{dir: targetRoot})
+	}
 }
 
 func buildRunStartedMetadata(cfg runConfig) map[string]string {

@@ -27,6 +27,8 @@ type CloneManager interface {
 	Cleanup(taskID string) error
 }
 
+type VCSFactory func(repoRoot string) contracts.VCS
+
 type LoopOptions struct {
 	ParentID             string
 	MaxRetries           int
@@ -46,6 +48,7 @@ type LoopOptions struct {
 	RequireReview        bool
 	MergeOnSuccess       bool
 	CloneManager         CloneManager
+	VCSFactory           VCSFactory
 }
 
 type Loop struct {
@@ -223,16 +226,17 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 	}
 
 	taskBranch := ""
-	if l.options.VCS != nil {
-		if err := l.options.VCS.EnsureMain(ctx); err != nil {
+	taskVCS := l.vcsForRepo(taskRepoRoot)
+	if taskVCS != nil {
+		if err := taskVCS.EnsureMain(ctx); err != nil {
 			return summary, err
 		}
-		branch, err := l.options.VCS.CreateTaskBranch(ctx, task.ID)
+		branch, err := taskVCS.CreateTaskBranch(ctx, task.ID)
 		if err != nil {
 			return summary, err
 		}
 		taskBranch = branch
-		if err := l.options.VCS.Checkout(ctx, branch); err != nil {
+		if err := taskVCS.Checkout(ctx, branch); err != nil {
 			return summary, err
 		}
 	}
@@ -346,7 +350,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.markTaskCompleted(task.ID); err != nil {
 				return summary, err
 			}
-			if l.options.MergeOnSuccess && l.options.VCS != nil && taskBranch != "" {
+			if l.options.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
 				landingState := scheduler.NewLandingQueueStateMachine(2)
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
 				if l.landingLock != nil {
@@ -359,7 +363,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					_ = landingState.Apply(scheduler.LandingEventBegin)
 					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "landing_attempt": fmt.Sprintf("%d", attempt)}, Timestamp: time.Now().UTC()})
 
-					if err := l.options.VCS.MergeToMain(ctx, taskBranch); err != nil {
+					if err := taskVCS.MergeToMain(ctx, taskBranch); err != nil {
 						landingReason = err.Error()
 						_ = landingState.Apply(scheduler.LandingEventFailedRetryable)
 						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": landingReason}, Timestamp: time.Now().UTC()})
@@ -373,7 +377,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					}
 
 					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeMergeCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: taskBranch, Timestamp: time.Now().UTC()})
-					if err := l.options.VCS.PushMain(ctx); err != nil {
+					if err := taskVCS.PushMain(ctx); err != nil {
 						landingReason = err.Error()
 						_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
 						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": landingReason}, Timestamp: time.Now().UTC()})
@@ -487,6 +491,18 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			return summary, nil
 		}
 	}
+}
+
+func (l *Loop) vcsForRepo(repoRoot string) contracts.VCS {
+	if l == nil {
+		return nil
+	}
+	if l.options.VCSFactory != nil {
+		if scoped := l.options.VCSFactory(repoRoot); scoped != nil {
+			return scoped
+		}
+	}
+	return l.options.VCS
 }
 
 func eventTypeForRunnerProgress(progressType string) contracts.EventType {

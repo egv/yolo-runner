@@ -1018,6 +1018,63 @@ func TestLoopUsesIsolatedClonePerTaskAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestLoopUsesCloneScopedVCSFactoryForTaskBranchingAndLanding(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	rootVCS := &fakeVCS{}
+	cloneVCS := &fakeVCS{}
+	cloneMgr := newFakeCloneManager()
+
+	var observedRoots []string
+	var rootsMu sync.Mutex
+	loop := NewLoop(mgr, run, nil, LoopOptions{
+		ParentID:       "root",
+		RepoRoot:       "/repo",
+		RequireReview:  true,
+		MergeOnSuccess: true,
+		VCS:            rootVCS,
+		VCSFactory: func(repoRoot string) contracts.VCS {
+			rootsMu.Lock()
+			observedRoots = append(observedRoots, repoRoot)
+			rootsMu.Unlock()
+			return cloneVCS
+		},
+	})
+	loop.cloneManager = cloneMgr
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected one completed task, got %#v", summary)
+	}
+	if len(rootVCS.calls) != 0 {
+		t.Fatalf("expected root VCS to be bypassed, got calls %v", rootVCS.calls)
+	}
+	if !containsCall(cloneVCS.calls, "create_branch:t-1") {
+		t.Fatalf("expected clone-scoped branch creation, got %v", cloneVCS.calls)
+	}
+	if !containsCall(cloneVCS.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("expected clone-scoped landing merge, got %v", cloneVCS.calls)
+	}
+	if !containsCall(cloneVCS.calls, "push_main") {
+		t.Fatalf("expected clone-scoped landing push, got %v", cloneVCS.calls)
+	}
+
+	rootsMu.Lock()
+	defer rootsMu.Unlock()
+	if len(observedRoots) == 0 {
+		t.Fatalf("expected VCS factory to be invoked")
+	}
+	if observedRoots[0] != "/tmp/clone/t-1" {
+		t.Fatalf("expected clone-scoped repo root, got %q", observedRoots[0])
+	}
+}
+
 func TestLoopResumesPersistedSchedulerStateAndDoesNotRerunCompletedTask(t *testing.T) {
 	tempDir := t.TempDir()
 	statePath := filepath.Join(tempDir, "scheduler-state.json")

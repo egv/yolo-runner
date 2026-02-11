@@ -14,7 +14,7 @@ func TestVCSAdapterImplementsContract(t *testing.T) {
 	var _ contracts.VCS = (*VCSAdapter)(nil)
 }
 
-func TestEnsureMainChecksOutMain(t *testing.T) {
+func TestEnsureMainChecksOutAndFastForwardsMain(t *testing.T) {
 	r := &fakeRunner{}
 	a := NewVCSAdapter(r)
 
@@ -22,7 +22,15 @@ func TestEnsureMainChecksOutMain(t *testing.T) {
 		t.Fatalf("ensure main failed: %v", err)
 	}
 
-	assertVCSCall(t, r.calls, call{name: "git", args: []string{"checkout", "main"}})
+	if len(r.calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(r.calls))
+	}
+	if !reflect.DeepEqual(r.calls[0], call{name: "git", args: []string{"checkout", "main"}}) {
+		t.Fatalf("unexpected call[0]: %#v", r.calls[0])
+	}
+	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}}) {
+		t.Fatalf("unexpected call[1]: %#v", r.calls[1])
+	}
 }
 
 func TestEnsureMainIncludesGitOutputInCheckoutFailure(t *testing.T) {
@@ -56,14 +64,17 @@ func TestCreateTaskBranchFromMain(t *testing.T) {
 		t.Fatalf("unexpected branch name: %q", branch)
 	}
 
-	if len(r.calls) != 2 {
-		t.Fatalf("expected 2 git calls, got %d", len(r.calls))
+	if len(r.calls) != 3 {
+		t.Fatalf("expected 3 git calls, got %d", len(r.calls))
 	}
 	if !reflect.DeepEqual(r.calls[0], call{name: "git", args: []string{"checkout", "main"}}) {
 		t.Fatalf("unexpected first call: %#v", r.calls[0])
 	}
-	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"checkout", "-b", "task/task-123"}}) {
+	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}}) {
 		t.Fatalf("unexpected second call: %#v", r.calls[1])
+	}
+	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"checkout", "-b", "task/task-123"}}) {
+		t.Fatalf("unexpected third call: %#v", r.calls[2])
 	}
 }
 
@@ -79,11 +90,11 @@ func TestCreateTaskBranchFallsBackToCheckoutExistingBranch(t *testing.T) {
 		t.Fatalf("unexpected branch %q", branch)
 	}
 
-	if len(r.calls) != 3 {
-		t.Fatalf("expected 3 calls, got %d", len(r.calls))
+	if len(r.calls) != 4 {
+		t.Fatalf("expected 4 calls, got %d", len(r.calls))
 	}
-	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"checkout", "task/task-123"}}) {
-		t.Fatalf("expected fallback checkout, got %#v", r.calls[2])
+	if !reflect.DeepEqual(r.calls[3], call{name: "git", args: []string{"checkout", "task/task-123"}}) {
+		t.Fatalf("expected fallback checkout, got %#v", r.calls[3])
 	}
 }
 
@@ -98,17 +109,20 @@ func TestMergeAndPushMain(t *testing.T) {
 		t.Fatalf("push main failed: %v", err)
 	}
 
-	if len(r.calls) != 3 {
-		t.Fatalf("expected 3 calls, got %d", len(r.calls))
+	if len(r.calls) != 4 {
+		t.Fatalf("expected 4 calls, got %d", len(r.calls))
 	}
 	if !reflect.DeepEqual(r.calls[0], call{name: "git", args: []string{"checkout", "main"}}) {
 		t.Fatalf("unexpected call[0]: %#v", r.calls[0])
 	}
-	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"merge", "--no-ff", "task/task-123"}}) {
+	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}}) {
 		t.Fatalf("unexpected call[1]: %#v", r.calls[1])
 	}
-	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"push", "origin", "main"}}) {
+	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"merge", "--no-ff", "task/task-123"}}) {
 		t.Fatalf("unexpected call[2]: %#v", r.calls[2])
+	}
+	if !reflect.DeepEqual(r.calls[3], call{name: "git", args: []string{"push", "origin", "main"}}) {
+		t.Fatalf("unexpected call[3]: %#v", r.calls[3])
 	}
 }
 
