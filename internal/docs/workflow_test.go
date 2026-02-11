@@ -46,10 +46,19 @@ func TestReadmeDocumentsRunnerTimeoutProfiles(t *testing.T) {
 	if !strings.Contains(readme, "CI profile") {
 		t.Fatalf("README missing CI timeout profile")
 	}
+	if !strings.Contains(readme, "Long-task profile") {
+		t.Fatalf("README missing long-task timeout profile")
+	}
+	if !strings.Contains(readme, "0s") {
+		t.Fatalf("README missing default timeout behavior")
+	}
 	if !strings.Contains(readme, "10m") {
 		t.Fatalf("README missing local timeout recommendation")
 	}
 	if !strings.Contains(readme, "20m") {
 		t.Fatalf("README missing CI timeout recommendation")
+	}
+	if !strings.Contains(readme, "45m") {
+		t.Fatalf("README missing long-task timeout recommendation")
 	}
 }

@@ -216,12 +216,13 @@ func classifyStall(config WatchdogConfig, now time.Time, lastOutput time.Time) *
 	lines := tailLines(latestLog, config.TailLines)
 	category := stallNoOutput
 	for _, line := range lines {
-		if strings.Contains(line, "service=permission") || strings.Contains(line, "permission=doom_loop") {
-			category = stallPermission
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "service=question") || strings.Contains(lower, "permission=question") || strings.Contains(lower, "service=provider") {
+			category = stallQuestion
 			break
 		}
-		if strings.Contains(line, "service=question") || strings.Contains(line, "permission=question") {
-			category = stallQuestion
+		if strings.Contains(lower, "service=permission") || strings.Contains(lower, "permission=doom_loop") {
+			category = stallPermission
 			break
 		}
 	}

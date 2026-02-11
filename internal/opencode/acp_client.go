@@ -66,9 +66,9 @@ func RunACPClient(
 	client := &acpClient{handler: handler, onUpdate: onUpdate}
 	connection := acp.NewClientSideConnection(client, stdin, stdout)
 
-	errCh := make(chan error, 1)
+	startErrCh := make(chan error, 1)
 	go func() {
-		errCh <- connection.Start(ctx)
+		startErrCh <- connection.Start(ctx)
 	}()
 
 	_, err := connection.Initialize(ctx, &acp.InitializeRequest{
@@ -183,13 +183,23 @@ func RunACPClient(
 	}
 
 	client.closeQuestionResponses()
+
+	// OpenCode may keep the ACP process alive (and stdout open) after the session
+	// goes idle. If we block waiting for connection.Start() to return, the runner
+	// can hang indefinitely even though the prompt finished.
+	//
+	// Best-effort shutdown: close stdin/stdout and the connection, then wait a
+	// short grace window for the start loop to unwind.
+	_ = connection.Close()
 	_ = stdin.Close()
-
-	if err := <-errCh; err != nil && !errors.Is(err, io.EOF) {
-		return err
+	_ = stdout.Close()
+	const shutdownGrace = 250 * time.Millisecond
+	select {
+	case <-startErrCh:
+		return nil
+	case <-time.After(shutdownGrace):
+		return nil
 	}
-
-	return nil
 }
 
 func sendQuestionResponses(ctx context.Context, promptFn func(string) error, responses []string) error {

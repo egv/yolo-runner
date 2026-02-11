@@ -530,6 +530,82 @@ func TestLoopEmitsParallelContextInRunnerStartedEvent(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsRunnerStartedMetadata(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", RepoRoot: "/repo", Model: "openai/gpt-5.3-codex"})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	if !ok {
+		t.Fatalf("expected runner_started event")
+	}
+	if event.Metadata["backend"] != "opencode" {
+		t.Fatalf("expected backend metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["mode"] != string(contracts.RunnerModeImplement) {
+		t.Fatalf("expected mode metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["model"] != "openai/gpt-5.3-codex" {
+		t.Fatalf("expected model metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["log_path"] != "/repo/runner-logs/opencode/t-1.jsonl" {
+		t.Fatalf("expected log_path metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["clone_path"] != "/repo" {
+		t.Fatalf("expected clone_path metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["started_at"] == "" {
+		t.Fatalf("expected started_at metadata, got %#v", event.Metadata)
+	}
+}
+
+func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{
+		Status: contracts.RunnerResultBlocked,
+		Reason: "opencode stall category=question",
+		Artifacts: map[string]string{
+			"log_path":        "/repo/runner-logs/opencode/t-1.jsonl",
+			"stall_category":  "question",
+			"session_id":      "ses_abc123",
+			"last_output_age": "31s",
+		},
+	}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", RepoRoot: "/repo", Model: "openai/gpt-5.3-codex"})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerFinished)
+	if !ok {
+		t.Fatalf("expected runner_finished event")
+	}
+	if event.Metadata["status"] != string(contracts.RunnerResultBlocked) {
+		t.Fatalf("expected status metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["reason"] != "opencode stall category=question" {
+		t.Fatalf("expected reason metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["stall_category"] != "question" {
+		t.Fatalf("expected stall_category metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["session_id"] != "ses_abc123" {
+		t.Fatalf("expected session_id metadata, got %#v", event.Metadata)
+	}
+	if event.Metadata["last_output_age"] != "31s" {
+		t.Fatalf("expected last_output_age metadata, got %#v", event.Metadata)
+	}
+}
+
 func TestLoopEmitsRunnerProgressEventsFromRunnerCallback(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish"}, {Type: "runner_warning", Message: "stall warning"}}}

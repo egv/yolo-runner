@@ -101,14 +101,17 @@ The monitor is decoder-safe: malformed NDJSON lines are surfaced as `decode_erro
 
 Use `--runner-timeout` to cap each task execution. Start with these defaults and tune for your repo/task size.
 
+- Default behavior (flag omitted): `--runner-timeout 0s` (no hard per-runner deadline) plus the no-output watchdog (10m default) still prevents indefinite hangs.
 - Local profile: `--runner-timeout 10m` keeps hangs bounded while still allowing normal coding loops.
 - CI profile: `--runner-timeout 20m` allows slower shared runners and heavier validation steps.
+- Long-task profile: `--runner-timeout 45m` for large refactors or slower model/provider backends.
 
 Examples:
 
 ```
 ./bin/yolo-agent --repo . --root <root-id> --model openai/gpt-5.3-codex --runner-timeout 10m
 ./bin/yolo-agent --repo . --root <root-id> --model openai/gpt-5.3-codex --runner-timeout 20m
+./bin/yolo-agent --repo . --root <root-id> --model openai/gpt-5.3-codex --runner-timeout 45m
 ```
 
 ## Task Prompt

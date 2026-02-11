@@ -215,13 +215,71 @@ func TestWatchdogTimeoutKillsProcessAndClassifiesPermission(t *testing.T) {
 	}
 }
 
+func TestWatchdogTimeoutClassifiesProviderPromptAsQuestion(t *testing.T) {
+	tempDir := t.TempDir()
+	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-provider.jsonl")
+	writeFile(t, runnerLog, "")
+	logDir := filepath.Join(tempDir, "opencode", "log")
+	opencodeLog := filepath.Join(logDir, "latest.log")
+	writeFile(t, opencodeLog, "INFO service=provider status=waiting_for_auth\nINFO session id=ses_provider\n")
+
+	base := time.Now()
+	oldTime := base.Add(-1 * time.Second)
+	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+
+	proc := newFakeProcess()
+	tickCh := make(chan time.Time, 1)
+	tickCh <- base
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:         runnerLog,
+		OpenCodeLogDir:  logDir,
+		Timeout:         10 * time.Millisecond,
+		CompletionGrace: 10 * time.Second,
+		TailLines:       50,
+		NewTicker: func(duration time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		After: func(time.Duration) <-chan time.Time {
+			ch := make(chan time.Time, 1)
+			ch <- base
+			return ch
+		},
+		Now: func() time.Time {
+			return base.Add(2 * time.Second)
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- watchdog.Monitor(proc)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatalf("expected error")
+		}
+		stall, ok := err.(*StallError)
+		if !ok {
+			t.Fatalf("expected StallError, got %T", err)
+		}
+		if stall.Category != stallQuestion {
+			t.Fatalf("expected %q category, got %q", stallQuestion, stall.Category)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for watchdog")
+	}
+}
+
 func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 	tempDir := t.TempDir()
 	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-2.jsonl")
 	writeFile(t, runnerLog, "")
 	logDir := filepath.Join(tempDir, "opencode", "log")
 	opencodeLog := filepath.Join(logDir, "latest.log")
-	writeFile(t, opencodeLog, "INFO service=provider status=started\n")
+	writeFile(t, opencodeLog, "INFO service=worker status=started\n")
 
 	oldTime := time.Now().Add(-2 * time.Second)
 	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {

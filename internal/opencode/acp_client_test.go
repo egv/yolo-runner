@@ -1,12 +1,15 @@
 package opencode
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -286,6 +289,110 @@ func TestRunACPClientReturnsAfterPrompt(t *testing.T) {
 		}
 	case <-time.After(timeout):
 		t.Fatalf("expected server connection to close")
+	}
+}
+
+func TestRunACPClientDoesNotHangWhenAgentKeepsStdoutOpen(t *testing.T) {
+	clientToAgentReader, clientToAgentWriter := io.Pipe()
+	agentToClientReader, agentToClientWriter := io.Pipe()
+
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		scanner := bufio.NewScanner(clientToAgentReader)
+		sessionCounter := 0
+		for scanner.Scan() {
+			var msg struct {
+				Jsonrpc string          `json:"jsonrpc"`
+				ID      *int64          `json:"id,omitempty"`
+				Method  string          `json:"method,omitempty"`
+				Params  json.RawMessage `json:"params,omitempty"`
+			}
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+				continue
+			}
+			if msg.Method == "" {
+				continue
+			}
+			// Notifications have no ID; ignore.
+			if msg.ID == nil {
+				continue
+			}
+
+			writeResponse := func(id int64, result any) {
+				payload, _ := json.Marshal(result)
+				resp := struct {
+					Jsonrpc string          `json:"jsonrpc"`
+					ID      int64           `json:"id"`
+					Result  json.RawMessage `json:"result"`
+				}{Jsonrpc: "2.0", ID: id, Result: payload}
+				data, _ := json.Marshal(resp)
+				data = append(data, '\n')
+				_, _ = agentToClientWriter.Write(data)
+			}
+
+			switch msg.Method {
+			case acp.AgentMethods.Initialize:
+				writeResponse(*msg.ID, &acp.InitializeResponse{ProtocolVersion: acp.ProtocolVersion(acp.CurrentProtocolVersion)})
+			case acp.AgentMethods.SessionNew:
+				sessionCounter++
+				writeResponse(*msg.ID, &acp.NewSessionResponse{SessionId: acp.SessionId(fmt.Sprintf("session-%d", sessionCounter))})
+			case acp.AgentMethods.SessionSetMode:
+				writeResponse(*msg.ID, map[string]any{})
+			case acp.AgentMethods.SessionPrompt:
+				var req acp.PromptRequest
+				_ = json.Unmarshal(msg.Params, &req)
+				text := ""
+				if len(req.Prompt) > 0 && req.Prompt[0].IsText() {
+					text = req.Prompt[0].GetText().Text
+				}
+				if strings.TrimSpace(text) == verificationPrompt {
+					note := &acp.SessionNotification{
+						SessionId: req.SessionId,
+						Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("DONE")),
+					}
+					params, _ := json.Marshal(note)
+					n := struct {
+						Jsonrpc string          `json:"jsonrpc"`
+						Method  string          `json:"method"`
+						Params  json.RawMessage `json:"params"`
+					}{Jsonrpc: "2.0", Method: acp.ClientMethods.SessionUpdate, Params: params}
+					data, _ := json.Marshal(n)
+					data = append(data, '\n')
+					_, _ = agentToClientWriter.Write(data)
+				}
+				writeResponse(*msg.ID, &acp.PromptResponse{StopReason: acp.StopReasonEndTurn})
+			default:
+				// Return an empty success to keep the client moving.
+				writeResponse(*msg.ID, map[string]any{})
+			}
+		}
+		// Intentionally do not close agentToClientWriter to mimic opencode keeping stdout open.
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- RunACPClient(ctx, clientToAgentWriter, agentToClientReader, t.TempDir(), "do work", nil, nil)
+	}()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("expected RunACPClient to return without error, got %v", err)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatalf("expected RunACPClient to return quickly even if stdout stays open")
+	}
+
+	select {
+	case <-serverDone:
+		// ok
+	case <-time.After(500 * time.Millisecond):
+		// The server goroutine should stop once stdin is closed.
+		t.Fatalf("expected server to stop after client shutdown")
 	}
 }
 

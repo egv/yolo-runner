@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,8 @@ type LoopOptions struct {
 	RepoRoot             string
 	Model                string
 	RunnerTimeout        time.Duration
+	WatchdogTimeout      time.Duration
+	WatchdogInterval     time.Duration
 	HeartbeatInterval    time.Duration
 	NoOutputWarningAfter time.Duration
 	VCS                  contracts.VCS
@@ -240,7 +243,17 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			return summary, err
 		}
 
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Timestamp: time.Now().UTC()})
+		implementLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID)
+		implementStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, l.options.Model, taskRepoRoot, implementLogPath, time.Now().UTC())
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Metadata: implementStartMeta, Timestamp: time.Now().UTC()})
+		requestMetadata := map[string]string{"log_path": implementLogPath, "clone_path": taskRepoRoot}
+		if l.options.WatchdogTimeout > 0 {
+			requestMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
+		}
+		if l.options.WatchdogInterval > 0 {
+			requestMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
+		}
+
 		result, err := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
 			TaskID:   task.ID,
 			ParentID: l.options.ParentID,
@@ -249,14 +262,26 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			Model:    l.options.Model,
 			Timeout:  l.options.RunnerTimeout,
 			Prompt:   buildPrompt(task, contracts.RunnerModeImplement),
+			Metadata: requestMetadata,
 		}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
 		if err != nil {
 			return summary, err
 		}
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Timestamp: time.Now().UTC()})
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Metadata: buildRunnerFinishedMetadata(result), Timestamp: time.Now().UTC()})
 
 		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
+			reviewLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID)
+			reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: reviewStartMeta, Timestamp: time.Now().UTC()})
+			reviewMetadata := map[string]string{"log_path": reviewLogPath, "clone_path": taskRepoRoot}
+			if l.options.WatchdogTimeout > 0 {
+				reviewMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
+			}
+			if l.options.WatchdogInterval > 0 {
+				reviewMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
+			}
+
 			reviewResult, reviewErr := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
 				TaskID:   task.ID,
 				ParentID: l.options.ParentID,
@@ -265,10 +290,12 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				Model:    l.options.Model,
 				Timeout:  l.options.RunnerTimeout,
 				Prompt:   buildPrompt(task, contracts.RunnerModeReview),
+				Metadata: reviewMetadata,
 			}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
 			if reviewErr != nil {
 				return summary, reviewErr
 			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(reviewResult.Status), Metadata: buildRunnerFinishedMetadata(reviewResult), Timestamp: time.Now().UTC()})
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(reviewResult.Status), Timestamp: time.Now().UTC()})
 			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady {
 				reviewResult.Status = contracts.RunnerResultFailed
@@ -551,6 +578,62 @@ func buildPrompt(task contracts.Task, mode contracts.RunnerMode) string {
 		sections = append(sections, "Description:\n"+task.Description)
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+func defaultRunnerLogPath(repoRoot string, taskID string) string {
+	if strings.TrimSpace(repoRoot) == "" || strings.TrimSpace(taskID) == "" {
+		return ""
+	}
+	return filepath.Join(repoRoot, "runner-logs", "opencode", taskID+".jsonl")
+}
+
+func buildRunnerStartedMetadata(mode contracts.RunnerMode, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {
+	metadata := map[string]string{
+		"backend":    "opencode",
+		"mode":       string(mode),
+		"started_at": startedAt.UTC().Format(time.RFC3339),
+		"clone_path": clonePath,
+		"log_path":   logPath,
+		"model":      model,
+	}
+	return compactMetadata(metadata)
+}
+
+func buildRunnerFinishedMetadata(result contracts.RunnerResult) map[string]string {
+	metadata := map[string]string{
+		"status": string(result.Status),
+	}
+	if strings.TrimSpace(result.Reason) != "" {
+		metadata["reason"] = result.Reason
+	}
+	if strings.TrimSpace(result.LogPath) != "" {
+		metadata["log_path"] = result.LogPath
+	}
+	for key, value := range result.Artifacts {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		metadata[key] = value
+	}
+	return compactMetadata(metadata)
+}
+
+func compactMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	filtered := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		filtered[key] = trimmed
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func (l *Loop) stopRequested() bool {

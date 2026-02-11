@@ -30,6 +30,8 @@ type runConfig struct {
 	streamOutputInterval time.Duration
 	streamOutputBuffer   int
 	runnerTimeout        time.Duration
+	watchdogTimeout      time.Duration
+	watchdogInterval     time.Duration
 	eventsPath           string
 }
 
@@ -46,6 +48,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	streamOutputInterval := fs.Duration("stream-output-interval", 150*time.Millisecond, "Minimum interval between emitted runner_output events when not verbose")
 	streamOutputBuffer := fs.Int("stream-output-buffer", 64, "Maximum coalesced runner_output events retained before drop")
 	runnerTimeout := fs.Duration("runner-timeout", 0, "Per runner execution timeout")
+	watchdogTimeout := fs.Duration("watchdog-timeout", 10*time.Minute, "No-output watchdog timeout for each runner execution")
+	watchdogInterval := fs.Duration("watchdog-interval", 5*time.Second, "Polling interval used by the no-output watchdog")
 	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -66,6 +70,14 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--stream-output-buffer must be greater than 0")
 		return 1
 	}
+	if *watchdogTimeout <= 0 {
+		fmt.Fprintln(os.Stderr, "--watchdog-timeout must be greater than 0")
+		return 1
+	}
+	if *watchdogInterval <= 0 {
+		fmt.Fprintln(os.Stderr, "--watchdog-interval must be greater than 0")
+		return 1
+	}
 
 	if run == nil {
 		run = defaultRun
@@ -83,6 +95,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		streamOutputInterval: *streamOutputInterval,
 		streamOutputBuffer:   *streamOutputBuffer,
 		runnerTimeout:        *runnerTimeout,
+		watchdogTimeout:      *watchdogTimeout,
+		watchdogInterval:     *watchdogInterval,
 		eventsPath:           *events,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
@@ -158,6 +172,8 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		RepoRoot:           cfg.repoRoot,
 		Model:              cfg.model,
 		RunnerTimeout:      cfg.runnerTimeout,
+		WatchdogTimeout:    cfg.watchdogTimeout,
+		WatchdogInterval:   cfg.watchdogInterval,
 		VCS:                vcs,
 		RequireReview:      true,
 		MergeOnSuccess:     true,
@@ -187,6 +203,8 @@ func buildRunStartedMetadata(cfg runConfig) map[string]string {
 		"verbose_stream":         strconv.FormatBool(cfg.verboseStream),
 		"stream_output_interval": cfg.streamOutputInterval.String(),
 		"stream_output_buffer":   strconv.Itoa(cfg.streamOutputBuffer),
+		"watchdog_timeout":       cfg.watchdogTimeout.String(),
+		"watchdog_interval":      cfg.watchdogInterval.String(),
 	}
 }
 

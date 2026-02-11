@@ -40,6 +40,36 @@ const (
 	acpShutdownGrace = 2 * time.Second
 )
 
+type watchdogRuntimeConfig struct {
+	Timeout        time.Duration
+	Interval       time.Duration
+	OpenCodeLogDir string
+}
+
+type watchdogRuntimeConfigContextKey struct{}
+
+func withWatchdogRuntimeConfig(ctx context.Context, config watchdogRuntimeConfig) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, watchdogRuntimeConfigContextKey{}, config)
+}
+
+func watchdogRuntimeConfigFromContext(ctx context.Context) watchdogRuntimeConfig {
+	if ctx == nil {
+		return watchdogRuntimeConfig{}
+	}
+	value := ctx.Value(watchdogRuntimeConfigContextKey{})
+	if value == nil {
+		return watchdogRuntimeConfig{}
+	}
+	config, ok := value.(watchdogRuntimeConfig)
+	if !ok {
+		return watchdogRuntimeConfig{}
+	}
+	return config
+}
+
 func BuildArgs(repoRoot string, prompt string, model string) []string {
 	args := []string{"opencode", "run", prompt, "--agent", "yolo", "--format", "json"}
 	if model != "" {
@@ -206,6 +236,18 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 		})
 	}
 	process = newWaitOnceProcess(process)
+	watchdogConfig := WatchdogConfig{LogPath: logPath}
+	watchdogRuntime := watchdogRuntimeConfigFromContext(ctx)
+	if watchdogRuntime.Timeout > 0 {
+		watchdogConfig.Timeout = watchdogRuntime.Timeout
+	}
+	if watchdogRuntime.Interval > 0 {
+		watchdogConfig.Interval = watchdogRuntime.Interval
+	}
+	if strings.TrimSpace(watchdogRuntime.OpenCodeLogDir) != "" {
+		watchdogConfig.OpenCodeLogDir = watchdogRuntime.OpenCodeLogDir
+	}
+	watchdog := NewWatchdog(watchdogConfig)
 
 	// Add timeout mechanism for detecting stuck OpenCode processes and initialization failures
 	initTimeout := 30 * time.Second
@@ -240,7 +282,7 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 
 	waitCh := make(chan error, 1)
 	go func() {
-		waitCh <- process.Wait()
+		waitCh <- watchdog.Monitor(process)
 	}()
 
 	var killErr error

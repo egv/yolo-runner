@@ -79,6 +79,39 @@ func TestCLIRunnerAdapterAppliesRequestTimeoutToRunContext(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterAppliesWatchdogMetadataToRunContext(t *testing.T) {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string)) error {
+		config := watchdogRuntimeConfigFromContext(ctx)
+		if config.Timeout != 3*time.Second {
+			t.Fatalf("expected watchdog timeout=3s, got %s", config.Timeout)
+		}
+		if config.Interval != 250*time.Millisecond {
+			t.Fatalf("expected watchdog interval=250ms, got %s", config.Interval)
+		}
+		if config.OpenCodeLogDir != "/tmp/opencode-log" {
+			t.Fatalf("expected watchdog log dir to be forwarded, got %q", config.OpenCodeLogDir)
+		}
+		return nil
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-1",
+		RepoRoot: "/repo",
+		Prompt:   "do x",
+		Metadata: map[string]string{
+			watchdogTimeoutMetadataKey:  "3s",
+			watchdogIntervalMetadataKey: "250ms",
+			watchdogLogDirMetadataKey:   "/tmp/opencode-log",
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+}
+
 func TestCLIRunnerAdapterMapsDeadlineExceededToBlockedTimeout(t *testing.T) {
 	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
 		return context.DeadlineExceeded
@@ -251,5 +284,36 @@ func TestNormalizeACPUpdateLineClassifiesPermissionRequestsAsWarnings(t *testing
 	}
 	if updateType != "runner_warning" {
 		t.Fatalf("expected runner_warning for permission request, got %q", updateType)
+	}
+}
+
+func TestBuildRunnerArtifactsIncludesStallDiagnostics(t *testing.T) {
+	err := &StallError{
+		Category:      "question",
+		SessionID:     "ses_test",
+		LastOutputAge: 42 * time.Second,
+		OpenCodeLog:   "/tmp/opencode.log",
+		TailPath:      "/tmp/opencode.tail.txt",
+	}
+	started := time.Date(2026, 2, 11, 13, 0, 0, 0, time.UTC)
+	finished := started.Add(90 * time.Second)
+	result := contracts.RunnerResult{Status: contracts.RunnerResultBlocked, Reason: err.Error(), StartedAt: started, FinishedAt: finished}
+	request := contracts.RunnerRequest{Mode: contracts.RunnerModeImplement, Model: "openai/gpt-5.3-codex"}
+
+	artifacts := buildRunnerArtifacts(request, result, err, "/tmp/run.jsonl")
+	if artifacts["status"] != string(contracts.RunnerResultBlocked) {
+		t.Fatalf("expected status artifact, got %#v", artifacts)
+	}
+	if artifacts["backend"] != "opencode" {
+		t.Fatalf("expected backend artifact, got %#v", artifacts)
+	}
+	if artifacts["stall_category"] != "question" {
+		t.Fatalf("expected stall category artifact, got %#v", artifacts)
+	}
+	if artifacts["session_id"] != "ses_test" {
+		t.Fatalf("expected session id artifact, got %#v", artifacts)
+	}
+	if artifacts["last_output_age"] != "42s" {
+		t.Fatalf("expected last_output_age artifact, got %#v", artifacts)
 	}
 }

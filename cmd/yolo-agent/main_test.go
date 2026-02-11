@@ -71,6 +71,57 @@ func TestRunMainParsesStreamFlag(t *testing.T) {
 	}
 }
 
+func TestRunMainUsesZeroRunnerTimeoutByDefault(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.runnerTimeout != 0 {
+		t.Fatalf("expected default runner timeout 0, got %s", got.runnerTimeout)
+	}
+	if got.watchdogTimeout != 10*time.Minute {
+		t.Fatalf("expected default watchdog timeout 10m, got %s", got.watchdogTimeout)
+	}
+	if got.watchdogInterval != 5*time.Second {
+		t.Fatalf("expected default watchdog interval 5s, got %s", got.watchdogInterval)
+	}
+}
+
+func TestRunMainParsesWatchdogFlags(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--watchdog-timeout", "90s", "--watchdog-interval", "1s"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.watchdogTimeout != 90*time.Second {
+		t.Fatalf("expected watchdog timeout 90s, got %s", got.watchdogTimeout)
+	}
+	if got.watchdogInterval != 1*time.Second {
+		t.Fatalf("expected watchdog interval 1s, got %s", got.watchdogInterval)
+	}
+}
+
 func TestRunMainParsesVerboseStreamFlag(t *testing.T) {
 	called := false
 	var got runConfig
@@ -174,6 +225,8 @@ func TestRunWithComponentsStreamEmitsRunStartedWithParameters(t *testing.T) {
 		concurrency:          2,
 		model:                "openai/gpt-5.3-codex",
 		runnerTimeout:        15 * time.Minute,
+		watchdogTimeout:      10 * time.Minute,
+		watchdogInterval:     5 * time.Second,
 		verboseStream:        false,
 		streamOutputBuffer:   64,
 		streamOutputInterval: 150 * time.Millisecond,
@@ -203,6 +256,12 @@ func TestRunWithComponentsStreamEmitsRunStartedWithParameters(t *testing.T) {
 	}
 	if !strings.Contains(out, `"concurrency":"2"`) {
 		t.Fatalf("expected concurrency in run_started metadata, got %q", out)
+	}
+	if !strings.Contains(out, `"watchdog_timeout":"10m0s"`) {
+		t.Fatalf("expected watchdog_timeout in run_started metadata, got %q", out)
+	}
+	if !strings.Contains(out, `"watchdog_interval":"5s"`) {
+		t.Fatalf("expected watchdog_interval in run_started metadata, got %q", out)
 	}
 }
 
@@ -420,6 +479,36 @@ func TestRunMainRejectsNonPositiveConcurrency(t *testing.T) {
 	}
 	if called {
 		t.Fatalf("expected run function not to be called for invalid concurrency")
+	}
+}
+
+func TestRunMainRejectsNonPositiveWatchdogTimeout(t *testing.T) {
+	called := false
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--watchdog-timeout", "0s"}, func(context.Context, runConfig) error {
+		called = true
+		return nil
+	})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when watchdog-timeout is non-positive, got %d", code)
+	}
+	if called {
+		t.Fatalf("expected run function not to be called for invalid watchdog-timeout")
+	}
+}
+
+func TestRunMainRejectsNonPositiveWatchdogInterval(t *testing.T) {
+	called := false
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--watchdog-interval", "0s"}, func(context.Context, runConfig) error {
+		called = true
+		return nil
+	})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when watchdog-interval is non-positive, got %d", code)
+	}
+	if called {
+		t.Fatalf("expected run function not to be called for invalid watchdog-interval")
 	}
 }
 

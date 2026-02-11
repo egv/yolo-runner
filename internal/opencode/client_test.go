@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -76,6 +77,24 @@ func TestBuildEnvSetsModelConfigContent(t *testing.T) {
 	env := BuildEnv(nil, configRoot, configDir, "zai-coding-plan/glm-4.7")
 	if env["OPENCODE_CONFIG_CONTENT"] != "{\"model\":\"zai-coding-plan/glm-4.7\"}" {
 		t.Fatalf("unexpected config content: %q", env["OPENCODE_CONFIG_CONTENT"])
+	}
+}
+
+func TestBuildEnvSetsDeterministicPermissionPolicy(t *testing.T) {
+	env := BuildEnv(nil, "", "", "")
+	raw := strings.TrimSpace(env["OPENCODE_PERMISSION"])
+	if raw == "" {
+		t.Fatalf("expected OPENCODE_PERMISSION to be set")
+	}
+
+	policy := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		t.Fatalf("decode OPENCODE_PERMISSION: %v", err)
+	}
+	for _, key := range []string{"*", "doom_loop", "external_directory", "question", "plan_enter", "plan_exit"} {
+		if policy[key] != "allow" {
+			t.Fatalf("expected %s=allow, got %#v", key, policy)
+		}
 	}
 }
 
@@ -425,6 +444,100 @@ func TestRunWithACPNoModelWhenEmpty(t *testing.T) {
 	}
 	if capturedEnv["OPENCODE_CONFIG_CONTENT"] != "{}" {
 		t.Fatalf("expected empty config content, got %q", capturedEnv["OPENCODE_CONFIG_CONTENT"])
+	}
+}
+
+func TestRunWithACPUsesWatchdogAndClassifiesPermissionStall(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-permission.jsonl")
+
+	homeDir := filepath.Join(tempDir, "home")
+	logDir := filepath.Join(homeDir, ".local", "share", "opencode", "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir opencode log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "latest.log"), []byte("INFO service=permission permission=ask sessionID=ses_perm\n"), 0o644); err != nil {
+		t.Fatalf("write opencode log: %v", err)
+	}
+	defaultHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { defaultHomeDir = os.UserHomeDir })
+
+	proc := &MockProcess{waitCh: make(chan error), killCh: make(chan error, 1), stdin: &nopWriteCloser{}, stdout: &nopReadCloser{}}
+	proc.killCh <- nil
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		if err := os.WriteFile(stdoutPath, []byte(""), 0o644); err != nil {
+			return nil, err
+		}
+		return proc, nil
+	})
+
+	ctx := withWatchdogRuntimeConfig(context.Background(), watchdogRuntimeConfig{Timeout: 40 * time.Millisecond, Interval: 5 * time.Millisecond})
+	err := RunWithACP(ctx, "issue-permission", repoRoot, "prompt", "", "", "", logPath, runner, ACPClientFunc(func(context.Context, string, string) error {
+		return nil
+	}))
+	if err == nil {
+		t.Fatalf("expected watchdog stall error")
+	}
+	var stallErr *StallError
+	if !errors.As(err, &stallErr) {
+		t.Fatalf("expected StallError, got %T (%v)", err, err)
+	}
+	if stallErr.Category != stallPermission {
+		t.Fatalf("expected %q category, got %q", stallPermission, stallErr.Category)
+	}
+	if !proc.killCalled {
+		t.Fatalf("expected process to be killed by watchdog")
+	}
+}
+
+func TestRunWithACPUsesWatchdogAndClassifiesQuestionStall(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-question.jsonl")
+
+	homeDir := filepath.Join(tempDir, "home")
+	logDir := filepath.Join(homeDir, ".local", "share", "opencode", "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir opencode log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "latest.log"), []byte("INFO service=question text=Need user decision\n"), 0o644); err != nil {
+		t.Fatalf("write opencode log: %v", err)
+	}
+	defaultHomeDir = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { defaultHomeDir = os.UserHomeDir })
+
+	proc := &MockProcess{waitCh: make(chan error), killCh: make(chan error, 1), stdin: &nopWriteCloser{}, stdout: &nopReadCloser{}}
+	proc.killCh <- nil
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		if err := os.WriteFile(stdoutPath, []byte(""), 0o644); err != nil {
+			return nil, err
+		}
+		return proc, nil
+	})
+
+	ctx := withWatchdogRuntimeConfig(context.Background(), watchdogRuntimeConfig{Timeout: 40 * time.Millisecond, Interval: 5 * time.Millisecond})
+	err := RunWithACP(ctx, "issue-question", repoRoot, "prompt", "", "", "", logPath, runner, ACPClientFunc(func(context.Context, string, string) error {
+		return nil
+	}))
+	if err == nil {
+		t.Fatalf("expected watchdog stall error")
+	}
+	var stallErr *StallError
+	if !errors.As(err, &stallErr) {
+		t.Fatalf("expected StallError, got %T (%v)", err, err)
+	}
+	if stallErr.Category != stallQuestion {
+		t.Fatalf("expected %q category, got %q", stallQuestion, stallErr.Category)
+	}
+	if !proc.killCalled {
+		t.Fatalf("expected process to be killed by watchdog")
 	}
 }
 
