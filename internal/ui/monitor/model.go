@@ -46,24 +46,40 @@ type PerformanceSnapshot struct {
 }
 
 type UIState struct {
-	CurrentTask   string
-	Phase         string
-	LastOutputAge string
-	StatusBar     []string
-	Performance   []string
-	Panels        []UIPanelLine
-	RunParams     []string
-	Workers       []string
-	Landing       []string
-	Triage        []string
-	History       []string
+	CurrentTask     string
+	Phase           string
+	LastOutputAge   string
+	StatusSummary   string
+	StatusMetrics   statusMetrics
+	StatusBar       []string
+	Performance     []string
+	PanelLines      []UIPanelLine
+	RunParams       []string
+	WorkerSummaries []UIWorkerSummary
+	Landing         []string
+	Triage          []string
+	History         []string
 }
 
 type UIPanelLine struct {
-	Text     string
+	ID       string
 	Depth    int
-	Selected bool
+	Label    string
 	Severity string
+	Selected bool
+	Expanded bool
+	Leaf     bool
+}
+
+type UIWorkerSummary struct {
+	WorkerID         string
+	Task             string
+	Phase            string
+	QueuePos         int
+	LastEvent        string
+	LastActivityAge  string
+	Severity         string
+	RecentTaskEvents []string
 }
 
 type RunState struct {
@@ -316,7 +332,7 @@ func (m *Model) Apply(event contracts.Event) {
 			m.runStartedAt = m.now()
 		}
 		m.runParams = map[string]string{}
-		for _, key := range []string{"root_id", "concurrency", "model", "runner_timeout", "stream", "verbose_stream", "stream_output_interval", "stream_output_buffer"} {
+		for _, key := range []string{"root_id", "concurrency", "model", "runner_timeout", "watchdog_timeout", "watchdog_interval", "stream", "verbose_stream", "stream_output_interval", "stream_output_buffer"} {
 			value := strings.TrimSpace(event.Metadata[key])
 			if value != "" {
 				m.runParams[key] = value
@@ -381,6 +397,105 @@ func (m *Model) Snapshot() Snapshot {
 	return Snapshot{Root: RunState{RunID: m.root.RunID, Workers: workers, Tasks: tasks}}
 }
 
+func (m *Model) UIState() UIState {
+	metrics := m.deriveStatusMetrics()
+	return UIState{
+		CurrentTask:     renderCurrentTask(m.currentTask, m.currentTitle),
+		Phase:           emptyAsNA(m.phase),
+		LastOutputAge:   ageSince(m.now(), m.lastOutputAt),
+		StatusSummary:   fmt.Sprintf("⏱ %s  %s  ✅%d  🟡%d  ❌%d/%d  👷 %d%%  📦 %d  ⚡ %s", metrics.runtime, metrics.activity, metrics.completed, metrics.blocked, metrics.failed, metrics.total, metrics.workerUtilization, metrics.queueDepth, metrics.throughput),
+		StatusMetrics:   metrics,
+		StatusBar:       renderStatusBar(metrics),
+		Performance:     renderPerformance(m.PerformanceSnapshot()),
+		PanelLines:      m.uiPanelLines(),
+		RunParams:       renderRunParameters(m.runParams),
+		WorkerSummaries: m.uiWorkerSummaries(),
+		Landing:         renderLandingQueue(m.landing),
+		Triage:          renderTriage(m.triage),
+		History:         append([]string{}, m.history...),
+	}
+}
+
+func (m *Model) uiPanelLines() []UIPanelLine {
+	rows := m.panelRows()
+	if len(rows) == 0 {
+		return []UIPanelLine{}
+	}
+	cursor := m.panelCursor
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= len(rows) {
+		cursor = len(rows) - 1
+	}
+	start, end := panelWindow(len(rows), cursor, m.viewportHeight)
+	lines := make([]UIPanelLine, 0, end-start)
+	for i := start; i < end; i++ {
+		row := rows[i]
+		lines = append(lines, UIPanelLine{
+			ID:       row.id,
+			Depth:    row.indent,
+			Label:    row.label,
+			Severity: row.severity,
+			Selected: i == cursor,
+			Expanded: row.expanded,
+			Leaf:     !row.hasChildren,
+		})
+	}
+	if hidden := len(rows) - end; hidden > 0 {
+		lines = append(lines, UIPanelLine{ID: "more", Depth: 0, Label: fmt.Sprintf("... %d more panel rows", hidden), Severity: "none", Leaf: true})
+	}
+	return lines
+}
+
+func (m *Model) uiWorkerSummaries() []UIWorkerSummary {
+	ids := sortedWorkerIDs(m.root.Workers)
+	workers := make([]UIWorkerSummary, 0, len(ids))
+	for _, workerID := range ids {
+		worker := m.root.Workers[workerID]
+		task := m.root.Tasks[worker.CurrentTaskID]
+		lastEvent := strings.TrimSpace(task.LastMessage)
+		if lastEvent == "" {
+			lastEvent = emptyAsNA(task.RunnerPhase)
+		}
+		recent := []string{}
+		if summary := strings.TrimSpace(task.LastCommandSummary); summary != "" {
+			recent = append(recent, "🛠 "+summary)
+		}
+		if msg := strings.TrimSpace(task.LastMessage); msg != "" {
+			recent = append(recent, "📌 "+msg)
+		}
+		if status := strings.TrimSpace(task.TerminalStatus); status != "" {
+			recent = append(recent, "🏁 "+status)
+		}
+		if len(recent) == 0 {
+			recent = append(recent, "📭 no task events yet")
+		}
+		workers = append(workers, UIWorkerSummary{
+			WorkerID:         workerID,
+			Task:             renderCurrentTask(task.TaskID, task.Title),
+			Phase:            emptyAsNA(worker.CurrentPhase),
+			QueuePos:         worker.CurrentQueuePos,
+			LastEvent:        lastEvent,
+			LastActivityAge:  ageSince(m.now(), task.LastUpdateAt),
+			Severity:         deriveTaskSeverity(task),
+			RecentTaskEvents: recent,
+		})
+	}
+	return workers
+}
+
+func ageSince(now time.Time, when time.Time) string {
+	if when.IsZero() {
+		return "n/a"
+	}
+	seconds := int(now.Sub(when).Round(time.Second).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 func (m *Model) View() string {
 	age := "n/a"
 	if !m.lastOutputAt.IsZero() {
@@ -415,31 +530,6 @@ func (m *Model) View() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func (m *Model) UIState() UIState {
-	age := "n/a"
-	if !m.lastOutputAt.IsZero() {
-		seconds := int(m.now().Sub(m.lastOutputAt).Round(time.Second).Seconds())
-		if seconds < 0 {
-			seconds = 0
-		}
-		age = fmt.Sprintf("%ds", seconds)
-	}
-	perf := m.PerformanceSnapshot()
-	return UIState{
-		CurrentTask:   renderCurrentTask(m.currentTask, m.currentTitle),
-		Phase:         emptyAsNA(m.phase),
-		LastOutputAge: age,
-		StatusBar:     renderStatusBar(m.deriveStatusMetrics()),
-		Performance:   renderPerformance(perf),
-		Panels:        m.uiPanelLines(),
-		RunParams:     renderRunParameters(m.runParams),
-		Workers:       renderWorkers(m.workers),
-		Landing:       renderLandingQueue(m.landing),
-		Triage:        renderTriage(m.triage),
-		History:       append([]string{}, m.history...),
-	}
-}
-
 type panelRow struct {
 	id          string
 	indent      int
@@ -447,44 +537,6 @@ type panelRow struct {
 	severity    string
 	hasChildren bool
 	expanded    bool
-}
-
-func (m *Model) uiPanelLines() []UIPanelLine {
-	rows := m.panelRows()
-	if len(rows) == 0 {
-		return []UIPanelLine{{Text: "n/a", Depth: 0, Selected: true, Severity: "none"}}
-	}
-	cursor := m.panelCursor
-	if cursor < 0 {
-		cursor = 0
-	}
-	if cursor >= len(rows) {
-		cursor = len(rows) - 1
-	}
-	start, end := panelWindow(len(rows), cursor, m.viewportHeight)
-	lines := make([]UIPanelLine, 0, end-start+1)
-	for i := start; i < end; i++ {
-		row := rows[i]
-		glyph := "[ ]"
-		if row.hasChildren {
-			if row.expanded {
-				glyph = "[-]"
-			} else {
-				glyph = "[+]"
-			}
-		}
-		text := glyph + " " + row.label
-		lines = append(lines, UIPanelLine{
-			Text:     text,
-			Depth:    row.indent,
-			Selected: i == cursor,
-			Severity: row.severity,
-		})
-	}
-	if hidden := len(rows) - end; hidden > 0 {
-		lines = append(lines, UIPanelLine{Text: fmt.Sprintf("... %d more panel rows", hidden), Depth: 0, Selected: false, Severity: "none"})
-	}
-	return lines
 }
 
 func (m *Model) panelRows() []panelRow {

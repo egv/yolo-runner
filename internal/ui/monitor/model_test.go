@@ -306,6 +306,40 @@ func TestModelUsesViewportAwareRenderingForLargePanelTrees(t *testing.T) {
 	assertContains(t, view, "... 108 more panel rows")
 }
 
+func TestModelBuildsStructuredUIStateWithWorkerActivity(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 13, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-s0go", "concurrency": "2"}, Timestamp: now.Add(-10 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-9 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-1", WorkerID: "worker-0", Message: "go test ./...", Timestamp: now.Add(-8 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-1", WorkerID: "worker-0", Message: "stalled", Timestamp: now.Add(-7 * time.Second)})
+
+	state := model.UIState()
+	if state.CurrentTask != "task-1 - First" {
+		t.Fatalf("expected current task in ui state, got %#v", state)
+	}
+	if len(state.PanelLines) == 0 {
+		t.Fatalf("expected panel lines in ui state")
+	}
+	if len(state.WorkerSummaries) != 1 {
+		t.Fatalf("expected single worker summary, got %#v", state.WorkerSummaries)
+	}
+	worker := state.WorkerSummaries[0]
+	if worker.WorkerID != "worker-0" || worker.Task != "task-1 - First" {
+		t.Fatalf("unexpected worker summary %#v", worker)
+	}
+	if worker.LastEvent != "stalled" {
+		t.Fatalf("expected last event stalled, got %#v", worker)
+	}
+	if worker.LastActivityAge != "7s" {
+		t.Fatalf("expected last activity age 7s, got %#v", worker)
+	}
+	if len(worker.RecentTaskEvents) == 0 {
+		t.Fatalf("expected worker recent task events")
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

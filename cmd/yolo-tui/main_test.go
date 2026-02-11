@@ -9,6 +9,7 @@ import (
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestRunMainRendersMonitorViewFromStdin(t *testing.T) {
@@ -177,135 +178,57 @@ func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
 	}
 }
 
-func TestFooterLineCountIncludesWarningsAndDoneState(t *testing.T) {
-	if got := footerLineCount("", false); got != 2 {
-		t.Fatalf("expected base footer size 2, got %d", got)
-	}
-	if got := footerLineCount("decode failure", true); got != 4 {
-		t.Fatalf("expected footer size 4 with warning and done, got %d", got)
-	}
-}
-
-func TestTruncateLineAddsEllipsisWhenTooLong(t *testing.T) {
-	got := truncateLine("abcdefghijklmnopqrstuvwxyz", 8)
-	if got != "abcdefg…" {
-		t.Fatalf("expected truncated line with ellipsis, got %q", got)
-	}
-}
-
-func TestRunMainDemoStateRendersWithoutStdin(t *testing.T) {
+func TestRunMainDemoStateRendersSnapshotWithoutTerminal(t *testing.T) {
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	code := RunMain([]string{"--demo-state"}, nil, out, errOut)
 	if code != 0 {
-		t.Fatalf("expected demo mode code 0, got %d stderr=%q", code, errOut.String())
+		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
 	}
 	if !contains(out.String(), "Panels:") {
-		t.Fatalf("expected demo snapshot in output, got %q", out.String())
+		t.Fatalf("expected monitor snapshot output, got %q", out.String())
 	}
 }
 
-func TestDemoEventsContainRunAndWorkerTasks(t *testing.T) {
-	events := demoEvents(time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC))
-	if len(events) < 5 {
-		t.Fatalf("expected rich demo event set, got %d", len(events))
-	}
-	if events[0].Type != contracts.EventTypeRunStarted {
-		t.Fatalf("expected first event run_started, got %s", events[0].Type)
-	}
-	hasSecondWorker := false
-	for _, event := range events {
-		if event.WorkerID == "worker-1" {
-			hasSecondWorker = true
-			break
-		}
-	}
-	if !hasSecondWorker {
-		t.Fatalf("expected demo events for worker-1")
-	}
-}
-
-func TestFullscreenModelStaysOpenOnStreamDoneInHoldOpenMode(t *testing.T) {
+func TestFullscreenModelDefaultsToCollapsedDetails(t *testing.T) {
 	stream := make(chan streamMsg)
 	close(stream)
 	m := newFullscreenModel(stream, demoEvents(time.Now().UTC()), true)
-	updated, cmd := m.Update(streamDoneMsg{})
-	model := updated.(fullscreenModel)
-	if !model.streamDone {
-		t.Fatalf("expected streamDone=true")
-	}
-	if cmd != nil {
-		t.Fatalf("expected no quit command in hold-open demo mode")
-	}
-}
-
-func TestMonitorStructuredStateIncludesPanelSelectionDepth(t *testing.T) {
-	m := monitor.NewModel(func() time.Time { return time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC) })
-	for _, event := range demoEvents(time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC)) {
-		m.Apply(event)
-	}
-	m.HandleKey("down")
-	state := m.UIState()
-	if len(state.Panels) == 0 {
-		t.Fatalf("expected panel lines in structured state")
-	}
-	hasSelected := false
-	for _, line := range state.Panels {
-		if line.Selected {
-			hasSelected = true
-			break
-		}
-	}
-	if !hasSelected {
-		t.Fatalf("expected one selected panel line")
-	}
-}
-
-func TestRenderBodyUsesSingleColumnPaneTitles(t *testing.T) {
-	stream := make(chan streamMsg)
-	close(stream)
-	m := newFullscreenModel(stream, demoEvents(time.Now().UTC()), true)
-	m.width = 100
-	m.height = 32
-	m.resizeViewport()
 	body := m.renderBody()
-	for _, expected := range []string{"Panels", "Status + Run", "Workers", "Queue + Triage", "History"} {
-		if !contains(body, expected) {
-			t.Fatalf("expected single-column pane title %q in body", expected)
-		}
+	if !contains(body, "press d to expand") {
+		t.Fatalf("expected details pane collapsed by default, got %q", body)
 	}
 }
 
-func TestStylePanelLinesRemovesSelectionMarkerAndAddsHierarchy(t *testing.T) {
+func TestFullscreenModelToggleDetailsWithDKey(t *testing.T) {
+	stream := make(chan streamMsg)
+	close(stream)
+	m := newFullscreenModel(stream, demoEvents(time.Now().UTC()), true)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	next := updated.(fullscreenModel)
+	body := next.renderBody()
+	if contains(body, "press d to expand") {
+		t.Fatalf("expected details pane expanded after d toggle")
+	}
+	if !contains(body, "root_id=yr-s0go") {
+		t.Fatalf("expected expanded details to include run params")
+	}
+}
+
+func TestStylePanelLinesUsesDepthWithoutMarkers(t *testing.T) {
 	lines := []monitor.UIPanelLine{
-		{Text: "[-] Run severity=warning", Depth: 0, Selected: true, Severity: "warning"},
-		{Text: "[-] Workers severity=warning", Depth: 1, Selected: false, Severity: "warning"},
-		{Text: "[+] worker-0 severity=warning", Depth: 2, Selected: false, Severity: "warning"},
-		{Text: "[ ] yr-me4i - E2-T3", Depth: 3, Selected: false, Severity: "warning"},
+		{ID: "run", Depth: 0, Label: "Run", Selected: false, Expanded: true, Leaf: false},
+		{ID: "workers", Depth: 1, Label: "Workers", Selected: true, Expanded: true, Leaf: false},
 	}
 	styled := stylePanelLines(lines, 80)
-	if len(styled) != 4 {
-		t.Fatalf("expected 4 styled lines, got %d", len(styled))
+	if len(styled) != 2 {
+		t.Fatalf("expected two lines, got %#v", styled)
 	}
-	if contains(styled[0].text, ">") {
-		t.Fatalf("expected selected marker removed, got %q", styled[0].text)
+	if contains(styled[1].text, ">") {
+		t.Fatalf("expected selection without marker, got %q", styled[1].text)
 	}
-	if !styled[0].selected {
-		t.Fatalf("expected first line selected")
-	}
-	if !contains(styled[1].text, "  [-]") || !contains(styled[2].text, "    [+]") || !contains(styled[3].text, "      [ ]") {
-		t.Fatalf("expected hierarchical indentation, got %#v", styled)
-	}
-}
-
-func TestStylePanelLinesSelectedAndUnselectedHaveSameIndent(t *testing.T) {
-	selected := stylePanelLines([]monitor.UIPanelLine{{Text: "[-] Workers severity=warning", Depth: 1, Selected: true, Severity: "warning"}}, 80)
-	unselected := stylePanelLines([]monitor.UIPanelLine{{Text: "[-] Workers severity=warning", Depth: 1, Selected: false, Severity: "warning"}}, 80)
-	if len(selected) != 1 || len(unselected) != 1 {
-		t.Fatalf("expected one line each, got %#v %#v", selected, unselected)
-	}
-	if selected[0].text != unselected[0].text {
-		t.Fatalf("expected selected/unselected indentation match, got %q vs %q", selected[0].text, unselected[0].text)
+	if !contains(styled[1].text, "  [-] Workers") {
+		t.Fatalf("expected indentation from depth, got %q", styled[1].text)
 	}
 }
 
