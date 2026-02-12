@@ -42,12 +42,40 @@ func (m *GitCloneManager) CloneForTask(ctx context.Context, taskID string, repoR
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git clone failed: %s: %w", strings.TrimSpace(string(output)), err)
 	}
+	if err := setCloneOriginToSourceOrigin(ctx, repoRoot, clonePath); err != nil {
+		return "", err
+	}
 
 	m.mu.Lock()
 	m.clones[taskID] = clonePath
 	m.mu.Unlock()
 
 	return clonePath, nil
+}
+
+func setCloneOriginToSourceOrigin(ctx context.Context, repoRoot string, clonePath string) error {
+	originURL, err := sourceOriginURL(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	if originURL == "" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", clonePath, "remote", "set-url", "origin", originURL)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git remote set-url origin failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+func sourceOriginURL(ctx context.Context, repoRoot string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "remote", "get-url", "origin")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Repositories used in tests or local bootstrap may not have origin configured.
+		return "", nil
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func (m *GitCloneManager) Cleanup(taskID string) error {
