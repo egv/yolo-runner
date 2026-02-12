@@ -12,6 +12,7 @@ import (
 
 const defaultWatchdogTimeout = 10 * time.Minute
 const defaultWatchdogInterval = 5 * time.Second
+const defaultWatchdogIdleTransportGrace = 15 * time.Second
 
 // defaultWatchdogCompletionGrace provides a short window for OpenCode to
 // finish after we detect a timeout, so we prefer the process exit result
@@ -22,9 +23,10 @@ const defaultWatchdogLogTail = 20
 var defaultHomeDir = os.UserHomeDir
 
 const (
-	stallPermission = "permission"
-	stallQuestion   = "question"
-	stallNoOutput   = "no_output"
+	stallIdleTransportOpen = "idle_transport_open"
+	stallPermission        = "permission"
+	stallQuestion          = "question"
+	stallNoOutput          = "no_output"
 )
 
 type Process interface {
@@ -38,15 +40,16 @@ type WatchdogTicker interface {
 }
 
 type WatchdogConfig struct {
-	LogPath         string
-	OpenCodeLogDir  string
-	Timeout         time.Duration
-	Interval        time.Duration
-	CompletionGrace time.Duration
-	TailLines       int
-	Now             func() time.Time
-	After           func(time.Duration) <-chan time.Time
-	NewTicker       func(time.Duration) WatchdogTicker
+	LogPath            string
+	OpenCodeLogDir     string
+	Timeout            time.Duration
+	Interval           time.Duration
+	IdleTransportGrace time.Duration
+	CompletionGrace    time.Duration
+	TailLines          int
+	Now                func() time.Time
+	After              func(time.Duration) <-chan time.Time
+	NewTicker          func(time.Duration) WatchdogTicker
 }
 
 type realWatchdogTicker struct{ ticker *time.Ticker }
@@ -110,6 +113,10 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 	}
 	if config.TailLines <= 0 {
 		config.TailLines = defaultWatchdogLogTail
+	}
+	idleTransportGrace := config.IdleTransportGrace
+	if idleTransportGrace <= 0 {
+		idleTransportGrace = defaultWatchdogIdleTransportGrace
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -178,6 +185,15 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 				}
 			}
 
+			if currentTime.Sub(lastOutput) > idleTransportGrace {
+				if stall, ok := classifyIdleTransportOpen(config, currentTime, lastOutput); ok {
+					if err := process.Kill(); err != nil {
+						return err
+					}
+					return stall
+				}
+			}
+
 			if currentTime.Sub(lastOutput) <= config.Timeout {
 				continue
 			}
@@ -209,6 +225,27 @@ func (watchdog *Watchdog) Monitor(process Process) error {
 			return stall
 		}
 	}
+}
+
+func classifyIdleTransportOpen(config WatchdogConfig, now time.Time, lastOutput time.Time) (*StallError, bool) {
+	completed, lines, stderrPath := promptLoopCompletedFromRunnerLogs(config.LogPath, config.TailLines)
+	if !completed {
+		return nil, false
+	}
+	stall := &StallError{
+		Category:      stallIdleTransportOpen,
+		OpenCodeLog:   stderrPath,
+		SessionID:     extractSessionID(lines),
+		LogPath:       config.LogPath,
+		LastOutputAge: now.Sub(lastOutput),
+		Tail:          lines,
+	}
+	if config.LogPath != "" {
+		if path, err := writeTailFile(config.LogPath, lines); err == nil {
+			stall.TailPath = path
+		}
+	}
+	return stall, true
 }
 
 func classifyStall(config WatchdogConfig, now time.Time, lastOutput time.Time) *StallError {
@@ -279,6 +316,56 @@ func latestLogPath(dir string) string {
 		}
 	}
 	return latest
+}
+
+func promptLoopCompletedFromRunnerLogs(logPath string, tailLimit int) (bool, []string, string) {
+	stderrPath := stderrLogPath(logPath)
+	if tailLimit <= 0 {
+		tailLimit = defaultWatchdogLogTail
+	}
+	lines := tailLines(stderrPath, tailLimit)
+	return hasPromptLoopCompletionTail(lines), lines, stderrPath
+}
+
+func hasPromptLoopCompletionTail(lines []string) bool {
+	if len(lines) == 0 {
+		return false
+	}
+	idleIdx := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.ToLower(strings.TrimSpace(lines[i]))
+		if strings.Contains(line, "service=bus type=session.idle publishing") {
+			idleIdx = i
+			break
+		}
+	}
+	if idleIdx < 0 {
+		return false
+	}
+	if len(lines)-1-idleIdx > 2 {
+		return false
+	}
+	start := idleIdx - 12
+	if start < 0 {
+		start = 0
+	}
+	for i := idleIdx; i >= start; i-- {
+		line := strings.ToLower(lines[i])
+		if strings.Contains(line, "service=session.prompt") && strings.Contains(line, "exiting loop") {
+			return true
+		}
+	}
+	return false
+}
+
+func stderrLogPath(logPath string) string {
+	if logPath == "" {
+		return ""
+	}
+	if strings.HasSuffix(logPath, ".jsonl") {
+		return strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	}
+	return logPath + ".stderr.log"
 }
 
 func tailLines(path string, limit int) []string {

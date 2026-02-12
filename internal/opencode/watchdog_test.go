@@ -321,6 +321,63 @@ func TestWatchdogNoOutputIncludesLastOutputAge(t *testing.T) {
 	}
 }
 
+func TestWatchdogClassifiesIdleTransportOpenFromTaskStderr(t *testing.T) {
+	tempDir := t.TempDir()
+	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-idle.jsonl")
+	writeFile(t, runnerLog, "")
+	stderrLog := strings.TrimSuffix(runnerLog, ".jsonl") + ".stderr.log"
+	writeFile(t, stderrLog, "INFO service=session.prompt sessionID=ses_idle exiting loop\nINFO service=session.prompt sessionID=ses_idle cancel\nINFO service=bus type=session.idle publishing\n")
+
+	base := time.Now()
+	oldTime := base.Add(-30 * time.Second)
+	if err := os.Chtimes(runnerLog, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+
+	proc := newFakeProcess()
+	tickCh := make(chan time.Time, 1)
+	tickCh <- base
+	watchdog := NewWatchdog(WatchdogConfig{
+		LogPath:            runnerLog,
+		Timeout:            10 * time.Minute,
+		IdleTransportGrace: 5 * time.Second,
+		TailLines:          20,
+		NewTicker: func(duration time.Duration) WatchdogTicker {
+			return newStaticTicker(tickCh)
+		},
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- watchdog.Monitor(proc)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatalf("expected error")
+		}
+		stall, ok := err.(*StallError)
+		if !ok {
+			t.Fatalf("expected StallError, got %T", err)
+		}
+		if stall.Category != stallIdleTransportOpen {
+			t.Fatalf("expected %q category, got %q", stallIdleTransportOpen, stall.Category)
+		}
+		if stall.OpenCodeLog != stderrLog {
+			t.Fatalf("expected stderr log path %q, got %q", stderrLog, stall.OpenCodeLog)
+		}
+		if !proc.killed {
+			t.Fatalf("expected process to be killed")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("timed out waiting for watchdog")
+	}
+}
+
 func TestWatchdogWritesTailFile(t *testing.T) {
 	tempDir := t.TempDir()
 	runnerLog := filepath.Join(tempDir, "runner-logs", "opencode", "issue-3.jsonl")

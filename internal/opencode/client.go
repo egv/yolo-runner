@@ -285,9 +285,11 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 	}
 
 	// Run ACP client in goroutine to avoid blocking
+	acpCtx, acpCancel := context.WithCancel(ctx)
+	defer acpCancel()
 	acpErrCh := make(chan error, 1)
 	go func() {
-		acpErrCh <- acpClient.Run(ctx, issueID, logPath)
+		acpErrCh <- acpClient.Run(acpCtx, issueID, logPath)
 	}()
 
 	waitCh := make(chan error, 1)
@@ -343,6 +345,27 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 			if acpCh == nil {
 				continue
 			}
+			if shouldTreatProcessExitAsSessionCompletion(waitErr, logPath) {
+				if waitErr != nil {
+					writeConsoleLine(os.Stderr, "detected session.idle marker; treating transport stall as completed run")
+				}
+				waitErr = nil
+				acpCancel()
+				t := time.NewTimer(acpShutdownGrace)
+				select {
+				case acpErr := <-acpCh:
+					if !t.Stop() {
+						<-t.C
+					}
+					if !isExpectedACPShutdownError(acpErr) {
+						runErr = acpErr
+					}
+					acpCh = nil
+				case <-t.C:
+					acpCh = nil
+				}
+				continue
+			}
 			// Process exited before ACP finished; give ACP a short grace window to drain.
 			t := time.NewTimer(acpShutdownGrace)
 			select {
@@ -375,6 +398,39 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 		return nil
 	}
 	return shutdownErr
+}
+
+func shouldTreatProcessExitAsSessionCompletion(waitErr error, logPath string) bool {
+	if waitErr != nil {
+		var stallErr *StallError
+		if !errors.As(waitErr, &stallErr) {
+			return false
+		}
+		if stallErr.Category == stallIdleTransportOpen {
+			return true
+		}
+	}
+	completed, _, _ := promptLoopCompletedFromRunnerLogs(logPath, defaultWatchdogLogTail)
+	return completed
+}
+
+func isExpectedACPShutdownError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	if errors.Is(err, os.ErrClosed) {
+		return true
+	}
+	if errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	return false
 }
 
 func forwardACPRequestLine(requestType string, decision string, detail string, onLineUpdate func(string)) string {

@@ -541,6 +541,105 @@ func TestRunWithACPUsesWatchdogAndClassifiesQuestionStall(t *testing.T) {
 	}
 }
 
+func TestRunWithACPTreatsIdleTransportMarkersAsCompletedRun(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-idle-complete.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir runner log dir: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write runner log: %v", err)
+	}
+	oldTime := time.Now().Add(-30 * time.Second)
+	if err := os.Chtimes(logPath, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	if err := os.WriteFile(stderrPath, []byte("INFO service=session.prompt sessionID=ses_idle exiting loop\nINFO service=session.prompt sessionID=ses_idle cancel\nINFO service=bus type=session.idle publishing\n"), 0o644); err != nil {
+		t.Fatalf("write stderr log: %v", err)
+	}
+
+	proc := &MockProcess{waitCh: make(chan error), killCh: make(chan error, 1), stdin: &nopWriteCloser{}, stdout: &nopReadCloser{}}
+	proc.killCh <- nil
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	})
+
+	runtimeCtx := withWatchdogRuntimeConfig(context.Background(), watchdogRuntimeConfig{Timeout: 10 * time.Minute, Interval: 5 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(runtimeCtx, 2*time.Second)
+	defer cancel()
+
+	err := RunWithACP(ctx, "issue-idle-complete", repoRoot, "prompt", "", "", "", logPath, runner, ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}))
+	if err != nil {
+		t.Fatalf("expected idle markers to complete run, got %v", err)
+	}
+	if !proc.killCalled {
+		t.Fatalf("expected process kill for idle-transport cleanup")
+	}
+}
+
+func TestRunWithACPTreatsPermissionStallAsCompletedWhenPromptLoopEnded(t *testing.T) {
+	tempDir := t.TempDir()
+	repoRoot := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "runner-logs", "opencode", "issue-permission-idle.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatalf("mkdir runner log dir: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte(""), 0o644); err != nil {
+		t.Fatalf("write runner log: %v", err)
+	}
+	oldTime := time.Now().Add(-2 * time.Second)
+	if err := os.Chtimes(logPath, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes runner log: %v", err)
+	}
+	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	if err := os.WriteFile(stderrPath, []byte("INFO service=session.prompt sessionID=ses_idle exiting loop\nINFO service=session.prompt sessionID=ses_idle cancel\nINFO service=bus type=session.idle publishing\n"), 0o644); err != nil {
+		t.Fatalf("write stderr log: %v", err)
+	}
+
+	logDir := filepath.Join(tempDir, "opencode", "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir opencode log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "latest.log"), []byte("INFO service=permission permission=ask sessionID=ses_perm\n"), 0o644); err != nil {
+		t.Fatalf("write opencode log: %v", err)
+	}
+
+	proc := &MockProcess{waitCh: make(chan error), killCh: make(chan error, 1), stdin: &nopWriteCloser{}, stdout: &nopReadCloser{}}
+	proc.killCh <- nil
+	runner := RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		if err := os.WriteFile(stdoutPath, []byte(""), 0o644); err != nil {
+			return nil, err
+		}
+		return proc, nil
+	})
+
+	runtimeCtx := withWatchdogRuntimeConfig(context.Background(), watchdogRuntimeConfig{Timeout: 40 * time.Millisecond, Interval: 5 * time.Millisecond, OpenCodeLogDir: logDir})
+	ctx, cancel := context.WithTimeout(runtimeCtx, 2*time.Second)
+	defer cancel()
+
+	err := RunWithACP(ctx, "issue-permission-idle", repoRoot, "prompt", "", "", "", logPath, runner, ACPClientFunc(func(ctx context.Context, issueID string, logPath string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}))
+	if err != nil {
+		t.Fatalf("expected prompt-loop markers to override permission stall, got %v", err)
+	}
+	if !proc.killCalled {
+		t.Fatalf("expected process to be killed")
+	}
+}
+
 func TestForwardACPRequestLineForUpdates(t *testing.T) {
 	seen := []string{}
 	line := forwardACPRequestLine("permission", "allow", "read /tmp/file.txt", func(update string) {
