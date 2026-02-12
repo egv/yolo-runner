@@ -161,10 +161,7 @@ func (m fullscreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamDoneMsg:
 		m.streamDone = true
 		m.viewport.SetContent(m.renderBody())
-		if m.holdOpen {
-			return m, nil
-		}
-		return m, tea.Quit
+		return m, nil
 	case tea.KeyMsg:
 		switch typed.String() {
 		case "ctrl+c", "q":
