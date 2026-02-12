@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,6 +104,8 @@ type TaskState struct {
 	QueuePos             int
 	RunnerPhase          string
 	LastMessage          string
+	LastAgentMessage     string
+	LastAgentThought     string
 	LastUpdateAt         time.Time
 	CommandStartedCount  int
 	CommandFinishedCount int
@@ -281,6 +284,14 @@ func (m *Model) Apply(event contracts.Event) {
 		task.RunnerPhase = string(event.Type)
 		if message := primaryEventMessage(event); message != "" {
 			task.LastMessage = message
+			if kind, content, ok := parseAgentProtocolMessage(message); ok {
+				switch kind {
+				case "agent_message":
+					task.LastAgentMessage = content
+				case "agent_thought":
+					task.LastAgentThought = content
+				}
+			}
 		}
 		task.LastUpdateAt = event.Timestamp
 		applyDerivedTaskEvent(&task, event)
@@ -991,7 +1002,11 @@ func renderHistoryLine(event contracts.Event) string {
 		parts = append(parts, renderCurrentTask(event.TaskID, event.TaskTitle))
 	}
 	if message := primaryEventMessage(event); message != "" {
-		parts = append(parts, message)
+		if kind, content, ok := parseAgentProtocolMessage(message); ok {
+			parts = append(parts, kind+" "+compactHistoryMessage(content))
+		} else {
+			parts = append(parts, message)
+		}
 	}
 	if len(event.Metadata) > 0 {
 		keys := make([]string, 0, len(event.Metadata))
@@ -1019,4 +1034,29 @@ func primaryEventMessage(event contracts.Event) string {
 		}
 	}
 	return ""
+}
+
+func parseAgentProtocolMessage(message string) (string, string, bool) {
+	trimmed := strings.TrimSpace(message)
+	for _, prefix := range []string{"agent_message", "agent_thought", "user_message"} {
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if payload == "" {
+			return prefix, "", true
+		}
+		if strings.HasPrefix(payload, `"`) {
+			if unquoted, err := strconv.Unquote(payload); err == nil {
+				payload = unquoted
+			}
+		}
+		return prefix, payload, true
+	}
+	return "", "", false
+}
+
+func compactHistoryMessage(message string) string {
+	compact := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(message)
+	return strings.TrimSpace(compact)
 }

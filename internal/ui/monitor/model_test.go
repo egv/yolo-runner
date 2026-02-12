@@ -373,6 +373,34 @@ func TestModelCapturesAgentThoughtAndMessageFromMetadataInStateAndHistory(t *tes
 	assertContains(t, history, "thinking through edge cases")
 }
 
+func TestModelCapturesAgentThoughtAndMessageInTaskStateAndHistory(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 14, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-9", TaskTitle: "Ninth", WorkerID: "worker-0", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-9", WorkerID: "worker-0", Message: "agent_thought \"Plan\\nVerify\\n\"", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-9", WorkerID: "worker-0", Message: "agent_message \"Implemented fix\\n\"", Timestamp: now.Add(-2 * time.Second)})
+
+	task := model.Snapshot().Root.Tasks["task-9"]
+	if task.LastAgentThought != "Plan\nVerify\n" {
+		t.Fatalf("expected last agent thought to be captured, got %#v", task)
+	}
+	if task.LastAgentMessage != "Implemented fix\n" {
+		t.Fatalf("expected last agent message to be captured, got %#v", task)
+	}
+
+	state := model.UIState()
+	if len(state.History) == 0 {
+		t.Fatalf("expected history entries")
+	}
+	joinedHistory := ""
+	for _, line := range state.History {
+		joinedHistory += line
+	}
+	assertContains(t, joinedHistory, "agent_thought Plan")
+	assertContains(t, joinedHistory, "agent_message Implemented fix")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
