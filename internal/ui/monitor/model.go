@@ -279,7 +279,7 @@ func (m *Model) Apply(event contracts.Event) {
 			task.QueuePos = event.QueuePos
 		}
 		task.RunnerPhase = string(event.Type)
-		if message := strings.TrimSpace(event.Message); message != "" {
+		if message := primaryEventMessage(event); message != "" {
 			task.LastMessage = message
 		}
 		task.LastUpdateAt = event.Timestamp
@@ -990,8 +990,8 @@ func renderHistoryLine(event contracts.Event) string {
 	if event.TaskID != "" {
 		parts = append(parts, renderCurrentTask(event.TaskID, event.TaskTitle))
 	}
-	if event.Message != "" {
-		parts = append(parts, event.Message)
+	if message := primaryEventMessage(event); message != "" {
+		parts = append(parts, message)
 	}
 	if len(event.Metadata) > 0 {
 		keys := make([]string, 0, len(event.Metadata))
@@ -1007,4 +1007,16 @@ func renderHistoryLine(event contracts.Event) string {
 		return ""
 	}
 	return "- " + strings.Join(parts, " | ")
+}
+
+func primaryEventMessage(event contracts.Event) string {
+	if message := strings.TrimSpace(event.Message); message != "" {
+		return message
+	}
+	for _, key := range []string{"agent_message", "agent_thought", "message", "thought"} {
+		if message := strings.TrimSpace(event.Metadata[key]); message != "" {
+			return message
+		}
+	}
+	return ""
 }

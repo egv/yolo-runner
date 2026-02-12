@@ -340,6 +340,39 @@ func TestModelBuildsStructuredUIStateWithWorkerActivity(t *testing.T) {
 	}
 }
 
+func TestModelCapturesAgentThoughtAndMessageFromMetadataInStateAndHistory(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 14, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-9", TaskTitle: "Ninth", WorkerID: "worker-0", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{
+		Type:      contracts.EventTypeRunnerOutput,
+		TaskID:    "task-9",
+		TaskTitle: "Ninth",
+		WorkerID:  "worker-0",
+		Metadata: map[string]string{
+			"agent_thought": "thinking through edge cases",
+			"agent_message": "implemented parser update",
+		},
+		Timestamp: now.Add(-4 * time.Second),
+	})
+
+	state := model.UIState()
+	if len(state.WorkerSummaries) != 1 {
+		t.Fatalf("expected one worker summary, got %#v", state.WorkerSummaries)
+	}
+	if state.WorkerSummaries[0].LastEvent != "implemented parser update" {
+		t.Fatalf("expected last event from metadata agent message, got %#v", state.WorkerSummaries[0])
+	}
+
+	if len(state.History) == 0 {
+		t.Fatalf("expected history entries")
+	}
+	history := state.History[len(state.History)-1]
+	assertContains(t, history, "implemented parser update")
+	assertContains(t, history, "thinking through edge cases")
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
