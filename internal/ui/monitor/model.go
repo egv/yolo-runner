@@ -390,9 +390,16 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		task.WarningActive = false
 		task.TerminalStatus = strings.TrimSpace(event.Message)
 		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
+	case contracts.EventTypeReviewFinished:
+		if reason := strings.TrimSpace(event.Metadata["reason"]); reason != "" {
+			task.LastMessage = strings.TrimSpace(event.Message) + " | " + reason
+		}
 	case contracts.EventTypeTaskFinished:
 		task.TerminalStatus = strings.TrimSpace(event.Message)
 		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
+		if reason := strings.TrimSpace(event.Metadata["triage_reason"]); reason != "" {
+			task.LastMessage = task.TerminalStatus + " | " + reason
+		}
 	}
 }
 

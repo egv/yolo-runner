@@ -200,6 +200,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		SchedulerStatePath: filepath.Join(cfg.repoRoot, ".yolo-runner", "scheduler-state.json"),
 		DryRun:             cfg.dryRun,
 		RepoRoot:           cfg.repoRoot,
+		Backend:            cfg.backend,
 		Model:              cfg.model,
 		RunnerTimeout:      cfg.runnerTimeout,
 		WatchdogTimeout:    cfg.watchdogTimeout,

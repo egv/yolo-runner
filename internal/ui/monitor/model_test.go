@@ -51,6 +51,22 @@ func TestModelRendersLandingQueueStatesFromTaskFinishedEvents(t *testing.T) {
 	assertContains(t, view, "task-2 - Second => failed")
 }
 
+func TestModelSurfacesTaskFinishedTriageReasonInWorkerSummary(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 2, 30, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-3", TaskTitle: "Third", WorkerID: "worker-3", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-3", TaskTitle: "Third", WorkerID: "worker-3", Message: "failed", Metadata: map[string]string{"triage_reason": "review verdict returned fail", "triage_status": "failed"}, Timestamp: now.Add(-1 * time.Second)})
+
+	state := model.UIState()
+	if len(state.WorkerSummaries) != 1 {
+		t.Fatalf("expected one worker summary, got %#v", state.WorkerSummaries)
+	}
+	if state.WorkerSummaries[0].LastEvent != "failed | review verdict returned fail" {
+		t.Fatalf("expected worker last event to include triage reason, got %#v", state.WorkerSummaries[0])
+	}
+}
+
 func TestModelNormalizesTriagePanelData(t *testing.T) {
 	now := time.Date(2026, 2, 10, 12, 3, 0, 0, time.UTC)
 	model := NewModel(func() time.Time { return now })

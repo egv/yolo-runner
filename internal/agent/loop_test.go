@@ -415,6 +415,29 @@ func TestLoopRetriesReviewWithVerdictOnlyPromptAndCompletes(t *testing.T) {
 	}
 }
 
+func TestLoopSkipsVerdictRetryWhenReviewVerdictIsExplicitFail(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: false, Artifacts: map[string]string{"review_verdict": "fail"}},
+	}}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failed summary after explicit fail verdict, got %#v", summary)
+	}
+	if len(run.modes) != 2 {
+		t.Fatalf("expected implement + review (no verdict retry), got %d", len(run.modes))
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "review verdict returned fail" {
+		t.Fatalf("expected explicit fail triage reason, got %q", got)
+	}
+}
+
 func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
@@ -619,6 +642,26 @@ func TestLoopEmitsRunnerStartedMetadata(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsRunnerStartedMetadataWithConfiguredBackend(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", RepoRoot: "/repo", Model: "openai/gpt-5.3-codex", Backend: "codex"})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	if !ok {
+		t.Fatalf("expected runner_started event")
+	}
+	if event.Metadata["backend"] != "codex" {
+		t.Fatalf("expected backend metadata=codex, got %#v", event.Metadata)
+	}
+}
+
 func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{
@@ -757,6 +800,32 @@ func TestLoopEmitsTaskDataUpdatedEventForFailedTriage(t *testing.T) {
 	}
 	if events[0].Metadata["triage_reason"] != "lint failed" {
 		t.Fatalf("expected triage_reason in metadata, got %#v", events[0].Metadata)
+	}
+}
+
+func TestLoopEmitsTaskFinishedMetadataForFailedTriage(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "lint failed"}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 0})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	finished := eventsByType(sink.events, contracts.EventTypeTaskFinished)
+	if len(finished) != 1 {
+		t.Fatalf("expected one task_finished event, got %d", len(finished))
+	}
+	if finished[0].Message != string(contracts.TaskStatusFailed) {
+		t.Fatalf("expected task_finished message=failed, got %q", finished[0].Message)
+	}
+	if finished[0].Metadata["triage_status"] != "failed" {
+		t.Fatalf("expected triage_status=failed on task_finished metadata, got %#v", finished[0].Metadata)
+	}
+	if finished[0].Metadata["triage_reason"] != "lint failed" {
+		t.Fatalf("expected triage_reason=lint failed on task_finished metadata, got %#v", finished[0].Metadata)
 	}
 }
 

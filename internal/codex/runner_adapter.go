@@ -218,6 +218,11 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 	if strings.TrimSpace(result.LogPath) != "" {
 		artifacts["log_path"] = strings.TrimSpace(result.LogPath)
 	}
+	if request.Mode == contracts.RunnerModeReview {
+		if verdict, ok := structuredReviewVerdict(result.LogPath); ok {
+			artifacts["review_verdict"] = verdict
+		}
+	}
 	if !result.StartedAt.IsZero() {
 		artifacts["started_at"] = result.StartedAt.UTC().Format(time.RFC3339)
 	}
@@ -236,18 +241,22 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 }
 
 func hasStructuredPassVerdict(logPath string) bool {
-	if strings.TrimSpace(logPath) == "" {
-		return false
-	}
-	content, err := os.ReadFile(logPath)
-	if err != nil {
-		return false
-	}
-	verdict, ok := lastStructuredVerdictLine(string(content))
+	verdict, ok := structuredReviewVerdict(logPath)
 	if !ok {
 		return false
 	}
 	return strings.EqualFold(verdict, "pass")
+}
+
+func structuredReviewVerdict(logPath string) (string, bool) {
+	if strings.TrimSpace(logPath) == "" {
+		return "", false
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", false
+	}
+	return lastStructuredVerdictLine(string(content))
 }
 
 func lastStructuredVerdictLine(text string) (string, bool) {

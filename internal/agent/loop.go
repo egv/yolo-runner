@@ -38,6 +38,7 @@ type LoopOptions struct {
 	DryRun               bool
 	Stop                 <-chan struct{}
 	RepoRoot             string
+	Backend              string
 	Model                string
 	RunnerTimeout        time.Duration
 	WatchdogTimeout      time.Duration
@@ -248,7 +249,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		}
 
 		implementLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID)
-		implementStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, l.options.Model, taskRepoRoot, implementLogPath, time.Now().UTC())
+		implementStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, l.options.Backend, l.options.Model, taskRepoRoot, implementLogPath, time.Now().UTC())
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Metadata: implementStartMeta, Timestamp: time.Now().UTC()})
 		requestMetadata := map[string]string{"log_path": implementLogPath, "clone_path": taskRepoRoot}
 		if l.options.WatchdogTimeout > 0 {
@@ -276,7 +277,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
 			reviewLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID)
-			reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
+			reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Backend, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: reviewStartMeta, Timestamp: time.Now().UTC()})
 			reviewMetadata := map[string]string{"log_path": reviewLogPath, "clone_path": taskRepoRoot}
 			if l.options.WatchdogTimeout > 0 {
@@ -302,7 +303,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(reviewResult.Status), Metadata: buildRunnerFinishedMetadata(reviewResult), Timestamp: time.Now().UTC()})
 
 			finalReviewResult := reviewResult
-			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady {
+			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady && reviewVerdictFromArtifacts(reviewResult) == "" {
 				verdictMetadata := map[string]string{
 					"log_path":     reviewLogPath,
 					"clone_path":   taskRepoRoot,
@@ -314,7 +315,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				if l.options.WatchdogInterval > 0 {
 					verdictMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
 				}
-				verdictStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
+				verdictStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Backend, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
 				verdictStartMeta["review_phase"] = "verdict_retry"
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: verdictStartMeta, Timestamp: time.Now().UTC()})
 
@@ -337,9 +338,23 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 
 			if finalReviewResult.Status == contracts.RunnerResultCompleted && !finalReviewResult.ReviewReady {
 				finalReviewResult.Status = contracts.RunnerResultFailed
-				finalReviewResult.Reason = "review verdict missing explicit pass"
+				if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict == "fail" {
+					finalReviewResult.Reason = "review verdict returned fail"
+				} else {
+					finalReviewResult.Reason = "review verdict missing explicit pass"
+				}
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(finalReviewResult.Status), Timestamp: time.Now().UTC()})
+			reviewFinishedMetadata := map[string]string{}
+			if strings.TrimSpace(finalReviewResult.Reason) != "" {
+				reviewFinishedMetadata["reason"] = strings.TrimSpace(finalReviewResult.Reason)
+			}
+			if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict != "" {
+				reviewFinishedMetadata["review_verdict"] = verdict
+			}
+			if len(reviewFinishedMetadata) == 0 {
+				reviewFinishedMetadata = nil
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(finalReviewResult.Status), Metadata: reviewFinishedMetadata, Timestamp: time.Now().UTC()})
 			if finalReviewResult.Status != contracts.RunnerResultCompleted {
 				result = finalReviewResult
 			}
@@ -401,7 +416,11 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 						return summary, err
 					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
+					finishedMetadata := map[string]string{"triage_status": "blocked"}
+					if landingReason != "" {
+						finishedMetadata["triage_reason"] = landingReason
+					}
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 					if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
 						return summary, err
 					}
@@ -433,7 +452,11 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Timestamp: time.Now().UTC()})
+			finishedMetadata := map[string]string{"triage_status": "blocked"}
+			if result.Reason != "" {
+				finishedMetadata["triage_reason"] = result.Reason
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
 				return summary, err
 			}
@@ -468,7 +491,11 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.clearTaskInFlight(task.ID); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			finishedMetadata := map[string]string{"triage_status": "failed"}
+			if result.Reason != "" {
+				finishedMetadata["triage_reason"] = result.Reason
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
 		default:
@@ -486,7 +513,11 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if err := l.clearTaskInFlight(task.ID); err != nil {
 				return summary, err
 			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Timestamp: time.Now().UTC()})
+			finishedMetadata := map[string]string{"triage_status": "failed"}
+			if result.Reason != "" {
+				finishedMetadata["triage_reason"] = result.Reason
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
 		}
@@ -661,9 +692,13 @@ func defaultRunnerLogPath(repoRoot string, taskID string) string {
 	return filepath.Join(repoRoot, "runner-logs", "opencode", taskID+".jsonl")
 }
 
-func buildRunnerStartedMetadata(mode contracts.RunnerMode, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {
+func buildRunnerStartedMetadata(mode contracts.RunnerMode, backend string, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {
+	backendValue := strings.TrimSpace(strings.ToLower(backend))
+	if backendValue == "" {
+		backendValue = "opencode"
+	}
 	metadata := map[string]string{
-		"backend":    "opencode",
+		"backend":    backendValue,
 		"mode":       string(mode),
 		"started_at": startedAt.UTC().Format(time.RFC3339),
 		"clone_path": clonePath,
@@ -671,6 +706,17 @@ func buildRunnerStartedMetadata(mode contracts.RunnerMode, model string, clonePa
 		"model":      model,
 	}
 	return compactMetadata(metadata)
+}
+
+func reviewVerdictFromArtifacts(result contracts.RunnerResult) string {
+	if len(result.Artifacts) == 0 {
+		return ""
+	}
+	verdict := strings.ToLower(strings.TrimSpace(result.Artifacts["review_verdict"]))
+	if verdict == "pass" || verdict == "fail" {
+		return verdict
+	}
+	return ""
 }
 
 func buildRunnerFinishedMetadata(result contracts.RunnerResult) map[string]string {
