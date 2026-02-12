@@ -8,19 +8,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/agent"
+	"github.com/anomalyco/yolo-runner/internal/codex"
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/opencode"
 	"github.com/anomalyco/yolo-runner/internal/tk"
 	gitvcs "github.com/anomalyco/yolo-runner/internal/vcs/git"
 )
 
+const (
+	backendOpenCode = "opencode"
+	backendCodex    = "codex"
+)
+
 type runConfig struct {
 	repoRoot             string
 	rootID               string
+	backend              string
 	model                string
 	maxTasks             int
 	concurrency          int
@@ -39,6 +47,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "Repository root")
 	root := fs.String("root", "", "Root task ID")
+	backend := fs.String("backend", backendOpenCode, "Runner backend (opencode|codex)")
 	model := fs.String("model", "", "Model for CLI agent")
 	max := fs.Int("max", 0, "Maximum tasks to execute")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of active task workers")
@@ -56,6 +65,11 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	}
 	if *root == "" {
 		fmt.Fprintln(os.Stderr, "--root is required")
+		return 1
+	}
+	selectedBackend := normalizeBackend(*backend)
+	if !isSupportedBackend(selectedBackend) {
+		fmt.Fprintf(os.Stderr, "--backend must be one of: %s, %s\n", backendOpenCode, backendCodex)
 		return 1
 	}
 	if *concurrency <= 0 {
@@ -86,6 +100,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if err := run(context.Background(), runConfig{
 		repoRoot:             *repo,
 		rootID:               *root,
+		backend:              selectedBackend,
 		model:                *model,
 		maxTasks:             *max,
 		concurrency:          *concurrency,
@@ -118,8 +133,22 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	tkRunner := localRunner{dir: cfg.repoRoot}
 	taskManager := tk.NewTaskManager(tkRunner)
 	vcsAdapter := gitvcs.NewVCSAdapter(localGitRunner{dir: cfg.repoRoot})
-	runnerAdapter := opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir())
+	runnerAdapter, err := buildRunnerAdapter(cfg)
+	if err != nil {
+		return err
+	}
 	return runWithComponents(ctx, cfg, taskManager, runnerAdapter, vcsAdapter)
+}
+
+func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
+	switch normalizeBackend(cfg.backend) {
+	case backendOpenCode:
+		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir()), nil
+	case backendCodex:
+		return codex.NewCLIRunnerAdapter("", nil), nil
+	default:
+		return nil, fmt.Errorf("unsupported runner backend %q", cfg.backend)
+	}
 }
 
 func resolveEventsPath(cfg runConfig) string {
@@ -211,6 +240,7 @@ func cloneScopedVCSFactory(cfg runConfig, vcs contracts.VCS) agent.VCSFactory {
 func buildRunStartedMetadata(cfg runConfig) map[string]string {
 	return map[string]string{
 		"root_id":                cfg.rootID,
+		"backend":                normalizeBackend(cfg.backend),
 		"concurrency":            strconv.Itoa(cfg.concurrency),
 		"model":                  cfg.model,
 		"runner_timeout":         cfg.runnerTimeout.String(),
@@ -220,6 +250,23 @@ func buildRunStartedMetadata(cfg runConfig) map[string]string {
 		"stream_output_buffer":   strconv.Itoa(cfg.streamOutputBuffer),
 		"watchdog_timeout":       cfg.watchdogTimeout.String(),
 		"watchdog_interval":      cfg.watchdogInterval.String(),
+	}
+}
+
+func normalizeBackend(raw string) string {
+	backend := strings.ToLower(strings.TrimSpace(raw))
+	if backend == "" {
+		return backendOpenCode
+	}
+	return backend
+}
+
+func isSupportedBackend(raw string) bool {
+	switch normalizeBackend(raw) {
+	case backendOpenCode, backendCodex:
+		return true
+	default:
+		return false
 	}
 }
 
