@@ -120,6 +120,27 @@ func TestRenderFromReaderContinuesAfterMalformedEventWithFallbackWarning(t *test
 	}
 }
 
+func TestRenderFromReaderIgnoresRawACPStderrLines(t *testing.T) {
+	input := strings.NewReader("acp: reconnecting to stream\n" +
+		"2026-02-12T11:00:00Z WARN transport timeout\n" +
+		"raw stderr line 3\n" +
+		"raw stderr line 4\n" +
+		"raw stderr line 5\n" +
+		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+
+	if err := renderFromReader(input, out, errOut); err != nil {
+		t.Fatalf("expected raw stderr lines to be ignored, got error: %v", err)
+	}
+	if !contains(out.String(), "runner_finished") {
+		t.Fatalf("expected valid event after raw stderr lines, got %q", out.String())
+	}
+	if contains(out.String(), "decode_error") {
+		t.Fatalf("expected raw stderr lines to be ignored without decode warnings, got %q", out.String())
+	}
+}
+
 func TestRenderFromReaderIsDeterministicForSameInput(t *testing.T) {
 	content := "{\"type\":\"run_started\",\"metadata\":{\"root_id\":\"yr-2y0b\"},\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
 		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"failed\",\"ts\":\"2026-02-10T12:00:01Z\"}\n"

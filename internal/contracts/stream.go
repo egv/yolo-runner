@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -42,13 +43,23 @@ func (d *EventDecoder) Next() (Event, error) {
 	if d == nil || d.scanner == nil {
 		return Event{}, io.EOF
 	}
-	if !d.scanner.Scan() {
-		if err := d.scanner.Err(); err != nil {
-			return Event{}, err
+	for {
+		if !d.scanner.Scan() {
+			if err := d.scanner.Err(); err != nil {
+				return Event{}, err
+			}
+			return Event{}, io.EOF
 		}
-		return Event{}, io.EOF
+		line := d.scanner.Bytes()
+		trimmed := strings.TrimSpace(string(line))
+		if trimmed == "" {
+			continue
+		}
+		if trimmed[0] != '{' {
+			continue
+		}
+		return ParseEventJSONLLine(line)
 	}
-	return ParseEventJSONLLine(d.scanner.Bytes())
 }
 
 func ParseEventJSONLLine(line []byte) (Event, error) {
