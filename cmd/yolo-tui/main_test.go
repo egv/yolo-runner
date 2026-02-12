@@ -278,6 +278,18 @@ func TestStylePanelLinesUsesDepthWithoutMarkers(t *testing.T) {
 	}
 }
 
+func TestRenderTopKeepsHeaderSingleLineAtTerminalWidth(t *testing.T) {
+	state := monitor.UIState{
+		CurrentTask:   "yr-very-long-task-id-with-a-title-that-keeps-going",
+		Phase:         "running",
+		LastOutputAge: "12s",
+	}
+	rendered := renderTop(24, state)
+	if strings.Count(rendered, "\n") != 0 {
+		t.Fatalf("expected top bar to remain single-line, got %q", rendered)
+	}
+}
+
 func contains(text string, sub string) bool {
 	for i := 0; i+len(sub) <= len(text); i++ {
 		if text[i:i+len(sub)] == sub {

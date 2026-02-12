@@ -266,7 +266,7 @@ func (m *fullscreenModel) renderBody() string {
 func renderTop(width int, state monitor.UIState) string {
 	header := fmt.Sprintf("🚀 %s   🎯 %s   ⏳ %s", state.CurrentTask, state.Phase, state.LastOutputAge)
 	style := lipgloss.NewStyle().Width(width).Padding(0, 1).Background(lipgloss.Color("24")).Foreground(lipgloss.Color("230")).Bold(true)
-	return style.Render(truncateLine(header, width-2))
+	return style.Render(truncateDisplayWidth(header, width-2))
 }
 
 func stylePanelLines(lines []monitor.UIPanelLine, width int) []displayLine {
@@ -464,6 +464,28 @@ func truncateLine(line string, width int) string {
 		return "…"
 	}
 	return string(runes[:width-1]) + "…"
+}
+
+func truncateDisplayWidth(line string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(line) <= width {
+		return line
+	}
+	if width == 1 {
+		return "…"
+	}
+	limit := width - 1
+	truncated := ""
+	for _, r := range line {
+		next := truncated + string(r)
+		if lipgloss.Width(next) > limit {
+			break
+		}
+		truncated = next
+	}
+	return truncated + "…"
 }
 
 func maxInt(a int, b int) int {
