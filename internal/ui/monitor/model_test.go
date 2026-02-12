@@ -139,6 +139,27 @@ func TestModelDerivesRunnerCommandAndOutputSummaries(t *testing.T) {
 	}
 }
 
+func TestModelSurfacesActiveOpencodeProgressDuringHeartbeat(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 6, 30, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-4", TaskTitle: "Long step", WorkerID: "worker-3", Timestamp: now.Add(-70 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-4", WorkerID: "worker-3", Message: "go test ./...", Timestamp: now.Add(-65 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerHeartbeat, TaskID: "task-4", WorkerID: "worker-3", Message: "alive", Metadata: map[string]string{"last_output_age": "45s"}, Timestamp: now.Add(-20 * time.Second)})
+
+	state := model.UIState()
+	if len(state.WorkerSummaries) != 1 {
+		t.Fatalf("expected single worker summary, got %#v", state.WorkerSummaries)
+	}
+	worker := state.WorkerSummaries[0]
+	if worker.LastEvent != "active: go test ./... (last output 45s)" {
+		t.Fatalf("expected heartbeat to surface active opencode progress, got %#v", worker)
+	}
+	if len(worker.RecentTaskEvents) == 0 || worker.RecentTaskEvents[0] != "📌 active: go test ./... (last output 45s)" {
+		t.Fatalf("expected recent events to include active opencode progress, got %#v", worker.RecentTaskEvents)
+	}
+}
+
 func TestModelDerivesWarningLifecycleAsActiveThenResolved(t *testing.T) {
 	now := time.Date(2026, 2, 10, 12, 7, 0, 0, time.UTC)
 	model := NewModel(func() time.Time { return now })

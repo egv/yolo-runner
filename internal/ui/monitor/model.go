@@ -371,6 +371,17 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		}
 	case contracts.EventTypeRunnerOutput:
 		task.OutputCount++
+	case contracts.EventTypeRunnerHeartbeat:
+		activeCommand := strings.TrimSpace(task.LastCommandStarted)
+		lastOutputAge := strings.TrimSpace(event.Metadata["last_output_age"])
+		switch {
+		case activeCommand != "" && lastOutputAge != "":
+			task.LastMessage = "active: " + activeCommand + " (last output " + lastOutputAge + ")"
+		case activeCommand != "":
+			task.LastMessage = "active: " + activeCommand
+		case lastOutputAge != "":
+			task.LastMessage = "heartbeat: last output " + lastOutputAge
+		}
 	case contracts.EventTypeRunnerWarning:
 		task.WarningCount++
 		task.WarningActive = true
