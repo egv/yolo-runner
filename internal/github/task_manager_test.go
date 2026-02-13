@@ -2,6 +2,8 @@ package github
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -227,6 +229,129 @@ func TestTaskManagerGetTaskMapsIssueDetailsAndDependencyMetadata(t *testing.T) {
 	}
 	if deps := task.Metadata["dependencies"]; deps != "2,3" {
 		t.Fatalf("expected normalized dependency metadata %q, got %q", "2,3", deps)
+	}
+}
+
+func TestTaskManagerSetTaskStatusUpdatesIssueStateForLifecycle(t *testing.T) {
+	t.Parallel()
+
+	updatedStates := []string{}
+	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		if r.Method != http.MethodPatch {
+			t.Fatalf("expected PATCH request, got %s", r.Method)
+		}
+		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues/8" {
+			t.Fatalf("expected issue update path, got %q", r.URL.Path)
+		}
+
+		var payload struct {
+			State string `json:"state"`
+		}
+		decodeJSONRequest(t, r, &payload)
+		updatedStates = append(updatedStates, payload.State)
+		_, _ = w.Write([]byte(`{"number":8}`))
+	})
+
+	lifecycle := []contracts.TaskStatus{
+		contracts.TaskStatusInProgress,
+		contracts.TaskStatusClosed,
+		contracts.TaskStatusBlocked,
+		contracts.TaskStatusOpen,
+		contracts.TaskStatusFailed,
+		contracts.TaskStatusOpen,
+	}
+	for _, status := range lifecycle {
+		if err := manager.SetTaskStatus(context.Background(), "8", status); err != nil {
+			t.Fatalf("SetTaskStatus(%q) returned error: %v", status, err)
+		}
+	}
+
+	want := []string{"open", "closed", "open", "open", "open", "open"}
+	if len(updatedStates) != len(want) {
+		t.Fatalf("expected %d updates, got %d (%#v)", len(want), len(updatedStates), updatedStates)
+	}
+	for idx, expected := range want {
+		if updatedStates[idx] != expected {
+			t.Fatalf("expected update[%d]=%q, got %q", idx, expected, updatedStates[idx])
+		}
+	}
+}
+
+func TestTaskManagerSetTaskStatusReturnsErrorOnFailedIssueUpdate(t *testing.T) {
+	t.Parallel()
+
+	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		if r.Method != http.MethodPatch {
+			t.Fatalf("expected PATCH request, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Validation Failed"}`))
+	})
+
+	err := manager.SetTaskStatus(context.Background(), "8", contracts.TaskStatusClosed)
+	if err == nil {
+		t.Fatalf("expected SetTaskStatus to fail")
+	}
+	if !strings.Contains(err.Error(), `request failed with status 422: Validation Failed`) {
+		t.Fatalf("expected wrapped API failure, got %q", err.Error())
+	}
+}
+
+func TestTaskManagerSetTaskDataWritesSortedComments(t *testing.T) {
+	t.Parallel()
+
+	written := []string{}
+	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", r.Method)
+		}
+		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues/8/comments" {
+			t.Fatalf("expected comments path, got %q", r.URL.Path)
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		decodeJSONRequest(t, r, &payload)
+		written = append(written, payload.Body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	})
+
+	err := manager.SetTaskData(context.Background(), "8", map[string]string{
+		"triage_status":  "blocked",
+		"triage_reason":  "needs manual input",
+		"landing_status": "merge_blocked",
+	})
+	if err != nil {
+		t.Fatalf("SetTaskData returned error: %v", err)
+	}
+	want := []string{
+		"landing_status=merge_blocked",
+		"triage_reason=needs manual input",
+		"triage_status=blocked",
+	}
+	if len(written) != len(want) {
+		t.Fatalf("expected %d comments, got %d (%#v)", len(want), len(written), written)
+	}
+	for idx, expected := range want {
+		if written[idx] != expected {
+			t.Fatalf("expected comment[%d]=%q, got %q", idx, expected, written[idx])
+		}
+	}
+}
+
+func decodeJSONRequest(t *testing.T, r *http.Request, out any) {
+	t.Helper()
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		t.Fatalf("decode JSON request: %v", err)
 	}
 }
 

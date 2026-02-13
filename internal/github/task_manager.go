@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -181,12 +183,69 @@ func (m *TaskManager) GetTask(ctx context.Context, taskID string) (contracts.Tas
 	}, nil
 }
 
-func (m *TaskManager) SetTaskStatus(context.Context, string, contracts.TaskStatus) error {
-	return errors.New("github SetTaskStatus is not implemented yet")
+func (m *TaskManager) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
+	issueNumber, err := parseIssueNumber(taskID, "task ID")
+	if err != nil {
+		return err
+	}
+
+	state, err := githubIssueStateForTaskStatus(status)
+	if err != nil {
+		return err
+	}
+
+	requestURL := buildIssueURL(m.apiEndpoint, m.owner, m.repo, issueNumber)
+	statusCode, body, err := m.doGitHubJSON(ctx, http.MethodPatch, requestURL, map[string]string{"state": state}, maxReadResponseSize)
+	if err != nil {
+		return fmt.Errorf("update GitHub issue %d status %q: %w", issueNumber, status, err)
+	}
+	if statusCode >= http.StatusBadRequest {
+		return fmt.Errorf("update GitHub issue %d status %q: request failed with status %d: %s", issueNumber, status, statusCode, firstAPIError(body))
+	}
+	return nil
 }
 
-func (m *TaskManager) SetTaskData(context.Context, string, map[string]string) error {
-	return errors.New("github SetTaskData is not implemented yet")
+func (m *TaskManager) SetTaskData(ctx context.Context, taskID string, data map[string]string) error {
+	issueNumber, err := parseIssueNumber(taskID, "task ID")
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return nil
+	}
+
+	entries := map[string]string{}
+	for key, value := range data {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		entries[trimmed] = value
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	requestURL := buildIssueCommentsURL(m.apiEndpoint, m.owner, m.repo, issueNumber)
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		payload := map[string]string{
+			"body": key + "=" + entries[key],
+		}
+		statusCode, body, err := m.doGitHubJSON(ctx, http.MethodPost, requestURL, payload, maxReadResponseSize)
+		if err != nil {
+			return fmt.Errorf("write GitHub issue %d task data %q: %w", issueNumber, key, err)
+		}
+		if statusCode >= http.StatusBadRequest {
+			return fmt.Errorf("write GitHub issue %d task data %q: request failed with status %d: %s", issueNumber, key, statusCode, firstAPIError(body))
+		}
+	}
+	return nil
 }
 
 func (m *TaskManager) fetchRepositoryIssues(ctx context.Context) ([]githubIssuePayload, error) {
@@ -223,7 +282,7 @@ func (m *TaskManager) fetchRepositoryIssues(ctx context.Context) ([]githubIssueP
 }
 
 func (m *TaskManager) fetchIssue(ctx context.Context, issueNumber int) (*githubIssuePayload, error) {
-	requestURL := strings.TrimRight(m.apiEndpoint, "/") + "/repos/" + url.PathEscape(m.owner) + "/" + url.PathEscape(m.repo) + "/issues/" + strconv.Itoa(issueNumber)
+	requestURL := buildIssueURL(m.apiEndpoint, m.owner, m.repo, issueNumber)
 	statusCode, body, err := m.doGitHubGET(ctx, requestURL, maxReadResponseSize)
 	if err != nil {
 		return nil, fmt.Errorf("query GitHub issue %d: %w", issueNumber, err)
@@ -252,12 +311,28 @@ func (m *TaskManager) fetchIssue(ctx context.Context, issueNumber int) (*githubI
 }
 
 func (m *TaskManager) doGitHubGET(ctx context.Context, requestURL string, maxBodyBytes int64) (int, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	return m.doGitHubJSON(ctx, http.MethodGet, requestURL, nil, maxBodyBytes)
+}
+
+func (m *TaskManager) doGitHubJSON(ctx context.Context, method string, requestURL string, payload any, maxBodyBytes int64) (int, []byte, error) {
+	var requestBody io.Reader
+	if payload != nil {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return 0, nil, fmt.Errorf("cannot encode request body: %w", err)
+		}
+		requestBody = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, requestBody)
 	if err != nil {
 		return 0, nil, fmt.Errorf("cannot build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+m.token)
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := m.client.Do(req)
 	if err != nil {
@@ -270,6 +345,28 @@ func (m *TaskManager) doGitHubGET(ctx context.Context, requestURL string, maxBod
 		return 0, nil, fmt.Errorf("cannot read response: %w", err)
 	}
 	return resp.StatusCode, body, nil
+}
+
+func githubIssueStateForTaskStatus(status contracts.TaskStatus) (string, error) {
+	switch status {
+	case contracts.TaskStatusClosed:
+		return "closed", nil
+	case contracts.TaskStatusOpen,
+		contracts.TaskStatusInProgress,
+		contracts.TaskStatusBlocked,
+		contracts.TaskStatusFailed:
+		return "open", nil
+	default:
+		return "", fmt.Errorf("unsupported task status %q", status)
+	}
+}
+
+func buildIssueURL(apiEndpoint string, owner string, repo string, issueNumber int) string {
+	return strings.TrimRight(apiEndpoint, "/") + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/issues/" + strconv.Itoa(issueNumber)
+}
+
+func buildIssueCommentsURL(apiEndpoint string, owner string, repo string, issueNumber int) string {
+	return buildIssueURL(apiEndpoint, owner, repo, issueNumber) + "/comments"
 }
 
 func buildTaskGraph(rootNumber int, issues []githubIssuePayload) (TaskGraph, map[string]contracts.TaskStatus, error) {
