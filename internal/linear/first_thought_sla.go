@@ -55,8 +55,8 @@ func (e FirstThoughtSLAError) Unwrap() error {
 }
 
 type FirstThoughtSLAWatchdog struct {
-	event        AgentSessionEvent
-	emitter      FirstThoughtEmitter
+	event         AgentSessionEvent
+	emitter       FirstThoughtEmitter
 	errorRecorder FirstThoughtSLAErrorRecorder
 
 	deadline     time.Duration
@@ -105,16 +105,16 @@ func NewFirstThoughtSLAWatchdog(event AgentSessionEvent, emitter FirstThoughtEmi
 	}
 
 	return &FirstThoughtSLAWatchdog{
-		event:           event,
-		emitter:         emitter,
-		errorRecorder:   errorRecorder,
-		deadline:        deadline,
-		fallbackBody:    fallbackBody,
-		after:           after,
-		now:             nowFn,
-		enforce:         enforce,
+		event:            event,
+		emitter:          emitter,
+		errorRecorder:    errorRecorder,
+		deadline:         deadline,
+		fallbackBody:     fallbackBody,
+		after:            after,
+		now:              nowFn,
+		enforce:          enforce,
 		thoughtEmittedCh: make(chan struct{}),
-		doneCh:          make(chan struct{}),
+		doneCh:           make(chan struct{}),
 	}, nil
 }
 
