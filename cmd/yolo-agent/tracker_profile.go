@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/anomalyco/yolo-runner/internal/linear"
 	"github.com/anomalyco/yolo-runner/internal/tk"
 	"gopkg.in/yaml.v3"
 )
@@ -68,6 +69,10 @@ type resolvedTrackerProfile struct {
 	Tracker trackerModel
 }
 
+var newLinearTaskManager = func(cfg linear.Config) (contracts.TaskManager, error) {
+	return linear.NewTaskManager(cfg)
+}
+
 func resolveProfileSelectionPolicy(input profileSelectionInput) string {
 	for _, value := range []string{
 		input.FlagValue,
@@ -114,6 +119,30 @@ func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile)
 	switch profile.Tracker.Type {
 	case trackerTypeTK:
 		return tk.NewTaskManager(localRunner{dir: repoRoot}), nil
+	case trackerTypeLinear:
+		if profile.Tracker.Linear == nil {
+			return nil, fmt.Errorf("tracker.linear settings are required for profile %q", profile.Name)
+		}
+		workspace := strings.TrimSpace(profile.Tracker.Linear.Scope.Workspace)
+		if workspace == "" {
+			return nil, fmt.Errorf("%s is required for profile %q", "linear.scope.workspace", profile.Name)
+		}
+		tokenEnv := strings.TrimSpace(profile.Tracker.Linear.Auth.TokenEnv)
+		if tokenEnv == "" {
+			return nil, fmt.Errorf("%s is required for profile %q", linearTokenEnvVarLabel, profile.Name)
+		}
+		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
+		if tokenValue == "" {
+			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
+		}
+		manager, err := newLinearTaskManager(linear.Config{
+			Workspace: workspace,
+			Token:     tokenValue,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("linear auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
+		}
+		return manager, nil
 	default:
 		return nil, fmt.Errorf("tracker type %q is not supported yet", profile.Tracker.Type)
 	}

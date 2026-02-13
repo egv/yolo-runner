@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/anomalyco/yolo-runner/internal/linear"
 )
 
 func TestResolveTrackerProfileDefaultsToTKWhenConfigMissing(t *testing.T) {
@@ -204,17 +209,96 @@ func TestBuildTaskManagerForTrackerSupportsTK(t *testing.T) {
 	}
 }
 
-func TestBuildTaskManagerForTrackerRejectsUnsupportedType(t *testing.T) {
+func TestBuildTaskManagerForTrackerSupportsLinear(t *testing.T) {
+	t.Setenv("LINEAR_TOKEN", "lin_api_test")
+	originalFactory := newLinearTaskManager
+	t.Cleanup(func() {
+		newLinearTaskManager = originalFactory
+	})
+
+	var got linear.Config
+	newLinearTaskManager = func(cfg linear.Config) (contracts.TaskManager, error) {
+		got = cfg
+		return staticTaskManager{}, nil
+	}
+
+	manager, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
+		Name: "linear",
+		Tracker: trackerModel{
+			Type: trackerTypeLinear,
+			Linear: &linearTrackerModel{
+				Scope: linearScopeModel{
+					Workspace: "anomaly",
+				},
+				Auth: linearAuthModel{
+					TokenEnv: "LINEAR_TOKEN",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected linear task manager to build, got %v", err)
+	}
+	if manager == nil {
+		t.Fatalf("expected non-nil linear task manager")
+	}
+	if got.Workspace != "anomaly" {
+		t.Fatalf("expected workspace to be wired, got %q", got.Workspace)
+	}
+	if got.Token != "lin_api_test" {
+		t.Fatalf("expected token to be loaded from env, got %q", got.Token)
+	}
+}
+
+func TestBuildTaskManagerForTrackerWrapsLinearAuthErrors(t *testing.T) {
+	t.Setenv("LINEAR_TOKEN", "lin_api_invalid")
+	originalFactory := newLinearTaskManager
+	t.Cleanup(func() {
+		newLinearTaskManager = originalFactory
+	})
+	newLinearTaskManager = func(linear.Config) (contracts.TaskManager, error) {
+		return nil, errors.New("invalid authentication")
+	}
+
 	_, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
 		Name: "linear",
 		Tracker: trackerModel{
 			Type: trackerTypeLinear,
+			Linear: &linearTrackerModel{
+				Scope: linearScopeModel{
+					Workspace: "anomaly",
+				},
+				Auth: linearAuthModel{
+					TokenEnv: "LINEAR_TOKEN",
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected linear auth failure to be returned")
+	}
+	if !strings.Contains(err.Error(), `linear auth validation failed`) {
+		t.Fatalf("expected linear auth context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `LINEAR_TOKEN`) {
+		t.Fatalf("expected token env to be included, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `invalid authentication`) {
+		t.Fatalf("expected original auth error to be preserved, got %q", err.Error())
+	}
+}
+
+func TestBuildTaskManagerForTrackerRejectsUnsupportedType(t *testing.T) {
+	_, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
+		Name: "unknown",
+		Tracker: trackerModel{
+			Type: "unknown",
 		},
 	})
 	if err == nil {
 		t.Fatalf("expected unsupported tracker type to fail")
 	}
-	if !strings.Contains(err.Error(), `tracker type "linear"`) {
+	if !strings.Contains(err.Error(), `tracker type "unknown"`) {
 		t.Fatalf("expected unsupported tracker error, got %q", err.Error())
 	}
 }
@@ -248,4 +332,22 @@ func writeTrackerConfigYAML(t *testing.T, repoRoot string, payload string) {
 	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(payload)+"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+}
+
+type staticTaskManager struct{}
+
+func (staticTaskManager) NextTasks(_ context.Context, _ string) ([]contracts.TaskSummary, error) {
+	return nil, nil
+}
+
+func (staticTaskManager) GetTask(_ context.Context, _ string) (contracts.Task, error) {
+	return contracts.Task{}, nil
+}
+
+func (staticTaskManager) SetTaskStatus(_ context.Context, _ string, _ contracts.TaskStatus) error {
+	return nil
+}
+
+func (staticTaskManager) SetTaskData(_ context.Context, _ string, _ map[string]string) error {
+	return nil
 }
