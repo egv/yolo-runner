@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	githubtracker "github.com/anomalyco/yolo-runner/internal/github"
 	"github.com/anomalyco/yolo-runner/internal/linear"
 )
 
@@ -194,6 +195,137 @@ profiles:
 	}
 }
 
+func TestResolveTrackerProfileRejectsGitHubMissingOwner(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: github
+      github:
+        scope:
+          repo: yolo-runner
+        auth:
+          token_env: GITHUB_TOKEN
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+	if err == nil {
+		t.Fatalf("expected missing github owner to fail")
+	}
+	if !strings.Contains(err.Error(), `github.scope.owner`) {
+		t.Fatalf("expected github owner validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `.yolo-runner/config.yaml`) {
+		t.Fatalf("expected config path guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveTrackerProfileRejectsGitHubMissingRepo(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: anomalyco
+        auth:
+          token_env: GITHUB_TOKEN
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+	if err == nil {
+		t.Fatalf("expected missing github repo to fail")
+	}
+	if !strings.Contains(err.Error(), `github.scope.repo`) {
+		t.Fatalf("expected github repo validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `.yolo-runner/config.yaml`) {
+		t.Fatalf("expected config path guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveTrackerProfileRejectsGitHubMissingTokenEnv(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: anomalyco
+          repo: yolo-runner
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+	if err == nil {
+		t.Fatalf("expected missing github token env to fail")
+	}
+	if !strings.Contains(err.Error(), `github.auth.token_env`) {
+		t.Fatalf("expected github token_env validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `.yolo-runner/config.yaml`) {
+		t.Fatalf("expected config path guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveTrackerProfileRejectsGitHubMissingTokenValue(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: anomalyco
+          repo: yolo-runner
+        auth:
+          token_env: GITHUB_TOKEN
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "" })
+	if err == nil {
+		t.Fatalf("expected missing github token value to fail")
+	}
+	if !strings.Contains(err.Error(), `missing auth token`) {
+		t.Fatalf("expected github token value validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `export GITHUB_TOKEN=<github-personal-access-token>`) {
+		t.Fatalf("expected auth token export guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveTrackerProfileRejectsGitHubMultiRepoConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: anomalyco
+          repo: yolo-runner,another-repo
+        auth:
+          token_env: GITHUB_TOKEN
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+	if err == nil {
+		t.Fatalf("expected multi-repo configuration to fail")
+	}
+	if !strings.Contains(err.Error(), `single-repo`) {
+		t.Fatalf("expected single-repo guidance, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `github.scope.repo`) {
+		t.Fatalf("expected repo field guidance, got %q", err.Error())
+	}
+}
+
 func TestBuildTaskManagerForTrackerSupportsTK(t *testing.T) {
 	manager, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
 		Name: "default",
@@ -284,6 +416,90 @@ func TestBuildTaskManagerForTrackerWrapsLinearAuthErrors(t *testing.T) {
 		t.Fatalf("expected token env to be included, got %q", err.Error())
 	}
 	if !strings.Contains(err.Error(), `invalid authentication`) {
+		t.Fatalf("expected original auth error to be preserved, got %q", err.Error())
+	}
+}
+
+func TestBuildTaskManagerForTrackerSupportsGitHub(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp_test")
+	originalFactory := newGitHubTaskManager
+	t.Cleanup(func() {
+		newGitHubTaskManager = originalFactory
+	})
+
+	var got githubtracker.Config
+	newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager, error) {
+		got = cfg
+		return staticTaskManager{}, nil
+	}
+
+	manager, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
+		Name: "github",
+		Tracker: trackerModel{
+			Type: trackerTypeGitHub,
+			GitHub: &githubTrackerModel{
+				Scope: githubScopeModel{
+					Owner: "anomalyco",
+					Repo:  "yolo-runner",
+				},
+				Auth: githubAuthModel{
+					TokenEnv: "GITHUB_TOKEN",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected github task manager to build, got %v", err)
+	}
+	if manager == nil {
+		t.Fatalf("expected non-nil github task manager")
+	}
+	if got.Owner != "anomalyco" {
+		t.Fatalf("expected owner to be wired, got %q", got.Owner)
+	}
+	if got.Repo != "yolo-runner" {
+		t.Fatalf("expected repo to be wired, got %q", got.Repo)
+	}
+	if got.Token != "ghp_test" {
+		t.Fatalf("expected token to be loaded from env, got %q", got.Token)
+	}
+}
+
+func TestBuildTaskManagerForTrackerWrapsGitHubAuthErrors(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "ghp_invalid")
+	originalFactory := newGitHubTaskManager
+	t.Cleanup(func() {
+		newGitHubTaskManager = originalFactory
+	})
+	newGitHubTaskManager = func(githubtracker.Config) (contracts.TaskManager, error) {
+		return nil, errors.New("bad credentials")
+	}
+
+	_, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
+		Name: "github",
+		Tracker: trackerModel{
+			Type: trackerTypeGitHub,
+			GitHub: &githubTrackerModel{
+				Scope: githubScopeModel{
+					Owner: "anomalyco",
+					Repo:  "yolo-runner",
+				},
+				Auth: githubAuthModel{
+					TokenEnv: "GITHUB_TOKEN",
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected github auth failure to be returned")
+	}
+	if !strings.Contains(err.Error(), `github auth validation failed`) {
+		t.Fatalf("expected github auth context in error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `GITHUB_TOKEN`) {
+		t.Fatalf("expected token env to be included, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `bad credentials`) {
 		t.Fatalf("expected original auth error to be preserved, got %q", err.Error())
 	}
 }
