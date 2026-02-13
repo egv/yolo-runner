@@ -71,9 +71,12 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--root is required")
 		return 1
 	}
-	selectedBackend := normalizeBackend(*backend)
-	if !isSupportedBackend(selectedBackend) {
-		fmt.Fprintf(os.Stderr, "--backend must be one of: %s, %s, %s, %s\n", backendOpenCode, backendCodex, backendClaude, backendKimi)
+	selectedBackend, _, err := selectBackend(*backend, backendSelectionOptions{
+		RequireReview: true,
+		Stream:        *stream,
+	}, defaultBackendCapabilityMatrix())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if *concurrency <= 0 {
@@ -145,7 +148,15 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 }
 
 func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
-	switch normalizeBackend(cfg.backend) {
+	selectedBackend, _, err := selectBackend(cfg.backend, backendSelectionOptions{
+		RequireReview: true,
+		Stream:        cfg.stream,
+	}, defaultBackendCapabilityMatrix())
+	if err != nil {
+		return nil, err
+	}
+
+	switch selectedBackend {
 	case backendOpenCode:
 		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir()), nil
 	case backendCodex:
@@ -268,15 +279,6 @@ func normalizeBackend(raw string) string {
 		return backendOpenCode
 	}
 	return backend
-}
-
-func isSupportedBackend(raw string) bool {
-	switch normalizeBackend(raw) {
-	case backendOpenCode, backendCodex, backendClaude, backendKimi:
-		return true
-	default:
-		return false
-	}
 }
 
 type mirrorEventSink struct {
