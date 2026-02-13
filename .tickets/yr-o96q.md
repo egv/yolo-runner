@@ -1,6 +1,6 @@
 ---
 id: yr-o96q
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-10T00:12:26Z

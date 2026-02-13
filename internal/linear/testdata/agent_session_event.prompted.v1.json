@@ -1,0 +1,19 @@
+{
+  "id": "evt-prompted-1",
+  "type": "AgentSessionEvent",
+  "action": "prompted",
+  "createdAt": "2026-02-10T00:16:12Z",
+  "payloadVersion": 1,
+  "agentSession": {
+    "id": "session-1",
+    "state": "awaitingInput",
+    "promptContext": "<issue identifier=\"YR-O96Q\"><title>Define Linear agent protocol contract</title></issue>"
+  },
+  "agentActivity": {
+    "id": "activity-1",
+    "content": {
+      "type": "prompt",
+      "body": "Please include validation for payloadVersion."
+    }
+  }
+}

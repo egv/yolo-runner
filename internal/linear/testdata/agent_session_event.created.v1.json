@@ -1,0 +1,27 @@
+{
+  "id": "evt-created-1",
+  "type": "AgentSessionEvent",
+  "action": "created",
+  "createdAt": "2026-02-10T00:12:26Z",
+  "payloadVersion": 1,
+  "agentSession": {
+    "id": "session-1",
+    "state": "pending",
+    "promptContext": "<issue identifier=\"YR-O96Q\"><title>Define Linear agent protocol contract</title></issue>",
+    "issue": {
+      "id": "issue-1",
+      "identifier": "YR-O96Q",
+      "title": "Define Linear agent protocol contract"
+    },
+    "comment": {
+      "id": "comment-1",
+      "body": "@yolo-agent implement this task"
+    }
+  },
+  "previousComments": [
+    {
+      "id": "comment-prev-1",
+      "body": "Please make sure tests are included."
+    }
+  ]
+}
