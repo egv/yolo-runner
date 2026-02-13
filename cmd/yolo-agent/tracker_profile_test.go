@@ -108,6 +108,9 @@ profiles:
 	if !strings.Contains(err.Error(), `linear.scope.workspace`) {
 		t.Fatalf("expected linear workspace validation error, got %q", err.Error())
 	}
+	if !strings.Contains(err.Error(), `.yolo-runner/config.yaml`) {
+		t.Fatalf("expected config path guidance, got %q", err.Error())
+	}
 }
 
 func TestResolveTrackerProfileRejectsLinearMissingTokenEnv(t *testing.T) {
@@ -128,6 +131,9 @@ profiles:
 	}
 	if !strings.Contains(err.Error(), `linear.auth.token_env`) {
 		t.Fatalf("expected linear token_env validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `.yolo-runner/config.yaml`) {
+		t.Fatalf("expected config path guidance, got %q", err.Error())
 	}
 }
 
@@ -151,6 +157,35 @@ profiles:
 	}
 	if !strings.Contains(err.Error(), `missing auth token`) {
 		t.Fatalf("expected linear token value validation error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `export LINEAR_TOKEN=<linear-api-token>`) {
+		t.Fatalf("expected auth token export guidance, got %q", err.Error())
+	}
+}
+
+func TestResolveTrackerProfileRejectsLinearMultiWorkspaceConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: anomaly,another
+        auth:
+          token_env: LINEAR_TOKEN
+`)
+
+	_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+	if err == nil {
+		t.Fatalf("expected multi-workspace configuration to fail")
+	}
+	if !strings.Contains(err.Error(), `single-workspace`) {
+		t.Fatalf("expected single-workspace guidance, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), `linear.scope.workspace`) {
+		t.Fatalf("expected workspace field guidance, got %q", err.Error())
 	}
 }
 

@@ -181,19 +181,35 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 		}
 		workspace := strings.TrimSpace(model.Linear.Scope.Workspace)
 		if workspace == "" {
-			return trackerModel{}, fmt.Errorf("%s is required for profile %q", "linear.scope.workspace", profileName)
+			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to your single Linear workspace slug", "linear.scope.workspace", profileName, trackerConfigRelPath)
+		}
+		if hasMultipleWorkspaceValues(workspace) {
+			return trackerModel{}, fmt.Errorf("%s must contain exactly one workspace for profile %q in %s (single-workspace mode); got %q", "linear.scope.workspace", profileName, trackerConfigRelPath, workspace)
 		}
 		tokenEnv := strings.TrimSpace(model.Linear.Auth.TokenEnv)
 		if tokenEnv == "" {
-			return trackerModel{}, fmt.Errorf("%s is required for profile %q", linearTokenEnvVarLabel, profileName)
+			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to the env var that stores your Linear API token", linearTokenEnvVarLabel, profileName, trackerConfigRelPath)
 		}
 		if getenv != nil && strings.TrimSpace(getenv(tokenEnv)) == "" {
-			return trackerModel{}, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profileName)
+			return trackerModel{}, fmt.Errorf("missing auth token from %s for profile %q configured in %s; set it in your shell (for example: export %s=<linear-api-token>)", tokenEnv, profileName, trackerConfigRelPath, tokenEnv)
 		}
+		model.Linear.Scope.Workspace = workspace
+		model.Linear.Auth.TokenEnv = tokenEnv
 		return model, nil
 	default:
 		return trackerModel{}, fmt.Errorf("unsupported tracker type %q for profile %q", model.Type, profileName)
 	}
+}
+
+func hasMultipleWorkspaceValues(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, ",") || strings.Contains(trimmed, ";") {
+		return true
+	}
+	return len(strings.Fields(trimmed)) > 1
 }
 
 func sortedProfileNames(profiles map[string]trackerProfileDef) []string {

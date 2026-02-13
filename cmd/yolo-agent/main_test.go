@@ -746,6 +746,38 @@ func TestRunMainHidesGenericExitStatusInActionableMessage(t *testing.T) {
 	}
 }
 
+func TestRunMainLinearStartupValidationReportsActionableConfigGuidance(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: anomaly
+        auth:
+          token_env: LINEAR_TOKEN
+`)
+
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", repoRoot, "--root", "root-1"}, defaultRun)
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if !strings.Contains(errText, "Category: auth_profile_config") {
+		t.Fatalf("expected auth/profile category, got %q", errText)
+	}
+	if !strings.Contains(errText, ".yolo-runner/config.yaml") {
+		t.Fatalf("expected config file guidance, got %q", errText)
+	}
+	if !strings.Contains(errText, "export LINEAR_TOKEN=<linear-api-token>") {
+		t.Fatalf("expected token export guidance, got %q", errText)
+	}
+}
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
