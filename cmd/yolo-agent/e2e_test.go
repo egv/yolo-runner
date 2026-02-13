@@ -19,6 +19,7 @@ import (
 	"github.com/anomalyco/yolo-runner/internal/claude"
 	"github.com/anomalyco/yolo-runner/internal/codex"
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	githubtracker "github.com/anomalyco/yolo-runner/internal/github"
 	"github.com/anomalyco/yolo-runner/internal/kimi"
 	"github.com/anomalyco/yolo-runner/internal/linear"
 	"github.com/anomalyco/yolo-runner/internal/tk"
@@ -532,6 +533,255 @@ profiles:
 		t.Fatalf("expected first transition to in_progress, got %#v", transitions)
 	}
 	if transitions[1] != contracts.TaskStatusClosed {
+		t.Fatalf("expected second transition to closed, got %#v", transitions)
+	}
+}
+
+func TestE2E_GitHubProfileProcessesAndClosesIssue(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required for e2e test")
+	}
+
+	repo := t.TempDir()
+	runCommand(t, repo, "git", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCommand(t, repo, "git", "add", "README.md")
+	runCommand(t, repo, "git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	const (
+		rootID           = "101"
+		issueID          = "102"
+		rootIssueNumber  = 101
+		taskIssueNumber  = 102
+		profileName      = "github-demo"
+	)
+
+	writeTrackerConfigYAML(t, repo, `
+default_profile: github-demo
+profiles:
+  github-demo:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: anomalyco
+          repo: yolo-runner
+        auth:
+          token_env: GITHUB_TOKEN
+`)
+	t.Setenv("GITHUB_TOKEN", "ghp_test")
+
+	var (
+		stateMu           sync.Mutex
+		rootState         = "open"
+		issueState        = "open"
+		statusTransitions []string
+	)
+
+	issuePayload := func(number int, title string, state string) map[string]any {
+		return map[string]any{
+			"number": number,
+			"title":  title,
+			"body":   "End-to-end processing",
+			"state":  state,
+			"labels": []map[string]string{
+				{"name": "p1"},
+			},
+		}
+	}
+
+	writeJSON := func(t *testing.T, w http.ResponseWriter, statusCode int, data any) {
+		t.Helper()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		if err := json.NewEncoder(w).Encode(data); err != nil {
+			t.Fatalf("encode GitHub response: %v", err)
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Helper()
+		if got := strings.TrimSpace(r.Header.Get("Authorization")); got != "Bearer ghp_test" {
+			t.Fatalf("expected Authorization=Bearer ghp_test, got %q", got)
+		}
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner":
+			writeJSON(t, w, http.StatusOK, map[string]any{"full_name": "anomalyco/yolo-runner"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner/issues":
+			if got := r.URL.Query().Get("state"); got != "all" {
+				t.Fatalf("expected state=all query, got %q", got)
+			}
+			if got := r.URL.Query().Get("per_page"); got != "100" {
+				t.Fatalf("expected per_page=100 query, got %q", got)
+			}
+			if got := r.URL.Query().Get("page"); got != "1" {
+				writeJSON(t, w, http.StatusOK, []any{})
+				return
+			}
+			stateMu.Lock()
+			root := rootState
+			issue := issueState
+			stateMu.Unlock()
+			writeJSON(t, w, http.StatusOK, []map[string]any{
+				issuePayload(rootIssueNumber, "GitHub e2e root", root),
+				issuePayload(taskIssueNumber, "Implement GitHub e2e demo", issue),
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102":
+			stateMu.Lock()
+			issue := issueState
+			stateMu.Unlock()
+			writeJSON(t, w, http.StatusOK, issuePayload(taskIssueNumber, "Implement GitHub e2e demo", issue))
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102":
+			var payload struct {
+				State string `json:"state"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode GitHub issue patch payload: %v", err)
+			}
+			stateMu.Lock()
+			issueState = strings.TrimSpace(payload.State)
+			statusTransitions = append(statusTransitions, issueState)
+			stateMu.Unlock()
+			writeJSON(t, w, http.StatusOK, map[string]any{"number": taskIssueNumber})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102/comments":
+			writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
+		default:
+			t.Fatalf("unexpected GitHub API request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	originalFactory := newGitHubTaskManager
+	newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager, error) {
+		if cfg.Owner != "anomalyco" {
+			return nil, errors.New("expected owner anomalyco")
+		}
+		if cfg.Repo != "yolo-runner" {
+			return nil, errors.New("expected repository yolo-runner")
+		}
+		if cfg.Token != "ghp_test" {
+			return nil, errors.New("expected GITHUB_TOKEN from environment")
+		}
+		return githubtracker.NewTaskManager(githubtracker.Config{
+			Owner:       cfg.Owner,
+			Repo:        cfg.Repo,
+			Token:       cfg.Token,
+			APIEndpoint: server.URL,
+			HTTPClient:  server.Client(),
+		})
+	}
+	t.Cleanup(func() {
+		newGitHubTaskManager = originalFactory
+	})
+
+	profile, err := resolveTrackerProfile(repo, "", rootID, os.Getenv)
+	if err != nil {
+		t.Fatalf("resolve tracker profile: %v", err)
+	}
+	if profile.Name != profileName {
+		t.Fatalf("expected profile %q, got %q", profileName, profile.Name)
+	}
+	if profile.Tracker.Type != trackerTypeGitHub {
+		t.Fatalf("expected tracker type %q, got %q", trackerTypeGitHub, profile.Tracker.Type)
+	}
+
+	taskManager, err := buildTaskManagerForTracker(repo, profile)
+	if err != nil {
+		t.Fatalf("build github task manager from profile: %v", err)
+	}
+	fakeAgent := &fakeAgentRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	fakeVCS := &fakeVCS{}
+
+	originalStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = writePipe
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	runErr := runWithComponents(context.Background(), runConfig{
+		repoRoot:    repo,
+		rootID:      rootID,
+		backend:     backendCodex,
+		profile:     profile.Name,
+		trackerType: profile.Tracker.Type,
+		model:       "openai/gpt-5.3-codex",
+		maxTasks:    1,
+		stream:      true,
+	}, taskManager, fakeAgent, fakeVCS)
+	if runErr != nil {
+		t.Fatalf("run failed: %v", runErr)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	raw, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := readPipe.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	events := decodeNDJSONEvents(t, raw)
+	sawRunStarted := false
+	sawGitHubTracker := false
+	sawGitHubProfile := false
+	for _, event := range events {
+		if event.Type != contracts.EventTypeRunStarted {
+			continue
+		}
+		sawRunStarted = true
+		if event.Metadata["tracker"] == trackerTypeGitHub {
+			sawGitHubTracker = true
+		}
+		if event.Metadata["profile"] == profileName {
+			sawGitHubProfile = true
+		}
+	}
+	if !sawRunStarted {
+		t.Fatalf("expected run_started event in stream, got %q", string(raw))
+	}
+	if !sawGitHubTracker {
+		t.Fatalf("expected run_started metadata tracker=%q, got %q", trackerTypeGitHub, string(raw))
+	}
+	if !sawGitHubProfile {
+		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
+	}
+
+	task, err := taskManager.GetTask(context.Background(), issueID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected github issue %q to be closed, got %q", issueID, task.Status)
+	}
+	if len(fakeAgent.requests) == 0 {
+		t.Fatalf("expected agent runner to be invoked at least once")
+	}
+	if fakeAgent.requests[0].RepoRoot == repo {
+		t.Fatalf("expected agent request to use isolated clone path, got %q", fakeAgent.requests[0].RepoRoot)
+	}
+
+	stateMu.Lock()
+	transitions := append([]string(nil), statusTransitions...)
+	stateMu.Unlock()
+	if len(transitions) != 2 {
+		t.Fatalf("expected exactly two GitHub status transitions, got %#v", transitions)
+	}
+	if transitions[0] != "open" {
+		t.Fatalf("expected first transition to open, got %#v", transitions)
+	}
+	if transitions[1] != "closed" {
 		t.Fatalf("expected second transition to closed, got %#v", transitions)
 	}
 }
