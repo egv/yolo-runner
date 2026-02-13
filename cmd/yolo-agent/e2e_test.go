@@ -19,6 +19,7 @@ import (
 	"github.com/anomalyco/yolo-runner/internal/claude"
 	"github.com/anomalyco/yolo-runner/internal/codex"
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/anomalyco/yolo-runner/internal/kimi"
 	"github.com/anomalyco/yolo-runner/internal/linear"
 	"github.com/anomalyco/yolo-runner/internal/tk"
 	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
@@ -535,6 +536,300 @@ profiles:
 	}
 }
 
+func TestE2E_KimiLinearProfileProcessesAndClosesIssue(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required for e2e test")
+	}
+
+	repo := t.TempDir()
+	runCommand(t, repo, "git", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCommand(t, repo, "git", "add", "README.md")
+	runCommand(t, repo, "git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	const (
+		rootID      = "proj-linear-kimi-e2e"
+		issueID     = "iss-linear-kimi-e2e"
+		profileName = "linear-kimi-demo"
+	)
+
+	writeTrackerConfigYAML(t, repo, `
+default_profile: linear-kimi-demo
+profiles:
+  linear-kimi-demo:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: acme
+        auth:
+          token_env: LINEAR_TOKEN
+`)
+	t.Setenv("LINEAR_TOKEN", "lin_api_test")
+
+	type issueState struct {
+		Type string
+		Name string
+	}
+
+	var (
+		stateMu           sync.Mutex
+		currentState      = issueState{Type: "backlog", Name: "Backlog"}
+		statusTransitions []contracts.TaskStatus
+	)
+
+	issuePayload := func(state issueState) map[string]any {
+		return map[string]any{
+			"id":          issueID,
+			"title":       "Implement Kimi + Linear e2e demo",
+			"description": "End-to-end processing",
+			"priority":    1,
+			"project":     map[string]any{"id": rootID},
+			"parent":      nil,
+			"state":       map[string]any{"type": state.Type, "name": state.Name},
+			"relations":   map[string]any{"nodes": []any{}},
+		}
+	}
+
+	writeResponse := func(t *testing.T, w http.ResponseWriter, data any) {
+		t.Helper()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+			t.Fatalf("encode GraphQL response: %v", err)
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Helper()
+		if got := strings.TrimSpace(r.Header.Get("Authorization")); got != "lin_api_test" {
+			t.Fatalf("expected Authorization=lin_api_test, got %q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		var payload struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode GraphQL request body: %v", err)
+		}
+		query := payload.Query
+
+		switch {
+		case strings.Contains(query, "AuthProbe"):
+			writeResponse(t, w, map[string]any{
+				"viewer": map[string]any{"id": "usr-1"},
+			})
+		case strings.Contains(query, "ReadProjectBacklog"):
+			if !strings.Contains(query, `project(id: "proj-linear-kimi-e2e")`) {
+				t.Fatalf("expected project backlog query for %q, got %q", rootID, query)
+			}
+			stateMu.Lock()
+			state := currentState
+			stateMu.Unlock()
+			writeResponse(t, w, map[string]any{
+				"project": map[string]any{
+					"id":   rootID,
+					"name": "Linear Kimi e2e project",
+					"issues": map[string]any{
+						"nodes": []any{issuePayload(state)},
+					},
+				},
+			})
+		case strings.Contains(query, "ReadIssueWorkflowStatesForWrite"):
+			writeResponse(t, w, map[string]any{
+				"issue": map[string]any{
+					"id": issueID,
+					"team": map[string]any{
+						"states": map[string]any{
+							"nodes": []any{
+								map[string]any{"id": "st-open", "type": "backlog", "name": "Backlog"},
+								map[string]any{"id": "st-started", "type": "started", "name": "In Progress"},
+								map[string]any{"id": "st-closed", "type": "completed", "name": "Done"},
+							},
+						},
+					},
+				},
+			})
+		case strings.Contains(query, "UpdateIssueWorkflowState"):
+			stateMu.Lock()
+			switch {
+			case strings.Contains(query, `stateId: "st-started"`):
+				currentState = issueState{Type: "started", Name: "In Progress"}
+				statusTransitions = append(statusTransitions, contracts.TaskStatusInProgress)
+			case strings.Contains(query, `stateId: "st-closed"`):
+				currentState = issueState{Type: "completed", Name: "Done"}
+				statusTransitions = append(statusTransitions, contracts.TaskStatusClosed)
+			default:
+				stateMu.Unlock()
+				t.Fatalf("unexpected workflow-state mutation query: %q", query)
+			}
+			stateMu.Unlock()
+			writeResponse(t, w, map[string]any{
+				"issueUpdate": map[string]any{"success": true},
+			})
+		case strings.Contains(query, "ReadIssue"):
+			if !strings.Contains(query, `issue(id: "iss-linear-kimi-e2e")`) {
+				t.Fatalf("expected issue query for %q, got %q", issueID, query)
+			}
+			stateMu.Lock()
+			state := currentState
+			stateMu.Unlock()
+			writeResponse(t, w, map[string]any{
+				"issue": issuePayload(state),
+			})
+		default:
+			t.Fatalf("unexpected GraphQL query: %q", query)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	originalFactory := newLinearTaskManager
+	newLinearTaskManager = func(cfg linear.Config) (contracts.TaskManager, error) {
+		if cfg.Workspace != "acme" {
+			return nil, errors.New("expected workspace acme")
+		}
+		if cfg.Token != "lin_api_test" {
+			return nil, errors.New("expected LINEAR_TOKEN from environment")
+		}
+		return linear.NewTaskManager(linear.Config{
+			Workspace:  cfg.Workspace,
+			Token:      cfg.Token,
+			Endpoint:   server.URL,
+			HTTPClient: server.Client(),
+		})
+	}
+	t.Cleanup(func() {
+		newLinearTaskManager = originalFactory
+	})
+
+	profile, err := resolveTrackerProfile(repo, "", rootID, os.Getenv)
+	if err != nil {
+		t.Fatalf("resolve tracker profile: %v", err)
+	}
+	if profile.Name != profileName {
+		t.Fatalf("expected profile %q, got %q", profileName, profile.Name)
+	}
+	if profile.Tracker.Type != trackerTypeLinear {
+		t.Fatalf("expected tracker type %q, got %q", trackerTypeLinear, profile.Tracker.Type)
+	}
+
+	taskManager, err := buildTaskManagerForTracker(repo, profile)
+	if err != nil {
+		t.Fatalf("build linear task manager from profile: %v", err)
+	}
+	kimiRunner := kimi.NewCLIRunnerAdapter(writeFakeKimiBinary(t), nil)
+	fakeVCS := &fakeVCS{}
+
+	originalStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = writePipe
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	runErr := runWithComponents(context.Background(), runConfig{
+		repoRoot:    repo,
+		rootID:      rootID,
+		backend:     backendKimi,
+		profile:     profile.Name,
+		trackerType: profile.Tracker.Type,
+		model:       "kimi-k2",
+		maxTasks:    1,
+		stream:      true,
+	}, taskManager, kimiRunner, fakeVCS)
+	if runErr != nil {
+		t.Fatalf("run failed: %v", runErr)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	raw, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := readPipe.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	events := decodeNDJSONEvents(t, raw)
+	sawRunStarted := false
+	sawKimiBackend := false
+	sawLinearTracker := false
+	sawLinearProfile := false
+	sawKimiRunnerFinished := false
+	sawReviewPassVerdict := false
+	for _, event := range events {
+		if event.Type == contracts.EventTypeRunStarted {
+			sawRunStarted = true
+			if event.Metadata["backend"] == backendKimi {
+				sawKimiBackend = true
+			}
+			if event.Metadata["tracker"] == trackerTypeLinear {
+				sawLinearTracker = true
+			}
+			if event.Metadata["profile"] == profileName {
+				sawLinearProfile = true
+			}
+			continue
+		}
+		if event.Type != contracts.EventTypeRunnerFinished {
+			continue
+		}
+		if event.Metadata["backend"] == backendKimi {
+			sawKimiRunnerFinished = true
+		}
+		if event.Metadata["backend"] == backendKimi && event.Metadata["review_verdict"] == "pass" {
+			sawReviewPassVerdict = true
+		}
+	}
+	if !sawRunStarted {
+		t.Fatalf("expected run_started event in stream, got %q", string(raw))
+	}
+	if !sawKimiBackend {
+		t.Fatalf("expected run_started metadata backend=%q, got %q", backendKimi, string(raw))
+	}
+	if !sawLinearTracker {
+		t.Fatalf("expected run_started metadata tracker=%q, got %q", trackerTypeLinear, string(raw))
+	}
+	if !sawLinearProfile {
+		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
+	}
+	if !sawKimiRunnerFinished {
+		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendKimi, string(raw))
+	}
+	if !sawReviewPassVerdict {
+		t.Fatalf("expected kimi review verdict metadata to include pass, got %q", string(raw))
+	}
+
+	task, err := taskManager.GetTask(context.Background(), issueID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected linear issue %q to be closed, got %q", issueID, task.Status)
+	}
+
+	stateMu.Lock()
+	transitions := append([]contracts.TaskStatus(nil), statusTransitions...)
+	stateMu.Unlock()
+	if len(transitions) != 2 {
+		t.Fatalf("expected exactly two Linear status transitions, got %#v", transitions)
+	}
+	if transitions[0] != contracts.TaskStatusInProgress {
+		t.Fatalf("expected first transition to in_progress, got %#v", transitions)
+	}
+	if transitions[1] != contracts.TaskStatusClosed {
+		t.Fatalf("expected second transition to closed, got %#v", transitions)
+	}
+}
+
 func TestE2E_ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage(t *testing.T) {
 	if _, err := exec.LookPath("tk"); err != nil {
 		t.Skip("tk CLI is required for e2e test")
@@ -850,6 +1145,16 @@ func writeFakeClaudeBinary(t *testing.T) string {
 	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
 	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude binary: %v", err)
+	}
+	return binaryPath
+}
+
+func writeFakeKimiBinary(t *testing.T) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "fake-kimi")
+	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake kimi binary: %v", err)
 	}
 	return binaryPath
 }
