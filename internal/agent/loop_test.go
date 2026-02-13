@@ -1536,3 +1536,9 @@ func (b *blockingRunner) Run(_ context.Context, _ contracts.RunnerRequest) (cont
 	atomic.AddInt32(&b.active, -1)
 	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 }
+
+func TestRunnerLogBackendDirSupportsClaude(t *testing.T) {
+	if got := runnerLogBackendDir("claude"); got != "claude" {
+		t.Fatalf("expected claude backend dir, got %q", got)
+	}
+}

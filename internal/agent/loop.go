@@ -696,6 +696,8 @@ func runnerLogBackendDir(backend string) string {
 	switch strings.TrimSpace(strings.ToLower(backend)) {
 	case "codex":
 		return "codex"
+	case "claude":
+		return "claude"
 	case "kimi":
 		return "kimi"
 	default:
