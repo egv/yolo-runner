@@ -35,7 +35,7 @@ type Config struct {
 	HTTPClient HTTPClient
 }
 
-type graphQLError struct {
+type probeGraphQLError struct {
 	Message string `json:"message"`
 }
 
@@ -129,7 +129,7 @@ func probeViewer(ctx context.Context, client HTTPClient, endpoint string, token 
 				ID string `json:"id"`
 			} `json:"viewer"`
 		} `json:"data"`
-		Errors []graphQLError `json:"errors"`
+		Errors []probeGraphQLError `json:"errors"`
 	}
 	if len(strings.TrimSpace(string(body))) > 0 {
 		if err := json.Unmarshal(body, &graphQLResp); err != nil {
@@ -152,7 +152,7 @@ func probeViewer(ctx context.Context, client HTTPClient, endpoint string, token 
 	return nil
 }
 
-func firstProbeError(errors []graphQLError, fallback string) string {
+func firstProbeError(errors []probeGraphQLError, fallback string) string {
 	for _, entry := range errors {
 		msg := strings.TrimSpace(entry.Message)
 		if msg != "" {
