@@ -97,6 +97,18 @@ func TestHandlerAcceptsCreatedEventAndDispatches(t *testing.T) {
 	if job.ReceivedAt.IsZero() {
 		t.Fatalf("expected receivedAt to be set")
 	}
+	if job.ContractVersion != JobContractVersion1 {
+		t.Fatalf("expected contract version %d, got %d", JobContractVersion1, job.ContractVersion)
+	}
+	if job.SessionID != "session-1" {
+		t.Fatalf("expected session id session-1, got %q", job.SessionID)
+	}
+	if job.SessionStep != "session-1:created" {
+		t.Fatalf("expected session step session-1:created, got %q", job.SessionStep)
+	}
+	if job.IdempotencyKey != "linear-agent-session/v1:session-1:created" {
+		t.Fatalf("unexpected idempotency key: %q", job.IdempotencyKey)
+	}
 }
 
 func TestHandlerMapsQueueFullTo503(t *testing.T) {

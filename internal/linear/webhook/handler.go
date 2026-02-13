@@ -86,17 +86,23 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func buildJob(event linear.AgentSessionEvent, payload []byte, deliveryID string, receivedAt time.Time) Job {
+	sessionStep := buildSessionStep(event, payload)
+	idempotencyKey := buildIdempotencyKey(sessionStep)
 	jobID := strings.TrimSpace(event.ID)
 	if jobID == "" {
-		jobID = fmt.Sprintf("%s:%s:%d", strings.TrimSpace(event.AgentSession.ID), event.Action, receivedAt.UnixNano())
+		jobID = idempotencyKey
 	}
 	copiedPayload := make([]byte, len(payload))
 	copy(copiedPayload, payload)
 	return Job{
-		ID:         jobID,
-		DeliveryID: deliveryID,
-		ReceivedAt: receivedAt,
-		Event:      event,
-		Payload:    copiedPayload,
+		ContractVersion: JobContractVersion1,
+		ID:              jobID,
+		DeliveryID:      deliveryID,
+		ReceivedAt:      receivedAt,
+		SessionID:       sessionStepSessionID(event, payload),
+		SessionStep:     sessionStep,
+		IdempotencyKey:  idempotencyKey,
+		Event:           event,
+		Payload:         copiedPayload,
 	}
 }
