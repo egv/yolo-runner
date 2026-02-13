@@ -22,6 +22,23 @@
 
 The stdin monitor now tolerates malformed NDJSON lines by emitting `decode_error` warnings and continuing to render subsequent valid events.
 
+## Release Gate (E8) Migration
+
+Use the split v2 CLIs for each E8 demo lane, then run the consolidated gate:
+
+- Codex + tk + concurrency=2:
+  - `./bin/yolo-agent --repo . --root <tk-root-id> --agent-backend codex --model openai/gpt-5.3-codex --concurrency 2 --stream`
+- Claude + conflict retry:
+  - `./bin/yolo-agent --repo . --root <tk-root-id> --agent-backend claude --model claude-3-5-sonnet --stream`
+- Kimi + Linear profile:
+  - `./bin/yolo-agent --repo . --root <linear-project-id> --agent-backend kimi --profile linear-kimi-demo --model kimi-k2 --stream`
+- GitHub single-repo profile:
+  - `./bin/yolo-agent --repo . --root <github-root-issue-number> --agent-backend codex --profile github-demo --model openai/gpt-5.3-codex --stream`
+
+Run the E8 release checklist in one command:
+
+- `make release-gate-e8`
+
 ## Compatibility Behavior
 
 Invoking `yolo-runner` prints a compatibility notice and continues to run, so existing scripts are preserved while migration proceeds.

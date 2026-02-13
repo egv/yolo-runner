@@ -59,6 +59,23 @@ make build
 make test
 ```
 
+## E8 Release Gate Checklist
+
+After completing the E8 self-host demos, run the release gate checklist:
+
+```
+make release-gate-e8
+```
+
+The gate verifies these acceptance tests:
+
+- `TestE2E_CodexTKConcurrency2LandsViaMergeQueue`
+- `TestE2E_ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage`
+- `TestE2E_KimiLinearProfileProcessesAndClosesIssue`
+- `TestE2E_GitHubProfileProcessesAndClosesIssue`
+
+It also validates docs contracts for this checklist and the migration guidance.
+
 ## Init
 
 The runner includes a helper to install the YOLO agent file into the OpenCode agent directory.

@@ -7,6 +7,10 @@ smoke-agent-tui:
 smoke-event-stream:
 	$(MAKE) smoke-agent-tui
 
+release-gate-e8:
+	go test ./cmd/yolo-agent -run 'TestE2E_(CodexTKConcurrency2LandsViaMergeQueue|ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage|KimiLinearProfileProcessesAndClosesIssue|GitHubProfileProcessesAndClosesIssue)$$' -count=1
+	go test ./internal/docs -run 'Test(MakefileDefinesE8ReleaseGateChecklistTarget|ReadmeDocumentsE8ReleaseGateChecklist|MigrationDocumentsE8ReleaseGateMigrationInstructions)$$' -count=1
+
 build:
 	mkdir -p bin
 	go build -o bin/yolo-runner ./cmd/yolo-runner
