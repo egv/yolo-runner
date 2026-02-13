@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anomalyco/yolo-runner/internal/claude"
 	"github.com/anomalyco/yolo-runner/internal/codex"
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/tk"
@@ -250,6 +252,224 @@ func TestE2E_CodexTKConcurrency2LandsViaMergeQueue(t *testing.T) {
 	}
 }
 
+func TestE2E_ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage(t *testing.T) {
+	if _, err := exec.LookPath("tk"); err != nil {
+		t.Skip("tk CLI is required for e2e test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git CLI is required for e2e test")
+	}
+
+	t.Run("lands after one retry", func(t *testing.T) {
+		taskID, taskManager, vcs, events, raw := runClaudeConflictRetryScenario(t, []error{
+			errors.New("merge conflict first"),
+		})
+
+		if vcs.mergeCalls != 2 {
+			t.Fatalf("expected one retry with two merge attempts, got %d", vcs.mergeCalls)
+		}
+
+		sawRunStarted := false
+		sawClaudeBackend := false
+		mergeRetryCount := 0
+		sawMergeLanded := false
+		sawMergeBlocked := false
+		for _, event := range events {
+			if event.Type == contracts.EventTypeRunStarted {
+				sawRunStarted = true
+				if event.Metadata["backend"] == backendClaude {
+					sawClaudeBackend = true
+				}
+			}
+			if event.Type == contracts.EventTypeMergeRetry {
+				mergeRetryCount++
+			}
+			if event.Type == contracts.EventTypeMergeLanded {
+				sawMergeLanded = true
+			}
+			if event.Type == contracts.EventTypeMergeBlocked {
+				sawMergeBlocked = true
+			}
+		}
+
+		if !sawRunStarted {
+			t.Fatalf("expected run_started event in stream, got %q", raw)
+		}
+		if !sawClaudeBackend {
+			t.Fatalf("expected run_started metadata backend=%q, got %q", backendClaude, raw)
+		}
+		if mergeRetryCount != 1 {
+			t.Fatalf("expected exactly one merge_retry event, got %d from %q", mergeRetryCount, raw)
+		}
+		if !sawMergeLanded {
+			t.Fatalf("expected merge_landed event after retry, got %q", raw)
+		}
+		if sawMergeBlocked {
+			t.Fatalf("did not expect merge_blocked event on landed scenario, got %q", raw)
+		}
+
+		task, err := taskManager.GetTask(context.Background(), taskID)
+		if err != nil {
+			t.Fatalf("get task failed: %v", err)
+		}
+		if task.Status != contracts.TaskStatusClosed {
+			t.Fatalf("expected task to be closed, got %s", task.Status)
+		}
+	})
+
+	t.Run("blocks with triage metadata after retry exhaustion", func(t *testing.T) {
+		_, _, vcs, events, raw := runClaudeConflictRetryScenario(t, []error{
+			errors.New("merge conflict first"),
+			errors.New("merge conflict second"),
+		})
+
+		if vcs.mergeCalls != 2 {
+			t.Fatalf("expected one retry with two merge attempts, got %d", vcs.mergeCalls)
+		}
+
+		sawRunStarted := false
+		sawClaudeBackend := false
+		mergeRetryCount := 0
+		sawMergeLanded := false
+		mergeBlockedReason := ""
+		taskFinishedBlocked := false
+		taskFinishedReason := ""
+		taskDataBlocked := false
+		taskDataReason := ""
+		for _, event := range events {
+			if event.Type == contracts.EventTypeRunStarted {
+				sawRunStarted = true
+				if event.Metadata["backend"] == backendClaude {
+					sawClaudeBackend = true
+				}
+			}
+			switch event.Type {
+			case contracts.EventTypeMergeRetry:
+				mergeRetryCount++
+			case contracts.EventTypeMergeLanded:
+				sawMergeLanded = true
+			case contracts.EventTypeMergeBlocked:
+				mergeBlockedReason = strings.TrimSpace(event.Metadata["triage_reason"])
+			case contracts.EventTypeTaskFinished:
+				if event.Message == string(contracts.TaskStatusBlocked) {
+					taskFinishedBlocked = true
+					taskFinishedReason = strings.TrimSpace(event.Metadata["triage_reason"])
+				}
+			case contracts.EventTypeTaskDataUpdated:
+				if event.Metadata["triage_status"] == "blocked" {
+					taskDataBlocked = true
+					taskDataReason = strings.TrimSpace(event.Metadata["triage_reason"])
+				}
+			}
+		}
+
+		if !sawRunStarted {
+			t.Fatalf("expected run_started event in stream, got %q", raw)
+		}
+		if !sawClaudeBackend {
+			t.Fatalf("expected run_started metadata backend=%q, got %q", backendClaude, raw)
+		}
+		if mergeRetryCount != 1 {
+			t.Fatalf("expected exactly one merge_retry event, got %d from %q", mergeRetryCount, raw)
+		}
+		if sawMergeLanded {
+			t.Fatalf("did not expect merge_landed event when both attempts conflict, got %q", raw)
+		}
+		if mergeBlockedReason == "" {
+			t.Fatalf("expected merge_blocked triage_reason metadata, got %q", raw)
+		}
+		if !strings.Contains(mergeBlockedReason, "merge conflict second") {
+			t.Fatalf("expected merge_blocked triage_reason to include final conflict, got %q", mergeBlockedReason)
+		}
+		if !taskFinishedBlocked {
+			t.Fatalf("expected task_finished blocked event, got %q", raw)
+		}
+		if taskFinishedReason == "" || !strings.Contains(taskFinishedReason, "merge conflict second") {
+			t.Fatalf("expected task_finished triage_reason with final conflict, got %q", taskFinishedReason)
+		}
+		if !taskDataBlocked {
+			t.Fatalf("expected task_data_updated with triage_status=blocked, got %q", raw)
+		}
+		if taskDataReason == "" || !strings.Contains(taskDataReason, "merge conflict second") {
+			t.Fatalf("expected task_data_updated triage_reason with final conflict, got %q", taskDataReason)
+		}
+	})
+}
+
+func runClaudeConflictRetryScenario(t *testing.T, mergeErrs []error) (string, *tk.TaskManager, *fakeVCS, []contracts.Event, string) {
+	t.Helper()
+
+	repo := t.TempDir()
+	runCommand(t, repo, "git", "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	runCommand(t, repo, "git", "add", "README.md")
+	runCommand(t, repo, "git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	runner := localRunner{dir: repo}
+	rootID := mustCreateTicket(t, runner, "Roadmap", "epic", "0", "")
+	taskID := mustCreateTicket(t, runner, "Conflict retry task", "task", "0", rootID)
+
+	taskManager := tk.NewTaskManager(runner)
+	fakeClaude := claude.NewCLIRunnerAdapter(writeFakeClaudeBinary(t), nil)
+	fakeVCS := &fakeVCS{mergeErrs: append([]error(nil), mergeErrs...)}
+
+	originalStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = writePipe
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	runErr := runWithComponents(context.Background(), runConfig{
+		repoRoot:    repo,
+		rootID:      rootID,
+		backend:     backendClaude,
+		model:       "claude-3-5-sonnet",
+		maxTasks:    1,
+		concurrency: 1,
+		stream:      true,
+	}, taskManager, fakeClaude, fakeVCS)
+	if runErr != nil {
+		t.Fatalf("run failed: %v", runErr)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	raw, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := readPipe.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	events := decodeNDJSONEvents(t, raw)
+	return taskID, taskManager, fakeVCS, events, string(raw)
+}
+
+func decodeNDJSONEvents(t *testing.T, raw []byte) []contracts.Event {
+	t.Helper()
+
+	decoder := contracts.NewEventDecoder(bytes.NewReader(raw))
+	events := []contracts.Event{}
+	for {
+		event, err := decoder.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("failed to decode NDJSON stream: %v", err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
 type fakeAgentRunner struct {
 	results  []contracts.RunnerResult
 	index    int
@@ -285,17 +505,28 @@ func (f *fakeAgentRunner) Run(_ context.Context, request contracts.RunnerRequest
 	return result, nil
 }
 
-type fakeVCS struct{}
+type fakeVCS struct {
+	mergeErrs  []error
+	mergeCalls int
+}
 
-func (fakeVCS) EnsureMain(context.Context) error { return nil }
-func (fakeVCS) CreateTaskBranch(_ context.Context, taskID string) (string, error) {
+func (f *fakeVCS) EnsureMain(context.Context) error { return nil }
+func (f *fakeVCS) CreateTaskBranch(_ context.Context, taskID string) (string, error) {
 	return "task/" + taskID, nil
 }
-func (fakeVCS) Checkout(context.Context, string) error            { return nil }
-func (fakeVCS) CommitAll(context.Context, string) (string, error) { return "", nil }
-func (fakeVCS) MergeToMain(context.Context, string) error         { return nil }
-func (fakeVCS) PushBranch(context.Context, string) error          { return nil }
-func (fakeVCS) PushMain(context.Context) error                    { return nil }
+func (f *fakeVCS) Checkout(context.Context, string) error            { return nil }
+func (f *fakeVCS) CommitAll(context.Context, string) (string, error) { return "", nil }
+func (f *fakeVCS) MergeToMain(context.Context, string) error {
+	f.mergeCalls++
+	if len(f.mergeErrs) > 0 {
+		err := f.mergeErrs[0]
+		f.mergeErrs = f.mergeErrs[1:]
+		return err
+	}
+	return nil
+}
+func (f *fakeVCS) PushBranch(context.Context, string) error { return nil }
+func (f *fakeVCS) PushMain(context.Context) error           { return nil }
 
 func mustCreateTicket(t *testing.T, runner localRunner, title string, issueType string, priority string, parent string) string {
 	t.Helper()
@@ -326,6 +557,16 @@ func writeFakeCodexBinary(t *testing.T) string {
 	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
 	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex binary: %v", err)
+	}
+	return binaryPath
+}
+
+func writeFakeClaudeBinary(t *testing.T) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "fake-claude")
+	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude binary: %v", err)
 	}
 	return binaryPath
 }
