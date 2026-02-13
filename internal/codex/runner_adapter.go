@@ -136,6 +136,10 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	stdoutWriter.Flush()
 	stderrWriter.Flush()
 
+	if runErr == nil && runCtx.Err() != nil {
+		runErr = runCtx.Err()
+	}
+
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 			runErr = context.DeadlineExceeded

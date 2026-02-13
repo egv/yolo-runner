@@ -1,6 +1,6 @@
 ---
 id: yr-me4i
-status: open
+status: closed
 deps: [yr-70nw]
 links: []
 created: 2026-02-09T23:07:07Z
@@ -17,3 +17,9 @@ STRICT TDD: failing tests first. Add Codex adapter with implement+review support
 
 Given codex profile, when task runs, then implement and review are executed with normalized outcomes.
 
+
+## Notes
+
+**2026-02-13T20:18:37Z**
+
+Implemented Codex timeout normalization when run context expires even if command runner returns nil; added regression test TestCLIRunnerAdapterMapsContextTimeoutToBlockedEvenWhenRunnerReturnsNil. Validation: go test ./internal/codex && go test ./...

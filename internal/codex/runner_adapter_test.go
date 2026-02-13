@@ -157,6 +157,30 @@ func TestCLIRunnerAdapterMapsTimeoutToBlocked(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterMapsContextTimeoutToBlockedEvenWhenRunnerReturnsNil(t *testing.T) {
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, "still working\n")
+		time.Sleep(30 * time.Millisecond)
+		return nil
+	}))
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-timeout",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		Timeout:  5 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultBlocked {
+		t.Fatalf("expected blocked status, got %s", result.Status)
+	}
+	if !strings.Contains(result.Reason, "timeout") {
+		t.Fatalf("expected timeout reason, got %q", result.Reason)
+	}
+}
+
 func TestCLIRunnerAdapterMapsGenericErrorToFailed(t *testing.T) {
 	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
 		_, _ = io.WriteString(spec.Stderr, "boom\n")
