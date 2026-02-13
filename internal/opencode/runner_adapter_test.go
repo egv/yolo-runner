@@ -30,6 +30,35 @@ func TestCLIRunnerAdapterImplementsContract(t *testing.T) {
 	var _ contracts.AgentRunner = (*CLIRunnerAdapter)(nil)
 }
 
+func TestCLIRunnerAdapterAcceptsNilContextWhenTimeoutIsSet(t *testing.T) {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string)) error {
+		if ctx == nil {
+			t.Fatalf("expected non-nil context")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatalf("expected timeout deadline on context")
+		}
+		return nil
+	}}
+
+	result, err := adapter.Run(nil, contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "do x", Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+}
+
+func TestCLIRunnerAdapterNilAdapterReturnsError(t *testing.T) {
+	var adapter *CLIRunnerAdapter
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "do x"})
+	if err == nil {
+		t.Fatalf("expected error for nil adapter, got nil with result %#v", result)
+	}
+}
+
 func TestCLIRunnerAdapterMapsSuccessToCompleted(t *testing.T) {
 	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
 		return nil

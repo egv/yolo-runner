@@ -45,6 +45,13 @@ func NewCLIRunnerAdapter(runner Runner, acpClient ACPClient, configRoot string, 
 }
 
 func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a == nil {
+		return contracts.RunnerResult{}, errors.New("nil opencode runner adapter")
+	}
+
 	start := time.Now().UTC()
 	logPath := ""
 	if request.Metadata != nil {

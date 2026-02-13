@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -23,7 +24,7 @@ func NormalizeBackendRunnerResult(startedAt time.Time, finishedAt time.Time, req
 		result.Reason = runErr.Error()
 		return result
 	}
-	if request.Timeout > 0 && runErr == context.DeadlineExceeded {
+	if request.Timeout > 0 && errors.Is(runErr, context.DeadlineExceeded) {
 		result.Status = RunnerResultBlocked
 		result.Reason = fmt.Sprintf("runner timeout after %s", request.Timeout)
 		return result

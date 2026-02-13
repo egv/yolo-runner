@@ -3,6 +3,7 @@ package contracts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ func TestNormalizeBackendRunnerResult(t *testing.T) {
 		{name: "review success", request: RunnerRequest{Mode: RunnerModeReview}, want: RunnerResultCompleted},
 		{name: "blocked classified", request: RunnerRequest{Mode: RunnerModeImplement}, runErr: blockedSentinel, isBlocked: func(err error) bool { return errors.Is(err, blockedSentinel) }, want: RunnerResultBlocked, contains: "blocked"},
 		{name: "timeout maps to blocked", request: RunnerRequest{Mode: RunnerModeImplement, Timeout: time.Minute}, runErr: context.DeadlineExceeded, want: RunnerResultBlocked, contains: "runner timeout"},
+		{name: "wrapped timeout maps to blocked", request: RunnerRequest{Mode: RunnerModeImplement, Timeout: time.Minute}, runErr: fmt.Errorf("runner wrapped: %w", context.DeadlineExceeded), want: RunnerResultBlocked, contains: "runner timeout"},
 		{name: "generic maps to failed", request: RunnerRequest{Mode: RunnerModeImplement}, runErr: errors.New("boom"), want: RunnerResultFailed, contains: "boom"},
 	}
 
