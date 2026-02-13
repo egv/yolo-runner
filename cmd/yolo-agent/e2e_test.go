@@ -692,10 +692,7 @@ profiles:
 	if err != nil {
 		t.Fatalf("build github task manager from profile: %v", err)
 	}
-	fakeAgent := &fakeAgentRunner{results: []contracts.RunnerResult{
-		{Status: contracts.RunnerResultCompleted},
-		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
-	}}
+	codexRunner := codex.NewCLIRunnerAdapter(writeFakeCodexBinary(t), nil)
 	fakeVCS := &fakeVCS{}
 
 	originalStdout := os.Stdout
@@ -717,7 +714,7 @@ profiles:
 		model:       "openai/gpt-5.3-codex",
 		maxTasks:    1,
 		stream:      true,
-	}, taskManager, fakeAgent, fakeVCS)
+	}, taskManager, codexRunner, fakeVCS)
 	if runErr != nil {
 		t.Fatalf("run failed: %v", runErr)
 	}
@@ -734,28 +731,59 @@ profiles:
 
 	events := decodeNDJSONEvents(t, raw)
 	sawRunStarted := false
+	sawCodexBackend := false
 	sawGitHubTracker := false
 	sawGitHubProfile := false
+	sawCodexRunnerFinished := false
+	sawReviewPassVerdict := false
+	sawIsolatedClonePath := false
 	for _, event := range events {
-		if event.Type != contracts.EventTypeRunStarted {
+		if event.Type == contracts.EventTypeRunStarted {
+			sawRunStarted = true
+			if event.Metadata["backend"] == backendCodex {
+				sawCodexBackend = true
+			}
+			if event.Metadata["tracker"] == trackerTypeGitHub {
+				sawGitHubTracker = true
+			}
+			if event.Metadata["profile"] == profileName {
+				sawGitHubProfile = true
+			}
 			continue
 		}
-		sawRunStarted = true
-		if event.Metadata["tracker"] == trackerTypeGitHub {
-			sawGitHubTracker = true
+		if event.Type == contracts.EventTypeRunnerStarted && strings.TrimSpace(event.ClonePath) != "" && strings.TrimSpace(event.ClonePath) != repo {
+			sawIsolatedClonePath = true
 		}
-		if event.Metadata["profile"] == profileName {
-			sawGitHubProfile = true
+		if event.Type != contracts.EventTypeRunnerFinished {
+			continue
+		}
+		if event.Metadata["backend"] == backendCodex {
+			sawCodexRunnerFinished = true
+		}
+		if event.Metadata["backend"] == backendCodex && event.Metadata["review_verdict"] == "pass" {
+			sawReviewPassVerdict = true
 		}
 	}
 	if !sawRunStarted {
 		t.Fatalf("expected run_started event in stream, got %q", string(raw))
+	}
+	if !sawCodexBackend {
+		t.Fatalf("expected run_started metadata backend=%q, got %q", backendCodex, string(raw))
 	}
 	if !sawGitHubTracker {
 		t.Fatalf("expected run_started metadata tracker=%q, got %q", trackerTypeGitHub, string(raw))
 	}
 	if !sawGitHubProfile {
 		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
+	}
+	if !sawCodexRunnerFinished {
+		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendCodex, string(raw))
+	}
+	if !sawReviewPassVerdict {
+		t.Fatalf("expected codex review verdict metadata to include pass, got %q", string(raw))
+	}
+	if !sawIsolatedClonePath {
+		t.Fatalf("expected runner_started clone path to use isolated clone, got %q", string(raw))
 	}
 
 	task, err := taskManager.GetTask(context.Background(), issueID)
@@ -764,12 +792,6 @@ profiles:
 	}
 	if task.Status != contracts.TaskStatusClosed {
 		t.Fatalf("expected github issue %q to be closed, got %q", issueID, task.Status)
-	}
-	if len(fakeAgent.requests) == 0 {
-		t.Fatalf("expected agent runner to be invoked at least once")
-	}
-	if fakeAgent.requests[0].RepoRoot == repo {
-		t.Fatalf("expected agent request to use isolated clone path, got %q", fakeAgent.requests[0].RepoRoot)
 	}
 
 	stateMu.Lock()
