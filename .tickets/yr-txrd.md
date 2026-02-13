@@ -1,6 +1,6 @@
 ---
 id: yr-txrd
-status: open
+status: closed
 deps: [yr-70nw]
 links: []
 created: 2026-02-09T23:07:07Z
