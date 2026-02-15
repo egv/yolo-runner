@@ -69,13 +69,23 @@ func (a *VCSAdapter) commitAll(message string) (string, error) {
 		return "", err
 	}
 	if _, err := a.runGit("commit", "-m", message); err != nil {
-		return "", err
+		if !isNoChangesCommitError(err) {
+			return "", err
+		}
 	}
 	sha, err := a.runGit("rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+func isNoChangesCommitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "nothing to commit") || strings.Contains(message, "no changes added to commit")
 }
 
 func (a *VCSAdapter) runGit(args ...string) (string, error) {
