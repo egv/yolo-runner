@@ -479,6 +479,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				blockedData["triage_reason"] = result.Reason
 			}
+			blockedData = appendReviewOutcomeMetadata(blockedData, result)
 			if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
 				return summary, err
 			}
@@ -489,6 +490,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				finishedMetadata["triage_reason"] = result.Reason
 			}
+			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
 				return summary, err
@@ -514,6 +516,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				failedData["triage_reason"] = result.Reason
 			}
+			failedData = appendReviewOutcomeMetadata(failedData, result)
 			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 				return summary, err
 			}
@@ -528,6 +531,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				finishedMetadata["triage_reason"] = result.Reason
 			}
+			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
@@ -536,6 +540,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				failedData["triage_reason"] = result.Reason
 			}
+			failedData = appendReviewOutcomeMetadata(failedData, result)
 			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
 				return summary, err
 			}
@@ -550,6 +555,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if result.Reason != "" {
 				finishedMetadata["triage_reason"] = result.Reason
 			}
+			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
 			summary.Failed++
 			return summary, nil
@@ -788,6 +794,19 @@ func buildReviewFailReason(result contracts.RunnerResult) string {
 		return feedback
 	}
 	return "review rejected: " + feedback
+}
+
+func appendReviewOutcomeMetadata(metadata map[string]string, result contracts.RunnerResult) map[string]string {
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	if verdict := reviewVerdictFromArtifacts(result); verdict != "" {
+		metadata["review_verdict"] = verdict
+	}
+	if feedback := reviewFailFeedbackFromArtifacts(result); feedback != "" {
+		metadata["review_fail_feedback"] = feedback
+	}
+	return metadata
 }
 
 func buildRunnerFinishedMetadata(result contracts.RunnerResult) map[string]string {

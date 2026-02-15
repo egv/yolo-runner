@@ -466,6 +466,12 @@ func TestLoopUsesStructuredReviewFailFeedbackAsTriageReason(t *testing.T) {
 	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "review rejected: missing regression test for retry/backoff flow" {
 		t.Fatalf("expected structured review fail triage reason, got %q", got)
 	}
+	if got := mgr.dataByID["t-1"]["review_verdict"]; got != "fail" {
+		t.Fatalf("expected review_verdict to be persisted, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["review_fail_feedback"]; got != "missing regression test for retry/backoff flow" {
+		t.Fatalf("expected review_fail_feedback to be persisted, got %q", got)
+	}
 }
 
 func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
@@ -859,6 +865,50 @@ func TestLoopEmitsTaskFinishedMetadataForFailedTriage(t *testing.T) {
 	}
 	if finished[0].Metadata["triage_reason"] != "lint failed" {
 		t.Fatalf("expected triage_reason=lint failed on task_finished metadata, got %#v", finished[0].Metadata)
+	}
+}
+
+func TestLoopEmitsReviewFeedbackMetadataOnFailedReview(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "missing e2e assertion for retry path",
+			},
+		},
+	}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true})
+
+	_, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+
+	updates := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
+	if len(updates) != 1 {
+		t.Fatalf("expected one task_data_updated event, got %d", len(updates))
+	}
+	if updates[0].Metadata["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict=fail in task_data_updated metadata, got %#v", updates[0].Metadata)
+	}
+	if updates[0].Metadata["review_fail_feedback"] != "missing e2e assertion for retry path" {
+		t.Fatalf("expected review_fail_feedback in task_data_updated metadata, got %#v", updates[0].Metadata)
+	}
+
+	finished := eventsByType(sink.events, contracts.EventTypeTaskFinished)
+	if len(finished) != 1 {
+		t.Fatalf("expected one task_finished event, got %d", len(finished))
+	}
+	if finished[0].Metadata["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict=fail in task_finished metadata, got %#v", finished[0].Metadata)
+	}
+	if finished[0].Metadata["review_fail_feedback"] != "missing e2e assertion for retry path" {
+		t.Fatalf("expected review_fail_feedback in task_finished metadata, got %#v", finished[0].Metadata)
 	}
 }
 
