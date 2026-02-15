@@ -86,6 +86,46 @@ func TestRunMainRoutesConfigInitSubcommand(t *testing.T) {
 	}
 }
 
+func TestRunMainRoutesConfigSubcommandAfterGlobalFlags(t *testing.T) {
+	originalValidate := runConfigValidateMain
+	originalInit := runConfigInitMain
+	defer func() {
+		runConfigValidateMain = originalValidate
+		runConfigInitMain = originalInit
+	}()
+
+	called := false
+	runConfigValidateMain = func(args []string) int {
+		called = true
+		want := []string{"--repo", "/tmp/repo", "--json"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("unexpected validate args: got=%v want=%v", args, want)
+		}
+		return 29
+	}
+	runConfigInitMain = func([]string) int {
+		t.Fatalf("did not expect init handler")
+		return 1
+	}
+
+	runCalled := false
+	run := func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/tmp/repo", "config", "validate", "--json"}, run)
+	if code != 29 {
+		t.Fatalf("expected validate handler exit code, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected validate handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("legacy run path should not execute when config follows global flags")
+	}
+}
+
 func TestRunMainConfigUnknownSubcommandReturnsError(t *testing.T) {
 	runCalled := false
 	run := func(context.Context, runConfig) error {

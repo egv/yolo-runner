@@ -76,6 +76,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
+	if code, handled := routeConfigCommandAfterGlobalFlags(fs.Args(), *repo); handled {
+		return code
+	}
 	setFlags := map[string]struct{}{}
 	fs.Visit(func(f *flag.Flag) {
 		setFlags[f.Name] = struct{}{}
@@ -190,6 +193,31 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		return 1
 	}
 	return 0
+}
+
+func routeConfigCommandAfterGlobalFlags(args []string, repoRoot string) (int, bool) {
+	if len(args) == 0 || args[0] != "config" {
+		return 0, false
+	}
+	if len(args) == 1 {
+		return RunConfigMain(nil), true
+	}
+	subcommand := args[1]
+	subcommandArgs := append([]string(nil), args[2:]...)
+	if !hasRepoFlag(subcommandArgs) {
+		subcommandArgs = append([]string{"--repo", repoRoot}, subcommandArgs...)
+	}
+	forwarded := append([]string{subcommand}, subcommandArgs...)
+	return RunConfigMain(forwarded), true
+}
+
+func hasRepoFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--repo" || strings.HasPrefix(arg, "--repo=") {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
