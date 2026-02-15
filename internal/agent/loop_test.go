@@ -292,6 +292,8 @@ func (noopSink) Emit(context.Context, contracts.Event) error { return nil }
 
 type fakeVCS struct {
 	calls      []string
+	commitErr  error
+	commitSHA  string
 	mergeErr   error
 	mergeErrs  []error
 	mergeCalls int
@@ -313,7 +315,16 @@ func (f *fakeVCS) Checkout(_ context.Context, ref string) error {
 	return nil
 }
 
-func (f *fakeVCS) CommitAll(context.Context, string) (string, error) { return "", nil }
+func (f *fakeVCS) CommitAll(_ context.Context, message string) (string, error) {
+	f.calls = append(f.calls, "commit_all:"+message)
+	if f.commitErr != nil {
+		return "", f.commitErr
+	}
+	if f.commitSHA != "" {
+		return f.commitSHA, nil
+	}
+	return "abc123", nil
+}
 
 func (f *fakeVCS) MergeToMain(_ context.Context, branch string) error {
 	f.calls = append(f.calls, "merge_to_main:"+branch)
@@ -518,6 +529,45 @@ func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
 	if !containsCall(vcs.calls, "push_main") {
 		t.Fatalf("expected push_main call, got %v", vcs.calls)
 	}
+	if !containsCallPrefix(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1") {
+		t.Fatalf("expected auto-commit call before landing, got %v", vcs.calls)
+	}
+	if callIndex(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1") > callIndex(vcs.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("expected auto-commit before merge, got %v", vcs.calls)
+	}
+}
+
+func TestLoopBlocksTaskWhenAutoCommitBeforeLandingFails(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	vcs := &fakeVCS{commitErr: errors.New("git commit failed: index lock")}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Blocked != 1 {
+		t.Fatalf("expected blocked summary, got %#v", summary)
+	}
+	if mgr.statusByID["t-1"] != contracts.TaskStatusBlocked {
+		t.Fatalf("expected blocked task status, got %s", mgr.statusByID["t-1"])
+	}
+	if !containsCallPrefix(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1") {
+		t.Fatalf("expected auto-commit attempt, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("did not expect merge call after auto-commit failure, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "push_main") {
+		t.Fatalf("did not expect push_main after auto-commit failure, got %v", vcs.calls)
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; !strings.Contains(got, "git commit failed") {
+		t.Fatalf("expected triage reason with commit failure, got %q", got)
+	}
 }
 
 func containsCall(calls []string, want string) bool {
@@ -527,6 +577,24 @@ func containsCall(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func containsCallPrefix(calls []string, wantPrefix string) bool {
+	for _, call := range calls {
+		if strings.HasPrefix(call, wantPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func callIndex(calls []string, want string) int {
+	for i, call := range calls {
+		if call == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestLoopRespectsMaxTasksLimit(t *testing.T) {
@@ -1025,7 +1093,7 @@ func TestLoopUsesLandingLockAroundMergeAndPush(t *testing.T) {
 func TestLoopEmitsLandingQueueLifecycleEventsOnAutoLandSuccess(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted, ReviewReady: true}}}
-	vcs := &fakeVCS{}
+	vcs := &fakeVCS{commitSHA: "deadbeef"}
 	sink := &recordingSink{}
 	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", VCS: vcs, MergeOnSuccess: true, RequireReview: true})
 
@@ -1044,11 +1112,20 @@ func TestLoopEmitsLandingQueueLifecycleEventsOnAutoLandSuccess(t *testing.T) {
 	if !hasLandingStatus(updates, "landed") {
 		t.Fatalf("expected landing landed update, got %#v", updates)
 	}
+	if !hasMetadataValue(updates, "auto_commit_sha", "deadbeef") {
+		t.Fatalf("expected landing updates to include auto_commit_sha, got %#v", updates)
+	}
 	if !hasEventType(sink.events, contracts.EventTypeMergeCompleted) {
 		t.Fatalf("expected merge_completed event")
 	}
+	if mergeEvent, ok := findEventByType(sink.events, contracts.EventTypeMergeCompleted); !ok || mergeEvent.Metadata["auto_commit_sha"] != "deadbeef" {
+		t.Fatalf("expected merge event auto_commit_sha=deadbeef, got %#v", mergeEvent)
+	}
 	if !hasEventType(sink.events, contracts.EventTypePushCompleted) {
 		t.Fatalf("expected push_completed event")
+	}
+	if pushEvent, ok := findEventByType(sink.events, contracts.EventTypePushCompleted); !ok || pushEvent.Metadata["auto_commit_sha"] != "deadbeef" {
+		t.Fatalf("expected push event auto_commit_sha=deadbeef, got %#v", pushEvent)
 	}
 	if !hasEventType(sink.events, contracts.EventTypeMergeQueued) {
 		t.Fatalf("expected merge_queued event")
@@ -1088,6 +1165,9 @@ func TestLoopMarksLandingQueueBlockedOnMergeFailure(t *testing.T) {
 	}
 	if got := mgr.dataByID["t-1"]["triage_reason"]; !strings.Contains(got, "merge conflict second") {
 		t.Fatalf("expected triage reason with final conflict, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["auto_commit_sha"]; got != "abc123" {
+		t.Fatalf("expected auto_commit_sha=abc123 in blocked data, got %q", got)
 	}
 
 	updates := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated)
@@ -1568,6 +1648,15 @@ func indexOfEventType(events []contracts.Event, eventType contracts.EventType) i
 func hasLandingStatus(events []contracts.Event, status string) bool {
 	for _, event := range events {
 		if event.Metadata["landing_status"] == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMetadataValue(events []contracts.Event, key string, value string) bool {
+	for _, event := range events {
+		if event.Metadata[key] == value {
 			return true
 		}
 	}

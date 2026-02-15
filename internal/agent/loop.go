@@ -370,7 +370,28 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			}
 			if l.options.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
 				landingState := scheduler.NewLandingQueueStateMachine(2)
+				autoCommitSHA := ""
+				buildLandingMetadata := func(status string, attempt int, reason string) map[string]string {
+					metadata := map[string]string{"landing_status": status}
+					if attempt > 0 {
+						metadata["landing_attempt"] = fmt.Sprintf("%d", attempt)
+					}
+					if strings.TrimSpace(reason) != "" {
+						metadata["triage_reason"] = reason
+					}
+					if autoCommitSHA != "" {
+						metadata["auto_commit_sha"] = autoCommitSHA
+					}
+					return metadata
+				}
 				emitMergeQueueEvent := func(eventType contracts.EventType, metadata map[string]string) {
+					merged := map[string]string{}
+					for key, value := range metadata {
+						merged[key] = value
+					}
+					if autoCommitSHA != "" {
+						merged["auto_commit_sha"] = autoCommitSHA
+					}
 					_ = l.emit(ctx, contracts.Event{
 						Type:      eventType,
 						TaskID:    task.ID,
@@ -378,26 +399,43 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 						WorkerID:  worker,
 						ClonePath: taskRepoRoot,
 						QueuePos:  queuePos,
-						Metadata:  compactMetadata(metadata),
+						Metadata:  compactMetadata(merged),
 						Timestamp: time.Now().UTC(),
 					})
 				}
 				emitMergeQueueEvent(contracts.EventTypeMergeQueued, map[string]string{"landing_status": string(landingState.State())})
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
 				if l.landingLock != nil {
 					l.landingLock.Lock()
 					defer l.landingLock.Unlock()
 				}
 				landingBlocked := false
 				landingReason := ""
+				autoCommitDone := false
 				for attempt := 1; attempt <= 2; attempt++ {
 					_ = landingState.Apply(scheduler.LandingEventBegin)
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "landing_attempt": fmt.Sprintf("%d", attempt)}, Timestamp: time.Now().UTC()})
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
+
+					if !autoCommitDone {
+						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task))
+						if err != nil {
+							landingReason = err.Error()
+							_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
+							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
+							landingBlocked = true
+							break
+						}
+						autoCommitDone = true
+						autoCommitSHA = strings.TrimSpace(sha)
+						if autoCommitSHA != "" {
+							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
+						}
+					}
 
 					if err := taskVCS.MergeToMain(ctx, taskBranch); err != nil {
 						landingReason = err.Error()
 						_ = landingState.Apply(scheduler.LandingEventFailedRetryable)
-						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": landingReason}, Timestamp: time.Now().UTC()})
+						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
 						if attempt < 2 {
 							emitMergeQueueEvent(contracts.EventTypeMergeRetry, map[string]string{
 								"landing_status":  string(landingState.State()),
@@ -405,7 +443,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 								"triage_reason":   landingReason,
 							})
 							_ = landingState.Apply(scheduler.LandingEventRequeued)
-							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
+							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
 							emitMergeQueueEvent(contracts.EventTypeMergeQueued, map[string]string{
 								"landing_status":  string(landingState.State()),
 								"landing_attempt": fmt.Sprintf("%d", attempt+1),
@@ -416,17 +454,31 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 						break
 					}
 
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeMergeCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: taskBranch, Timestamp: time.Now().UTC()})
+					mergeMetadata := map[string]string{}
+					if autoCommitSHA != "" {
+						mergeMetadata["auto_commit_sha"] = autoCommitSHA
+					}
+					if len(mergeMetadata) == 0 {
+						mergeMetadata = nil
+					}
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeMergeCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: taskBranch, Metadata: mergeMetadata, Timestamp: time.Now().UTC()})
 					if err := taskVCS.PushMain(ctx); err != nil {
 						landingReason = err.Error()
 						_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
-						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State()), "triage_reason": landingReason}, Timestamp: time.Now().UTC()})
+						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
 						landingBlocked = true
 						break
 					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypePushCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
+					pushMetadata := map[string]string{}
+					if autoCommitSHA != "" {
+						pushMetadata["auto_commit_sha"] = autoCommitSHA
+					}
+					if len(pushMetadata) == 0 {
+						pushMetadata = nil
+					}
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypePushCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: pushMetadata, Timestamp: time.Now().UTC()})
 					_ = landingState.Apply(scheduler.LandingEventSucceeded)
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: map[string]string{"landing_status": string(landingState.State())}, Timestamp: time.Now().UTC()})
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
 					emitMergeQueueEvent(contracts.EventTypeMergeLanded, map[string]string{
 						"landing_status":  string(landingState.State()),
 						"landing_attempt": fmt.Sprintf("%d", attempt),
@@ -442,6 +494,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					blockedData := map[string]string{"triage_status": "blocked", "landing_status": string(landingState.State())}
 					if landingReason != "" {
 						blockedData["triage_reason"] = landingReason
+					}
+					if autoCommitSHA != "" {
+						blockedData["auto_commit_sha"] = autoCommitSHA
 					}
 					if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
 						return summary, err
@@ -722,6 +777,14 @@ func buildPrompt(task contracts.Task, mode contracts.RunnerMode) string {
 		sections = append(sections, "Description:\n"+task.Description)
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+func autoLandingCommitMessage(task contracts.Task) string {
+	taskID := strings.TrimSpace(task.ID)
+	if taskID == "" {
+		return "chore(task): auto-commit before landing"
+	}
+	return fmt.Sprintf("chore(task): auto-commit before landing %s", taskID)
 }
 
 func buildReviewVerdictPrompt(task contracts.Task) string {
