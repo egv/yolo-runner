@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -119,33 +118,7 @@ func resolveProfileSelectionPolicy(input profileSelectionInput) string {
 }
 
 func resolveTrackerProfile(repoRoot string, selectedProfile string, rootID string, getenv func(string) string) (resolvedTrackerProfile, error) {
-	configPath := filepath.Join(repoRoot, trackerConfigRelPath)
-	model, err := loadTrackerProfilesModel(configPath)
-	if err != nil {
-		return resolvedTrackerProfile{}, err
-	}
-
-	profileName := strings.TrimSpace(selectedProfile)
-	if profileName == "" {
-		profileName = strings.TrimSpace(model.DefaultProfile)
-	}
-	if profileName == "" {
-		profileName = defaultProfileName
-	}
-
-	profile, ok := model.Profiles[profileName]
-	if !ok {
-		return resolvedTrackerProfile{}, fmt.Errorf("tracker profile %q not found (available: %s)", profileName, strings.Join(sortedProfileNames(model.Profiles), ", "))
-	}
-
-	validated, err := validateTrackerModel(profileName, profile.Tracker, rootID, getenv)
-	if err != nil {
-		return resolvedTrackerProfile{}, err
-	}
-	return resolvedTrackerProfile{
-		Name:    profileName,
-		Tracker: validated,
-	}, nil
+	return newTrackerConfigService(repoRoot, getenv).resolveTrackerProfile(selectedProfile, rootID)
 }
 
 func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile) (contracts.TaskManager, error) {

@@ -116,6 +116,27 @@ func TestRunMainParsesProfileFlag(t *testing.T) {
 	}
 }
 
+func TestRunMainInjectsSharedConfigService(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.configService == nil {
+		t.Fatalf("expected run config to include shared config service")
+	}
+}
+
 func TestRunMainUsesProfileFromEnvWhenFlagUnset(t *testing.T) {
 	t.Setenv("YOLO_PROFILE", "team-default")
 	called := false

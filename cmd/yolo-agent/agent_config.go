@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,12 +17,7 @@ type yoloAgentConfigDefaults struct {
 }
 
 func loadYoloAgentConfigDefaults(repoRoot string) (yoloAgentConfigDefaults, error) {
-	configPath := filepath.Join(repoRoot, trackerConfigRelPath)
-	model, err := loadTrackerProfilesModel(configPath)
-	if err != nil {
-		return yoloAgentConfigDefaults{}, err
-	}
-	return resolveYoloAgentConfigDefaults(model.Agent)
+	return newTrackerConfigService(repoRoot, nil).loadAgentDefaults()
 }
 
 func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel) (yoloAgentConfigDefaults, error) {

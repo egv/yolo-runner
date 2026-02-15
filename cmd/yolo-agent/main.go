@@ -30,6 +30,7 @@ const (
 
 type runConfig struct {
 	repoRoot             string
+	configService        *trackerConfigService
 	rootID               string
 	backend              string
 	profile              string
@@ -84,7 +85,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--root is required")
 		return 1
 	}
-	configDefaults, err := loadYoloAgentConfigDefaults(*repo)
+	configService := newTrackerConfigService(*repo, os.Getenv)
+	configDefaults, err := configService.loadAgentDefaults()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -165,6 +167,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 
 	if err := run(context.Background(), runConfig{
 		repoRoot:             *repo,
+		configService:        configService,
 		rootID:               *root,
 		backend:              selectedBackend,
 		profile:              selectedProfile,
@@ -198,7 +201,11 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	}
 	cfg.eventsPath = resolveEventsPath(cfg)
 
-	trackerProfile, err := resolveTrackerProfile(cfg.repoRoot, cfg.profile, cfg.rootID, os.Getenv)
+	configService := cfg.configService
+	if configService == nil {
+		configService = newTrackerConfigService(cfg.repoRoot, os.Getenv)
+	}
+	trackerProfile, err := configService.resolveTrackerProfile(cfg.profile, cfg.rootID)
 	if err != nil {
 		return err
 	}
