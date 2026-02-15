@@ -304,6 +304,70 @@ agent:
 	}
 }
 
+func TestRunMainEnvBackendOverridesAgentConfigDefaultBackend(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: codex
+`)
+	t.Setenv("YOLO_AGENT_BACKEND", backendClaude)
+
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", repoRoot, "--root", "root-1"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.backend != backendClaude {
+		t.Fatalf("expected env backend=%q to override config backend, got %q", backendClaude, got.backend)
+	}
+}
+
+func TestRunMainFailsFastOnInvalidAgentDefaultsInConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  watchdog_timeout: 0s
+`)
+
+	called := false
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", repoRoot, "--root", "root-1"}, func(context.Context, runConfig) error {
+			called = true
+			return nil
+		})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+	if called {
+		t.Fatalf("expected run function not to be called when config defaults are invalid")
+	}
+	if !strings.Contains(errText, "agent.watchdog_timeout") {
+		t.Fatalf("expected field-specific error, got %q", errText)
+	}
+	if !strings.Contains(errText, ".yolo-runner/config.yaml") {
+		t.Fatalf("expected config path in error, got %q", errText)
+	}
+}
+
 func TestRunMainAcceptsKimiBackend(t *testing.T) {
 	called := false
 	var got runConfig

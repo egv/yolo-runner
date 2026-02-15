@@ -131,6 +131,45 @@ Examples:
 ./bin/yolo-agent --repo . --root <root-id> --model openai/gpt-5.3-codex --runner-timeout 45m
 ```
 
+### `yolo-agent` config defaults (`.yolo-runner/config.yaml`)
+
+`yolo-agent` can load defaults from the `agent:` block in `.yolo-runner/config.yaml`.
+
+Example:
+
+```yaml
+default_profile: default
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: codex
+  model: openai/gpt-5.3-codex
+  concurrency: 2
+  runner_timeout: 20m
+  watchdog_timeout: 10m
+  watchdog_interval: 5s
+  retry_budget: 1
+```
+
+Precedence rules:
+
+- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode`
+- Profile: `--profile > YOLO_PROFILE > default_profile > default`
+- Model and numeric/duration defaults: CLI flag value wins; if unset, `agent.*` value is used.
+
+Validation rules for `agent.*` values:
+
+- `agent.backend` must be one of `opencode`, `codex`, `claude`, `kimi`.
+- `agent.concurrency` must be greater than `0`.
+- `agent.runner_timeout` must be greater than or equal to `0`.
+- `agent.watchdog_timeout` must be greater than `0`.
+- `agent.watchdog_interval` must be greater than `0`.
+- `agent.retry_budget` must be greater than or equal to `0`.
+
+Invalid config values fail startup with field-specific errors that reference `.yolo-runner/config.yaml`.
+
 ## Task Prompt
 
 The prompt includes:

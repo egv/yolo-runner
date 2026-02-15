@@ -62,3 +62,60 @@ func TestReadmeDocumentsRunnerTimeoutProfiles(t *testing.T) {
 		t.Fatalf("README missing long-task timeout recommendation")
 	}
 }
+
+func TestReadmeDocumentsYoloAgentConfigPrecedenceAndValidation(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	readme := string(contents)
+	required := []string{
+		".yolo-runner/config.yaml",
+		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode",
+		"--profile > YOLO_PROFILE > default_profile > default",
+		"agent.concurrency",
+		"agent.runner_timeout",
+		"agent.watchdog_timeout",
+		"agent.watchdog_interval",
+		"agent.retry_budget",
+	}
+	for _, needle := range required {
+		if !strings.Contains(readme, needle) {
+			t.Fatalf("README missing yolo-agent config guidance: %q", needle)
+		}
+	}
+}
+
+func TestMigrationDocumentsYoloAgentConfigDefaults(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	migrationPath := filepath.Join(repoRoot, "MIGRATION.md")
+	contents, err := os.ReadFile(migrationPath)
+	if err != nil {
+		t.Fatalf("read MIGRATION: %v", err)
+	}
+
+	migration := string(contents)
+	required := []string{
+		"Config Defaults and Precedence",
+		".yolo-runner/config.yaml",
+		"YOLO_AGENT_BACKEND",
+		"YOLO_PROFILE",
+		"agent.watchdog_timeout",
+	}
+	for _, needle := range required {
+		if !strings.Contains(migration, needle) {
+			t.Fatalf("MIGRATION missing yolo-agent config guidance: %q", needle)
+		}
+	}
+}

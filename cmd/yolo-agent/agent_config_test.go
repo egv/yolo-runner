@@ -44,6 +44,33 @@ func TestResolveYoloAgentConfigDefaultsParsesConfiguredValues(t *testing.T) {
 	}
 }
 
+func TestResolveYoloAgentConfigDefaultsNormalizesConfiguredBackend(t *testing.T) {
+	defaults, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		Backend: "  CoDeX  ",
+	})
+	if err != nil {
+		t.Fatalf("expected config defaults to parse, got %v", err)
+	}
+	if defaults.Backend != backendCodex {
+		t.Fatalf("expected backend=%q, got %q", backendCodex, defaults.Backend)
+	}
+}
+
+func TestResolveYoloAgentConfigDefaultsRejectsUnsupportedBackend(t *testing.T) {
+	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		Backend: "unsupported",
+	})
+	if err == nil {
+		t.Fatalf("expected unsupported backend to fail")
+	}
+	if !strings.Contains(err.Error(), "agent.backend") {
+		t.Fatalf("expected field-specific error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), ".yolo-runner/config.yaml") {
+		t.Fatalf("expected config path in error, got %q", err.Error())
+	}
+}
+
 func TestResolveYoloAgentConfigDefaultsRejectsInvalidDuration(t *testing.T) {
 	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
 		RunnerTimeout: "soon",
@@ -81,6 +108,42 @@ func TestResolveYoloAgentConfigDefaultsRejectsNegativeRetryBudget(t *testing.T) 
 		t.Fatalf("expected negative retry budget to fail")
 	}
 	if !strings.Contains(err.Error(), "agent.retry_budget") {
+		t.Fatalf("expected field-specific error, got %q", err.Error())
+	}
+}
+
+func TestResolveYoloAgentConfigDefaultsRejectsNegativeRunnerTimeout(t *testing.T) {
+	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		RunnerTimeout: "-1s",
+	})
+	if err == nil {
+		t.Fatalf("expected negative runner timeout to fail")
+	}
+	if !strings.Contains(err.Error(), "agent.runner_timeout") {
+		t.Fatalf("expected field-specific error, got %q", err.Error())
+	}
+}
+
+func TestResolveYoloAgentConfigDefaultsRejectsNonPositiveWatchdogTimeout(t *testing.T) {
+	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		WatchdogTimeout: "0s",
+	})
+	if err == nil {
+		t.Fatalf("expected non-positive watchdog timeout to fail")
+	}
+	if !strings.Contains(err.Error(), "agent.watchdog_timeout") {
+		t.Fatalf("expected field-specific error, got %q", err.Error())
+	}
+}
+
+func TestResolveYoloAgentConfigDefaultsRejectsNonPositiveWatchdogInterval(t *testing.T) {
+	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		WatchdogInterval: "0s",
+	})
+	if err == nil {
+		t.Fatalf("expected non-positive watchdog interval to fail")
+	}
+	if !strings.Contains(err.Error(), "agent.watchdog_interval") {
 		t.Fatalf("expected field-specific error, got %q", err.Error())
 	}
 }

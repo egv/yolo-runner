@@ -27,8 +27,12 @@ func loadYoloAgentConfigDefaults(repoRoot string) (yoloAgentConfigDefaults, erro
 }
 
 func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel) (yoloAgentConfigDefaults, error) {
+	backend, err := normalizeAndValidateAgentBackend(model.Backend)
+	if err != nil {
+		return yoloAgentConfigDefaults{}, err
+	}
 	defaults := yoloAgentConfigDefaults{
-		Backend: strings.TrimSpace(model.Backend),
+		Backend: backend,
 		Model:   strings.TrimSpace(model.Model),
 	}
 
@@ -51,11 +55,17 @@ func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel) (yoloAgentConfig
 	if err != nil {
 		return yoloAgentConfigDefaults{}, err
 	}
+	if durationValue != nil && *durationValue < 0 {
+		return yoloAgentConfigDefaults{}, fmt.Errorf("agent.runner_timeout in %s must be greater than or equal to 0", trackerConfigRelPath)
+	}
 	defaults.RunnerTimeout = durationValue
 
 	durationValue, err = parseAgentDuration("watchdog_timeout", model.WatchdogTimeout)
 	if err != nil {
 		return yoloAgentConfigDefaults{}, err
+	}
+	if durationValue != nil && *durationValue <= 0 {
+		return yoloAgentConfigDefaults{}, fmt.Errorf("agent.watchdog_timeout in %s must be greater than 0", trackerConfigRelPath)
 	}
 	defaults.WatchdogTimeout = durationValue
 
@@ -63,9 +73,25 @@ func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel) (yoloAgentConfig
 	if err != nil {
 		return yoloAgentConfigDefaults{}, err
 	}
+	if durationValue != nil && *durationValue <= 0 {
+		return yoloAgentConfigDefaults{}, fmt.Errorf("agent.watchdog_interval in %s must be greater than 0", trackerConfigRelPath)
+	}
 	defaults.WatchdogInterval = durationValue
 
 	return defaults, nil
+}
+
+func normalizeAndValidateAgentBackend(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	normalized := normalizeBackend(value)
+	matrix := defaultBackendCapabilityMatrix()
+	if _, ok := matrix[normalized]; !ok {
+		return "", fmt.Errorf("agent.backend in %s must be one of: %s", trackerConfigRelPath, strings.Join(supportedBackends(matrix), ", "))
+	}
+	return normalized, nil
 }
 
 func parseAgentDuration(field string, raw string) (*time.Duration, error) {
