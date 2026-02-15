@@ -1,6 +1,6 @@
 ---
 id: yr-ma1p
-status: open
+status: closed
 deps: [yr-xl5o]
 links: []
 created: 2026-02-09T23:07:08Z

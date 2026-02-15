@@ -1,6 +1,6 @@
 ---
 id: yr-bho4
-status: open
+status: closed
 deps: [yr-o96q]
 links: []
 created: 2026-02-10T00:12:26Z
