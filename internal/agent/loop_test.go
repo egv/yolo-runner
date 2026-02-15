@@ -54,6 +54,28 @@ func TestBuildPromptImplementExcludesReviewVerdictInstructions(t *testing.T) {
 	}
 }
 
+func TestBuildPromptImplementIncludesCommandContractAndTDDChecklist(t *testing.T) {
+	prompt := buildPrompt(contracts.Task{ID: "t-1", Title: "Task 1", Description: "Implement behavior"}, contracts.RunnerModeImplement)
+
+	required := []string{
+		"Command Contract:",
+		"- Work only on this task; do not switch tasks.",
+		"- Do not call task-selection/status tools (the runner owns task state).",
+		"- Keep edits scoped to files required for this task.",
+		"Strict TDD Checklist:",
+		"[ ] Add or update a test that fails for the target behavior.",
+		"[ ] Run the targeted test and confirm it fails before implementation.",
+		"[ ] Implement the minimal code change required for the test to pass.",
+		"[ ] Re-run targeted tests, then run broader relevant tests.",
+		"[ ] Stop only when all tests pass and acceptance criteria are covered.",
+	}
+	for _, needle := range required {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected prompt to include %q, got %q", needle, prompt)
+		}
+	}
+}
+
 func TestLoopRetriesFailedTaskThenCompletes(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{

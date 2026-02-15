@@ -702,6 +702,21 @@ func buildPrompt(task contracts.Task, mode contracts.RunnerMode) string {
 			"- Use pass only when implementation satisfies acceptance criteria and tests.",
 			"- If fail, include exactly one structured line: REVIEW_FAIL_FEEDBACK: <blocking gaps and required fixes>.",
 		}, "\n"))
+	} else {
+		sections = append(sections, strings.Join([]string{
+			"Command Contract:",
+			"- Work only on this task; do not switch tasks.",
+			"- Do not call task-selection/status tools (the runner owns task state).",
+			"- Keep edits scoped to files required for this task.",
+		}, "\n"))
+		sections = append(sections, strings.Join([]string{
+			"Strict TDD Checklist:",
+			"[ ] Add or update a test that fails for the target behavior.",
+			"[ ] Run the targeted test and confirm it fails before implementation.",
+			"[ ] Implement the minimal code change required for the test to pass.",
+			"[ ] Re-run targeted tests, then run broader relevant tests.",
+			"[ ] Stop only when all tests pass and acceptance criteria are covered.",
+		}, "\n"))
 	}
 	if strings.TrimSpace(task.Description) != "" {
 		sections = append(sections, "Description:\n"+task.Description)
