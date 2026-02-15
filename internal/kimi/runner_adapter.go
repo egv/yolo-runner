@@ -18,6 +18,7 @@ import (
 const defaultBinary = "kimi"
 
 var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERDICT\s*:\s*(pass|fail)(?:\s*DONE)?\s*$`)
+var structuredReviewFailFeedbackLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_(?:FAIL_)?FEEDBACK\s*:\s*(.+?)\s*$`)
 var tokenRedactionPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 
 type CommandSpec struct {
@@ -225,6 +226,11 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 	if request.Mode == contracts.RunnerModeReview {
 		if verdict, ok := structuredReviewVerdict(result.LogPath); ok {
 			artifacts["review_verdict"] = verdict
+			if verdict == "fail" {
+				if feedback, ok := structuredReviewFailFeedback(result.LogPath); ok {
+					artifacts["review_fail_feedback"] = feedback
+				}
+			}
 		}
 	}
 	if !result.StartedAt.IsZero() {
@@ -263,6 +269,17 @@ func structuredReviewVerdict(logPath string) (string, bool) {
 	return lastStructuredVerdictLine(string(content))
 }
 
+func structuredReviewFailFeedback(logPath string) (string, bool) {
+	if strings.TrimSpace(logPath) == "" {
+		return "", false
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", false
+	}
+	return lastStructuredReviewFailFeedbackLine(string(content))
+}
+
 func lastStructuredVerdictLine(text string) (string, bool) {
 	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
 	if normalized == "" {
@@ -279,6 +296,28 @@ func lastStructuredVerdictLine(text string) (string, bool) {
 		found = true
 	}
 	return lastVerdict, found
+}
+
+func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
+	if normalized == "" {
+		return "", false
+	}
+	lastFeedback := ""
+	found := false
+	for _, line := range strings.Split(normalized, "\n") {
+		matches := structuredReviewFailFeedbackLinePattern.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+		candidate := strings.Join(strings.Fields(matches[1]), " ")
+		if candidate == "" {
+			continue
+		}
+		lastFeedback = candidate
+		found = true
+	}
+	return lastFeedback, found
 }
 
 func normalizeLine(line string) string {

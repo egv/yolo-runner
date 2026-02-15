@@ -249,6 +249,32 @@ func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenStructuredVerdictFails(t *tes
 	}
 }
 
+func TestCLIRunnerAdapterExtractsStructuredReviewFailFeedback(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "review.jsonl")
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+		lines := []string{
+			`{"message":"agent_message \"REVIEW_VERDICT: fail\\n\""}`,
+			`{"message":"agent_message \"REVIEW_FAIL_FEEDBACK: missing e2e assertion for retry path\\n\""}`,
+		}
+		return os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{TaskID: "t-1", RepoRoot: "/repo", Prompt: "review", Mode: contracts.RunnerModeReview, Metadata: map[string]string{"log_path": logPath}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.Artifacts["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict=fail artifact, got %#v", result.Artifacts)
+	}
+	if result.Artifacts["review_fail_feedback"] != "missing e2e assertion for retry path" {
+		t.Fatalf("expected review_fail_feedback artifact, got %#v", result.Artifacts)
+	}
+}
+
 func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenOnlyPassFailTemplatePresent(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")

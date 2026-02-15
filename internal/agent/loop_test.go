@@ -39,6 +39,9 @@ func TestBuildPromptReviewRequiresStructuredVerdict(t *testing.T) {
 	if !strings.Contains(prompt, "REVIEW_VERDICT: pass") || !strings.Contains(prompt, "REVIEW_VERDICT: fail") {
 		t.Fatalf("expected structured review verdict instructions, got %q", prompt)
 	}
+	if !strings.Contains(prompt, "REVIEW_FAIL_FEEDBACK:") {
+		t.Fatalf("expected structured review fail feedback instructions, got %q", prompt)
+	}
 }
 
 func TestBuildPromptImplementExcludesReviewVerdictInstructions(t *testing.T) {
@@ -435,6 +438,33 @@ func TestLoopSkipsVerdictRetryWhenReviewVerdictIsExplicitFail(t *testing.T) {
 	}
 	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "review verdict returned fail" {
 		t.Fatalf("expected explicit fail triage reason, got %q", got)
+	}
+}
+
+func TestLoopUsesStructuredReviewFailFeedbackAsTriageReason(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "missing regression test for retry/backoff flow",
+			},
+		},
+	}}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failed summary after explicit fail verdict, got %#v", summary)
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "review rejected: missing regression test for retry/backoff flow" {
+		t.Fatalf("expected structured review fail triage reason, got %q", got)
 	}
 }
 

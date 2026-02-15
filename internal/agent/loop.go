@@ -339,7 +339,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if finalReviewResult.Status == contracts.RunnerResultCompleted && !finalReviewResult.ReviewReady {
 				finalReviewResult.Status = contracts.RunnerResultFailed
 				if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict == "fail" {
-					finalReviewResult.Reason = "review verdict returned fail"
+					finalReviewResult.Reason = buildReviewFailReason(finalReviewResult)
 				} else {
 					finalReviewResult.Reason = "review verdict missing explicit pass"
 				}
@@ -350,6 +350,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			}
 			if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict != "" {
 				reviewFinishedMetadata["review_verdict"] = verdict
+			}
+			if feedback := reviewFailFeedbackFromArtifacts(finalReviewResult); feedback != "" {
+				reviewFinishedMetadata["review_fail_feedback"] = feedback
 			}
 			if len(reviewFinishedMetadata) == 0 {
 				reviewFinishedMetadata = nil
@@ -691,7 +694,7 @@ func buildPrompt(task contracts.Task, mode contracts.RunnerMode) string {
 			"Review Instructions:",
 			"- Include exactly one verdict line in this format: REVIEW_VERDICT: pass OR REVIEW_VERDICT: fail",
 			"- Use pass only when implementation satisfies acceptance criteria and tests.",
-			"- If fail, explain the blocking gaps and required fixes.",
+			"- If fail, include exactly one structured line: REVIEW_FAIL_FEEDBACK: <blocking gaps and required fixes>.",
 		}, "\n"))
 	}
 	if strings.TrimSpace(task.Description) != "" {
@@ -760,6 +763,31 @@ func reviewVerdictFromArtifacts(result contracts.RunnerResult) string {
 		return verdict
 	}
 	return ""
+}
+
+func reviewFailFeedbackFromArtifacts(result contracts.RunnerResult) string {
+	if len(result.Artifacts) == 0 {
+		return ""
+	}
+	for _, key := range []string{"review_fail_feedback", "review_feedback"} {
+		value := strings.TrimSpace(result.Artifacts[key])
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func buildReviewFailReason(result contracts.RunnerResult) string {
+	feedback := reviewFailFeedbackFromArtifacts(result)
+	if feedback == "" {
+		return "review verdict returned fail"
+	}
+	lower := strings.ToLower(feedback)
+	if strings.HasPrefix(lower, "review rejected") {
+		return feedback
+	}
+	return "review rejected: " + feedback
 }
 
 func buildRunnerFinishedMetadata(result contracts.RunnerResult) map[string]string {

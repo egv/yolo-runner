@@ -26,6 +26,7 @@ type CLIRunnerAdapter struct {
 }
 
 var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERDICT\s*:\s*(pass|fail)(?:\s*DONE)?\s*$`)
+var structuredReviewFailFeedbackLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_(?:FAIL_)?FEEDBACK\s*:\s*(.+?)\s*$`)
 var tokenRedactionPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 
 const (
@@ -114,6 +115,11 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 	if request.Mode == contracts.RunnerModeReview {
 		if verdict, ok := structuredReviewVerdict(logPath); ok {
 			artifacts["review_verdict"] = verdict
+			if verdict == "fail" {
+				if feedback, ok := structuredReviewFailFeedback(logPath); ok {
+					artifacts["review_fail_feedback"] = feedback
+				}
+			}
 		}
 	}
 	artifacts["backend"] = "opencode"
@@ -212,6 +218,17 @@ func structuredReviewVerdict(logPath string) (string, bool) {
 	return lastStructuredVerdictFromACPLog(content)
 }
 
+func structuredReviewFailFeedback(logPath string) (string, bool) {
+	if strings.TrimSpace(logPath) == "" {
+		return "", false
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", false
+	}
+	return lastStructuredReviewFailFeedbackFromACPLog(content)
+}
+
 func lastStructuredVerdictFromACPLog(content []byte) (string, bool) {
 	if len(content) == 0 {
 		return "", false
@@ -235,6 +252,31 @@ func lastStructuredVerdictFromACPLog(content []byte) (string, bool) {
 	}
 
 	return lastStructuredVerdictLine(combinedAgentMessages.String())
+}
+
+func lastStructuredReviewFailFeedbackFromACPLog(content []byte) (string, bool) {
+	if len(content) == 0 {
+		return "", false
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 2*1024*1024)
+
+	var combinedAgentMessages strings.Builder
+	for scanner.Scan() {
+		text := extractAgentMessageText(scanner.Text())
+		if text == "" {
+			continue
+		}
+		combinedAgentMessages.WriteString(text)
+	}
+
+	if scanner.Err() != nil {
+		return "", false
+	}
+
+	return lastStructuredReviewFailFeedbackLine(combinedAgentMessages.String())
 }
 
 func extractAgentMessageText(logLine string) string {
@@ -285,6 +327,30 @@ func lastStructuredVerdictLine(text string) (string, bool) {
 	}
 
 	return lastVerdict, found
+}
+
+func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
+	if normalized == "" {
+		return "", false
+	}
+
+	lastFeedback := ""
+	found := false
+	for _, line := range strings.Split(normalized, "\n") {
+		matches := structuredReviewFailFeedbackLinePattern.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+		candidate := strings.Join(strings.Fields(matches[1]), " ")
+		if candidate == "" {
+			continue
+		}
+		lastFeedback = candidate
+		found = true
+	}
+
+	return lastFeedback, found
 }
 
 func normalizeACPUpdateLine(line string) (string, string) {
