@@ -36,6 +36,7 @@ type runConfig struct {
 	trackerType          string
 	model                string
 	maxTasks             int
+	retryBudget          int
 	concurrency          int
 	dryRun               bool
 	stream               bool
@@ -66,23 +67,65 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	runnerTimeout := fs.Duration("runner-timeout", 0, "Per runner execution timeout")
 	watchdogTimeout := fs.Duration("watchdog-timeout", 10*time.Minute, "No-output watchdog timeout for each runner execution")
 	watchdogInterval := fs.Duration("watchdog-interval", 5*time.Second, "Polling interval used by the no-output watchdog")
+	retryBudget := fs.Int("retry-budget", 0, "Maximum retry attempts for remediation loop")
 	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
 		return 1
+	}
+	setFlags := map[string]struct{}{}
+	fs.Visit(func(f *flag.Flag) {
+		setFlags[f.Name] = struct{}{}
+	})
+	flagWasSet := func(name string) bool {
+		_, ok := setFlags[name]
+		return ok
 	}
 	if *root == "" {
 		fmt.Fprintln(os.Stderr, "--root is required")
 		return 1
 	}
+	configDefaults, err := loadYoloAgentConfigDefaults(*repo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defaultBackend := strings.TrimSpace(os.Getenv("YOLO_AGENT_BACKEND"))
+	if defaultBackend == "" {
+		defaultBackend = configDefaults.Backend
+	}
 	selectedBackendRaw := resolveBackendSelectionPolicy(backendSelectionPolicyInput{
 		AgentBackendFlag:      *agentBackend,
 		LegacyBackendFlag:     *backend,
-		ProfileDefaultBackend: os.Getenv("YOLO_AGENT_BACKEND"),
+		ProfileDefaultBackend: defaultBackend,
 	})
 	selectedProfile := resolveProfileSelectionPolicy(profileSelectionInput{
 		FlagValue: *profile,
 		EnvValue:  os.Getenv("YOLO_PROFILE"),
 	})
+	selectedModel := strings.TrimSpace(*model)
+	if selectedModel == "" {
+		selectedModel = configDefaults.Model
+	}
+	selectedConcurrency := *concurrency
+	if !flagWasSet("concurrency") && configDefaults.Concurrency != nil {
+		selectedConcurrency = *configDefaults.Concurrency
+	}
+	selectedRunnerTimeout := *runnerTimeout
+	if !flagWasSet("runner-timeout") && configDefaults.RunnerTimeout != nil {
+		selectedRunnerTimeout = *configDefaults.RunnerTimeout
+	}
+	selectedWatchdogTimeout := *watchdogTimeout
+	if !flagWasSet("watchdog-timeout") && configDefaults.WatchdogTimeout != nil {
+		selectedWatchdogTimeout = *configDefaults.WatchdogTimeout
+	}
+	selectedWatchdogInterval := *watchdogInterval
+	if !flagWasSet("watchdog-interval") && configDefaults.WatchdogInterval != nil {
+		selectedWatchdogInterval = *configDefaults.WatchdogInterval
+	}
+	selectedRetryBudget := *retryBudget
+	if !flagWasSet("retry-budget") && configDefaults.RetryBudget != nil {
+		selectedRetryBudget = *configDefaults.RetryBudget
+	}
 	selectedBackend, _, err := selectBackend(selectedBackendRaw, backendSelectionOptions{
 		RequireReview: true,
 		Stream:        *stream,
@@ -91,7 +134,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if *concurrency <= 0 {
+	if selectedConcurrency <= 0 {
 		fmt.Fprintln(os.Stderr, "--concurrency must be greater than 0")
 		return 1
 	}
@@ -103,12 +146,16 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--stream-output-buffer must be greater than 0")
 		return 1
 	}
-	if *watchdogTimeout <= 0 {
+	if selectedWatchdogTimeout <= 0 {
 		fmt.Fprintln(os.Stderr, "--watchdog-timeout must be greater than 0")
 		return 1
 	}
-	if *watchdogInterval <= 0 {
+	if selectedWatchdogInterval <= 0 {
 		fmt.Fprintln(os.Stderr, "--watchdog-interval must be greater than 0")
+		return 1
+	}
+	if selectedRetryBudget < 0 {
+		fmt.Fprintln(os.Stderr, "--retry-budget must be greater than or equal to 0")
 		return 1
 	}
 
@@ -121,17 +168,18 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		rootID:               *root,
 		backend:              selectedBackend,
 		profile:              selectedProfile,
-		model:                *model,
+		model:                selectedModel,
 		maxTasks:             *max,
-		concurrency:          *concurrency,
+		retryBudget:          selectedRetryBudget,
+		concurrency:          selectedConcurrency,
 		dryRun:               *dryRun,
 		stream:               *stream,
 		verboseStream:        *verboseStream,
 		streamOutputInterval: *streamOutputInterval,
 		streamOutputBuffer:   *streamOutputBuffer,
-		runnerTimeout:        *runnerTimeout,
-		watchdogTimeout:      *watchdogTimeout,
-		watchdogInterval:     *watchdogInterval,
+		runnerTimeout:        selectedRunnerTimeout,
+		watchdogTimeout:      selectedWatchdogTimeout,
+		watchdogInterval:     selectedWatchdogInterval,
 		eventsPath:           *events,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
@@ -235,6 +283,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:           cfg.rootID,
+		MaxRetries:         cfg.retryBudget,
 		MaxTasks:           cfg.maxTasks,
 		Concurrency:        cfg.concurrency,
 		SchedulerStatePath: filepath.Join(cfg.repoRoot, ".yolo-runner", "scheduler-state.json"),
@@ -284,6 +333,7 @@ func buildRunStartedMetadata(cfg runConfig) map[string]string {
 		"backend":                normalizeBackend(cfg.backend),
 		"profile":                strings.TrimSpace(cfg.profile),
 		"tracker":                strings.TrimSpace(cfg.trackerType),
+		"retry_budget":           strconv.Itoa(cfg.retryBudget),
 		"concurrency":            strconv.Itoa(cfg.concurrency),
 		"model":                  cfg.model,
 		"runner_timeout":         cfg.runnerTimeout.String(),

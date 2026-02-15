@@ -182,6 +182,128 @@ func TestRunMainAgentBackendFlagOverridesLegacyAndProfileBackends(t *testing.T) 
 	}
 }
 
+func TestRunMainLoadsAgentDefaultsFromConfigFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: codex
+  model: openai/gpt-5.3-codex
+  concurrency: 3
+  runner_timeout: 25m
+  watchdog_timeout: 2m
+  watchdog_interval: 3s
+  retry_budget: 4
+`)
+
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", repoRoot, "--root", "root-1"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.backend != backendCodex {
+		t.Fatalf("expected backend from config=%q, got %q", backendCodex, got.backend)
+	}
+	if got.model != "openai/gpt-5.3-codex" {
+		t.Fatalf("expected model from config, got %q", got.model)
+	}
+	if got.concurrency != 3 {
+		t.Fatalf("expected concurrency from config=3, got %d", got.concurrency)
+	}
+	if got.runnerTimeout != 25*time.Minute {
+		t.Fatalf("expected runner timeout from config 25m, got %s", got.runnerTimeout)
+	}
+	if got.watchdogTimeout != 2*time.Minute {
+		t.Fatalf("expected watchdog timeout from config 2m, got %s", got.watchdogTimeout)
+	}
+	if got.watchdogInterval != 3*time.Second {
+		t.Fatalf("expected watchdog interval from config 3s, got %s", got.watchdogInterval)
+	}
+	if got.retryBudget != 4 {
+		t.Fatalf("expected retry budget from config=4, got %d", got.retryBudget)
+	}
+}
+
+func TestRunMainFlagAndEnvPrecedenceOverAgentConfigDefaults(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: codex
+  model: openai/gpt-5.3-codex
+  concurrency: 3
+  runner_timeout: 25m
+  watchdog_timeout: 2m
+  watchdog_interval: 3s
+  retry_budget: 4
+`)
+
+	t.Setenv("YOLO_AGENT_BACKEND", backendClaude)
+
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{
+		"--repo", repoRoot,
+		"--root", "root-1",
+		"--agent-backend", "kimi",
+		"--model", "kimi-k2",
+		"--concurrency", "7",
+		"--runner-timeout", "11m",
+		"--watchdog-timeout", "12m",
+		"--watchdog-interval", "4s",
+		"--retry-budget", "9",
+	}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.backend != backendKimi {
+		t.Fatalf("expected agent-backend flag to win, got %q", got.backend)
+	}
+	if got.model != "kimi-k2" {
+		t.Fatalf("expected model from flag, got %q", got.model)
+	}
+	if got.concurrency != 7 {
+		t.Fatalf("expected concurrency from flag=7, got %d", got.concurrency)
+	}
+	if got.runnerTimeout != 11*time.Minute {
+		t.Fatalf("expected runner timeout from flag 11m, got %s", got.runnerTimeout)
+	}
+	if got.watchdogTimeout != 12*time.Minute {
+		t.Fatalf("expected watchdog timeout from flag 12m, got %s", got.watchdogTimeout)
+	}
+	if got.watchdogInterval != 4*time.Second {
+		t.Fatalf("expected watchdog interval from flag 4s, got %s", got.watchdogInterval)
+	}
+	if got.retryBudget != 9 {
+		t.Fatalf("expected retry budget from flag=9, got %d", got.retryBudget)
+	}
+}
+
 func TestRunMainAcceptsKimiBackend(t *testing.T) {
 	called := false
 	var got runConfig
@@ -307,6 +429,27 @@ func TestRunMainParsesWatchdogFlags(t *testing.T) {
 	}
 	if got.watchdogInterval != 1*time.Second {
 		t.Fatalf("expected watchdog interval 1s, got %s", got.watchdogInterval)
+	}
+}
+
+func TestRunMainParsesRetryBudgetFlag(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--retry-budget", "2"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.retryBudget != 2 {
+		t.Fatalf("expected retryBudget=2, got %d", got.retryBudget)
 	}
 }
 
@@ -697,6 +840,21 @@ func TestRunMainRejectsNonPositiveWatchdogInterval(t *testing.T) {
 	}
 	if called {
 		t.Fatalf("expected run function not to be called for invalid watchdog-interval")
+	}
+}
+
+func TestRunMainRejectsNegativeRetryBudget(t *testing.T) {
+	called := false
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--retry-budget", "-1"}, func(context.Context, runConfig) error {
+		called = true
+		return nil
+	})
+
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when retry-budget is negative, got %d", code)
+	}
+	if called {
+		t.Fatalf("expected run function not to be called for invalid retry-budget")
 	}
 }
 

@@ -33,6 +33,7 @@ type profileSelectionInput struct {
 type trackerProfilesModel struct {
 	DefaultProfile string                       `yaml:"default_profile"`
 	Profiles       map[string]trackerProfileDef `yaml:"profiles"`
+	Agent          yoloAgentConfigModel         `yaml:"agent,omitempty"`
 	Tracker        trackerModel                 `yaml:"tracker,omitempty"`
 }
 
@@ -80,6 +81,16 @@ type githubScopeModel struct {
 
 type githubAuthModel struct {
 	TokenEnv string `yaml:"token_env"`
+}
+
+type yoloAgentConfigModel struct {
+	Backend          string `yaml:"backend,omitempty"`
+	Model            string `yaml:"model,omitempty"`
+	Concurrency      *int   `yaml:"concurrency,omitempty"`
+	RunnerTimeout    string `yaml:"runner_timeout,omitempty"`
+	WatchdogTimeout  string `yaml:"watchdog_timeout,omitempty"`
+	WatchdogInterval string `yaml:"watchdog_interval,omitempty"`
+	RetryBudget      *int   `yaml:"retry_budget,omitempty"`
 }
 
 type resolvedTrackerProfile struct {
