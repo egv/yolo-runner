@@ -52,6 +52,58 @@ func TestEnsureMainIncludesGitOutputInCheckoutFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureMainResetsMainWhenFastForwardPullFailsAndWorktreeIsClean(t *testing.T) {
+	r := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "fatal: Not possible to fast-forward, aborting.", err: errors.New("exit status 128")},
+		{output: "", err: nil},
+		{output: "", err: nil},
+		{output: "HEAD is now at b32d33e", err: nil},
+	}}
+	a := NewVCSAdapter(r)
+
+	if err := a.EnsureMain(context.Background()); err != nil {
+		t.Fatalf("expected ensure main to recover via fetch+reset, got %v", err)
+	}
+
+	want := []call{
+		{name: "git", args: []string{"checkout", "main"}},
+		{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}},
+		{name: "git", args: []string{"status", "--porcelain"}},
+		{name: "git", args: []string{"fetch", "origin", "main"}},
+		{name: "git", args: []string{"reset", "--hard", "origin/main"}},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("unexpected call sequence: got %#v want %#v", r.calls, want)
+	}
+}
+
+func TestEnsureMainDoesNotResetWhenFastForwardPullFailsAndWorktreeIsDirty(t *testing.T) {
+	r := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "fatal: Not possible to fast-forward, aborting.", err: errors.New("exit status 128")},
+		{output: " M internal/agent/loop.go", err: nil},
+	}}
+	a := NewVCSAdapter(r)
+
+	err := a.EnsureMain(context.Background())
+	if err == nil {
+		t.Fatal("expected error when worktree is dirty")
+	}
+	if !contains(strings.ToLower(err.Error()), "not possible to fast-forward") {
+		t.Fatalf("expected fast-forward failure in error, got %q", err.Error())
+	}
+
+	want := []call{
+		{name: "git", args: []string{"checkout", "main"}},
+		{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}},
+		{name: "git", args: []string{"status", "--porcelain"}},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("unexpected call sequence: got %#v want %#v", r.calls, want)
+	}
+}
+
 func TestCreateTaskBranchFromMain(t *testing.T) {
 	r := &fakeRunner{}
 	a := NewVCSAdapter(r)

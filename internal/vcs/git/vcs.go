@@ -19,8 +19,25 @@ func (a *VCSAdapter) EnsureMain(context.Context) error {
 	if _, err := a.runGit("checkout", "main"); err != nil {
 		return err
 	}
-	_, err := a.runGit("pull", "--ff-only", "origin", "main")
-	return err
+	if _, err := a.runGit("pull", "--ff-only", "origin", "main"); err != nil {
+		if !isNonFastForwardPullError(err) {
+			return err
+		}
+		dirty, dirtyErr := a.isWorktreeDirty()
+		if dirtyErr != nil {
+			return errors.Join(err, dirtyErr)
+		}
+		if dirty {
+			return err
+		}
+		if _, fetchErr := a.runGit("fetch", "origin", "main"); fetchErr != nil {
+			return errors.Join(err, fetchErr)
+		}
+		if _, resetErr := a.runGit("reset", "--hard", "origin/main"); resetErr != nil {
+			return errors.Join(err, resetErr)
+		}
+	}
+	return nil
 }
 
 func (a *VCSAdapter) CreateTaskBranch(ctx context.Context, taskID string) (string, error) {
@@ -99,4 +116,20 @@ func (a *VCSAdapter) runGit(args ...string) (string, error) {
 		return "", fmt.Errorf("%s failed: %w", command, err)
 	}
 	return "", fmt.Errorf("%s failed: %s: %w", command, details, err)
+}
+
+func (a *VCSAdapter) isWorktreeDirty() (bool, error) {
+	status, err := a.runGit("status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(status) != "", nil
+}
+
+func isNonFastForwardPullError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not possible to fast-forward") || strings.Contains(message, "can't be fast-forwarded") || strings.Contains(message, "cannot pull with rebase")
 }
