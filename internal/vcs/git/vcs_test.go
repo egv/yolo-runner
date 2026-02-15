@@ -163,6 +163,36 @@ func TestCommitAll(t *testing.T) {
 	}
 }
 
+func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
+	r := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "On branch task/t-1\nnothing to commit, working tree clean", err: errors.New("exit status 1")},
+		{output: "abc123\n", err: nil},
+	}}
+	a := NewVCSAdapter(r)
+
+	sha, err := a.CommitAll(context.Background(), "feat: test")
+	if err != nil {
+		t.Fatalf("commit all should succeed when nothing to commit: %v", err)
+	}
+	if sha != "abc123" {
+		t.Fatalf("expected sha abc123, got %q", sha)
+	}
+
+	if len(r.calls) != 3 {
+		t.Fatalf("expected 3 calls, got %d", len(r.calls))
+	}
+	if !reflect.DeepEqual(r.calls[0], call{name: "git", args: []string{"add", "."}}) {
+		t.Fatalf("unexpected call[0]: %#v", r.calls[0])
+	}
+	if !reflect.DeepEqual(r.calls[1], call{name: "git", args: []string{"commit", "-m", "feat: test"}}) {
+		t.Fatalf("unexpected call[1]: %#v", r.calls[1])
+	}
+	if !reflect.DeepEqual(r.calls[2], call{name: "git", args: []string{"rev-parse", "HEAD"}}) {
+		t.Fatalf("unexpected call[2]: %#v", r.calls[2])
+	}
+}
+
 func assertVCSCall(t *testing.T, got []call, want call) {
 	t.Helper()
 	if len(got) != 1 {
@@ -192,4 +222,24 @@ func (r *branchExistsRunner) Run(name string, args ...string) (string, error) {
 		return "", errors.New("fatal: a branch named already exists")
 	}
 	return "", nil
+}
+
+type sequenceResponse struct {
+	output string
+	err    error
+}
+
+type sequenceRunner struct {
+	responses []sequenceResponse
+	calls     []call
+}
+
+func (r *sequenceRunner) Run(name string, args ...string) (string, error) {
+	r.calls = append(r.calls, call{name: name, args: append([]string{}, args...)})
+	if len(r.responses) == 0 {
+		return "", nil
+	}
+	response := r.responses[0]
+	r.responses = r.responses[1:]
+	return response.output, response.err
 }
