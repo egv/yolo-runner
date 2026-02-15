@@ -1,6 +1,6 @@
 ---
 id: yr-10ub
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-15T17:56:44Z
