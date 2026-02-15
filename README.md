@@ -114,6 +114,29 @@ Use streaming mode to drive `yolo-tui` from stdin in real time:
 
 The monitor is decoder-safe: malformed NDJSON lines are surfaced as `decode_error` warnings in the UI and stderr while valid subsequent events continue rendering.
 
+### `yolo-agent` preflight (commit + push first)
+
+Always commit and push ticket/config changes before starting `yolo-agent`.
+
+- Required before run: commit `.tickets/*.md` and related config/code changes, then run `git push`.
+- Why: each task runs in a fresh clone that syncs against `origin/main`; local-only commits are not visible in task clones.
+- Symptom when skipped: runner output shows errors like `ticket '<id>' not found` in clone context.
+
+Quick preflight:
+
+```
+git status --short
+git push
+./bin/yolo-agent --repo . --root <root-id> --backend codex --concurrency 3 --events "runner-logs/<run>.events.jsonl" --stream | ./bin/yolo-tui --events-stdin
+```
+
+If a run is interrupted, reset state before restarting:
+
+1. Stop `yolo-agent`.
+2. Move interrupted tasks back to `open`.
+3. Remove stale clone directories under `.yolo-runner/clones/<task-id>`.
+4. Remove stale `in_flight` entries from `.yolo-runner/scheduler-state.json`.
+
 ### `--runner-timeout` profiles (`yolo-agent`)
 
 Use `--runner-timeout` to cap each task execution. Start with these defaults and tune for your repo/task size.
