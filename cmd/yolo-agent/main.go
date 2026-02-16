@@ -49,10 +49,7 @@ type runConfig struct {
 	eventsPath           string
 }
 
-var runConfigValidateCommand = func(args []string) int {
-	fmt.Fprintln(os.Stderr, "config validate command is not implemented")
-	return 1
-}
+var runConfigValidateCommand = defaultRunConfigValidateCommand
 
 var runConfigInitCommand = func(args []string) int {
 	fmt.Fprintln(os.Stderr, "config init command is not implemented")
