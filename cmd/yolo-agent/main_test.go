@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,101 @@ func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
 	}
 	if got.stream {
 		t.Fatalf("expected stream=false by default")
+	}
+}
+
+func TestRunMainRoutesConfigValidateSubcommand(t *testing.T) {
+	originalValidate := runConfigValidateCommand
+	t.Cleanup(func() {
+		runConfigValidateCommand = originalValidate
+	})
+
+	called := false
+	var gotArgs []string
+	runConfigValidateCommand = func(args []string) int {
+		called = true
+		gotArgs = append([]string(nil), args...)
+		return 73
+	}
+
+	runCalled := false
+	code := RunMain([]string{"config", "validate", "--repo", "/repo"}, func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	})
+	if code != 73 {
+		t.Fatalf("expected validate route exit code 73, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected validate command handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("expected legacy run function not to be called for config validate")
+	}
+	if !reflect.DeepEqual(gotArgs, []string{"--repo", "/repo"}) {
+		t.Fatalf("unexpected validate args: %#v", gotArgs)
+	}
+}
+
+func TestRunMainRoutesConfigInitSubcommand(t *testing.T) {
+	originalInit := runConfigInitCommand
+	t.Cleanup(func() {
+		runConfigInitCommand = originalInit
+	})
+
+	called := false
+	var gotArgs []string
+	runConfigInitCommand = func(args []string) int {
+		called = true
+		gotArgs = append([]string(nil), args...)
+		return 29
+	}
+
+	runCalled := false
+	code := RunMain([]string{"config", "init", "--repo", "/repo", "--force"}, func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	})
+	if code != 29 {
+		t.Fatalf("expected init route exit code 29, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected init command handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("expected legacy run function not to be called for config init")
+	}
+	if !reflect.DeepEqual(gotArgs, []string{"--repo", "/repo", "--force"}) {
+		t.Fatalf("unexpected init args: %#v", gotArgs)
+	}
+}
+
+func TestRunMainConfigCommandRequiresSubcommand(t *testing.T) {
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"config"}, func(context.Context, runConfig) error { return nil })
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if !strings.Contains(errText, "usage: yolo-agent config <validate|init> [flags]") {
+		t.Fatalf("expected config usage guidance, got %q", errText)
+	}
+}
+
+func TestRunMainRejectsUnknownConfigSubcommand(t *testing.T) {
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{"config", "unknown"}, func(context.Context, runConfig) error { return nil })
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if !strings.Contains(errText, "unknown config command: unknown") {
+		t.Fatalf("expected unknown config command message, got %q", errText)
+	}
+	if !strings.Contains(errText, "usage: yolo-agent config <validate|init> [flags]") {
+		t.Fatalf("expected config usage guidance, got %q", errText)
 	}
 }
 
