@@ -193,6 +193,51 @@ Validation rules for `agent.*` values:
 
 Invalid config values fail startup with field-specific errors that reference `.yolo-runner/config.yaml`.
 
+### `yolo-agent config` init/validate workflow
+
+Use `config init` to scaffold a starter config, then run `config validate` before starting longer agent runs.
+
+Bootstrap:
+
+```bash
+./bin/yolo-agent config init --repo .
+```
+
+If the file already exists and you intentionally want to overwrite it:
+
+```bash
+./bin/yolo-agent config init --repo . --force
+```
+
+Validate in human-readable mode:
+
+```bash
+./bin/yolo-agent config validate --repo .
+```
+
+Typical success output:
+
+```text
+config is valid
+```
+
+Typical failure output:
+
+```text
+config is invalid
+field: agent.concurrency
+reason: must be greater than 0
+remediation: Set agent.concurrency to an integer greater than 0 in .yolo-runner/config.yaml.
+```
+
+Machine-readable validation (for CI hooks):
+
+```bash
+./bin/yolo-agent config validate --repo . --format json
+```
+
+Troubleshooting details and additional failure/remediation cases are documented in `docs/config-workflow.md`.
+
 ## Task Prompt
 
 The prompt includes:

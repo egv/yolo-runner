@@ -119,3 +119,54 @@ func TestMigrationDocumentsYoloAgentConfigDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigWorkflowDocsCoverValidateInitAndTroubleshooting(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	readmeContents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	readme := string(readmeContents)
+	readmeRequired := []string{
+		"yolo-agent config init --repo .",
+		"yolo-agent config validate --repo .",
+		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode",
+		"config is invalid",
+		"remediation:",
+	}
+	for _, needle := range readmeRequired {
+		if !strings.Contains(readme, needle) {
+			t.Fatalf("README missing validate/init workflow guidance: %q", needle)
+		}
+	}
+
+	runbookPath := filepath.Join(repoRoot, "docs", "config-workflow.md")
+	runbookContents, err := os.ReadFile(runbookPath)
+	if err != nil {
+		t.Fatalf("read config workflow runbook: %v", err)
+	}
+
+	runbook := string(runbookContents)
+	runbookRequired := []string{
+		"Command Usage",
+		"Precedence",
+		"Common Failures",
+		"Remediation",
+		"yolo-agent config init",
+		"yolo-agent config validate",
+		"already exists; rerun with --force to overwrite",
+		"unsupported --format value",
+		"missing auth token from",
+	}
+	for _, needle := range runbookRequired {
+		if !strings.Contains(runbook, needle) {
+			t.Fatalf("config workflow runbook missing %q", needle)
+		}
+	}
+}
