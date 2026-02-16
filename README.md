@@ -173,7 +173,7 @@ agent:
   runner_timeout: 20m
   watchdog_timeout: 10m
   watchdog_interval: 5s
-  retry_budget: 1
+  retry_budget: 5
 ```
 
 Precedence rules:
@@ -181,6 +181,7 @@ Precedence rules:
 - Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode`
 - Profile: `--profile > YOLO_PROFILE > default_profile > default`
 - Model and numeric/duration defaults: CLI flag value wins; if unset, `agent.*` value is used.
+- Retry budget defaults to `5` per task when neither `--retry-budget` nor `agent.retry_budget` is set.
 
 Validation rules for `agent.*` values:
 

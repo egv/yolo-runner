@@ -75,7 +75,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	runnerTimeout := fs.Duration("runner-timeout", 0, "Per runner execution timeout")
 	watchdogTimeout := fs.Duration("watchdog-timeout", 10*time.Minute, "No-output watchdog timeout for each runner execution")
 	watchdogInterval := fs.Duration("watchdog-interval", 5*time.Second, "Polling interval used by the no-output watchdog")
-	retryBudget := fs.Int("retry-budget", 0, "Maximum retry attempts for remediation loop")
+	retryBudget := fs.Int("retry-budget", 5, "Maximum retry attempts per task for remediation loop")
 	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
 		return 1

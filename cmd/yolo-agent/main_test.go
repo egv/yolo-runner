@@ -613,6 +613,27 @@ func TestRunMainParsesRetryBudgetFlag(t *testing.T) {
 	}
 }
 
+func TestRunMainUsesDefaultRetryBudget(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.retryBudget != 5 {
+		t.Fatalf("expected default retryBudget=5, got %d", got.retryBudget)
+	}
+}
+
 func TestRunMainParsesVerboseStreamFlag(t *testing.T) {
 	called := false
 	var got runConfig
