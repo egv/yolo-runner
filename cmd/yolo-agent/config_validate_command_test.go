@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -66,8 +67,103 @@ agent:
 	if !strings.Contains(stderrText, "config is invalid") {
 		t.Fatalf("expected deterministic invalid prefix, got %q", stderrText)
 	}
-	if !strings.Contains(stderrText, "agent.concurrency") {
+	if !strings.Contains(stderrText, "field: agent.concurrency") {
+		t.Fatalf("expected failing field in output, got %q", stderrText)
+	}
+	if !strings.Contains(stderrText, "reason: must be greater than 0") {
 		t.Fatalf("expected validation reason in output, got %q", stderrText)
+	}
+	if !strings.Contains(stderrText, "remediation:") {
+		t.Fatalf("expected remediation guidance in output, got %q", stderrText)
+	}
+}
+
+func TestRunConfigValidateCommandInvalidConfigJSONOutputIsMachineReadable(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  concurrency: 0
+`)
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot, "--format", "json"})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for machine-readable mode, got %q", stderrText)
+	}
+
+	var payload configValidateResultPayload
+	if err := json.Unmarshal([]byte(stdoutText), &payload); err != nil {
+		t.Fatalf("expected valid JSON payload, got %q (%v)", stdoutText, err)
+	}
+	if payload.SchemaVersion != configValidateSchemaVersion {
+		t.Fatalf("expected schema version %q, got %q", configValidateSchemaVersion, payload.SchemaVersion)
+	}
+	if payload.Status != "invalid" {
+		t.Fatalf("expected invalid status, got %q", payload.Status)
+	}
+	if len(payload.Diagnostics) != 1 {
+		t.Fatalf("expected one diagnostic, got %d", len(payload.Diagnostics))
+	}
+	diag := payload.Diagnostics[0]
+	if diag.Field != "agent.concurrency" {
+		t.Fatalf("expected field agent.concurrency, got %q", diag.Field)
+	}
+	if !strings.Contains(diag.Reason, "greater than 0") {
+		t.Fatalf("expected reason to describe numeric constraint, got %q", diag.Reason)
+	}
+	if strings.TrimSpace(diag.Remediation) == "" {
+		t.Fatalf("expected remediation guidance to be present")
+	}
+}
+
+func TestRunConfigValidateCommandValidConfigJSONOutputUsesStableSchema(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: anomaly
+        auth:
+          token_env: LINEAR_TOKEN
+agent:
+  backend: codex
+  concurrency: 2
+`)
+	t.Setenv("LINEAR_TOKEN", "lin_api_token")
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot, "--format", "json"})
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d", code)
+		}
+	})
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for machine-readable mode, got %q", stderrText)
+	}
+
+	var payload configValidateResultPayload
+	if err := json.Unmarshal([]byte(stdoutText), &payload); err != nil {
+		t.Fatalf("expected valid JSON payload, got %q (%v)", stdoutText, err)
+	}
+	if payload.SchemaVersion != configValidateSchemaVersion {
+		t.Fatalf("expected schema version %q, got %q", configValidateSchemaVersion, payload.SchemaVersion)
+	}
+	if payload.Status != "valid" {
+		t.Fatalf("expected valid status, got %q", payload.Status)
+	}
+	if len(payload.Diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics for valid config, got %d", len(payload.Diagnostics))
 	}
 }
 

@@ -11,22 +11,7 @@ import (
 
 const starterTrackerConfigTemplate = "default_profile: default\nprofiles:\n  default:\n    tracker:\n      type: tk\n"
 
-func runConfigCommand(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "config subcommand is required (supported: init)")
-		return 1
-	}
-
-	switch args[0] {
-	case "init":
-		return runConfigInitCommand(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "unsupported config subcommand %q (supported: init)\n", args[0])
-		return 1
-	}
-}
-
-func runConfigInitCommand(args []string) int {
+func defaultRunConfigInitCommand(args []string) int {
 	fs := flag.NewFlagSet("yolo-agent config init", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	repoRoot := fs.String("repo", ".", "Repository root")
