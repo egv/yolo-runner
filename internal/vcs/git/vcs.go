@@ -67,8 +67,11 @@ func (a *VCSAdapter) MergeToMain(ctx context.Context, sourceBranch string) error
 	if err := a.EnsureMain(ctx); err != nil {
 		return err
 	}
-	_, err := a.runGit("merge", "--no-ff", sourceBranch)
-	return err
+	if _, err := a.runGit("merge", "--no-ff", sourceBranch); err != nil {
+		_, _ = a.runGit("merge", "--abort")
+		return err
+	}
+	return nil
 }
 
 func (a *VCSAdapter) PushBranch(_ context.Context, branch string) error {

@@ -178,6 +178,31 @@ func TestMergeAndPushMain(t *testing.T) {
 	}
 }
 
+func TestMergeToMainAbortsMergeOnConflict(t *testing.T) {
+	r := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "", err: nil},
+		{output: "Auto-merging .tickets/yr-foo.md\nCONFLICT (add/add): Merge conflict", err: errors.New("exit status 1")},
+		{output: "", err: nil},
+	}}
+	a := NewVCSAdapter(r)
+
+	err := a.MergeToMain(context.Background(), "task/task-123")
+	if err == nil {
+		t.Fatal("expected merge failure")
+	}
+
+	want := []call{
+		{name: "git", args: []string{"checkout", "main"}},
+		{name: "git", args: []string{"pull", "--ff-only", "origin", "main"}},
+		{name: "git", args: []string{"merge", "--no-ff", "task/task-123"}},
+		{name: "git", args: []string{"merge", "--abort"}},
+	}
+	if !reflect.DeepEqual(r.calls, want) {
+		t.Fatalf("unexpected call sequence: got %#v want %#v", r.calls, want)
+	}
+}
+
 func TestPushBranch(t *testing.T) {
 	r := &fakeRunner{}
 	a := NewVCSAdapter(r)
