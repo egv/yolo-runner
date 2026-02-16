@@ -170,3 +170,29 @@ func TestConfigWorkflowDocsCoverValidateInitAndTroubleshooting(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigWorkflowRunbookPrecedenceMatchesConfigValidateBehavior(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	runbookPath := filepath.Join(repoRoot, "docs", "config-workflow.md")
+	contents, err := os.ReadFile(runbookPath)
+	if err != nil {
+		t.Fatalf("read config workflow runbook: %v", err)
+	}
+
+	runbook := string(contents)
+	required := []string{
+		"Profile: `--profile > YOLO_PROFILE > default_profile > default`",
+		"Root scope for tracker validation: `--root > profiles.<selected>.tracker.tk.scope.root (when tracker.type=tk) > empty`",
+		"Backend and other `agent.*` values are validated from `.yolo-runner/config.yaml` as written.",
+		"`--agent-backend`, `--backend`, and `YOLO_AGENT_BACKEND` are ignored by `config validate`.",
+	}
+	for _, needle := range required {
+		if !strings.Contains(runbook, needle) {
+			t.Fatalf("config workflow precedence documentation missing %q", needle)
+		}
+	}
+}

@@ -28,11 +28,12 @@ Validate current config in JSON mode:
 
 ## Precedence
 
-`yolo-agent config validate` evaluates the same runtime precedence used by `yolo-agent` startup:
+`yolo-agent config validate` resolves only profile/root selection at runtime:
 
-- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode`
 - Profile: `--profile > YOLO_PROFILE > default_profile > default`
-- Other `agent.*` values: explicit CLI flag wins; otherwise `.yolo-runner/config.yaml` value is used.
+- Root scope for tracker validation: `--root > profiles.<selected>.tracker.tk.scope.root (when tracker.type=tk) > empty`
+- Backend and other `agent.*` values are validated from `.yolo-runner/config.yaml` as written.
+- `--agent-backend`, `--backend`, and `YOLO_AGENT_BACKEND` are ignored by `config validate`.
 
 ## Common Failures
 
