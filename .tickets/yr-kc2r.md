@@ -1,6 +1,6 @@
 ---
 id: yr-kc2r
-status: open
+status: closed
 deps: [yr-fcft, yr-r3hr]
 links: []
 created: 2026-02-15T17:56:44Z
@@ -36,3 +36,51 @@ tdd_green_result=pass after documenting `yolo-agent config init/validate` workfl
 tdd_broader_command=`go test ./internal/docs -count=1`
 tdd_broader_exit=0
 tdd_refactor_confirmation=no additional refactor required; docs changes are minimal and scoped to workflow/troubleshooting coverage.
+
+**2026-02-16T08:44:37Z**
+
+review_fail_feedback=Correct the runbook precedence section to match actual `config validate` behavior (or implement backend-precedence validation in the command), and add/adjust doc tests so they verify this behavior-level accuracy rather than only string presence.
+
+**2026-02-16T08:44:37Z**
+
+review_feedback=Correct the runbook precedence section to match actual `config validate` behavior (or implement backend-precedence validation in the command), and add/adjust doc tests so they verify this behavior-level accuracy rather than only string presence.
+
+**2026-02-16T08:44:37Z**
+
+review_retry_count=1
+
+**2026-02-16T08:44:37Z**
+
+review_verdict=fail
+
+**2026-02-16T08:49:53Z**
+
+review_fail_feedback=Correct the runbook precedence/troubleshooting text to reflect actual behavior (`YOLO_AGENT_BACKEND` is ignored by `config validate`, but `--agent-backend`/`--backend` are unsupported and fail flag parsing), then update `internal/docs/workflow_test.go` to assert the corrected wording and add/adjust coverage for unknown backend flag handling so docs and tests match real CLI behavior.
+
+**2026-02-16T08:49:53Z**
+
+review_verdict=fail
+
+**2026-02-16T08:49:53Z**
+
+triage_reason=review rejected: Correct the runbook precedence/troubleshooting text to reflect actual behavior (`YOLO_AGENT_BACKEND` is ignored by `config validate`, but `--agent-backend`/`--backend` are unsupported and fail flag parsing), then update `internal/docs/workflow_test.go` to assert the corrected wording and add/adjust coverage for unknown backend flag handling so docs and tests match real CLI behavior.
+
+**2026-02-16T08:49:53Z**
+
+triage_status=failed
+
+**2026-02-18T08:23:02Z**
+
+review_fail_feedback=`docs/config-workflow.md:36` (enforced by `internal/docs/workflow_test.go:191`) says `--agent-backend`/`--backend` are ignored by `yolo-agent config validate`, but runtime behavior is a hard parse error (`flag provided but not defined: -backend`); align docs/tests with actual behavior (flags unsupported) or change the command to accept and ignore those flags so documentation matches implementation.
+
+**2026-02-18T08:23:02Z**
+
+review_feedback=`docs/config-workflow.md:36` (enforced by `internal/docs/workflow_test.go:191`) says `--agent-backend`/`--backend` are ignored by `yolo-agent config validate`, but runtime behavior is a hard parse error (`flag provided but not defined: -backend`); align docs/tests with actual behavior (flags unsupported) or change the command to accept and ignore those flags so documentation matches implementation.
+
+**2026-02-18T08:23:02Z**
+
+review_retry_count=1
+
+**2026-02-18T08:23:02Z**
+
+review_verdict=fail

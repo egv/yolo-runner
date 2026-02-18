@@ -1,6 +1,6 @@
 ---
 id: yr-nkoi
-status: open
+status: closed
 deps: [yr-w7qh]
 links: []
 created: 2026-02-10T00:15:30Z

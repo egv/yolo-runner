@@ -1,6 +1,6 @@
 ---
 id: yr-sxpf
-status: open
+status: closed
 deps: [yr-fx2p]
 links: []
 created: 2026-02-10T00:12:26Z

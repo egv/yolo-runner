@@ -1,6 +1,6 @@
 ---
 id: yr-r3hr
-status: open
+status: closed
 deps: [yr-94xu]
 links: []
 created: 2026-02-15T17:56:44Z

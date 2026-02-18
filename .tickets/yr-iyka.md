@@ -1,6 +1,6 @@
 ---
 id: yr-iyka
-status: open
+status: closed
 deps: [yr-fcft, yr-kc2r]
 links: []
 created: 2026-02-15T17:56:44Z

@@ -1,6 +1,6 @@
 ---
 id: yr-p7hw
-status: open
+status: closed
 deps: [yr-k00h]
 links: [yr-w16z, yr-9es9]
 created: 2026-02-15T14:35:33Z

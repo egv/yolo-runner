@@ -1,6 +1,6 @@
 ---
 id: yr-jp9i
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-02-15T14:35:33Z

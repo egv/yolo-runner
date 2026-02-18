@@ -1,6 +1,6 @@
 ---
 id: yr-fcft
-status: open
+status: closed
 deps: [yr-zv9d]
 links: []
 created: 2026-02-15T17:56:44Z
