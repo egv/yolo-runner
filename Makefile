@@ -3,6 +3,10 @@ test:
 
 smoke-agent-tui:
 	go test ./cmd/yolo-agent ./cmd/yolo-tui
+	$(MAKE) smoke-config-commands
+
+smoke-config-commands:
+	go test ./cmd/yolo-agent -run 'TestE2E_ConfigCommands_(InitThenValidateHappyPath|ValidateMissingFileFallsBackToDefaults|ValidateInvalidValuesReportsDeterministicDiagnostics|ValidateMissingAuthEnvReportsRemediation)$$' -count=1
 
 smoke-event-stream:
 	$(MAKE) smoke-agent-tui
