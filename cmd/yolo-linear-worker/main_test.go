@@ -135,6 +135,7 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 
 	var activityCalls int32
 	var workflowCalls int32
+	var sessionUpdateCalls int32
 	activityServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer lin_api_test" {
 			t.Fatalf("expected Authorization header, got %q", got)
@@ -161,6 +162,9 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 					},
 				},
 			})
+		case strings.Contains(payload.Query, "agentSessionUpdate"):
+			atomic.AddInt32(&sessionUpdateCalls, 1)
+			_, _ = w.Write([]byte(`{"data":{"agentSessionUpdate":{"success":true,"agentSession":{"id":"session-1"}}}}`))
 		case strings.Contains(payload.Query, "ReadIssueWorkflowForDelegatedRun"):
 			atomic.AddInt32(&workflowCalls, 1)
 			_, _ = w.Write([]byte(`{
@@ -242,6 +246,9 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 
 	if got := atomic.LoadInt32(&activityCalls); got != 4 {
 		t.Fatalf("expected thought+response activity emission for created+prompted jobs (4 calls), got %d", got)
+	}
+	if got := atomic.LoadInt32(&sessionUpdateCalls); got != 2 {
+		t.Fatalf("expected externalUrls session update for created+prompted jobs (2 calls), got %d", got)
 	}
 	if got := atomic.LoadInt32(&workflowCalls); got != 2 {
 		t.Fatalf("expected delegated issue workflow read+update for created job (2 calls), got %d", got)

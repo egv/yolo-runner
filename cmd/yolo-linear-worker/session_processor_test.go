@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -25,10 +26,12 @@ func (r *captureLinearRunner) Run(_ context.Context, request contracts.RunnerReq
 }
 
 type captureLinearActivities struct {
-	thoughts   []linear.ThoughtActivityInput
-	responses  []linear.ResponseActivityInput
-	thoughtErr error
-	replyErr   error
+	thoughts         []linear.ThoughtActivityInput
+	responses        []linear.ResponseActivityInput
+	sessionUpdates   []linear.AgentSessionExternalURLsInput
+	thoughtErr       error
+	replyErr         error
+	updateSessionErr error
 }
 
 func (a *captureLinearActivities) EmitThought(_ context.Context, input linear.ThoughtActivityInput) (string, error) {
@@ -39,6 +42,11 @@ func (a *captureLinearActivities) EmitThought(_ context.Context, input linear.Th
 func (a *captureLinearActivities) EmitResponse(_ context.Context, input linear.ResponseActivityInput) (string, error) {
 	a.responses = append(a.responses, input)
 	return "response-1", a.replyErr
+}
+
+func (a *captureLinearActivities) UpdateSessionExternalURLs(_ context.Context, input linear.AgentSessionExternalURLsInput) error {
+	a.sessionUpdates = append(a.sessionUpdates, input)
+	return a.updateSessionErr
 }
 
 func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput(t *testing.T) {
@@ -127,6 +135,62 @@ func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput
 	}
 }
 
+func TestLinearSessionJobProcessorProcessUpdatesSessionExternalURLsForRunContext(t *testing.T) {
+	runner := &captureLinearRunner{
+		result: contracts.RunnerResult{
+			Status:  contracts.RunnerResultCompleted,
+			LogPath: "/tmp/runner-logs/codex/evt-created-1.jsonl",
+			Artifacts: map[string]string{
+				"session_id": "ses_abc123",
+				"backend":    "opencode",
+				"log_path":   "/tmp/runner-logs/codex/evt-created-1.jsonl",
+			},
+		},
+	}
+	activities := &captureLinearActivities{}
+	processor := &linearSessionJobProcessor{
+		repoRoot:   t.TempDir(),
+		runner:     runner,
+		activities: activities,
+	}
+
+	if err := processor.Process(context.Background(), queuedLinearJobFixture(linear.AgentSessionEventActionCreated)); err != nil {
+		t.Fatalf("process created job: %v", err)
+	}
+
+	if len(activities.sessionUpdates) != 1 {
+		t.Fatalf("expected one AgentSession externalUrls update, got %d", len(activities.sessionUpdates))
+	}
+	update := activities.sessionUpdates[0]
+	if update.AgentSessionID != "session-1" {
+		t.Fatalf("expected update for session-1, got %q", update.AgentSessionID)
+	}
+	if len(update.ExternalURLs) < 2 {
+		t.Fatalf("expected session/log links in external urls, got %#v", update.ExternalURLs)
+	}
+
+	var sawSessionURL bool
+	var sawLogURL bool
+	for _, external := range update.ExternalURLs {
+		parsed, err := url.Parse(strings.TrimSpace(external.URL))
+		if err != nil {
+			t.Fatalf("expected valid external URL %q: %v", external.URL, err)
+		}
+		if parsed.Scheme == "https" && strings.Contains(parsed.Host, "opencode.ai") {
+			sawSessionURL = true
+		}
+		if parsed.Scheme == "file" && strings.HasSuffix(parsed.Path, "/runner-logs/codex/evt-created-1.jsonl") {
+			sawLogURL = true
+		}
+	}
+	if !sawSessionURL {
+		t.Fatalf("expected opencode session link in external urls, got %#v", update.ExternalURLs)
+	}
+	if !sawLogURL {
+		t.Fatalf("expected runner log file link in external urls, got %#v", update.ExternalURLs)
+	}
+}
+
 func TestLinearSessionJobProcessorCreated_AutoTransitionsDelegatedIssueToFirstStartedState(t *testing.T) {
 	var (
 		sawReadIssueWorkflowStates bool
@@ -150,6 +214,8 @@ func TestLinearSessionJobProcessorCreated_AutoTransitionsDelegatedIssueToFirstSt
 		switch {
 		case strings.Contains(query, "agentActivityCreate"):
 			_, _ = w.Write([]byte(`{"data":{"agentActivityCreate":{"success":true,"agentActivity":{"id":"activity-1"}}}}`))
+		case strings.Contains(query, "agentSessionUpdate"):
+			_, _ = w.Write([]byte(`{"data":{"agentSessionUpdate":{"success":true,"agentSession":{"id":"session-1"}}}}`))
 		case strings.Contains(query, `issue(id: "iss-delegated-1")`) && strings.Contains(query, "states") && !strings.Contains(query, "issueUpdate"):
 			sawReadIssueWorkflowStates = true
 			_, _ = w.Write([]byte(`{

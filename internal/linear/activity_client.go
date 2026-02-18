@@ -22,6 +22,17 @@ mutation createAgentActivity($input: AgentActivityCreateInput!) {
 }
 `
 
+const updateAgentSessionMutation = `
+mutation updateAgentSession($id: String!, $input: AgentSessionUpdateInput!) {
+  agentSessionUpdate(id: $id, input: $input) {
+    success
+    agentSession {
+      id
+    }
+  }
+}
+`
+
 type AgentActivityClientConfig struct {
 	Endpoint   string
 	Token      string
@@ -52,6 +63,16 @@ type ResponseActivityInput struct {
 	AgentSessionID string
 	Body           string
 	IdempotencyKey string
+}
+
+type ExternalURL struct {
+	Label string
+	URL   string
+}
+
+type AgentSessionExternalURLsInput struct {
+	AgentSessionID string
+	ExternalURLs   []ExternalURL
 }
 
 func NewAgentActivityClient(config AgentActivityClientConfig) (*AgentActivityClient, error) {
@@ -126,6 +147,81 @@ func (c *AgentActivityClient) EmitResponse(ctx context.Context, input ResponseAc
 		"type": string(AgentActivityContentTypeResponse),
 		"body": input.Body,
 	})
+}
+
+func (c *AgentActivityClient) UpdateSessionExternalURLs(ctx context.Context, input AgentSessionExternalURLsInput) error {
+	if c == nil {
+		return fmt.Errorf("agent activity client is nil")
+	}
+	if strings.TrimSpace(input.AgentSessionID) == "" {
+		return fmt.Errorf("agent session id is required")
+	}
+
+	externalURLs := normalizedExternalURLs(input.ExternalURLs)
+	if len(externalURLs) == 0 {
+		return nil
+	}
+
+	body := graphqlMutationRequest{
+		Query: updateAgentSessionMutation,
+		Variables: map[string]any{
+			"id": input.AgentSessionID,
+			"input": map[string]any{
+				"externalUrls": externalURLs,
+			},
+		},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal agent session mutation: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build agent session mutation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send agent session mutation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read agent session mutation response: %w", err)
+	}
+
+	decoded := updateAgentSessionResponse{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return fmt.Errorf("decode agent session mutation response: %w", err)
+		}
+	}
+
+	if len(decoded.Errors) > 0 {
+		return fmt.Errorf("agent session mutation graphql errors: %s", joinGraphQLErrors(decoded.Errors))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return fmt.Errorf("agent session mutation http %d: %s", resp.StatusCode, msg)
+	}
+
+	result := decoded.Data.AgentSessionUpdate
+	if !result.Success {
+		return fmt.Errorf("agent session mutation unsuccessful")
+	}
+	if result.AgentSession == nil || strings.TrimSpace(result.AgentSession.ID) == "" {
+		return fmt.Errorf("agent session mutation missing session id")
+	}
+
+	return nil
 }
 
 func validateActivityBaseInput(agentSessionID string, idempotencyKey string) error {
@@ -218,6 +314,34 @@ func activityIDFromIdempotencyKey(key string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16])
 }
 
+func normalizedExternalURLs(urls []ExternalURL) []map[string]any {
+	if len(urls) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	entries := make([]map[string]any, 0, len(urls))
+	for _, candidate := range urls {
+		url := strings.TrimSpace(candidate.URL)
+		if url == "" {
+			continue
+		}
+		if _, exists := seen[url]; exists {
+			continue
+		}
+		seen[url] = struct{}{}
+
+		entry := map[string]any{"url": url}
+		if label := strings.TrimSpace(candidate.Label); label != "" {
+			entry["label"] = label
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
+}
+
 func joinGraphQLErrors(errors []graphQLError) string {
 	messages := make([]string, 0, len(errors))
 	for _, gqlErr := range errors {
@@ -243,6 +367,20 @@ type createActivityResponse struct {
 		AgentActivityCreate createActivityResult `json:"agentActivityCreate"`
 	} `json:"data"`
 	Errors []graphQLError `json:"errors"`
+}
+
+type updateAgentSessionResponse struct {
+	Data struct {
+		AgentSessionUpdate updateAgentSessionResult `json:"agentSessionUpdate"`
+	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+type updateAgentSessionResult struct {
+	Success      bool `json:"success"`
+	AgentSession *struct {
+		ID string `json:"id"`
+	} `json:"agentSession"`
 }
 
 type createActivityResult struct {

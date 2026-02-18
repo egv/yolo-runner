@@ -391,6 +391,124 @@ func TestAgentActivityClientValidatesInputs(t *testing.T) {
 	}
 }
 
+func TestAgentActivityClientUpdateSessionExternalURLsMutationShape(t *testing.T) {
+	captured := graphQLRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeGraphQLRequest(t, r, &captured)
+		writeGraphQLResponse(t, w, map[string]any{
+			"data": map[string]any{
+				"agentSessionUpdate": map[string]any{
+					"success": true,
+					"agentSession": map[string]any{
+						"id": "session-1",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewAgentActivityClient(AgentActivityClientConfig{
+		Endpoint:   server.URL,
+		Token:      "linear-token",
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	err = client.UpdateSessionExternalURLs(context.Background(), AgentSessionExternalURLsInput{
+		AgentSessionID: "session-1",
+		ExternalURLs: []ExternalURL{
+			{Label: "Runner Session", URL: "https://example.test/sessions/session-1"},
+			{Label: "Runner Log", URL: "file:///tmp/runner-logs/session-1.jsonl"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update session external urls: %v", err)
+	}
+
+	if got, want := strings.TrimSpace(captured.Query), strings.TrimSpace(updateAgentSessionMutation); got != want {
+		t.Fatalf("expected exact mutation query shape\nwant: %q\n got: %q", want, got)
+	}
+
+	if len(captured.Variables) != 2 {
+		t.Fatalf("expected exactly top-level id and input variables, got %#v", captured.Variables)
+	}
+	if got := stringFromMap(t, captured.Variables, "id"); got != "session-1" {
+		t.Fatalf("expected top-level id variable session-1, got %q", got)
+	}
+	input := mapFromMap(t, captured.Variables, "input")
+	if len(input) != 1 {
+		t.Fatalf("expected input to contain only externalUrls, got %#v", input)
+	}
+	if _, ok := input["id"]; ok {
+		t.Fatalf("expected input.id to be omitted and id sent as top-level variable")
+	}
+
+	externalURLs := arrayFromMap(t, input, "externalUrls")
+	if len(externalURLs) != 2 {
+		t.Fatalf("expected 2 externalUrls entries, got %d", len(externalURLs))
+	}
+	if got := stringFromMap(t, externalURLs[0], "label"); got != "Runner Session" {
+		t.Fatalf("expected first externalUrls label Runner Session, got %q", got)
+	}
+	if got := stringFromMap(t, externalURLs[0], "url"); got != "https://example.test/sessions/session-1" {
+		t.Fatalf("expected first externalUrls url to round-trip, got %q", got)
+	}
+}
+
+func TestAgentActivityClientUpdateSessionExternalURLsDeduplicatesByURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := graphQLRequest{}
+		decodeGraphQLRequest(t, r, &request)
+
+		input := mapFromMap(t, request.Variables, "input")
+		externalURLs := arrayFromMap(t, input, "externalUrls")
+		if len(externalURLs) != 1 {
+			t.Fatalf("expected externalUrls deduplicated by URL to one entry, got %d", len(externalURLs))
+		}
+		if got := stringFromMap(t, externalURLs[0], "label"); got != "Runner Session" {
+			t.Fatalf("expected first label to win after dedupe, got %q", got)
+		}
+		if got := stringFromMap(t, externalURLs[0], "url"); got != "https://example.test/sessions/session-1" {
+			t.Fatalf("expected deduped URL to round-trip, got %q", got)
+		}
+
+		writeGraphQLResponse(t, w, map[string]any{
+			"data": map[string]any{
+				"agentSessionUpdate": map[string]any{
+					"success": true,
+					"agentSession": map[string]any{
+						"id": "session-1",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewAgentActivityClient(AgentActivityClientConfig{
+		Endpoint:   server.URL,
+		Token:      "linear-token",
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	err = client.UpdateSessionExternalURLs(context.Background(), AgentSessionExternalURLsInput{
+		AgentSessionID: "session-1",
+		ExternalURLs: []ExternalURL{
+			{Label: "Runner Session", URL: "https://example.test/sessions/session-1"},
+			{Label: "Alternate Label", URL: "https://example.test/sessions/session-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update session external urls: %v", err)
+	}
+}
+
 type graphQLRequest struct {
 	Query     string                 `json:"query"`
 	Variables map[string]interface{} `json:"variables"`
@@ -448,4 +566,25 @@ func stringFromMap(t *testing.T, m map[string]interface{}, key string) string {
 		t.Fatalf("expected key %q to be string, got %T", key, raw)
 	}
 	return got
+}
+
+func arrayFromMap(t *testing.T, m map[string]interface{}, key string) []map[string]interface{} {
+	t.Helper()
+	raw, ok := m[key]
+	if !ok {
+		t.Fatalf("expected key %q", key)
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		t.Fatalf("expected key %q to be array, got %T", key, raw)
+	}
+	out := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected array item in %q to be object, got %T", key, item)
+		}
+		out = append(out, entry)
+	}
+	return out
 }

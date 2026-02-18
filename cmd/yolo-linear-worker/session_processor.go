@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,6 +40,7 @@ const (
 type linearSessionActivityEmitter interface {
 	EmitThought(context.Context, linear.ThoughtActivityInput) (string, error)
 	EmitResponse(context.Context, linear.ResponseActivityInput) (string, error)
+	UpdateSessionExternalURLs(context.Context, linear.AgentSessionExternalURLsInput) error
 }
 
 type linearIssueStatusStarter interface {
@@ -192,6 +194,15 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 	})
 
 	executionErr := linearSessionRunnerError(result, runErr)
+	if externalURLs := linearSessionExternalURLsForRun(p.repoRoot, result); len(externalURLs) > 0 {
+		if err := p.activities.UpdateSessionExternalURLs(ctx, linear.AgentSessionExternalURLsInput{
+			AgentSessionID: sessionID,
+			ExternalURLs:   externalURLs,
+		}); err != nil {
+			return fmt.Errorf("update linear session external urls: %w", err)
+		}
+	}
+
 	responseBody := responseBodyForLinearJob(job, executionErr)
 	if _, err := p.activities.EmitResponse(ctx, linear.ResponseActivityInput{
 		AgentSessionID: sessionID,
@@ -343,6 +354,61 @@ func responseBodyForLinearJob(job webhook.Job, runErr error) string {
 
 	message := fmt.Sprintf("Finished processing Linear session %s step.", action)
 	return message
+}
+
+func linearSessionExternalURLsForRun(repoRoot string, result contracts.RunnerResult) []linear.ExternalURL {
+	urls := make([]linear.ExternalURL, 0, 3)
+
+	if sessionURL := sessionExternalURL(result.Artifacts); sessionURL != "" {
+		urls = append(urls, linear.ExternalURL{Label: "Runner session", URL: sessionURL})
+	}
+
+	if logURL := fileExternalURL(repoRoot, result.LogPath); logURL != "" {
+		urls = append(urls, linear.ExternalURL{Label: "Runner log", URL: logURL})
+	}
+	if result.Artifacts != nil {
+		if logURL := fileExternalURL(repoRoot, result.Artifacts["log_path"]); logURL != "" {
+			urls = append(urls, linear.ExternalURL{Label: "Runner log artifact", URL: logURL})
+		}
+	}
+
+	return urls
+}
+
+func sessionExternalURL(artifacts map[string]string) string {
+	if len(artifacts) == 0 {
+		return ""
+	}
+	if raw := strings.TrimSpace(artifacts["session_url"]); raw != "" {
+		parsed, err := url.Parse(raw)
+		if err == nil && strings.TrimSpace(parsed.Scheme) != "" {
+			return raw
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(artifacts["backend"]), "opencode") {
+		return ""
+	}
+	sessionID := strings.TrimSpace(artifacts["session_id"])
+	if sessionID == "" {
+		return ""
+	}
+	return "https://opencode.ai/sessions/" + url.PathEscape(sessionID)
+}
+
+func fileExternalURL(repoRoot string, pathValue string) string {
+	resolved := strings.TrimSpace(pathValue)
+	if resolved == "" {
+		return ""
+	}
+	if !filepath.IsAbs(resolved) {
+		if strings.TrimSpace(repoRoot) != "" {
+			resolved = filepath.Join(repoRoot, resolved)
+		}
+	}
+	if absolute, err := filepath.Abs(resolved); err == nil {
+		resolved = absolute
+	}
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(resolved)}).String()
 }
 
 func buildLinearJobPrompt(job webhook.Job) string {
