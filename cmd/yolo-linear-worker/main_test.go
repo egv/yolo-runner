@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +123,17 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 	dispatcher := webhook.NewAsyncDispatcher(queue, 8)
 
 	var activityCalls int32
+	var externalURLCalls int32
+	type externalURL struct {
+		Label string
+		URL   string
+	}
+	type sessionUpdateCall struct {
+		SessionID    string
+		ExternalURLs []externalURL
+	}
+	var sessionUpdatesMu sync.Mutex
+	sessionUpdates := make([]sessionUpdateCall, 0, 2)
 	activityServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer lin_api_test" {
 			t.Fatalf("expected Authorization header, got %q", got)
@@ -131,18 +144,62 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 			t.Fatalf("decode activity mutation payload: %v", err)
 		}
 
-		call := atomic.AddInt32(&activityCalls, 1)
+		query, _ := payload["query"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": map[string]any{
-				"agentActivityCreate": map[string]any{
-					"success": true,
-					"agentActivity": map[string]any{
-						"id": fmt.Sprintf("activity-%d", call),
+		switch {
+		case strings.Contains(query, "agentActivityCreate"):
+			call := atomic.AddInt32(&activityCalls, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"agentActivityCreate": map[string]any{
+						"success": true,
+						"agentActivity": map[string]any{
+							"id": fmt.Sprintf("activity-%d", call),
+						},
 					},
 				},
-			},
-		})
+			})
+		case strings.Contains(query, "agentSessionUpdate"):
+			atomic.AddInt32(&externalURLCalls, 1)
+			variables, ok := payload["variables"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected variables object for session update, got %T", payload["variables"])
+			}
+			input, ok := variables["input"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected variables.input object for session update, got %T", variables["input"])
+			}
+			sessionID, _ := input["id"].(string)
+			rawExternalURLs, ok := input["externalUrls"].([]any)
+			if !ok {
+				t.Fatalf("expected externalUrls array in session update, got %T", input["externalUrls"])
+			}
+			urls := make([]externalURL, 0, len(rawExternalURLs))
+			for i, raw := range rawExternalURLs {
+				entry, ok := raw.(map[string]any)
+				if !ok {
+					t.Fatalf("expected externalUrls[%d] to be object, got %T", i, raw)
+				}
+				label, _ := entry["label"].(string)
+				value, _ := entry["url"].(string)
+				urls = append(urls, externalURL{Label: label, URL: value})
+			}
+			sessionUpdatesMu.Lock()
+			sessionUpdates = append(sessionUpdates, sessionUpdateCall{
+				SessionID:    sessionID,
+				ExternalURLs: urls,
+			})
+			sessionUpdatesMu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"agentSessionUpdate": map[string]any{
+						"success": true,
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected graphql mutation query: %q", query)
+		}
 	}))
 	t.Cleanup(activityServer.Close)
 
@@ -201,6 +258,64 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 	if got := atomic.LoadInt32(&activityCalls); got != 4 {
 		t.Fatalf("expected thought+response activity emission for created+prompted jobs (4 calls), got %d", got)
 	}
+	if got := atomic.LoadInt32(&externalURLCalls); got != 2 {
+		t.Fatalf("expected externalUrls updates for created+prompted jobs (2 calls), got %d", got)
+	}
+
+	sessionURL := mustFileURL(t, filepath.Join(repoRoot, "runner-logs", "codex"))
+	expectedLogURLs := map[string]struct{}{
+		mustFileURL(t, createdLogPath): {},
+		mustFileURL(t, filepath.Join(repoRoot, "runner-logs", "codex", "evt-prompted-1.jsonl")): {},
+	}
+	sessionUpdatesMu.Lock()
+	defer sessionUpdatesMu.Unlock()
+	if len(sessionUpdates) != 2 {
+		t.Fatalf("expected 2 session update payloads, got %d", len(sessionUpdates))
+	}
+	for i, update := range sessionUpdates {
+		if update.SessionID != "session-1" {
+			t.Fatalf("expected session update[%d] to target session-1, got %q", i, update.SessionID)
+		}
+		if len(update.ExternalURLs) < 2 {
+			t.Fatalf("expected at least 2 external urls in session update[%d], got %d", i, len(update.ExternalURLs))
+		}
+		seen := map[string]struct{}{}
+		sawSessionURL := false
+		sawLogURL := false
+		for _, entry := range update.ExternalURLs {
+			if strings.TrimSpace(entry.Label) == "" || strings.TrimSpace(entry.URL) == "" {
+				t.Fatalf("session update[%d] contains empty external url entry: %#v", i, entry)
+			}
+			key := entry.Label + "\n" + entry.URL
+			if _, exists := seen[key]; exists {
+				t.Fatalf("session update[%d] external urls should be unique, duplicate entry=%#v", i, entry)
+			}
+			seen[key] = struct{}{}
+			if _, err := url.Parse(entry.URL); err != nil {
+				t.Fatalf("session update[%d] contains invalid url %q: %v", i, entry.URL, err)
+			}
+			if entry.Label == "Runner Session" && entry.URL == sessionURL {
+				sawSessionURL = true
+			}
+			if entry.Label == "Runner Log" {
+				if _, ok := expectedLogURLs[entry.URL]; ok {
+					sawLogURL = true
+				}
+			}
+		}
+		if !sawSessionURL {
+			t.Fatalf("session update[%d] missing runner session url %q: %#v", i, sessionURL, update.ExternalURLs)
+		}
+		if !sawLogURL {
+			t.Fatalf("session update[%d] missing expected runner log url: %#v", i, update.ExternalURLs)
+		}
+	}
+}
+
+func mustFileURL(t *testing.T, path string) string {
+	t.Helper()
+	u := &url.URL{Scheme: "file", Path: filepath.Clean(path)}
+	return u.String()
 }
 
 func writeFakeCodexBinary(t *testing.T) string {

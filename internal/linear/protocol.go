@@ -61,12 +61,18 @@ type AgentSessionEvent struct {
 }
 
 type AgentSession struct {
-	ID            string            `json:"id"`
-	State         AgentSessionState `json:"state"`
-	PromptContext string            `json:"promptContext"`
-	Issue         *AgentIssue       `json:"issue,omitempty"`
-	Comment       *AgentComment     `json:"comment,omitempty"`
-	Guidance      *AgentGuidance    `json:"guidance,omitempty"`
+	ID            string             `json:"id"`
+	State         AgentSessionState  `json:"state"`
+	PromptContext string             `json:"promptContext"`
+	ExternalURLs  []AgentExternalURL `json:"externalUrls,omitempty"`
+	Issue         *AgentIssue        `json:"issue,omitempty"`
+	Comment       *AgentComment      `json:"comment,omitempty"`
+	Guidance      *AgentGuidance     `json:"guidance,omitempty"`
+}
+
+type AgentExternalURL struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 type AgentIssue struct {

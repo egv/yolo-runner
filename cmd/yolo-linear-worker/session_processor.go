@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,9 @@ const (
 
 	defaultLinearGraphQLEndpoint = "https://api.linear.app/graphql"
 	defaultLinearWorkerBackend   = "opencode"
+
+	runnerSessionExternalURLLabel = "Runner Session"
+	runnerLogExternalURLLabel     = "Runner Log"
 )
 
 type linearSessionActivityEmitter interface {
@@ -36,12 +40,18 @@ type linearSessionActivityEmitter interface {
 	EmitResponse(context.Context, linear.ResponseActivityInput) (string, error)
 }
 
+type linearSessionUpdater interface {
+	SetExternalURLs(context.Context, linear.UpdateAgentSessionExternalURLsInput) error
+}
+
 type linearSessionJobProcessor struct {
 	repoRoot      string
+	backend       string
 	model         string
 	runnerTimeout time.Duration
 	runner        contracts.AgentRunner
 	activities    linearSessionActivityEmitter
+	sessions      linearSessionUpdater
 }
 
 func defaultProcessLinearSessionJob(ctx context.Context, job webhook.Job) error {
@@ -94,13 +104,22 @@ func newLinearSessionJobProcessorFromEnv() (*linearSessionJobProcessor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build linear activity client: %w", err)
 	}
+	sessionClient, err := linear.NewAgentSessionClient(linear.AgentSessionClientConfig{
+		Endpoint: endpoint,
+		Token:    token,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build linear session client: %w", err)
+	}
 
 	return &linearSessionJobProcessor{
 		repoRoot:      repoRoot,
+		backend:       backend,
 		model:         strings.TrimSpace(os.Getenv(envLinearWorkerModel)),
 		runnerTimeout: runnerTimeout,
 		runner:        runner,
 		activities:    activityClient,
+		sessions:      sessionClient,
 	}, nil
 }
 
@@ -145,9 +164,15 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 	if p.activities == nil {
 		return fmt.Errorf("linear session activity emitter is nil")
 	}
+	if p.sessions == nil {
+		return fmt.Errorf("linear session updater is nil")
+	}
 
 	sessionID := resolveLinearSessionID(job)
 	baseKey := resolveLinearIdempotencyBase(job, sessionID)
+	if err := p.updateSessionExternalURLs(ctx, job, sessionID); err != nil {
+		return fmt.Errorf("update linear session external urls: %w", err)
+	}
 
 	if _, err := p.activities.EmitThought(ctx, linear.ThoughtActivityInput{
 		AgentSessionID: sessionID,
@@ -245,6 +270,89 @@ func sanitizeLinearJobID(raw string) string {
 		return "linear-session-job"
 	}
 	return sanitized
+}
+
+func (p *linearSessionJobProcessor) updateSessionExternalURLs(ctx context.Context, job webhook.Job, sessionID string) error {
+	if p == nil {
+		return fmt.Errorf("linear session job processor is nil")
+	}
+	if p.sessions == nil {
+		return fmt.Errorf("linear session updater is nil")
+	}
+
+	urls := mergeLinearExternalURLs(
+		job.Event.AgentSession.ExternalURLs,
+		runnerExternalURLsForLinearJob(job, p.repoRoot, p.backend),
+	)
+	if len(urls) == 0 {
+		return nil
+	}
+
+	return p.sessions.SetExternalURLs(ctx, linear.UpdateAgentSessionExternalURLsInput{
+		AgentSessionID: sessionID,
+		ExternalURLs:   urls,
+	})
+}
+
+func runnerExternalURLsForLinearJob(job webhook.Job, repoRoot string, backend string) []linear.AgentExternalURL {
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = defaultLinearWorkerBackend
+	}
+
+	sessionPath := filepath.Join("runner-logs", backend)
+	if strings.TrimSpace(repoRoot) != "" {
+		sessionPath = filepath.Join(repoRoot, sessionPath)
+	}
+
+	logPath := filepath.Join(sessionPath, normalizeLinearJobTaskID(job)+".jsonl")
+	return []linear.AgentExternalURL{
+		{
+			Label: runnerSessionExternalURLLabel,
+			URL:   fileURLForPath(sessionPath),
+		},
+		{
+			Label: runnerLogExternalURLLabel,
+			URL:   fileURLForPath(logPath),
+		},
+	}
+}
+
+func mergeLinearExternalURLs(existing []linear.AgentExternalURL, additions []linear.AgentExternalURL) []linear.AgentExternalURL {
+	merged := make([]linear.AgentExternalURL, 0, len(existing)+len(additions))
+	seen := map[string]struct{}{}
+	appendUnique := func(entry linear.AgentExternalURL) {
+		label := strings.TrimSpace(entry.Label)
+		value := strings.TrimSpace(entry.URL)
+		if label == "" || value == "" {
+			return
+		}
+		key := strings.ToLower(label) + "\n" + value
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, linear.AgentExternalURL{
+			Label: label,
+			URL:   value,
+		})
+	}
+
+	for _, entry := range existing {
+		appendUnique(entry)
+	}
+	for _, entry := range additions {
+		appendUnique(entry)
+	}
+	return merged
+}
+
+func fileURLForPath(path string) string {
+	cleaned := strings.TrimSpace(path)
+	if cleaned == "" {
+		return ""
+	}
+	return (&url.URL{Scheme: "file", Path: filepath.Clean(cleaned)}).String()
 }
 
 func buildLinearRunnerMetadata(job webhook.Job, sessionID string) map[string]string {

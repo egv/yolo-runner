@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -38,16 +39,30 @@ func (a *captureLinearActivities) EmitResponse(_ context.Context, input linear.R
 	return "response-1", a.replyErr
 }
 
+type captureLinearSessions struct {
+	updates []linear.UpdateAgentSessionExternalURLsInput
+	err     error
+}
+
+func (s *captureLinearSessions) SetExternalURLs(_ context.Context, input linear.UpdateAgentSessionExternalURLsInput) error {
+	s.updates = append(s.updates, input)
+	return s.err
+}
+
 func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput(t *testing.T) {
 	runner := &captureLinearRunner{
 		result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted},
 	}
 	activities := &captureLinearActivities{}
+	sessions := &captureLinearSessions{}
+	repoRoot := t.TempDir()
 
 	processor := &linearSessionJobProcessor{
-		repoRoot:   t.TempDir(),
+		repoRoot:   repoRoot,
+		backend:    "codex",
 		runner:     runner,
 		activities: activities,
+		sessions:   sessions,
 	}
 
 	createdJob := webhook.Job{
@@ -117,5 +132,73 @@ func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput
 	finalResponse := activities.responses[len(activities.responses)-1].Body
 	if !strings.Contains(finalResponse, "Finished processing Linear session prompted step.") {
 		t.Fatalf("expected prompted step final response, got %q", finalResponse)
+	}
+
+	if len(sessions.updates) != 2 {
+		t.Fatalf("expected two session externalUrls updates, got %d", len(sessions.updates))
+	}
+	expectedSessionURL := fileURLForPath(filepath.Join(repoRoot, "runner-logs", "codex"))
+	expectedLogURLs := map[string]struct{}{
+		fileURLForPath(filepath.Join(repoRoot, "runner-logs", "codex", "evt-created-1.jsonl")):  {},
+		fileURLForPath(filepath.Join(repoRoot, "runner-logs", "codex", "evt-prompted-1.jsonl")): {},
+	}
+	for i, update := range sessions.updates {
+		if update.AgentSessionID != "session-1" {
+			t.Fatalf("expected update[%d] session id to be session-1, got %q", i, update.AgentSessionID)
+		}
+		if len(update.ExternalURLs) < 2 {
+			t.Fatalf("expected update[%d] to include runner session/log urls, got %#v", i, update.ExternalURLs)
+		}
+		seen := map[string]struct{}{}
+		sawSessionURL := false
+		sawLogURL := false
+		for _, entry := range update.ExternalURLs {
+			key := entry.Label + "\n" + entry.URL
+			if _, exists := seen[key]; exists {
+				t.Fatalf("expected update[%d] external urls to be unique, duplicate=%#v", i, entry)
+			}
+			seen[key] = struct{}{}
+			if entry.Label == runnerSessionExternalURLLabel && entry.URL == expectedSessionURL {
+				sawSessionURL = true
+			}
+			if entry.Label == runnerLogExternalURLLabel {
+				if _, ok := expectedLogURLs[entry.URL]; ok {
+					sawLogURL = true
+				}
+			}
+		}
+		if !sawSessionURL {
+			t.Fatalf("expected update[%d] to include session url %q", i, expectedSessionURL)
+		}
+		if !sawLogURL {
+			t.Fatalf("expected update[%d] to include one of runner log urls %#v", i, expectedLogURLs)
+		}
+	}
+}
+
+func TestMergeLinearExternalURLs_PreservesExistingAndDeduplicates(t *testing.T) {
+	existing := []linear.AgentExternalURL{
+		{Label: "Session Notes", URL: "https://example.test/session-notes"},
+		{Label: "Runner Session", URL: "file:///tmp/runner-logs/codex"},
+		{Label: "Session Notes", URL: "https://example.test/session-notes"},
+	}
+	additions := []linear.AgentExternalURL{
+		{Label: "Runner Session", URL: "file:///tmp/runner-logs/codex"},
+		{Label: "Runner Log", URL: "file:///tmp/runner-logs/codex/job-1.jsonl"},
+		{Label: "Runner Log", URL: "file:///tmp/runner-logs/codex/job-1.jsonl"},
+	}
+
+	merged := mergeLinearExternalURLs(existing, additions)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 unique urls, got %d %#v", len(merged), merged)
+	}
+	if merged[0].Label != "Session Notes" || merged[0].URL != "https://example.test/session-notes" {
+		t.Fatalf("expected first merged entry to preserve existing custom url, got %#v", merged[0])
+	}
+	if merged[1].Label != "Runner Session" || merged[1].URL != "file:///tmp/runner-logs/codex" {
+		t.Fatalf("expected second merged entry to preserve unique runner session url, got %#v", merged[1])
+	}
+	if merged[2].Label != "Runner Log" || merged[2].URL != "file:///tmp/runner-logs/codex/job-1.jsonl" {
+		t.Fatalf("expected third merged entry to append unique runner log url, got %#v", merged[2])
 	}
 }
