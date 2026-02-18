@@ -206,6 +206,78 @@ func TestAgentActivityClientEmitResponseMutation(t *testing.T) {
 	}
 }
 
+func TestAgentActivityClientUpdateSessionExternalURLsMutationShapeAndDedupByURL(t *testing.T) {
+	captured := graphQLRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decodeGraphQLRequest(t, r, &captured)
+		writeGraphQLResponse(t, w, map[string]any{
+			"data": map[string]any{
+				"agentSessionUpdate": map[string]any{
+					"success": true,
+					"agentSession": map[string]any{
+						"id": "session-1",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewAgentActivityClient(AgentActivityClientConfig{
+		Endpoint:   server.URL,
+		Token:      "linear-token",
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	err = client.UpdateSessionExternalURLs(context.Background(), SessionExternalURLsInput{
+		AgentSessionID: "session-1",
+		ExternalURLs: []ExternalURL{
+			{Label: "Runner Session", URL: "https://runner.example/sessions/ses_1"},
+			{Label: "Runner Session Duplicate Label", URL: "https://runner.example/sessions/ses_1"},
+			{Label: "Runner Log", URL: "file:///repo/runner-logs/codex/task-1.jsonl"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSessionExternalURLs returned error: %v", err)
+	}
+
+	if !strings.Contains(captured.Query, "mutation updateAgentSession") {
+		t.Fatalf("expected update mutation name in query, got %q", captured.Query)
+	}
+	if !strings.Contains(captured.Query, "agentSessionUpdate(id: $id, input: $input)") {
+		t.Fatalf("expected id argument as top-level mutation argument, got %q", captured.Query)
+	}
+
+	if got := stringFromMap(t, captured.Variables, "id"); got != "session-1" {
+		t.Fatalf("expected variables.id=session-1, got %q", got)
+	}
+	input := mapFromMap(t, captured.Variables, "input")
+	if _, hasID := input["id"]; hasID {
+		t.Fatalf("expected variables.input to omit id, got %#v", input)
+	}
+	externalURLs := listFromMap(t, input, "externalUrls")
+	if len(externalURLs) != 2 {
+		t.Fatalf("expected duplicate URL to be deduplicated, got %d entries (%#v)", len(externalURLs), externalURLs)
+	}
+	first := mapFromListEntry(t, externalURLs[0])
+	if got := stringFromMap(t, first, "label"); got != "Runner Session" {
+		t.Fatalf("expected first label to preserve first unique URL entry, got %q", got)
+	}
+	if got := stringFromMap(t, first, "url"); got != "https://runner.example/sessions/ses_1" {
+		t.Fatalf("expected first url to match session url, got %q", got)
+	}
+	second := mapFromListEntry(t, externalURLs[1])
+	if got := stringFromMap(t, second, "label"); got != "Runner Log" {
+		t.Fatalf("expected second label Runner Log, got %q", got)
+	}
+	if got := stringFromMap(t, second, "url"); got != "file:///repo/runner-logs/codex/task-1.jsonl" {
+		t.Fatalf("expected second url to match log url, got %q", got)
+	}
+}
+
 func TestAgentActivityClientIdempotencyIDIsStablePerKey(t *testing.T) {
 	var seenIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -446,6 +518,28 @@ func stringFromMap(t *testing.T, m map[string]interface{}, key string) string {
 	got, ok := raw.(string)
 	if !ok {
 		t.Fatalf("expected key %q to be string, got %T", key, raw)
+	}
+	return got
+}
+
+func listFromMap(t *testing.T, m map[string]interface{}, key string) []interface{} {
+	t.Helper()
+	raw, ok := m[key]
+	if !ok {
+		t.Fatalf("expected key %q", key)
+	}
+	got, ok := raw.([]interface{})
+	if !ok {
+		t.Fatalf("expected key %q to be list, got %T", key, raw)
+	}
+	return got
+}
+
+func mapFromListEntry(t *testing.T, raw interface{}) map[string]interface{} {
+	t.Helper()
+	got, ok := raw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected list entry to be object, got %T", raw)
 	}
 	return got
 }

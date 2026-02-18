@@ -34,6 +34,10 @@ func (a *boundaryTestActivities) EmitResponse(context.Context, linear.ResponseAc
 	return "response-1", nil
 }
 
+func (a *boundaryTestActivities) UpdateSessionExternalURLs(context.Context, linear.SessionExternalURLsInput) error {
+	return nil
+}
+
 func TestLinearSessionJobProcessorRejectsNonWebhookContractBeforeExecution(t *testing.T) {
 	runner := &boundaryTestRunner{}
 	activities := &boundaryTestActivities{}

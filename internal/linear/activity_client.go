@@ -22,6 +22,17 @@ mutation createAgentActivity($input: AgentActivityCreateInput!) {
 }
 `
 
+const updateAgentSessionMutation = `
+mutation updateAgentSession($id: String!, $input: AgentSessionUpdateInput!) {
+  agentSessionUpdate(id: $id, input: $input) {
+    success
+    agentSession {
+      id
+    }
+  }
+}
+`
+
 type AgentActivityClientConfig struct {
 	Endpoint   string
 	Token      string
@@ -52,6 +63,16 @@ type ResponseActivityInput struct {
 	AgentSessionID string
 	Body           string
 	IdempotencyKey string
+}
+
+type ExternalURL struct {
+	Label string
+	URL   string
+}
+
+type SessionExternalURLsInput struct {
+	AgentSessionID string
+	ExternalURLs   []ExternalURL
 }
 
 func NewAgentActivityClient(config AgentActivityClientConfig) (*AgentActivityClient, error) {
@@ -126,6 +147,106 @@ func (c *AgentActivityClient) EmitResponse(ctx context.Context, input ResponseAc
 		"type": string(AgentActivityContentTypeResponse),
 		"body": input.Body,
 	})
+}
+
+func (c *AgentActivityClient) UpdateSessionExternalURLs(ctx context.Context, input SessionExternalURLsInput) error {
+	if c == nil {
+		return fmt.Errorf("agent activity client is nil")
+	}
+	if strings.TrimSpace(input.AgentSessionID) == "" {
+		return fmt.Errorf("agent session id is required")
+	}
+
+	externalURLs := dedupeExternalURLsByURL(input.ExternalURLs)
+	if len(externalURLs) == 0 {
+		return nil
+	}
+
+	body := graphqlMutationRequest{
+		Query: updateAgentSessionMutation,
+		Variables: map[string]any{
+			"id": input.AgentSessionID,
+			"input": map[string]any{
+				"externalUrls": externalURLs,
+			},
+		},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal agent session update mutation: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build agent session update mutation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send agent session update mutation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read agent session update mutation response: %w", err)
+	}
+
+	decoded := updateAgentSessionResponse{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return fmt.Errorf("decode agent session update mutation response: %w", err)
+		}
+	}
+
+	if len(decoded.Errors) > 0 {
+		return fmt.Errorf("agent session update mutation graphql errors: %s", joinGraphQLErrors(decoded.Errors))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return fmt.Errorf("agent session update mutation http %d: %s", resp.StatusCode, msg)
+	}
+	if !decoded.Data.AgentSessionUpdate.Success {
+		return fmt.Errorf("agent session update mutation unsuccessful")
+	}
+	if decoded.Data.AgentSessionUpdate.AgentSession == nil || strings.TrimSpace(decoded.Data.AgentSessionUpdate.AgentSession.ID) == "" {
+		return fmt.Errorf("agent session update mutation missing session id")
+	}
+
+	return nil
+}
+
+func dedupeExternalURLsByURL(externalURLs []ExternalURL) []map[string]string {
+	if len(externalURLs) == 0 {
+		return nil
+	}
+	seenByURL := make(map[string]struct{}, len(externalURLs))
+	out := make([]map[string]string, 0, len(externalURLs))
+	for _, entry := range externalURLs {
+		label := strings.TrimSpace(entry.Label)
+		url := strings.TrimSpace(entry.URL)
+		if label == "" || url == "" {
+			continue
+		}
+		if _, ok := seenByURL[url]; ok {
+			continue
+		}
+		seenByURL[url] = struct{}{}
+		out = append(out, map[string]string{
+			"label": label,
+			"url":   url,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func validateActivityBaseInput(agentSessionID string, idempotencyKey string) error {
@@ -241,6 +362,18 @@ type graphqlMutationRequest struct {
 type createActivityResponse struct {
 	Data struct {
 		AgentActivityCreate createActivityResult `json:"agentActivityCreate"`
+	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+type updateAgentSessionResponse struct {
+	Data struct {
+		AgentSessionUpdate struct {
+			Success      bool `json:"success"`
+			AgentSession *struct {
+				ID string `json:"id"`
+			} `json:"agentSession"`
+		} `json:"agentSessionUpdate"`
 	} `json:"data"`
 	Errors []graphQLError `json:"errors"`
 }

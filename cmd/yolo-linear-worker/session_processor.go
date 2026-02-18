@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,6 +40,7 @@ const (
 type linearSessionActivityEmitter interface {
 	EmitThought(context.Context, linear.ThoughtActivityInput) (string, error)
 	EmitResponse(context.Context, linear.ResponseActivityInput) (string, error)
+	UpdateSessionExternalURLs(context.Context, linear.SessionExternalURLsInput) error
 }
 
 type linearIssueStatusStarter interface {
@@ -190,6 +192,16 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 		Metadata:   buildLinearRunnerMetadata(job, sessionID),
 		OnProgress: nil,
 	})
+
+	externalURLs := buildLinearRunnerExternalURLs(result, p.repoRoot)
+	if len(externalURLs) > 0 {
+		if err := p.activities.UpdateSessionExternalURLs(ctx, linear.SessionExternalURLsInput{
+			AgentSessionID: sessionID,
+			ExternalURLs:   externalURLs,
+		}); err != nil {
+			return fmt.Errorf("update linear session external urls: %w", err)
+		}
+	}
 
 	executionErr := linearSessionRunnerError(result, runErr)
 	responseBody := responseBodyForLinearJob(job, executionErr)
@@ -384,6 +396,60 @@ func buildLinearJobPrompt(job webhook.Job) string {
 		parts = append(parts, "Continue handling the Linear AgentSession request.")
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func buildLinearRunnerExternalURLs(result contracts.RunnerResult, repoRoot string) []linear.ExternalURL {
+	if strings.TrimSpace(result.LogPath) == "" && len(result.Artifacts) == 0 {
+		return nil
+	}
+
+	seenByURL := map[string]struct{}{}
+	externalURLs := make([]linear.ExternalURL, 0, 4)
+	appendExternalURL := func(label string, rawURL string) {
+		label = strings.TrimSpace(label)
+		rawURL = strings.TrimSpace(rawURL)
+		if label == "" || rawURL == "" {
+			return
+		}
+		if _, ok := seenByURL[rawURL]; ok {
+			return
+		}
+		seenByURL[rawURL] = struct{}{}
+		externalURLs = append(externalURLs, linear.ExternalURL{Label: label, URL: rawURL})
+	}
+
+	if result.Artifacts != nil {
+		appendExternalURL("Runner Session", result.Artifacts["session_url"])
+		if sessionID := strings.TrimSpace(result.Artifacts["session_id"]); sessionID != "" {
+			appendExternalURL("Runner Session", "opencode://session/"+url.PathEscape(sessionID))
+		}
+		appendExternalURL("Runner Log", result.Artifacts["log_url"])
+		if artifactLogPath := strings.TrimSpace(result.Artifacts["log_path"]); artifactLogPath != "" {
+			appendExternalURL("Runner Log", linearFileURL(artifactLogPath, repoRoot))
+		}
+	}
+	if logPath := strings.TrimSpace(result.LogPath); logPath != "" {
+		appendExternalURL("Runner Log", linearFileURL(logPath, repoRoot))
+	}
+
+	if len(externalURLs) == 0 {
+		return nil
+	}
+	return externalURLs
+}
+
+func linearFileURL(path string, repoRoot string) string {
+	trimmedPath := strings.TrimSpace(path)
+	if trimmedPath == "" {
+		return ""
+	}
+	abs := trimmedPath
+	if !filepath.IsAbs(abs) && strings.TrimSpace(repoRoot) != "" {
+		abs = filepath.Join(repoRoot, abs)
+	}
+	abs = filepath.Clean(abs)
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	return u.String()
 }
 
 type linearIssueStarterClient struct {
