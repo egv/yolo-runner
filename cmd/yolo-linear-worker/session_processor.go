@@ -330,6 +330,7 @@ func buildLinearJobPrompt(job webhook.Job) string {
 				parts = append(parts, "Follow-up input:\n"+body)
 			}
 		}
+		parts = append(parts, "Continue handling the Linear AgentSession request.")
 	}
 
 	if len(parts) == 0 {
