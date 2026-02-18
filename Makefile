@@ -22,3 +22,4 @@ build:
 	go build -o bin/yolo-task ./cmd/yolo-task
 	go build -o bin/yolo-tui ./cmd/yolo-tui
 	go build -o bin/yolo-linear-webhook ./cmd/yolo-linear-webhook
+	go build -o bin/yolo-linear-worker ./cmd/yolo-linear-worker
