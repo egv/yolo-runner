@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,6 +67,27 @@ func TestRunMainReturnsErrorWhenRunFails(t *testing.T) {
 	})
 	if code != 1 {
 		t.Fatalf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestRunMainPrintsActionableLinearErrorOnRunFailure(t *testing.T) {
+	errText := captureStderr(t, func() {
+		code := RunMain([]string{}, func(context.Context, runConfig) error {
+			return errors.New("decode queued job line: missing job identifiers")
+		})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if !strings.Contains(errText, "Category: webhook") {
+		t.Fatalf("expected webhook category, got %q", errText)
+	}
+	if !strings.Contains(errText, "Cause: decode queued job line: missing job identifiers") {
+		t.Fatalf("expected full cause in stderr, got %q", errText)
+	}
+	if !strings.Contains(errText, "Next step:") {
+		t.Fatalf("expected remediation guidance, got %q", errText)
 	}
 }
 
@@ -221,4 +244,31 @@ func readLinearFixture(t *testing.T, name string) []byte {
 		t.Fatalf("read fixture %q: %v", path, err)
 	}
 	return data
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = original
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+	return string(data)
 }

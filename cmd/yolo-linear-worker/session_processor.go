@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,6 +169,7 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 		OnProgress: nil,
 	})
 
+	runErr = linearSessionRunErr(result, runErr)
 	responseBody := responseBodyForLinearJob(job, result, runErr)
 	if _, err := p.activities.EmitResponse(ctx, linear.ResponseActivityInput{
 		AgentSessionID: sessionID,
@@ -175,13 +177,13 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 		IdempotencyKey: baseKey + ":response",
 	}); err != nil {
 		if runErr != nil {
-			return fmt.Errorf("run linear session job: %v; emit linear response activity: %w", runErr, err)
+			return fmt.Errorf("%v; emit linear response activity: %w", runErr, err)
 		}
 		return fmt.Errorf("emit linear response activity: %w", err)
 	}
 
 	if runErr != nil {
-		return fmt.Errorf("run linear session job: %w", runErr)
+		return runErr
 	}
 	return nil
 }
@@ -293,7 +295,7 @@ func responseBodyForLinearJob(job webhook.Job, result contracts.RunnerResult, ru
 		action = "queued"
 	}
 	if runErr != nil {
-		return fmt.Sprintf("Failed processing Linear session %s step: %s", action, strings.TrimSpace(runErr.Error()))
+		return fmt.Sprintf("Failed processing Linear session %s step.\n%s", action, FormatLinearSessionActionableError(runErr))
 	}
 
 	message := fmt.Sprintf("Finished processing Linear session %s step.", action)
@@ -301,6 +303,25 @@ func responseBodyForLinearJob(job webhook.Job, result contracts.RunnerResult, ru
 		message += " " + reason
 	}
 	return message
+}
+
+func linearSessionRunErr(result contracts.RunnerResult, runErr error) error {
+	if runErr == nil && result.Status != contracts.RunnerResultCompleted {
+		reason := strings.TrimSpace(result.Reason)
+		if reason == "" {
+			status := strings.TrimSpace(string(result.Status))
+			if status == "" {
+				reason = "runner returned empty status"
+			} else {
+				reason = "runner returned status " + status
+			}
+		}
+		runErr = errors.New(reason)
+	}
+	if runErr == nil {
+		return nil
+	}
+	return fmt.Errorf("run linear session job: %w", runErr)
 }
 
 func buildLinearJobPrompt(job webhook.Job) string {

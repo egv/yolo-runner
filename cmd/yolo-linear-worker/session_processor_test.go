@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -117,5 +118,126 @@ func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput
 	finalResponse := activities.responses[len(activities.responses)-1].Body
 	if !strings.Contains(finalResponse, "Finished processing Linear session prompted step.") {
 		t.Fatalf("expected prompted step final response, got %q", finalResponse)
+	}
+}
+
+func TestLinearSessionJobProcessorRuntimeFailureAddsActionableResponse(t *testing.T) {
+	runner := &captureLinearRunner{
+		err: errors.New("opencode stall category=no_output"),
+	}
+	activities := &captureLinearActivities{}
+	processor := &linearSessionJobProcessor{
+		repoRoot:   t.TempDir(),
+		runner:     runner,
+		activities: activities,
+	}
+
+	job := webhook.Job{
+		ID:             "evt-prompted-1",
+		IdempotencyKey: "session-1:prompted:activity:activity-1",
+		SessionID:      "session-1",
+		StepAction:     linear.AgentSessionEventActionPrompted,
+		Event: linear.AgentSessionEvent{
+			Action: linear.AgentSessionEventActionPrompted,
+			AgentSession: linear.AgentSession{
+				ID: "session-1",
+			},
+		},
+	}
+
+	err := processor.Process(context.Background(), job)
+	if err == nil {
+		t.Fatalf("expected runtime failure from runner")
+	}
+
+	if len(activities.responses) != 1 {
+		t.Fatalf("expected one response activity emission, got %d", len(activities.responses))
+	}
+	body := activities.responses[0].Body
+	if !strings.Contains(body, "Failed processing Linear session prompted step.") {
+		t.Fatalf("expected response failure headline, got %q", body)
+	}
+	if !strings.Contains(body, "Category: runtime") {
+		t.Fatalf("expected runtime category in response body, got %q", body)
+	}
+	if !strings.Contains(body, "Next step:") {
+		t.Fatalf("expected remediation guidance in response body, got %q", body)
+	}
+}
+
+func TestLinearSessionJobProcessorNonCompletedResultWithoutRunnerErrorIsFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		status contracts.RunnerResultStatus
+		reason string
+	}{
+		{
+			name:   "failed status",
+			status: contracts.RunnerResultFailed,
+			reason: "lint failed in workspace",
+		},
+		{
+			name:   "blocked status",
+			status: contracts.RunnerResultBlocked,
+			reason: "waiting for manual approval",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &captureLinearRunner{
+				result: contracts.RunnerResult{
+					Status: tc.status,
+					Reason: tc.reason,
+				},
+			}
+			activities := &captureLinearActivities{}
+			processor := &linearSessionJobProcessor{
+				repoRoot:   t.TempDir(),
+				runner:     runner,
+				activities: activities,
+			}
+
+			job := webhook.Job{
+				ID:             "evt-prompted-1",
+				IdempotencyKey: "session-1:prompted:activity:activity-1",
+				SessionID:      "session-1",
+				StepAction:     linear.AgentSessionEventActionPrompted,
+				Event: linear.AgentSessionEvent{
+					Action: linear.AgentSessionEventActionPrompted,
+					AgentSession: linear.AgentSession{
+						ID: "session-1",
+					},
+				},
+			}
+
+			err := processor.Process(context.Background(), job)
+			if err == nil {
+				t.Fatalf("expected runtime failure for status %q", tc.status)
+			}
+			if !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("expected returned error to include reason %q, got %q", tc.reason, err.Error())
+			}
+
+			if len(activities.responses) != 1 {
+				t.Fatalf("expected one response activity emission, got %d", len(activities.responses))
+			}
+			body := activities.responses[0].Body
+			if !strings.Contains(body, "Failed processing Linear session prompted step.") {
+				t.Fatalf("expected response failure headline, got %q", body)
+			}
+			if !strings.Contains(body, "Category: runtime") {
+				t.Fatalf("expected runtime category in response body, got %q", body)
+			}
+			if !strings.Contains(body, "Cause: run linear session job:") {
+				t.Fatalf("expected response cause prefix in body, got %q", body)
+			}
+			if !strings.Contains(body, tc.reason) {
+				t.Fatalf("expected response cause to include reason %q, got %q", tc.reason, body)
+			}
+			if !strings.Contains(body, "Next step:") {
+				t.Fatalf("expected remediation guidance in response body, got %q", body)
+			}
+		})
 	}
 }

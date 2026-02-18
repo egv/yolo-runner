@@ -56,7 +56,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		once:         *once,
 	}
 	if err := run(context.Background(), cfg); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, FormatLinearSessionActionableError(err))
 		return 1
 	}
 	return 0
