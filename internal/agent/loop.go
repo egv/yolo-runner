@@ -346,6 +346,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					finalReviewResult.Reason = "review verdict missing explicit pass"
 				}
 			}
+			if finalReviewResult.Status == contracts.RunnerResultFailed {
+				finalReviewResult.Reason = resolveReviewFailureReason(finalReviewResult.Reason, task.Metadata)
+			}
 			reviewFinishedMetadata := map[string]string{}
 			if strings.TrimSpace(finalReviewResult.Reason) != "" {
 				reviewFinishedMetadata["reason"] = strings.TrimSpace(finalReviewResult.Reason)
@@ -929,6 +932,22 @@ func buildReviewFailReason(result contracts.RunnerResult) string {
 		return feedback
 	}
 	return "review rejected: " + feedback
+}
+
+func resolveReviewFailureReason(reason string, retryMetadata map[string]string) string {
+	trimmed := strings.TrimSpace(reason)
+	if trimmed != "" && !strings.EqualFold(trimmed, "review verdict returned fail") {
+		return trimmed
+	}
+	blockers := strings.TrimSpace(reviewRetryBlockersFromMetadata(retryMetadata))
+	if blockers == "" {
+		return trimmed
+	}
+	lower := strings.ToLower(blockers)
+	if strings.HasPrefix(lower, "review rejected") {
+		return blockers
+	}
+	return "review rejected: " + blockers
 }
 
 func appendReviewOutcomeMetadata(metadata map[string]string, result contracts.RunnerResult) map[string]string {

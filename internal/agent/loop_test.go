@@ -185,6 +185,60 @@ func TestLoopMarksFailedAfterRetryExhausted(t *testing.T) {
 	}
 }
 
+func TestLoopUsesFinalUnresolvedBlockerSummaryAfterReviewRetryExhausted(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "missing regression test for retry/backoff flow",
+			},
+		},
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict": "fail",
+			},
+		},
+	}}
+	vcs := &fakeVCS{}
+	loop := NewLoop(mgr, run, nil, LoopOptions{
+		ParentID:       "root",
+		MaxRetries:     1,
+		RequireReview:  true,
+		MergeOnSuccess: true,
+		VCS:            vcs,
+	})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failed summary, got %#v", summary)
+	}
+	if mgr.statusByID["t-1"] != contracts.TaskStatusFailed {
+		t.Fatalf("expected failed status, got %s", mgr.statusByID["t-1"])
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "review rejected: missing regression test for retry/backoff flow" {
+		t.Fatalf("expected final unresolved blocker summary in triage_reason, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["review_retry_count"]; got != "1" {
+		t.Fatalf("expected review_retry_count=1 after retry exhaustion, got %q", got)
+	}
+	if containsCall(vcs.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("did not expect merge_to_main call on terminal failure, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "push_main") {
+		t.Fatalf("did not expect push_main call on terminal failure, got %v", vcs.calls)
+	}
+}
+
 func TestLoopDoesNotRetryNonReviewFailureWhenRetryBudgetRemains(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
