@@ -57,3 +57,15 @@ Automatic merge failed; fix conflicts and then commit the result.: exit status 1
 **2026-02-18T20:59:37Z**
 
 triage_status=blocked
+
+**2026-02-18T21:54:58Z**
+
+review_feedback=review verdict returned fail
+
+**2026-02-18T21:54:58Z**
+
+review_retry_count=1
+
+**2026-02-18T21:54:58Z**
+
+review_verdict=fail
