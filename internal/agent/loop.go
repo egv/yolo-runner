@@ -277,7 +277,12 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Metadata: buildRunnerFinishedMetadata(result), Timestamp: time.Now().UTC()})
 
 		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Timestamp: time.Now().UTC()})
+			reviewAttempt := reviewRetries + 1
+			reviewTelemetry := map[string]string{
+				"review_attempt":     fmt.Sprintf("%d", reviewAttempt),
+				"review_retry_count": fmt.Sprintf("%d", reviewRetries),
+			}
+			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: reviewTelemetry, Timestamp: time.Now().UTC()})
 			reviewLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID, l.options.Backend)
 			reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, l.options.Backend, l.options.Model, taskRepoRoot, reviewLogPath, time.Now().UTC())
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: reviewStartMeta, Timestamp: time.Now().UTC()})
@@ -349,7 +354,10 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			if finalReviewResult.Status == contracts.RunnerResultFailed {
 				finalReviewResult.Reason = resolveReviewFailureReason(finalReviewResult.Reason, task.Metadata)
 			}
-			reviewFinishedMetadata := map[string]string{}
+			reviewFinishedMetadata := map[string]string{
+				"review_attempt":     fmt.Sprintf("%d", reviewAttempt),
+				"review_retry_count": fmt.Sprintf("%d", reviewRetries),
+			}
 			if strings.TrimSpace(finalReviewResult.Reason) != "" {
 				reviewFinishedMetadata["reason"] = strings.TrimSpace(finalReviewResult.Reason)
 			}
@@ -358,9 +366,6 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			}
 			if feedback := reviewFailFeedbackFromArtifacts(finalReviewResult); feedback != "" {
 				reviewFinishedMetadata["review_fail_feedback"] = feedback
-			}
-			if len(reviewFinishedMetadata) == 0 {
-				reviewFinishedMetadata = nil
 			}
 			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(finalReviewResult.Status), Metadata: reviewFinishedMetadata, Timestamp: time.Now().UTC()})
 			if finalReviewResult.Status != contracts.RunnerResultCompleted {

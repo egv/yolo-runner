@@ -114,6 +114,55 @@ func TestLoopRetriesReviewFailThenCompletes(t *testing.T) {
 	}
 }
 
+func TestLoopEmitsReviewAttemptTelemetryOnPassAfterRetry(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "missing regression test",
+			},
+		},
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 1, RequireReview: true})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completion after retry, got %#v", summary)
+	}
+
+	started := eventsByType(sink.events, contracts.EventTypeReviewStarted)
+	if len(started) != 2 {
+		t.Fatalf("expected two review_started events, got %d", len(started))
+	}
+	if started[0].Metadata["review_attempt"] != "1" || started[0].Metadata["review_retry_count"] != "0" {
+		t.Fatalf("expected first review_started telemetry, got %#v", started[0].Metadata)
+	}
+	if started[1].Metadata["review_attempt"] != "2" || started[1].Metadata["review_retry_count"] != "1" {
+		t.Fatalf("expected second review_started telemetry, got %#v", started[1].Metadata)
+	}
+
+	finished := eventsByType(sink.events, contracts.EventTypeReviewFinished)
+	if len(finished) != 2 {
+		t.Fatalf("expected two review_finished events, got %d", len(finished))
+	}
+	if finished[0].Metadata["review_attempt"] != "1" || finished[0].Metadata["review_retry_count"] != "0" {
+		t.Fatalf("expected first review_finished telemetry, got %#v", finished[0].Metadata)
+	}
+	if finished[1].Metadata["review_attempt"] != "2" || finished[1].Metadata["review_retry_count"] != "1" {
+		t.Fatalf("expected second review_finished telemetry, got %#v", finished[1].Metadata)
+	}
+}
+
 func TestLoopInjectsPriorReviewBlockersIntoRetryImplementPrompt(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
@@ -182,6 +231,62 @@ func TestLoopMarksFailedAfterRetryExhausted(t *testing.T) {
 	}
 	if got := mgr.dataByID["t-1"]["review_retry_count"]; got != "1" {
 		t.Fatalf("expected review_retry_count=1 after retry exhaustion, got %q", got)
+	}
+}
+
+func TestLoopEmitsReviewAttemptTelemetryOnRetryExhaustionFailure(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "first review blocker",
+			},
+		},
+		{Status: contracts.RunnerResultCompleted},
+		{
+			Status:      contracts.RunnerResultCompleted,
+			ReviewReady: false,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "second review blocker",
+			},
+		},
+	}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 1, RequireReview: true})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failure after retry exhaustion, got %#v", summary)
+	}
+
+	started := eventsByType(sink.events, contracts.EventTypeReviewStarted)
+	if len(started) != 2 {
+		t.Fatalf("expected two review_started events, got %d", len(started))
+	}
+	if started[0].Metadata["review_attempt"] != "1" || started[0].Metadata["review_retry_count"] != "0" {
+		t.Fatalf("expected first review_started telemetry, got %#v", started[0].Metadata)
+	}
+	if started[1].Metadata["review_attempt"] != "2" || started[1].Metadata["review_retry_count"] != "1" {
+		t.Fatalf("expected second review_started telemetry, got %#v", started[1].Metadata)
+	}
+
+	finished := eventsByType(sink.events, contracts.EventTypeReviewFinished)
+	if len(finished) != 2 {
+		t.Fatalf("expected two review_finished events, got %d", len(finished))
+	}
+	if finished[0].Metadata["review_attempt"] != "1" || finished[0].Metadata["review_retry_count"] != "0" {
+		t.Fatalf("expected first review_finished telemetry, got %#v", finished[0].Metadata)
+	}
+	if finished[1].Metadata["review_attempt"] != "2" || finished[1].Metadata["review_retry_count"] != "1" {
+		t.Fatalf("expected second review_finished telemetry, got %#v", finished[1].Metadata)
 	}
 }
 
