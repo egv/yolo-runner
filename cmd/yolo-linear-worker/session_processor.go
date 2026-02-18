@@ -45,6 +45,10 @@ type linearSessionJobProcessor struct {
 }
 
 func defaultProcessLinearSessionJob(ctx context.Context, job webhook.Job) error {
+	if err := validateQueuedLinearWebhookJob(job); err != nil {
+		return err
+	}
+
 	processor, err := newLinearSessionJobProcessorFromEnv()
 	if err != nil {
 		return err
@@ -144,6 +148,9 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 	}
 	if p.activities == nil {
 		return fmt.Errorf("linear session activity emitter is nil")
+	}
+	if err := validateQueuedLinearWebhookJob(job); err != nil {
+		return err
 	}
 
 	sessionID := resolveLinearSessionID(job)
@@ -359,4 +366,26 @@ func ensureLinearWorkerRepoPath(repoRoot string) string {
 		return ""
 	}
 	return filepath.Clean(repoRoot)
+}
+
+func validateQueuedLinearWebhookJob(job webhook.Job) error {
+	if job.ContractVersion != webhook.JobContractVersion1 {
+		return fmt.Errorf("queued linear webhook job contract version must be %d", webhook.JobContractVersion1)
+	}
+	if strings.TrimSpace(job.IdempotencyKey) == "" {
+		return fmt.Errorf("queued linear webhook job idempotency key is required")
+	}
+	if strings.TrimSpace(resolveLinearSessionID(job)) == "" {
+		return fmt.Errorf("queued linear webhook job session id is required")
+	}
+	if strings.TrimSpace(job.StepID) == "" {
+		return fmt.Errorf("queued linear webhook job step id is required")
+	}
+
+	switch linear.AgentSessionEventAction(linearJobAction(job)) {
+	case linear.AgentSessionEventActionCreated, linear.AgentSessionEventActionPrompted:
+		return nil
+	default:
+		return fmt.Errorf("queued linear webhook job step action must be created or prompted")
+	}
 }
