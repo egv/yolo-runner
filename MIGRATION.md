@@ -61,6 +61,20 @@ Run the E8 release checklist in one command:
 
 Invoking `yolo-runner` prints a compatibility notice and continues to run, so existing scripts are preserved while migration proceeds.
 
+## Linear Agent Deferred Scope (v2.1)
+
+The E10 Linear integration is intentionally scoped to a single-workspace MVP. The following capabilities are deferred to v2.1:
+
+- `issueRepositorySuggestions` handling from AgentSession/Issue webhook payloads.
+- `multi-workspace` profile/runtime support.
+- `advanced activity types` beyond current thought/action/response and prompt-context reconstruction flow.
+
+### Migration path to v2.1
+
+- Keep one workspace value per Linear profile in the E10 rollout.
+- Add v2.1 profile and webhook processor updates for deferred payload/activity fields before enabling them in production profiles.
+- Re-run Linear profile and docs checks after enabling each deferred capability.
+
 ## Stream Rate Controls
 
 `yolo-agent --stream` now applies output backpressure controls for `runner_output` events by default:

@@ -32,3 +32,10 @@ Right now we run ohnly one runner and implement tasks in order. We should learn 
 
 ## linear agent
 Implement linear agent so runner can be used to delegate linear tasks (including epics). More info here: https://linear.app/developers/aig
+
+### Linear agent deferred scope (v2.1)
+- E10 ships a single-workspace MVP and intentionally defers these items to v2.1.
+- `issueRepositorySuggestions` (repo-level suggestions on AgentSession/Issue payloads) is deferred to v2.1.
+- `multi-workspace` routing/config support is deferred to v2.1; current runtime accepts one workspace per profile.
+- `advanced activity types` beyond the MVP thought/action/response + prompt context set are deferred to v2.1.
+- Migration path: keep single-workspace profiles for E10 and promote these deferred capabilities behind v2.1 tracker profile and webhook processing updates.
