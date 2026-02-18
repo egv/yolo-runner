@@ -2,6 +2,8 @@ package webhook
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -99,17 +101,58 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func buildJob(event linear.AgentSessionEvent, payload []byte, deliveryID string, receivedAt time.Time) Job {
+	sessionID := normalizeSessionID(event)
+	stepID := deriveSessionStepID(event, payload)
+	idempotencyKey := fmt.Sprintf("%s:%s:%s", sessionID, event.Action, stepID)
 	jobID := strings.TrimSpace(event.ID)
 	if jobID == "" {
-		jobID = fmt.Sprintf("%s:%s:%d", strings.TrimSpace(event.AgentSession.ID), event.Action, receivedAt.UnixNano())
+		jobID = idempotencyKey
 	}
 	copiedPayload := make([]byte, len(payload))
 	copy(copiedPayload, payload)
 	return Job{
-		ID:         jobID,
-		DeliveryID: deliveryID,
-		ReceivedAt: receivedAt,
-		Event:      event,
-		Payload:    copiedPayload,
+		ID:              jobID,
+		ContractVersion: JobContractVersion1,
+		IdempotencyKey:  idempotencyKey,
+		SessionID:       sessionID,
+		StepAction:      event.Action,
+		StepID:          stepID,
+		DeliveryID:      deliveryID,
+		ReceivedAt:      receivedAt,
+		Event:           event,
+		Payload:         copiedPayload,
 	}
+}
+
+func normalizeSessionID(event linear.AgentSessionEvent) string {
+	sessionID := strings.TrimSpace(event.AgentSession.ID)
+	if sessionID == "" {
+		return "unknown-session"
+	}
+	return sessionID
+}
+
+func deriveSessionStepID(event linear.AgentSessionEvent, payload []byte) string {
+	if event.Action == linear.AgentSessionEventActionPrompted {
+		if event.AgentActivity != nil {
+			if activityID := strings.TrimSpace(event.AgentActivity.ID); activityID != "" {
+				return "activity:" + activityID
+			}
+		}
+	}
+
+	if eventID := strings.TrimSpace(event.ID); eventID != "" {
+		return "event:" + eventID
+	}
+	if event.AgentActivity != nil {
+		if activityID := strings.TrimSpace(event.AgentActivity.ID); activityID != "" {
+			return "activity:" + activityID
+		}
+	}
+	if !event.CreatedAt.IsZero() {
+		return "createdAt:" + event.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	sum := sha256.Sum256(payload)
+	return "payload:" + hex.EncodeToString(sum[:8])
 }

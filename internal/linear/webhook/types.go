@@ -14,12 +14,19 @@ var (
 	ErrDispatcherClosed = errors.New("webhook dispatcher is closed")
 )
 
+const JobContractVersion1 = 1
+
 type Job struct {
-	ID         string                   `json:"id"`
-	DeliveryID string                   `json:"deliveryId,omitempty"`
-	ReceivedAt time.Time                `json:"receivedAt"`
-	Event      linear.AgentSessionEvent `json:"event"`
-	Payload    json.RawMessage          `json:"payload"`
+	ID              string                         `json:"id"`
+	ContractVersion int                            `json:"contractVersion"`
+	IdempotencyKey  string                         `json:"idempotencyKey"`
+	SessionID       string                         `json:"sessionId"`
+	StepAction      linear.AgentSessionEventAction `json:"stepAction"`
+	StepID          string                         `json:"stepId"`
+	DeliveryID      string                         `json:"deliveryId,omitempty"`
+	ReceivedAt      time.Time                      `json:"receivedAt"`
+	Event           linear.AgentSessionEvent       `json:"event"`
+	Payload         json.RawMessage                `json:"payload"`
 }
 
 type Dispatcher interface {

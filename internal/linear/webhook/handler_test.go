@@ -100,6 +100,61 @@ func TestHandlerAcceptsCreatedEventAndDispatches(t *testing.T) {
 	}
 }
 
+func TestBuildJobDefinesWebhookWorkerContract(t *testing.T) {
+	payload := readFixture(t, "agent_session_event.prompted.v1.json")
+	event, err := linear.DecodeAgentSessionEvent(payload)
+	if err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+
+	now := time.Date(2026, 2, 18, 22, 30, 0, 0, time.UTC)
+	job := buildJob(event, payload, "delivery-1", now)
+
+	if job.ContractVersion != JobContractVersion1 {
+		t.Fatalf("expected contract version %d, got %d", JobContractVersion1, job.ContractVersion)
+	}
+	if job.SessionID != "session-1" {
+		t.Fatalf("expected sessionId session-1, got %q", job.SessionID)
+	}
+	if job.StepAction != linear.AgentSessionEventActionPrompted {
+		t.Fatalf("expected step action prompted, got %q", job.StepAction)
+	}
+	if job.StepID != "activity:activity-1" {
+		t.Fatalf("expected stepId activity:activity-1, got %q", job.StepID)
+	}
+	if job.IdempotencyKey != "session-1:prompted:activity:activity-1" {
+		t.Fatalf("expected idempotency key session-1:prompted:activity:activity-1, got %q", job.IdempotencyKey)
+	}
+	if job.ID != "evt-prompted-1" {
+		t.Fatalf("expected job ID evt-prompted-1, got %q", job.ID)
+	}
+}
+
+func TestBuildJobUsesStableIdempotencyForDuplicateDeliveries(t *testing.T) {
+	payload := readFixture(t, "agent_session_event.prompted.v1.json")
+	event, err := linear.DecodeAgentSessionEvent(payload)
+	if err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	event.ID = ""
+
+	job1 := buildJob(event, payload, "delivery-a", time.Date(2026, 2, 18, 22, 30, 0, 0, time.UTC))
+	job2 := buildJob(event, payload, "delivery-b", time.Date(2026, 2, 18, 22, 31, 0, 0, time.UTC))
+
+	if job1.IdempotencyKey == "" {
+		t.Fatal("expected non-empty idempotency key")
+	}
+	if job1.IdempotencyKey != job2.IdempotencyKey {
+		t.Fatalf("expected duplicate deliveries to share idempotency key, got %q and %q", job1.IdempotencyKey, job2.IdempotencyKey)
+	}
+	if job1.ID != job2.ID {
+		t.Fatalf("expected duplicate deliveries to produce same job ID, got %q and %q", job1.ID, job2.ID)
+	}
+	if job1.DeliveryID == job2.DeliveryID {
+		t.Fatalf("expected delivery IDs to differ, got %q", job1.DeliveryID)
+	}
+}
+
 func TestHandlerMapsQueueFullTo503(t *testing.T) {
 	dispatcher := &captureDispatcher{err: ErrQueueFull}
 	h := NewHandler(dispatcher, HandlerOptions{})
