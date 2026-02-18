@@ -21,6 +21,7 @@ func (r *boundaryTestRunner) Run(context.Context, contracts.RunnerRequest) (cont
 
 type boundaryTestActivities struct {
 	thoughtCalls  int
+	actionCalls   int
 	responseCalls int
 }
 
@@ -32,6 +33,11 @@ func (a *boundaryTestActivities) EmitThought(context.Context, linear.ThoughtActi
 func (a *boundaryTestActivities) EmitResponse(context.Context, linear.ResponseActivityInput) (string, error) {
 	a.responseCalls++
 	return "response-1", nil
+}
+
+func (a *boundaryTestActivities) EmitAction(context.Context, linear.ActionActivityInput) (string, error) {
+	a.actionCalls++
+	return "action-1", nil
 }
 
 func (a *boundaryTestActivities) UpdateSessionExternalURLs(context.Context, linear.SessionExternalURLsInput) error {
@@ -62,6 +68,9 @@ func TestLinearSessionJobProcessorRejectsNonWebhookContractBeforeExecution(t *te
 	}
 	if activities.responseCalls != 0 {
 		t.Fatalf("expected no response emissions, got %d", activities.responseCalls)
+	}
+	if activities.actionCalls != 0 {
+		t.Fatalf("expected no action emissions, got %d", activities.actionCalls)
 	}
 	if runner.runCalls != 0 {
 		t.Fatalf("expected no runner invocations, got %d", runner.runCalls)

@@ -26,9 +26,11 @@ func (r *captureLinearRunner) Run(_ context.Context, request contracts.RunnerReq
 
 type captureLinearActivities struct {
 	thoughts             []linear.ThoughtActivityInput
+	actions              []linear.ActionActivityInput
 	responses            []linear.ResponseActivityInput
 	externalURLUpdates   []linear.SessionExternalURLsInput
 	thoughtErr           error
+	actionErr            error
 	replyErr             error
 	externalURLUpdateErr error
 }
@@ -41,6 +43,11 @@ func (a *captureLinearActivities) EmitThought(_ context.Context, input linear.Th
 func (a *captureLinearActivities) EmitResponse(_ context.Context, input linear.ResponseActivityInput) (string, error) {
 	a.responses = append(a.responses, input)
 	return "response-1", a.replyErr
+}
+
+func (a *captureLinearActivities) EmitAction(_ context.Context, input linear.ActionActivityInput) (string, error) {
+	a.actions = append(a.actions, input)
+	return "action-1", a.actionErr
 }
 
 func (a *captureLinearActivities) UpdateSessionExternalURLs(_ context.Context, input linear.SessionExternalURLsInput) error {
@@ -127,6 +134,9 @@ func TestLinearSessionJobProcessorCreatedThenPrompted_ContinuesWithFollowUpInput
 
 	if len(activities.responses) != 2 {
 		t.Fatalf("expected two response activity emissions, got %d", len(activities.responses))
+	}
+	if len(activities.actions) != 2 {
+		t.Fatalf("expected two action activity emissions, got %d", len(activities.actions))
 	}
 	finalResponse := activities.responses[len(activities.responses)-1].Body
 	if !strings.Contains(finalResponse, "Finished processing Linear session prompted step.") {

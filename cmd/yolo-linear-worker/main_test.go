@@ -136,13 +136,16 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 	var activityCalls int32
 	var workflowCalls int32
 	var externalURLCalls int32
+	var activityTypesMu sync.Mutex
+	activityTypes := make([]string, 0, 6)
 	activityServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer lin_api_test" {
 			t.Fatalf("expected Authorization header, got %q", got)
 		}
 
 		var payload struct {
-			Query string `json:"query"`
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode GraphQL payload: %v", err)
@@ -152,6 +155,31 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 		switch {
 		case strings.Contains(payload.Query, "agentActivityCreate"):
 			call := atomic.AddInt32(&activityCalls, 1)
+			input, ok := payload.Variables["input"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected agent activity mutation variables to include input map, got %#v", payload.Variables["input"])
+			}
+			content, ok := input["content"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected agent activity mutation input to include content map, got %#v", input["content"])
+			}
+			contentType, _ := content["type"].(string)
+			if strings.TrimSpace(contentType) == "" {
+				t.Fatalf("expected agent activity content type, got %#v", content["type"])
+			}
+			activityTypesMu.Lock()
+			activityTypes = append(activityTypes, contentType)
+			activityTypesMu.Unlock()
+			if contentType == "action" {
+				action, _ := content["action"].(string)
+				if strings.TrimSpace(action) == "" {
+					t.Fatalf("expected action activity to include action label, got %#v", content["action"])
+				}
+				parameter, _ := content["parameter"].(string)
+				if strings.TrimSpace(parameter) == "" {
+					t.Fatalf("expected action activity to include parameter, got %#v", content["parameter"])
+				}
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": map[string]any{
 					"agentActivityCreate": map[string]any{
@@ -253,8 +281,20 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 		}
 	}
 
-	if got := atomic.LoadInt32(&activityCalls); got != 4 {
-		t.Fatalf("expected thought+response activity emission for created+prompted jobs (4 calls), got %d", got)
+	if got := atomic.LoadInt32(&activityCalls); got != 6 {
+		t.Fatalf("expected thought+action+response activity emission for created+prompted jobs (6 calls), got %d", got)
+	}
+	activityTypesMu.Lock()
+	gotActivityTypes := append([]string(nil), activityTypes...)
+	activityTypesMu.Unlock()
+	expectedActivityTypes := []string{"thought", "action", "response", "thought", "action", "response"}
+	if len(gotActivityTypes) != len(expectedActivityTypes) {
+		t.Fatalf("expected %d activity types, got %d (%#v)", len(expectedActivityTypes), len(gotActivityTypes), gotActivityTypes)
+	}
+	for i := range expectedActivityTypes {
+		if gotActivityTypes[i] != expectedActivityTypes[i] {
+			t.Fatalf("expected activity type #%d to be %q, got %q (full=%#v)", i+1, expectedActivityTypes[i], gotActivityTypes[i], gotActivityTypes)
+		}
 	}
 	if got := atomic.LoadInt32(&workflowCalls); got != 2 {
 		t.Fatalf("expected delegated issue workflow read+update for created job (2 calls), got %d", got)

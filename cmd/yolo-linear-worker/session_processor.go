@@ -39,6 +39,7 @@ const (
 
 type linearSessionActivityEmitter interface {
 	EmitThought(context.Context, linear.ThoughtActivityInput) (string, error)
+	EmitAction(context.Context, linear.ActionActivityInput) (string, error)
 	EmitResponse(context.Context, linear.ResponseActivityInput) (string, error)
 	UpdateSessionExternalURLs(context.Context, linear.SessionExternalURLsInput) error
 }
@@ -180,6 +181,14 @@ func (p *linearSessionJobProcessor) Process(ctx context.Context, job webhook.Job
 		if err := p.issueStarter.EnsureIssueStarted(ctx, issueID); err != nil {
 			return fmt.Errorf("transition delegated Linear issue %q to started: %w", issueID, err)
 		}
+	}
+	if _, err := p.activities.EmitAction(ctx, linear.ActionActivityInput{
+		AgentSessionID: sessionID,
+		Action:         actionLabelForLinearJob(job),
+		Parameter:      normalizeLinearJobTaskID(job),
+		IdempotencyKey: baseKey + ":action",
+	}); err != nil {
+		return fmt.Errorf("emit linear action activity: %w", err)
 	}
 
 	result, runErr := p.runner.Run(ctx, contracts.RunnerRequest{
@@ -355,6 +364,18 @@ func responseBodyForLinearJob(job webhook.Job, runErr error) string {
 
 	message := fmt.Sprintf("Finished processing Linear session %s step.", action)
 	return message
+}
+
+func actionLabelForLinearJob(job webhook.Job) string {
+	action := linear.AgentSessionEventAction(linearJobAction(job))
+	switch action {
+	case linear.AgentSessionEventActionCreated:
+		return "process_created_session_step"
+	case linear.AgentSessionEventActionPrompted:
+		return "process_prompted_session_step"
+	default:
+		return "process_session_step"
+	}
 }
 
 func buildLinearJobPrompt(job webhook.Job) string {
