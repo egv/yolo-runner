@@ -119,3 +119,82 @@ func TestMigrationDocumentsYoloAgentConfigDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigWorkflowDocsCoverValidateInitAndTroubleshooting(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	readmeContents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	readme := string(readmeContents)
+	readmeRequired := []string{
+		"yolo-agent config init --repo .",
+		"yolo-agent config validate --repo .",
+		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode",
+		"config is invalid",
+		"remediation:",
+	}
+	for _, needle := range readmeRequired {
+		if !strings.Contains(readme, needle) {
+			t.Fatalf("README missing validate/init workflow guidance: %q", needle)
+		}
+	}
+
+	runbookPath := filepath.Join(repoRoot, "docs", "config-workflow.md")
+	runbookContents, err := os.ReadFile(runbookPath)
+	if err != nil {
+		t.Fatalf("read config workflow runbook: %v", err)
+	}
+
+	runbook := string(runbookContents)
+	runbookRequired := []string{
+		"Command Usage",
+		"Precedence",
+		"Common Failures",
+		"Remediation",
+		"yolo-agent config init",
+		"yolo-agent config validate",
+		"already exists; rerun with --force to overwrite",
+		"flag provided but not defined",
+		"unsupported --format value",
+		"missing auth token from",
+	}
+	for _, needle := range runbookRequired {
+		if !strings.Contains(runbook, needle) {
+			t.Fatalf("config workflow runbook missing %q", needle)
+		}
+	}
+}
+
+func TestConfigWorkflowRunbookPrecedenceMatchesConfigValidateBehavior(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	runbookPath := filepath.Join(repoRoot, "docs", "config-workflow.md")
+	contents, err := os.ReadFile(runbookPath)
+	if err != nil {
+		t.Fatalf("read config workflow runbook: %v", err)
+	}
+
+	runbook := string(contents)
+	required := []string{
+		"Profile: `--profile > YOLO_PROFILE > default_profile > default`",
+		"Root scope for tracker validation: `--root > profiles.<selected>.tracker.tk.scope.root (when tracker.type=tk) > empty`",
+		"Backend and other `agent.*` values are validated from `.yolo-runner/config.yaml` as written.",
+		"`--agent-backend` and `--backend` are not supported by `config validate`; passing either flag fails with `flag provided but not defined`.",
+		"`YOLO_AGENT_BACKEND` is not read by `config validate`.",
+	}
+	for _, needle := range required {
+		if !strings.Contains(runbook, needle) {
+			t.Fatalf("config workflow precedence documentation missing %q", needle)
+		}
+	}
+}

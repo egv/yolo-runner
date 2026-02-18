@@ -167,6 +167,67 @@ agent:
 	}
 }
 
+func TestRunConfigValidateCommandValidatesBackendFromConfigNotEnvOverride(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: unsupported
+`)
+	t.Setenv("YOLO_AGENT_BACKEND", "codex")
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+
+	if stdoutText != "" {
+		t.Fatalf("expected no stdout output for invalid config, got %q", stdoutText)
+	}
+	if !strings.Contains(stderrText, "field: agent.backend") {
+		t.Fatalf("expected backend failure from config value, got %q", stderrText)
+	}
+}
+
+func TestRunConfigValidateCommandProfileFlagOverridesYOLOProfileEnv(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+default_profile: default
+profiles:
+  default:
+    tracker:
+      type: tk
+  qa:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: anomaly
+        auth:
+          token_env: LINEAR_TOKEN
+`)
+	t.Setenv("YOLO_PROFILE", "qa")
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot, "--profile", "default"})
+		if code != 0 {
+			t.Fatalf("expected exit code 0 when profile flag overrides env, got %d", code)
+		}
+	})
+
+	if stdoutText != "config is valid\n" {
+		t.Fatalf("expected deterministic success output, got %q", stdoutText)
+	}
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for valid config, got %q", stderrText)
+	}
+}
+
 func captureOutput(t *testing.T, fn func()) (string, string) {
 	t.Helper()
 
