@@ -14,7 +14,6 @@ var linearSessionErrorTaxonomy = []struct {
 	{
 		match: containsAny(
 			"webhook",
-			"queued job",
 			"queue file",
 			"decode queued job line",
 			"contract version",

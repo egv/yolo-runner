@@ -32,6 +32,21 @@ func TestFormatLinearSessionActionableErrorClassifiesCommonFailureModes(t *testi
 			err:      errors.New("run linear session job: opencode stall category=no_output"),
 			category: "runtime",
 		},
+		{
+			name:     "wrapped runtime from queue processor",
+			err:      errors.New("process queued job \"evt-prompted-1\": run linear session job: opencode stall category=no_output"),
+			category: "runtime",
+		},
+		{
+			name:     "wrapped auth from queue processor",
+			err:      errors.New("process queued job \"evt-prompted-1\": run linear session job: agent activity mutation http 401: unauthorized"),
+			category: "auth",
+		},
+		{
+			name:     "wrapped graphql from queue processor",
+			err:      errors.New("process queued job \"evt-prompted-1\": run linear session job: agent activity mutation graphql errors: rate limited"),
+			category: "graphql",
+		},
 	}
 
 	for _, tc := range tests {
