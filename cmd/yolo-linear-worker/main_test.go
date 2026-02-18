@@ -165,11 +165,11 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 			if !ok {
 				t.Fatalf("expected variables object for session update, got %T", payload["variables"])
 			}
+			sessionID, _ := variables["id"].(string)
 			input, ok := variables["input"].(map[string]any)
 			if !ok {
 				t.Fatalf("expected variables.input object for session update, got %T", variables["input"])
 			}
-			sessionID, _ := input["id"].(string)
 			rawExternalURLs, ok := input["externalUrls"].([]any)
 			if !ok {
 				t.Fatalf("expected externalUrls array in session update, got %T", input["externalUrls"])
@@ -286,7 +286,7 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 			if strings.TrimSpace(entry.Label) == "" || strings.TrimSpace(entry.URL) == "" {
 				t.Fatalf("session update[%d] contains empty external url entry: %#v", i, entry)
 			}
-			key := entry.Label + "\n" + entry.URL
+			key := entry.URL
 			if _, exists := seen[key]; exists {
 				t.Fatalf("session update[%d] external urls should be unique, duplicate entry=%#v", i, entry)
 			}

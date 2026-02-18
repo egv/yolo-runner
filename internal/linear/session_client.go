@@ -11,8 +11,8 @@ import (
 )
 
 const updateAgentSessionMutation = `
-mutation updateAgentSession($input: AgentSessionUpdateInput!) {
-  agentSessionUpdate(input: $input) {
+mutation updateAgentSession($id: String!, $input: AgentSessionUpdateInput!) {
+  agentSessionUpdate(id: $id, input: $input) {
     success
   }
 }
@@ -84,8 +84,8 @@ func (c *AgentSessionClient) SetExternalURLs(ctx context.Context, input UpdateAg
 	body := graphqlMutationRequest{
 		Query: updateAgentSessionMutation,
 		Variables: map[string]any{
+			"id": sessionID,
 			"input": map[string]any{
-				"id":           sessionID,
 				"externalUrls": externalURLs,
 			},
 		},
@@ -151,7 +151,7 @@ func normalizeAgentExternalURLs(urls []AgentExternalURL) []AgentExternalURL {
 		if label == "" || value == "" {
 			continue
 		}
-		key := strings.ToLower(label) + "\n" + value
+		key := value
 		if _, exists := seen[key]; exists {
 			continue
 		}
