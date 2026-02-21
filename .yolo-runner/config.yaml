@@ -1,5 +1,8 @@
-default_profile: github
+default_profile: tk
 profiles:
+  tk:
+    tracker:
+      type: tk
   github:
     tracker:
       type: github
