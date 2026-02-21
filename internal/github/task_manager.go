@@ -22,6 +22,7 @@ const (
 	maxProbeResponseSize = 1 << 20
 	maxReadResponseSize  = 8 << 20
 	issuesPerPage        = 100
+	maxRateLimitBackoff  = 30 * time.Second
 )
 
 type HTTPClient interface {
@@ -42,15 +43,19 @@ type TaskManager struct {
 	token       string
 	apiEndpoint string
 	client      HTTPClient
+	now         func() time.Time
+	sleep       func(time.Duration)
 }
 
 type githubIssuePayload struct {
-	Number      int                  `json:"number"`
-	Title       string               `json:"title"`
-	Body        string               `json:"body"`
-	State       string               `json:"state"`
-	Labels      []githubLabelPayload `json:"labels"`
-	PullRequest *struct {
+	Number         int                  `json:"number"`
+	Title          string               `json:"title"`
+	Body           string               `json:"body"`
+	State          string               `json:"state"`
+	ParentIssueURL string               `json:"parent_issue_url"`
+	ParentIssueID  *int                 `json:"parent_issue_id"`
+	Labels         []githubLabelPayload `json:"labels"`
+	PullRequest    *struct {
 		URL string `json:"url"`
 	} `json:"pull_request"`
 }
@@ -95,6 +100,8 @@ func NewTaskManager(cfg Config) (*TaskManager, error) {
 		token:       token,
 		apiEndpoint: endpoint,
 		client:      client,
+		now:         time.Now,
+		sleep:       time.Sleep,
 	}, nil
 }
 
@@ -344,7 +351,46 @@ func (m *TaskManager) doGitHubJSON(ctx context.Context, method string, requestUR
 	if err != nil {
 		return 0, nil, fmt.Errorf("cannot read response: %w", err)
 	}
+	m.maybeBackoffForRateLimit(resp.Header)
 	return resp.StatusCode, body, nil
+}
+
+func (m *TaskManager) maybeBackoffForRateLimit(headers http.Header) {
+	remainingRaw := strings.TrimSpace(headers.Get("X-RateLimit-Remaining"))
+	if remainingRaw == "" {
+		return
+	}
+	remaining, err := strconv.Atoi(remainingRaw)
+	if err != nil || remaining > 1 {
+		return
+	}
+
+	resetRaw := strings.TrimSpace(headers.Get("X-RateLimit-Reset"))
+	if resetRaw == "" {
+		return
+	}
+	resetUnix, err := strconv.ParseInt(resetRaw, 10, 64)
+	if err != nil {
+		return
+	}
+
+	nowFn := m.now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	wait := time.Unix(resetUnix, 0).Sub(nowFn())
+	if wait <= 0 {
+		return
+	}
+	if wait > maxRateLimitBackoff {
+		wait = maxRateLimitBackoff
+	}
+
+	sleepFn := m.sleep
+	if sleepFn == nil {
+		sleepFn = time.Sleep
+	}
+	sleepFn(wait)
 }
 
 func githubIssueStateForTaskStatus(status contracts.TaskStatus) (string, error) {
