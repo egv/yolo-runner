@@ -263,7 +263,9 @@ func TestTaskEngineGetNextAvailableReflectsDependencyCompletionOnNextCall(t *tes
 		t.Fatalf("GetNextAvailable() before dependency completion = %v, want [dep]", got)
 	}
 
-	engine.UpdateTaskStatus(graph, "dep", contracts.TaskStatusClosed)
+	if err := engine.UpdateTaskStatus(graph, "dep", contracts.TaskStatusClosed); err != nil {
+		t.Fatalf("UpdateTaskStatus() error = %v", err)
+	}
 	if got := summaryIDs(engine.GetNextAvailable(graph)); !reflect.DeepEqual(got, []string{"blocked"}) {
 		t.Fatalf("GetNextAvailable() after dependency completion = %v, want [blocked]", got)
 	}
@@ -291,6 +293,63 @@ func TestTaskEngineGetNextAvailableReturnsEmptySliceForNilOrEmptyGraph(t *testin
 				t.Fatalf("len(GetNextAvailable()) = %d, want 0", len(got))
 			}
 		})
+	}
+}
+
+func TestTaskEngineUpdateTaskStatusReturnsErrorWhenClosingTaskWithOpenDependencies(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Status: contracts.TaskStatusClosed},
+			"dep":  {ID: "dep", Title: "Dependency", Status: contracts.TaskStatusOpen},
+			"task": {ID: "task", Title: "Task", Status: contracts.TaskStatusOpen},
+		},
+		Relations: []contracts.TaskRelation{
+			{FromID: "task", ToID: "dep", Type: contracts.RelationDependsOn},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	err = engine.UpdateTaskStatus(graph, "task", contracts.TaskStatusClosed)
+	if err == nil {
+		t.Fatalf("UpdateTaskStatus() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "dependencies are not closed") {
+		t.Fatalf("UpdateTaskStatus() error = %q, want dependency closure message", err)
+	}
+
+	if got := graph.Nodes["task"].Status; got != contracts.TaskStatusOpen {
+		t.Fatalf("task node status = %q, want %q", got, contracts.TaskStatusOpen)
+	}
+	if got := graph.Nodes["task"].Task.Status; got != contracts.TaskStatusOpen {
+		t.Fatalf("embedded task status = %q, want %q", got, contracts.TaskStatusOpen)
+	}
+}
+
+func TestTaskEngineIsCompleteTreatsClosedFailedAndBlockedAsFinished(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Status: contracts.TaskStatusClosed},
+			"a":    {ID: "a", Status: contracts.TaskStatusFailed},
+			"b":    {ID: "b", Status: contracts.TaskStatusBlocked},
+			"c":    {ID: "c", Status: contracts.TaskStatusClosed},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	if !engine.IsComplete(graph) {
+		t.Fatalf("IsComplete() = false, want true")
 	}
 }
 

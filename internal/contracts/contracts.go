@@ -67,7 +67,7 @@ type TaskEngine interface {
 	BuildGraph(tree *TaskTree) (*TaskGraph, error)
 	GetNextAvailable(graph *TaskGraph) []TaskSummary
 	CalculateConcurrency(graph *TaskGraph, opts ConcurrencyOptions) int
-	UpdateTaskStatus(graph *TaskGraph, taskID string, status TaskStatus)
+	UpdateTaskStatus(graph *TaskGraph, taskID string, status TaskStatus) error
 	IsComplete(graph *TaskGraph) bool
 }
 

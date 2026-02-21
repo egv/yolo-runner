@@ -12,7 +12,7 @@ func TestTaskEngineInterfaceIncludesRequiredMethods(t *testing.T) {
 		"BuildGraph":           reflect.TypeOf(func(*TaskTree) (*TaskGraph, error) { return nil, nil }),
 		"GetNextAvailable":     reflect.TypeOf(func(*TaskGraph) []TaskSummary { return nil }),
 		"CalculateConcurrency": reflect.TypeOf(func(*TaskGraph, ConcurrencyOptions) int { return 0 }),
-		"UpdateTaskStatus":     reflect.TypeOf(func(*TaskGraph, string, TaskStatus) {}),
+		"UpdateTaskStatus":     reflect.TypeOf(func(*TaskGraph, string, TaskStatus) error { return nil }),
 		"IsComplete":           reflect.TypeOf(func(*TaskGraph) bool { return false }),
 	}
 
@@ -141,7 +141,9 @@ func TestTaskEngineContractCanBeImplementedByFakes(t *testing.T) {
 		t.Fatalf("expected fixed fake concurrency 1, got %d", concurrency)
 	}
 
-	engine.UpdateTaskStatus(graph, "root", TaskStatusClosed)
+	if err := engine.UpdateTaskStatus(graph, "root", TaskStatusClosed); err != nil {
+		t.Fatalf("UpdateTaskStatus returned error: %v", err)
+	}
 	if !engine.IsComplete(graph) {
 		t.Fatalf("expected graph to be complete after closing root task")
 	}
@@ -177,15 +179,16 @@ func (fakeTaskEngine) CalculateConcurrency(_ *TaskGraph, _ ConcurrencyOptions) i
 	return 1
 }
 
-func (fakeTaskEngine) UpdateTaskStatus(graph *TaskGraph, taskID string, status TaskStatus) {
+func (fakeTaskEngine) UpdateTaskStatus(graph *TaskGraph, taskID string, status TaskStatus) error {
 	if graph == nil || graph.Nodes == nil {
-		return
+		return nil
 	}
 	node := graph.Nodes[taskID]
 	if node == nil {
-		return
+		return nil
 	}
 	node.Status = status
+	return nil
 }
 
 func (fakeTaskEngine) IsComplete(graph *TaskGraph) bool {

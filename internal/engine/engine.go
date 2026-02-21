@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 )
 
 // TaskEngine builds and evaluates in-memory task graphs over contracts types.
-type TaskEngine struct{}
+type TaskEngine struct {
+	mu sync.RWMutex
+}
 
 func NewTaskEngine() *TaskEngine {
 	return &TaskEngine{}
@@ -117,6 +120,9 @@ func (e *TaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.Ta
 		return []contracts.TaskSummary{}
 	}
 
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	ids := make([]string, 0, len(graph.Nodes))
 	for id := range graph.Nodes {
 		ids = append(ids, id)
@@ -213,17 +219,24 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 	return limit
 }
 
-func (e *TaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string, status contracts.TaskStatus) {
+func (e *TaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string, status contracts.TaskStatus) error {
 	if graph == nil || len(graph.Nodes) == 0 {
-		return
+		return nil
 	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	node := graph.Nodes[taskID]
 	if node == nil {
-		return
+		return nil
+	}
+	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(node) {
+		return fmt.Errorf("cannot close task %q: dependencies are not closed", taskID)
 	}
 	node.Status = status
 	node.Task.Status = status
+	return nil
 }
 
 func (e *TaskEngine) IsComplete(graph *contracts.TaskGraph) bool {
@@ -231,7 +244,13 @@ func (e *TaskEngine) IsComplete(graph *contracts.TaskGraph) bool {
 		return true
 	}
 
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	for _, node := range graph.Nodes {
+		if node == nil {
+			return false
+		}
 		if !isFinishedStatus(node.Status) {
 			return false
 		}
