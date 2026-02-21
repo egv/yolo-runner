@@ -32,6 +32,35 @@ type Task struct {
 	Metadata    map[string]string
 }
 
+// StorageBackend handles persistence and retrieval of task data only.
+// Scheduling and dependency resolution are handled by TaskEngine.
+type StorageBackend interface {
+	GetTaskTree(ctx context.Context, rootID string) (*TaskTree, error)
+	GetTask(ctx context.Context, taskID string) (*Task, error)
+	SetTaskStatus(ctx context.Context, taskID string, status TaskStatus) error
+	SetTaskData(ctx context.Context, taskID string, data map[string]string) error
+}
+
+type TaskTree struct {
+	Root      Task
+	Tasks     map[string]Task
+	Relations []TaskRelation
+}
+
+type TaskRelation struct {
+	FromID string
+	ToID   string
+	Type   RelationType
+}
+
+type RelationType string
+
+const (
+	RelationParent    RelationType = "parent"
+	RelationDependsOn RelationType = "depends_on"
+	RelationBlocks    RelationType = "blocks"
+)
+
 type TaskManager interface {
 	NextTasks(ctx context.Context, parentID string) ([]TaskSummary, error)
 	GetTask(ctx context.Context, taskID string) (Task, error)
