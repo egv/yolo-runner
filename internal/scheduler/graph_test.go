@@ -3,6 +3,7 @@ package scheduler
 import (
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -256,6 +257,257 @@ func TestTaskGraphReserveReadyStress_RespectsDAGDependencies(t *testing.T) {
 	if len(order) != 6 {
 		t.Fatalf("expected 6 tasks reserved, got %d (%v)", len(order), order)
 	}
+}
+
+func TestTaskGraphRejectsCircularDependenciesWithCyclePath(t *testing.T) {
+	_, err := NewTaskGraph([]TaskNode{
+		{ID: "a", State: TaskStatePending, DependsOn: []string{"c"}},
+		{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+		{ID: "c", State: TaskStatePending, DependsOn: []string{"b"}},
+	})
+	if err == nil {
+		t.Fatalf("expected circular dependency error, got nil")
+	}
+	if !strings.Contains(err.Error(), "circular dependency") {
+		t.Fatalf("expected circular dependency error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "a -> c -> b -> a") {
+		t.Fatalf("expected cycle path in error, got %q", err.Error())
+	}
+}
+
+func TestTaskGraphBuildGraphGetNextAvailableUpdateTaskStatus_Topologies(t *testing.T) {
+	type transition struct {
+		taskID    string
+		state     TaskState
+		wantReady []string
+	}
+
+	tests := []struct {
+		name         string
+		nodes        []TaskNode
+		initialReady []string
+		transitions  []transition
+	}{
+		{
+			name: "linear chain",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"b"}},
+			},
+			initialReady: []string{"a"},
+			transitions: []transition{
+				{taskID: "a", state: TaskStateSucceeded, wantReady: []string{"b"}},
+				{taskID: "b", state: TaskStateSucceeded, wantReady: []string{"c"}},
+				{taskID: "c", state: TaskStateSucceeded, wantReady: []string{}},
+			},
+		},
+		{
+			name: "diamond",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "d", State: TaskStatePending, DependsOn: []string{"b", "c"}},
+			},
+			initialReady: []string{"a"},
+			transitions: []transition{
+				{taskID: "a", state: TaskStateSucceeded, wantReady: []string{"b", "c"}},
+				{taskID: "b", state: TaskStateSucceeded, wantReady: []string{"c"}},
+				{taskID: "c", state: TaskStateSucceeded, wantReady: []string{"d"}},
+				{taskID: "d", state: TaskStateSucceeded, wantReady: []string{}},
+			},
+		},
+		{
+			name: "fan-out",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "d", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "e", State: TaskStatePending, DependsOn: []string{"a"}},
+			},
+			initialReady: []string{"a"},
+			transitions: []transition{
+				{taskID: "a", state: TaskStateSucceeded, wantReady: []string{"b", "c", "d", "e"}},
+				{taskID: "b", state: TaskStateSucceeded, wantReady: []string{"c", "d", "e"}},
+				{taskID: "c", state: TaskStateSucceeded, wantReady: []string{"d", "e"}},
+				{taskID: "d", state: TaskStateSucceeded, wantReady: []string{"e"}},
+				{taskID: "e", state: TaskStateSucceeded, wantReady: []string{}},
+			},
+		},
+		{
+			name: "fan-in",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending},
+				{ID: "c", State: TaskStatePending},
+				{ID: "d", State: TaskStatePending},
+				{ID: "e", State: TaskStatePending, DependsOn: []string{"a", "b", "c", "d"}},
+			},
+			initialReady: []string{"a", "b", "c", "d"},
+			transitions: []transition{
+				{taskID: "a", state: TaskStateSucceeded, wantReady: []string{"b", "c", "d"}},
+				{taskID: "b", state: TaskStateSucceeded, wantReady: []string{"c", "d"}},
+				{taskID: "c", state: TaskStateSucceeded, wantReady: []string{"d"}},
+				{taskID: "d", state: TaskStateSucceeded, wantReady: []string{"e"}},
+				{taskID: "e", state: TaskStateSucceeded, wantReady: []string{}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, err := NewTaskGraph(tc.nodes)
+			if err != nil {
+				t.Fatalf("NewTaskGraph() error = %v", err)
+			}
+			if len(graph.nodes) != len(tc.nodes) {
+				t.Fatalf("NewTaskGraph() built %d nodes, want %d", len(graph.nodes), len(tc.nodes))
+			}
+
+			if got := graph.ReadySet(); !reflect.DeepEqual(got, tc.initialReady) {
+				t.Fatalf("ReadySet() initial = %v, want %v", got, tc.initialReady)
+			}
+
+			for _, step := range tc.transitions {
+				if err := graph.SetState(step.taskID, step.state); err != nil {
+					t.Fatalf("SetState(%s) error = %v", step.taskID, err)
+				}
+				if got := graph.ReadySet(); !reflect.DeepEqual(got, step.wantReady) {
+					t.Fatalf("ReadySet() after %s=%s = %v, want %v", step.taskID, step.state, got, step.wantReady)
+				}
+			}
+		})
+	}
+}
+
+func TestTaskGraphCalculateConcurrencyAcrossTopologies(t *testing.T) {
+	tests := []struct {
+		name  string
+		nodes []TaskNode
+		want  int
+	}{
+		{
+			name: "empty graph",
+			want: 0,
+		},
+		{
+			name: "linear chain",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"b"}},
+			},
+			want: 1,
+		},
+		{
+			name: "diamond",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "d", State: TaskStatePending, DependsOn: []string{"b", "c"}},
+			},
+			want: 2,
+		},
+		{
+			name: "fan-out",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "c", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "d", State: TaskStatePending, DependsOn: []string{"a"}},
+				{ID: "e", State: TaskStatePending, DependsOn: []string{"a"}},
+			},
+			want: 4,
+		},
+		{
+			name: "fan-in",
+			nodes: []TaskNode{
+				{ID: "a", State: TaskStatePending},
+				{ID: "b", State: TaskStatePending},
+				{ID: "c", State: TaskStatePending},
+				{ID: "d", State: TaskStatePending},
+				{ID: "e", State: TaskStatePending, DependsOn: []string{"a", "b", "c", "d"}},
+			},
+			want: 4,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, err := NewTaskGraph(tc.nodes)
+			if err != nil {
+				t.Fatalf("NewTaskGraph() error = %v", err)
+			}
+			if got := callTaskGraphCalculateConcurrency(t, &graph); got != tc.want {
+				t.Fatalf("CalculateConcurrency() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTaskGraphIsCompleteReturnsTrueWhenAllTasksFinished(t *testing.T) {
+	graph, err := NewTaskGraph([]TaskNode{
+		{ID: "a", State: TaskStatePending},
+		{ID: "b", State: TaskStatePending},
+		{ID: "c", State: TaskStatePending, DependsOn: []string{"a", "b"}},
+	})
+	if err != nil {
+		t.Fatalf("NewTaskGraph() error = %v", err)
+	}
+
+	if callTaskGraphIsComplete(t, &graph) {
+		t.Fatalf("IsComplete() = true for pending graph, want false")
+	}
+
+	if err := graph.SetState("a", TaskStateSucceeded); err != nil {
+		t.Fatalf("SetState(a) error = %v", err)
+	}
+	if err := graph.SetState("b", TaskStateFailed); err != nil {
+		t.Fatalf("SetState(b) error = %v", err)
+	}
+	if err := graph.SetState("c", TaskStateRunning); err != nil {
+		t.Fatalf("SetState(c) error = %v", err)
+	}
+	if callTaskGraphIsComplete(t, &graph) {
+		t.Fatalf("IsComplete() = true with running task, want false")
+	}
+
+	if err := graph.SetState("c", TaskStateCanceled); err != nil {
+		t.Fatalf("SetState(c) error = %v", err)
+	}
+	if !callTaskGraphIsComplete(t, &graph) {
+		t.Fatalf("IsComplete() = false after all tasks reached terminal states, want true")
+	}
+}
+
+func callTaskGraphCalculateConcurrency(t *testing.T, graph *TaskGraph) int {
+	t.Helper()
+	method := reflect.ValueOf(graph).MethodByName("CalculateConcurrency")
+	if !method.IsValid() {
+		t.Fatalf("TaskGraph.CalculateConcurrency is not implemented")
+	}
+	results := method.Call(nil)
+	if len(results) != 1 || results[0].Kind() != reflect.Int {
+		t.Fatalf("TaskGraph.CalculateConcurrency() returned unexpected signature")
+	}
+	return int(results[0].Int())
+}
+
+func callTaskGraphIsComplete(t *testing.T, graph *TaskGraph) bool {
+	t.Helper()
+	method := reflect.ValueOf(graph).MethodByName("IsComplete")
+	if !method.IsValid() {
+		t.Fatalf("TaskGraph.IsComplete is not implemented")
+	}
+	results := method.Call(nil)
+	if len(results) != 1 || results[0].Kind() != reflect.Bool {
+		t.Fatalf("TaskGraph.IsComplete() returned unexpected signature")
+	}
+	return results[0].Bool()
 }
 
 func taskID(i int) string {
