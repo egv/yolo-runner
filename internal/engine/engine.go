@@ -145,16 +145,56 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 		return 0
 	}
 
-	depthCount := make(map[int]int, len(graph.Nodes))
-	for _, node := range graph.Nodes {
-		depthCount[node.Depth]++
+	inDegree := make(map[string]int, len(graph.Nodes))
+	currentLevel := make([]string, 0, len(graph.Nodes))
+	for id, node := range graph.Nodes {
+		if node == nil {
+			continue
+		}
+		deps := 0
+		for _, dependency := range node.Dependencies {
+			if dependency == nil {
+				continue
+			}
+			if _, exists := graph.Nodes[dependency.ID]; exists {
+				deps++
+			}
+		}
+		inDegree[id] = deps
+		if deps == 0 {
+			currentLevel = append(currentLevel, id)
+		}
 	}
+	sort.Strings(currentLevel)
 
 	maxParallel := 0
-	for _, count := range depthCount {
-		if count > maxParallel {
-			maxParallel = count
+	for len(currentLevel) > 0 {
+		if len(currentLevel) > maxParallel {
+			maxParallel = len(currentLevel)
 		}
+
+		nextLevel := make([]string, 0)
+		for _, taskID := range currentLevel {
+			node := graph.Nodes[taskID]
+			if node == nil {
+				continue
+			}
+			for _, dependent := range node.Dependents {
+				if dependent == nil {
+					continue
+				}
+				dependentID := dependent.ID
+				if _, exists := inDegree[dependentID]; !exists {
+					continue
+				}
+				inDegree[dependentID]--
+				if inDegree[dependentID] == 0 {
+					nextLevel = append(nextLevel, dependentID)
+				}
+			}
+		}
+		sort.Strings(nextLevel)
+		currentLevel = nextLevel
 	}
 
 	limit := maxParallel

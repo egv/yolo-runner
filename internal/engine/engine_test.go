@@ -294,6 +294,121 @@ func TestTaskEngineGetNextAvailableReturnsEmptySliceForNilOrEmptyGraph(t *testin
 	}
 }
 
+func TestTaskEngineCalculateConcurrencyAcrossTopologies(t *testing.T) {
+	engine := NewTaskEngine()
+	if got := engine.CalculateConcurrency(nil, contracts.ConcurrencyOptions{}); got != 0 {
+		t.Fatalf("CalculateConcurrency(nil) = %d, want 0", got)
+	}
+	if got := engine.CalculateConcurrency(&contracts.TaskGraph{}, contracts.ConcurrencyOptions{}); got != 0 {
+		t.Fatalf("CalculateConcurrency(empty) = %d, want 0", got)
+	}
+
+	tests := []struct {
+		name string
+		tree *contracts.TaskTree
+		opts contracts.ConcurrencyOptions
+		want int
+	}{
+		{
+			name: "linear chain",
+			tree: &contracts.TaskTree{
+				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"a": {ID: "a", Status: contracts.TaskStatusOpen},
+					"b": {ID: "b", Status: contracts.TaskStatusOpen},
+					"c": {ID: "c", Status: contracts.TaskStatusOpen},
+				},
+				Relations: []contracts.TaskRelation{
+					{FromID: "b", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "c", ToID: "b", Type: contracts.RelationDependsOn},
+				},
+			},
+			want: 1,
+		},
+		{
+			name: "diamond",
+			tree: &contracts.TaskTree{
+				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"a": {ID: "a", Status: contracts.TaskStatusOpen},
+					"b": {ID: "b", Status: contracts.TaskStatusOpen},
+					"c": {ID: "c", Status: contracts.TaskStatusOpen},
+					"d": {ID: "d", Status: contracts.TaskStatusOpen},
+				},
+				Relations: []contracts.TaskRelation{
+					{FromID: "b", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "c", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "d", ToID: "b", Type: contracts.RelationDependsOn},
+					{FromID: "d", ToID: "c", Type: contracts.RelationDependsOn},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "fan out",
+			tree: &contracts.TaskTree{
+				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"a": {ID: "a", Status: contracts.TaskStatusOpen},
+					"b": {ID: "b", Status: contracts.TaskStatusOpen},
+					"c": {ID: "c", Status: contracts.TaskStatusOpen},
+					"d": {ID: "d", Status: contracts.TaskStatusOpen},
+					"e": {ID: "e", Status: contracts.TaskStatusOpen},
+				},
+				Relations: []contracts.TaskRelation{
+					{FromID: "b", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "c", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "d", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "e", ToID: "a", Type: contracts.RelationDependsOn},
+				},
+			},
+			want: 4,
+		},
+		{
+			name: "max workers limit",
+			tree: &contracts.TaskTree{
+				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"a": {ID: "a", Status: contracts.TaskStatusOpen},
+					"b": {ID: "b", Status: contracts.TaskStatusOpen},
+					"c": {ID: "c", Status: contracts.TaskStatusOpen},
+					"d": {ID: "d", Status: contracts.TaskStatusOpen},
+					"e": {ID: "e", Status: contracts.TaskStatusOpen},
+				},
+				Relations: []contracts.TaskRelation{
+					{FromID: "b", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "c", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "d", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "e", ToID: "a", Type: contracts.RelationDependsOn},
+				},
+			},
+			opts: contracts.ConcurrencyOptions{MaxWorkers: 2},
+			want: 2,
+		},
+		{
+			name: "cpu limit uses 2x rule",
+			tree: fanOutTaskTree("a", 20),
+			opts: contracts.ConcurrencyOptions{
+				CPUCount: 8,
+			},
+			want: 16,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			graph, err := engine.BuildGraph(tc.tree)
+			if err != nil {
+				t.Fatalf("BuildGraph() error = %v", err)
+			}
+			got := engine.CalculateConcurrency(graph, tc.opts)
+			if got != tc.want {
+				t.Fatalf("CalculateConcurrency() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func childIDs(nodes []*contracts.TaskNode) []string {
 	ids := make([]string, 0, len(nodes))
 	for _, node := range nodes {
@@ -316,4 +431,25 @@ func summaryIDs(tasks []contracts.TaskSummary) []string {
 		ids = append(ids, task.ID)
 	}
 	return ids
+}
+
+func fanOutTaskTree(rootID string, fanOut int) *contracts.TaskTree {
+	tasks := map[string]contracts.Task{
+		rootID: {ID: rootID, Status: contracts.TaskStatusOpen},
+	}
+	relations := make([]contracts.TaskRelation, 0, fanOut)
+	for i := 0; i < fanOut; i++ {
+		id := fmt.Sprintf("n-%02d", i)
+		tasks[id] = contracts.Task{ID: id, Status: contracts.TaskStatusOpen}
+		relations = append(relations, contracts.TaskRelation{
+			FromID: id,
+			ToID:   rootID,
+			Type:   contracts.RelationDependsOn,
+		})
+	}
+	return &contracts.TaskTree{
+		Root:      tasks[rootID],
+		Tasks:     tasks,
+		Relations: relations,
+	}
 }
