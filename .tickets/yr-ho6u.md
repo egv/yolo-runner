@@ -37,3 +37,28 @@ Following strict TDD, write tests for graph building, dependency resolution, and
 ## Links
 - Epic: yr-abz7
 
+## TDD Evidence
+- RED run recorded on 2026-02-21 22:07:26 UTC.
+- Command:
+  - `go test ./internal/scheduler -run 'TestTaskGraph(BuildGraphGetNextAvailableUpdateTaskStatus_Topologies|CalculateConcurrencyAcrossTopologies|IsCompleteReturnsTrueWhenAllTasksFinished|RejectsCircularDependenciesWithCyclePath)$' -count=1`
+- Output (failed as expected before Task Engine implementation):
+```text
+--- FAIL: TestTaskGraphRejectsCircularDependenciesWithCyclePath (0.00s)
+    graph_test.go:269: expected circular dependency error, got nil
+--- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies (0.00s)
+    --- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies/empty_graph (0.00s)
+        graph_test.go:445: TaskGraph.CalculateConcurrency is not implemented
+    --- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies/linear_chain (0.00s)
+        graph_test.go:445: TaskGraph.CalculateConcurrency is not implemented
+    --- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies/diamond (0.00s)
+        graph_test.go:445: TaskGraph.CalculateConcurrency is not implemented
+    --- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies/fan-out (0.00s)
+        graph_test.go:445: TaskGraph.CalculateConcurrency is not implemented
+    --- FAIL: TestTaskGraphCalculateConcurrencyAcrossTopologies/fan-in (0.00s)
+        graph_test.go:445: TaskGraph.CalculateConcurrency is not implemented
+--- FAIL: TestTaskGraphIsCompleteReturnsTrueWhenAllTasksFinished (0.00s)
+    graph_test.go:462: TaskGraph.IsComplete is not implemented
+FAIL
+FAIL	github.com/anomalyco/yolo-runner/internal/scheduler	0.517s
+FAIL
+```
