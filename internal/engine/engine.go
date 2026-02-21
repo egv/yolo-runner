@@ -135,6 +135,9 @@ func (e *TaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.Ta
 		if node == nil || node.Status != contracts.TaskStatusOpen {
 			continue
 		}
+		if id == graph.RootID && len(node.Children) > 0 {
+			continue
+		}
 		if dependenciesSatisfied(node) {
 			available = append(available, contracts.TaskSummary{
 				ID:       node.ID,
