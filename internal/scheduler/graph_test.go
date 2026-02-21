@@ -276,6 +276,21 @@ func TestTaskGraphRejectsCircularDependenciesWithCyclePath(t *testing.T) {
 	}
 }
 
+func TestTaskGraphRejectsSelfDependencyWithCyclePath(t *testing.T) {
+	_, err := NewTaskGraph([]TaskNode{
+		{ID: "a", State: TaskStatePending, DependsOn: []string{"a"}},
+	})
+	if err == nil {
+		t.Fatalf("expected circular dependency error, got nil")
+	}
+	if !strings.Contains(err.Error(), "circular dependency") {
+		t.Fatalf("expected circular dependency error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "a -> a") {
+		t.Fatalf("expected self-cycle path in error, got %q", err.Error())
+	}
+}
+
 func TestTaskGraphBuildGraphGetNextAvailableUpdateTaskStatus_Topologies(t *testing.T) {
 	type transition struct {
 		taskID    string
