@@ -61,6 +61,50 @@ const (
 	RelationBlocks    RelationType = "blocks"
 )
 
+// TaskEngine handles in-memory scheduling decisions based on task graph shape
+// and task state. Storage and persistence remain in StorageBackend.
+type TaskEngine interface {
+	BuildGraph(tree *TaskTree) (*TaskGraph, error)
+	GetNextAvailable(graph *TaskGraph) []TaskSummary
+	CalculateConcurrency(graph *TaskGraph, opts ConcurrencyOptions) int
+	UpdateTaskStatus(graph *TaskGraph, taskID string, status TaskStatus)
+	IsComplete(graph *TaskGraph) bool
+}
+
+// TaskGraph represents a directed task graph with explicit nodes and edges.
+type TaskGraph struct {
+	RootID string
+	Nodes  map[string]*TaskNode
+	Edges  []TaskEdge
+}
+
+// TaskEdge is a directed relationship from FromID -> ToID.
+type TaskEdge struct {
+	FromID string
+	ToID   string
+	Type   RelationType
+}
+
+// TaskNode stores graph topology and scheduling metadata for a single task.
+type TaskNode struct {
+	ID           string
+	Task         Task
+	Status       TaskStatus
+	Parent       *TaskNode
+	Children     []*TaskNode
+	Dependencies []*TaskNode
+	Dependents   []*TaskNode
+	Depth        int
+	Priority     int
+}
+
+type ConcurrencyOptions struct {
+	MaxWorkers     int
+	CPUCount       int
+	MemoryGB       int
+	TaskComplexity int
+}
+
 type TaskManager interface {
 	NextTasks(ctx context.Context, parentID string) ([]TaskSummary, error)
 	GetTask(ctx context.Context, taskID string) (Task, error)
