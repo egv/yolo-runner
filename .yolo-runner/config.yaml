@@ -1,0 +1,11 @@
+default_profile: github
+profiles:
+  github:
+    tracker:
+      type: github
+      github:
+        scope:
+          owner: egv
+          repo: yolo-runner
+        auth:
+          token_env: GITHUB_TOKEN
