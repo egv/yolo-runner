@@ -72,6 +72,28 @@ func TestStorageBackendContractSetTaskStatusPersistsStatusChanges(t *testing.T) 
 	}
 }
 
+func TestStorageBackendContractSetTaskStatusPersistsInTaskTree(t *testing.T) {
+	ctx := context.Background()
+	backend := newFakeStorageBackendFixture()
+
+	if err := backend.SetTaskStatus(ctx, "t-1", TaskStatusInProgress); err != nil {
+		t.Fatalf("SetTaskStatus returned error: %v", err)
+	}
+
+	tree, err := backend.GetTaskTree(ctx, "root")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+
+	task, ok := tree.Tasks["t-1"]
+	if !ok {
+		t.Fatalf("expected task tree to include %q", "t-1")
+	}
+	if task.Status != TaskStatusInProgress {
+		t.Fatalf("expected tree task status %q, got %q", TaskStatusInProgress, task.Status)
+	}
+}
+
 func TestStorageBackendContractSetTaskDataStoresKeyValuePairs(t *testing.T) {
 	ctx := context.Background()
 	backend := newFakeStorageBackendFixture()
@@ -201,6 +223,13 @@ func (f *fakeStorageBackend) SetTaskStatus(_ context.Context, taskID string, sta
 	}
 	task.Status = status
 	f.tasks[taskID] = task
+	if treeTask, ok := f.tree.Tasks[taskID]; ok {
+		treeTask.Status = status
+		f.tree.Tasks[taskID] = treeTask
+	}
+	if f.tree.Root.ID == taskID {
+		f.tree.Root.Status = status
+	}
 	f.statuses[taskID] = status
 	return nil
 }
