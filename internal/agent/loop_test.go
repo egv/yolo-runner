@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
 )
 
 func TestLoopCompletesTask(t *testing.T) {
@@ -433,6 +434,94 @@ func TestLoopCreatesAndChecksOutTaskBranchBeforeRun(t *testing.T) {
 	}
 }
 
+func TestLoopStorageEnginePathUsesStorageBackendAndTaskEngine(t *testing.T) {
+	storage := newSpyStorageBackend([]contracts.Task{
+		{ID: "root", Title: "Root", Status: contracts.TaskStatusClosed},
+		{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen, ParentID: "root"},
+	}, []contracts.TaskRelation{
+		{FromID: "root", ToID: "t-1", Type: contracts.RelationParent},
+	})
+	engine := newSpyTaskEngine(enginepkg.NewTaskEngine())
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	loop := NewLoopWithTaskEngine(storage, engine, run, nil, LoopOptions{ParentID: "root", Concurrency: 4})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected one completed task, got %#v", summary)
+	}
+	if storage.getTaskTreeCalls == 0 {
+		t.Fatalf("expected storage GetTaskTree to be called")
+	}
+	if storage.statusSetCount("t-1", contracts.TaskStatusInProgress) == 0 {
+		t.Fatalf("expected storage SetTaskStatus to set in_progress")
+	}
+	if storage.statusSetCount("t-1", contracts.TaskStatusClosed) == 0 {
+		t.Fatalf("expected storage SetTaskStatus to set closed")
+	}
+	if engine.buildGraphCalls == 0 {
+		t.Fatalf("expected task engine BuildGraph to be called")
+	}
+	if engine.nextAvailableCalls == 0 {
+		t.Fatalf("expected task engine GetNextAvailable to be called")
+	}
+	if engine.calculateConcurrencyCalls == 0 {
+		t.Fatalf("expected task engine CalculateConcurrency to be called")
+	}
+	if engine.isCompleteCalls == 0 {
+		t.Fatalf("expected task engine IsComplete to be called")
+	}
+}
+
+func TestLoopWithTaskEngineTreatsOpenRootWithTerminalChildrenAsComplete(t *testing.T) {
+	storage := newSpyStorageBackend([]contracts.Task{
+		{ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
+		{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusClosed, ParentID: "root"},
+		{ID: "t-2", Title: "Task 2", Status: contracts.TaskStatusFailed, ParentID: "root"},
+	}, []contracts.TaskRelation{
+		{FromID: "root", ToID: "t-1", Type: contracts.RelationParent},
+		{FromID: "root", ToID: "t-2", Type: contracts.RelationParent},
+	})
+	engine := newSpyTaskEngine(enginepkg.NewTaskEngine())
+	run := &fakeRunner{}
+	loop := NewLoopWithTaskEngine(storage, engine, run, nil, LoopOptions{ParentID: "root", Concurrency: 2})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.TotalProcessed() != 0 {
+		t.Fatalf("expected no processed tasks, got %#v", summary)
+	}
+	if len(run.requests) != 0 {
+		t.Fatalf("expected runner not to be invoked, got %d calls", len(run.requests))
+	}
+	if engine.isCompleteCalls == 0 {
+		t.Fatalf("expected task engine IsComplete to be called")
+	}
+}
+
+func TestLoopReturnsErrorWhenCompletionCheckerReportsIncomplete(t *testing.T) {
+	mgr := &completionAwareTaskManager{
+		fakeTaskManager: newFakeTaskManager(),
+		complete:        false,
+	}
+	loop := NewLoop(mgr, &fakeRunner{}, nil, LoopOptions{ParentID: "root"})
+
+	summary, err := loop.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected incomplete graph error, got summary %#v", summary)
+	}
+	if !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("expected incomplete graph error message, got %q", err.Error())
+	}
+	if mgr.isCompleteCalls == 0 {
+		t.Fatalf("expected completion checker to be called")
+	}
+}
+
 type fakeTaskManager struct {
 	mu             sync.Mutex
 	queue          []contracts.Task
@@ -448,6 +537,21 @@ func newFakeTaskManager(tasks ...contracts.Task) *fakeTaskManager {
 		status[task.ID] = task.Status
 	}
 	return &fakeTaskManager{queue: tasks, statusByID: status, dataByID: map[string]map[string]string{}}
+}
+
+type completionAwareTaskManager struct {
+	*fakeTaskManager
+	complete        bool
+	isCompleteErr   error
+	isCompleteCalls int
+}
+
+func (m *completionAwareTaskManager) IsComplete(context.Context) (bool, error) {
+	m.isCompleteCalls++
+	if m.isCompleteErr != nil {
+		return false, m.isCompleteErr
+	}
+	return m.complete, nil
 }
 
 func (f *fakeTaskManager) NextTasks(context.Context, string) ([]contracts.TaskSummary, error) {
@@ -2192,4 +2296,137 @@ func TestRunnerLogBackendDirSupportsClaude(t *testing.T) {
 	if got := runnerLogBackendDir("claude"); got != "claude" {
 		t.Fatalf("expected claude backend dir, got %q", got)
 	}
+}
+
+type statusTransition struct {
+	taskID string
+	status contracts.TaskStatus
+}
+
+type spyStorageBackend struct {
+	mu               sync.Mutex
+	tasks            map[string]contracts.Task
+	relations        []contracts.TaskRelation
+	getTaskTreeCalls int
+	setStatusCalls   []statusTransition
+}
+
+func newSpyStorageBackend(tasks []contracts.Task, relations []contracts.TaskRelation) *spyStorageBackend {
+	byID := make(map[string]contracts.Task, len(tasks))
+	for _, task := range tasks {
+		byID[task.ID] = task
+	}
+	return &spyStorageBackend{tasks: byID, relations: append([]contracts.TaskRelation(nil), relations...)}
+}
+
+func (s *spyStorageBackend) GetTaskTree(_ context.Context, rootID string) (*contracts.TaskTree, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getTaskTreeCalls++
+	root, ok := s.tasks[rootID]
+	if !ok {
+		return nil, fmt.Errorf("missing root task %q", rootID)
+	}
+	tasks := make(map[string]contracts.Task, len(s.tasks))
+	for taskID, task := range s.tasks {
+		tasks[taskID] = task
+	}
+	return &contracts.TaskTree{
+		Root:      root,
+		Tasks:     tasks,
+		Relations: append([]contracts.TaskRelation(nil), s.relations...),
+	}, nil
+}
+
+func (s *spyStorageBackend) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return nil, errors.New("missing task")
+	}
+	copy := task
+	return &copy, nil
+}
+
+func (s *spyStorageBackend) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("missing task")
+	}
+	task.Status = status
+	s.tasks[taskID] = task
+	s.setStatusCalls = append(s.setStatusCalls, statusTransition{taskID: taskID, status: status})
+	return nil
+}
+
+func (s *spyStorageBackend) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[taskID]
+	if !ok {
+		return errors.New("missing task")
+	}
+	if len(data) > 0 {
+		if task.Metadata == nil {
+			task.Metadata = map[string]string{}
+		}
+		for key, value := range data {
+			task.Metadata[key] = value
+		}
+	}
+	s.tasks[taskID] = task
+	return nil
+}
+
+func (s *spyStorageBackend) statusSetCount(taskID string, status contracts.TaskStatus) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, call := range s.setStatusCalls {
+		if call.taskID == taskID && call.status == status {
+			count++
+		}
+	}
+	return count
+}
+
+type spyTaskEngine struct {
+	delegate                  contracts.TaskEngine
+	buildGraphCalls           int
+	nextAvailableCalls        int
+	calculateConcurrencyCalls int
+	updateTaskStatusCalls     int
+	isCompleteCalls           int
+}
+
+func newSpyTaskEngine(delegate contracts.TaskEngine) *spyTaskEngine {
+	return &spyTaskEngine{delegate: delegate}
+}
+
+func (s *spyTaskEngine) BuildGraph(tree *contracts.TaskTree) (*contracts.TaskGraph, error) {
+	s.buildGraphCalls++
+	return s.delegate.BuildGraph(tree)
+}
+
+func (s *spyTaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.TaskSummary {
+	s.nextAvailableCalls++
+	return s.delegate.GetNextAvailable(graph)
+}
+
+func (s *spyTaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contracts.ConcurrencyOptions) int {
+	s.calculateConcurrencyCalls++
+	return s.delegate.CalculateConcurrency(graph, opts)
+}
+
+func (s *spyTaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string, status contracts.TaskStatus) error {
+	s.updateTaskStatusCalls++
+	return s.delegate.UpdateTaskStatus(graph, taskID, status)
+}
+
+func (s *spyTaskEngine) IsComplete(graph *contracts.TaskGraph) bool {
+	s.isCompleteCalls++
+	return s.delegate.IsComplete(graph)
 }

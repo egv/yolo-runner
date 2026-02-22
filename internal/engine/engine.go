@@ -250,13 +250,19 @@ func (e *TaskEngine) IsComplete(graph *contracts.TaskGraph) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	for _, node := range graph.Nodes {
+	for id, node := range graph.Nodes {
 		if node == nil {
 			return false
 		}
-		if !isFinishedStatus(node.Status) {
-			return false
+		if isFinishedStatus(node.Status) {
+			continue
 		}
+		if id == graph.RootID && len(node.Children) > 0 {
+			// Root nodes that own child tasks act as containers and are intentionally
+			// non-runnable, so they may remain open after all descendants finish.
+			continue
+		}
+		return false
 	}
 	return true
 }

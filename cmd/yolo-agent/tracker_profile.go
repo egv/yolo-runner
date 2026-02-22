@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -100,8 +101,16 @@ var newLinearTaskManager = func(cfg linear.Config) (contracts.TaskManager, error
 	return linear.NewTaskManager(cfg)
 }
 
+var newTKTaskManager = func(repoRoot string) (contracts.TaskManager, error) {
+	return tk.NewTaskManager(localRunner{dir: repoRoot}), nil
+}
+
 var newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager, error) {
 	return githubtracker.NewTaskManager(cfg)
+}
+
+var newGitHubStorageBackend = func(cfg githubtracker.Config) (contracts.StorageBackend, error) {
+	return githubtracker.NewStorageBackend(cfg)
 }
 
 func resolveProfileSelectionPolicy(input profileSelectionInput) string {
@@ -123,7 +132,7 @@ func resolveTrackerProfile(repoRoot string, selectedProfile string, rootID strin
 func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile) (contracts.TaskManager, error) {
 	switch profile.Tracker.Type {
 	case trackerTypeTK:
-		return tk.NewTaskManager(localRunner{dir: repoRoot}), nil
+		return newTKTaskManager(repoRoot)
 	case trackerTypeLinear:
 		if profile.Tracker.Linear == nil {
 			return nil, fmt.Errorf("tracker.linear settings are required for profile %q", profile.Name)
@@ -180,6 +189,197 @@ func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile)
 	default:
 		return nil, fmt.Errorf("tracker type %q is not supported yet", profile.Tracker.Type)
 	}
+}
+
+func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfile) (contracts.StorageBackend, error) {
+	switch profile.Tracker.Type {
+	case trackerTypeGitHub:
+		if profile.Tracker.GitHub == nil {
+			return nil, fmt.Errorf("tracker.github settings are required for profile %q", profile.Name)
+		}
+		owner := strings.TrimSpace(profile.Tracker.GitHub.Scope.Owner)
+		if owner == "" {
+			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.owner", profile.Name)
+		}
+		repo := strings.TrimSpace(profile.Tracker.GitHub.Scope.Repo)
+		if repo == "" {
+			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.repo", profile.Name)
+		}
+		tokenEnv := strings.TrimSpace(profile.Tracker.GitHub.Auth.TokenEnv)
+		if tokenEnv == "" {
+			return nil, fmt.Errorf("%s is required for profile %q", githubTokenEnvVarLabel, profile.Name)
+		}
+		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
+		if tokenValue == "" {
+			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
+		}
+		backend, err := newGitHubStorageBackend(githubtracker.Config{
+			Owner: owner,
+			Repo:  repo,
+			Token: tokenValue,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
+		}
+		return backend, nil
+	case trackerTypeTK, trackerTypeLinear:
+		manager, err := buildTaskManagerForTracker(repoRoot, profile)
+		if err != nil {
+			return nil, err
+		}
+		return taskManagerStorageBackend{taskManager: manager}, nil
+	default:
+		return nil, fmt.Errorf("tracker type %q is not supported yet", profile.Tracker.Type)
+	}
+}
+
+type taskManagerStorageBackend struct {
+	taskManager contracts.TaskManager
+}
+
+var _ contracts.StorageBackend = taskManagerStorageBackend{}
+
+type taskTreeProvider interface {
+	GetTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error)
+}
+
+func (b taskManagerStorageBackend) GetTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error) {
+	if provider, ok := b.taskManager.(taskTreeProvider); ok {
+		tree, err := provider.GetTaskTree(ctx, rootID)
+		if err != nil {
+			return nil, err
+		}
+		if tree != nil {
+			return tree, nil
+		}
+	}
+
+	rootTask, err := b.taskManager.GetTask(ctx, rootID)
+	if err != nil {
+		rootTask = contracts.Task{ID: rootID, Title: rootID, Status: contracts.TaskStatusOpen}
+	}
+	if strings.TrimSpace(rootTask.ID) == "" {
+		rootTask.ID = strings.TrimSpace(rootID)
+	}
+
+	tasks := map[string]contracts.Task{
+		rootTask.ID: rootTask,
+	}
+	relations := make([]contracts.TaskRelation, 0)
+	seenRelations := map[string]struct{}{}
+
+	readyTasks, err := b.taskManager.NextTasks(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	readyTaskRecords := make([]contracts.Task, 0, len(readyTasks))
+	for _, summary := range readyTasks {
+		task, err := b.taskManager.GetTask(ctx, summary.ID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(task.ID) == "" {
+			task.ID = strings.TrimSpace(summary.ID)
+		}
+		if strings.TrimSpace(task.Title) == "" {
+			task.Title = strings.TrimSpace(summary.Title)
+		}
+		tasks[task.ID] = task
+		readyTaskRecords = append(readyTaskRecords, task)
+	}
+
+	for _, task := range readyTaskRecords {
+		parentID := strings.TrimSpace(task.ParentID)
+		if parentID == "" {
+			parentID = rootTask.ID
+		}
+		if _, ok := tasks[parentID]; !ok {
+			parentID = rootTask.ID
+		}
+		appendUniqueRelation(&relations, seenRelations, contracts.TaskRelation{
+			FromID: parentID,
+			ToID:   task.ID,
+			Type:   contracts.RelationParent,
+		})
+
+		for _, depID := range dependencyIDsFromTask(task) {
+			if depID == "" || depID == task.ID {
+				continue
+			}
+			if _, ok := tasks[depID]; !ok {
+				continue
+			}
+			appendUniqueRelation(&relations, seenRelations, contracts.TaskRelation{
+				FromID: task.ID,
+				ToID:   depID,
+				Type:   contracts.RelationDependsOn,
+			})
+			appendUniqueRelation(&relations, seenRelations, contracts.TaskRelation{
+				FromID: depID,
+				ToID:   task.ID,
+				Type:   contracts.RelationBlocks,
+			})
+		}
+	}
+
+	return &contracts.TaskTree{
+		Root:      rootTask,
+		Tasks:     tasks,
+		Relations: relations,
+	}, nil
+}
+
+func (b taskManagerStorageBackend) GetTask(ctx context.Context, taskID string) (*contracts.Task, error) {
+	task, err := b.taskManager.GetTask(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func (b taskManagerStorageBackend) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
+	return b.taskManager.SetTaskStatus(ctx, taskID, status)
+}
+
+func (b taskManagerStorageBackend) SetTaskData(ctx context.Context, taskID string, data map[string]string) error {
+	return b.taskManager.SetTaskData(ctx, taskID, data)
+}
+
+func appendUniqueRelation(relations *[]contracts.TaskRelation, seen map[string]struct{}, relation contracts.TaskRelation) {
+	if relation.FromID == "" || relation.ToID == "" || relation.FromID == relation.ToID {
+		return
+	}
+	key := string(relation.Type) + "|" + relation.FromID + "|" + relation.ToID
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*relations = append(*relations, relation)
+}
+
+func dependencyIDsFromTask(task contracts.Task) []string {
+	if len(task.Metadata) == 0 {
+		return nil
+	}
+	rawDeps := strings.TrimSpace(task.Metadata["dependencies"])
+	if rawDeps == "" {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	deps := make([]string, 0)
+	for _, part := range strings.Split(rawDeps, ",") {
+		depID := strings.TrimSpace(part)
+		if depID == "" {
+			continue
+		}
+		if _, ok := seen[depID]; ok {
+			continue
+		}
+		seen[depID] = struct{}{}
+		deps = append(deps, depID)
+	}
+	return deps
 }
 
 func defaultTrackerProfilesModel() trackerProfilesModel {

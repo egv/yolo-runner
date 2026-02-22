@@ -16,6 +16,7 @@ import (
 	"github.com/anomalyco/yolo-runner/internal/claude"
 	"github.com/anomalyco/yolo-runner/internal/codex"
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/anomalyco/yolo-runner/internal/engine"
 	"github.com/anomalyco/yolo-runner/internal/kimi"
 	"github.com/anomalyco/yolo-runner/internal/opencode"
 	gitvcs "github.com/anomalyco/yolo-runner/internal/vcs/git"
@@ -230,16 +231,18 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	}
 	cfg.profile = trackerProfile.Name
 	cfg.trackerType = trackerProfile.Tracker.Type
-	taskManager, err := buildTaskManagerForTracker(cfg.repoRoot, trackerProfile)
-	if err != nil {
-		return err
-	}
 	vcsAdapter := gitvcs.NewVCSAdapter(localGitRunner{dir: cfg.repoRoot})
 	runnerAdapter, err := buildRunnerAdapter(cfg)
 	if err != nil {
 		return err
 	}
-	return runWithComponents(ctx, cfg, taskManager, runnerAdapter, vcsAdapter)
+
+	storageBackend, err := buildStorageBackendForTracker(cfg.repoRoot, trackerProfile)
+	if err != nil {
+		return err
+	}
+	taskEngine := engine.NewTaskEngine()
+	return runWithStorageComponents(ctx, cfg, storageBackend, taskEngine, runnerAdapter, vcsAdapter)
 }
 
 func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
@@ -308,6 +311,71 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
+		ParentID:           cfg.rootID,
+		MaxRetries:         cfg.retryBudget,
+		MaxTasks:           cfg.maxTasks,
+		Concurrency:        cfg.concurrency,
+		SchedulerStatePath: filepath.Join(cfg.repoRoot, ".yolo-runner", "scheduler-state.json"),
+		DryRun:             cfg.dryRun,
+		RepoRoot:           cfg.repoRoot,
+		Backend:            cfg.backend,
+		Model:              cfg.model,
+		RunnerTimeout:      cfg.runnerTimeout,
+		WatchdogTimeout:    cfg.watchdogTimeout,
+		WatchdogInterval:   cfg.watchdogInterval,
+		VCS:                vcs,
+		RequireReview:      true,
+		MergeOnSuccess:     true,
+		CloneManager:       agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
+		VCSFactory:         vcsFactory,
+	})
+	if eventSink != nil {
+		_ = eventSink.Emit(ctx, contracts.Event{
+			Type:      contracts.EventTypeRunStarted,
+			TaskID:    cfg.rootID,
+			TaskTitle: "run",
+			Metadata:  buildRunStartedMetadata(cfg),
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
+	_, err := loop.Run(ctx)
+	return err
+}
+
+func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contracts.StorageBackend, taskEngine contracts.TaskEngine, runner contracts.AgentRunner, vcs contracts.VCS) error {
+	sinks := []contracts.EventSink{}
+	closers := []func(){}
+	if cfg.stream {
+		sinks = append(sinks, contracts.NewStreamEventSinkWithOptions(os.Stdout, contracts.StreamEventSinkOptions{
+			VerboseOutput:  cfg.verboseStream,
+			OutputInterval: cfg.streamOutputInterval,
+			MaxPending:     cfg.streamOutputBuffer,
+		}))
+	}
+	if cfg.eventsPath != "" {
+		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
+		if cfg.stream {
+			mirror := newMirrorEventSink(fileSink, cfg.streamOutputBuffer)
+			closers = append(closers, mirror.Close)
+			sinks = append(sinks, mirror)
+		} else {
+			sinks = append(sinks, fileSink)
+		}
+	}
+	defer func() {
+		for _, closeFn := range closers {
+			closeFn()
+		}
+	}()
+	eventSink := contracts.EventSink(nil)
+	if len(sinks) == 1 {
+		eventSink = sinks[0]
+	} else if len(sinks) > 1 {
+		eventSink = contracts.NewFanoutEventSink(sinks...)
+	}
+	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
+	loop := agent.NewLoopWithTaskEngine(storage, taskEngine, runner, eventSink, agent.LoopOptions{
 		ParentID:           cfg.rootID,
 		MaxRetries:         cfg.retryBudget,
 		MaxTasks:           cfg.maxTasks,

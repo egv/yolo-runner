@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/anomalyco/yolo-runner/internal/linear"
 )
 
 func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
@@ -1117,6 +1118,102 @@ profiles:
 	}
 }
 
+func TestDefaultRunTrackerProfilesUseStorageBackendPathWhenNoReadyChildren(t *testing.T) {
+	tests := []struct {
+		name        string
+		configYAML  string
+		installMock func(t *testing.T, manager contracts.TaskManager)
+	}{
+		{
+			name: "tk",
+			configYAML: `
+profiles:
+  default:
+    tracker:
+      type: tk
+`,
+			installMock: func(t *testing.T, manager contracts.TaskManager) {
+				t.Helper()
+				originalFactory := newTKTaskManager
+				t.Cleanup(func() {
+					newTKTaskManager = originalFactory
+				})
+				newTKTaskManager = func(string) (contracts.TaskManager, error) {
+					return manager, nil
+				}
+			},
+		},
+		{
+			name: "linear",
+			configYAML: `
+profiles:
+  default:
+    tracker:
+      type: linear
+      linear:
+        scope:
+          workspace: anomaly
+        auth:
+          token_env: LINEAR_TOKEN
+`,
+			installMock: func(t *testing.T, manager contracts.TaskManager) {
+				t.Helper()
+				t.Setenv("LINEAR_TOKEN", "lin_api_test")
+				originalFactory := newLinearTaskManager
+				t.Cleanup(func() {
+					newLinearTaskManager = originalFactory
+				})
+				newLinearTaskManager = func(linear.Config) (contracts.TaskManager, error) {
+					return manager, nil
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := initGitRepo(t)
+			writeTrackerConfigYAML(t, repoRoot, tc.configYAML)
+
+			originalWD, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("getwd: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = os.Chdir(originalWD)
+			})
+
+			manager := &countingNoReadyTaskManager{
+				rootTask: contracts.Task{
+					ID:     "root",
+					Title:  "Root",
+					Status: contracts.TaskStatusClosed,
+				},
+			}
+			tc.installMock(t, manager)
+
+			runErr := defaultRun(context.Background(), runConfig{
+				repoRoot:         repoRoot,
+				rootID:           "root",
+				backend:          backendCodex,
+				concurrency:      1,
+				dryRun:           true,
+				watchdogTimeout:  10 * time.Minute,
+				watchdogInterval: 5 * time.Second,
+			})
+			if runErr != nil {
+				t.Fatalf("defaultRun failed: %v", runErr)
+			}
+			if manager.nextTasksCalls == 0 {
+				t.Fatalf("expected NextTasks to be called")
+			}
+			if manager.getTaskCalls == 0 {
+				t.Fatalf("expected storage-backed path to consult root task via GetTask")
+			}
+		})
+	}
+}
+
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	original := os.Stderr
@@ -1161,5 +1258,32 @@ type blockingSink struct {
 
 func (b blockingSink) Emit(context.Context, contracts.Event) error {
 	<-b.block
+	return nil
+}
+
+type countingNoReadyTaskManager struct {
+	rootTask       contracts.Task
+	nextTasksCalls int
+	getTaskCalls   int
+}
+
+func (m *countingNoReadyTaskManager) NextTasks(context.Context, string) ([]contracts.TaskSummary, error) {
+	m.nextTasksCalls++
+	return nil, nil
+}
+
+func (m *countingNoReadyTaskManager) GetTask(_ context.Context, taskID string) (contracts.Task, error) {
+	m.getTaskCalls++
+	if taskID == m.rootTask.ID {
+		return m.rootTask, nil
+	}
+	return contracts.Task{}, errors.New("task not found")
+}
+
+func (m *countingNoReadyTaskManager) SetTaskStatus(context.Context, string, contracts.TaskStatus) error {
+	return nil
+}
+
+func (m *countingNoReadyTaskManager) SetTaskData(context.Context, string, map[string]string) error {
 	return nil
 }

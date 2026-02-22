@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
 )
 
 func TestNewTaskManagerRejectsMissingToken(t *testing.T) {
@@ -406,6 +407,98 @@ func TestTaskManagerSetTaskDataWritesSortedIssueComments(t *testing.T) {
 	}
 	if !strings.Contains(queries[2], `body: "triage_status=blocked"`) {
 		t.Fatalf("expected third mutation to be triage_status, got %q", queries[2])
+	}
+}
+
+func TestTaskManagerGetTaskTreeTreatsOpenRootWithTerminalChildrenAsComplete(t *testing.T) {
+	t.Parallel()
+
+	manager := newLinearTestManager(t, func(t *testing.T, query string, w http.ResponseWriter) {
+		t.Helper()
+		switch {
+		case strings.Contains(query, `project(id: "iss-root")`):
+			_, _ = w.Write([]byte(`{"data":{"project":null}}`))
+		case strings.Contains(query, `issue(id: "iss-root")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "issue": {
+      "id": "iss-root",
+      "project": {"id": "proj-1"},
+      "parent": null,
+      "title": "Root issue",
+      "description": "",
+      "priority": 2,
+      "state": {"type": "backlog", "name": "Backlog"},
+      "relations": {"nodes": []}
+    }
+  }
+}`))
+		case strings.Contains(query, `project(id: "proj-1")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "project": {
+      "id": "proj-1",
+      "name": "Roadmap",
+      "issues": {
+        "nodes": [
+          {
+            "id": "iss-root",
+            "project": {"id": "proj-1"},
+            "parent": null,
+            "title": "Root issue",
+            "description": "",
+            "priority": 2,
+            "state": {"type": "backlog", "name": "Backlog"},
+            "relations": {"nodes": []}
+          },
+          {
+            "id": "iss-closed",
+            "project": {"id": "proj-1"},
+            "parent": {"id": "iss-root"},
+            "title": "Closed child",
+            "description": "",
+            "priority": 2,
+            "state": {"type": "completed", "name": "Done"},
+            "relations": {"nodes": []}
+          },
+          {
+            "id": "iss-failed",
+            "project": {"id": "proj-1"},
+            "parent": {"id": "iss-root"},
+            "title": "Failed child",
+            "description": "",
+            "priority": 3,
+            "state": {"type": "failed", "name": "Failed"},
+            "relations": {"nodes": []}
+          }
+        ]
+      }
+    }
+  }
+}`))
+		default:
+			t.Fatalf("unexpected query: %q", query)
+		}
+	})
+
+	tree, err := manager.GetTaskTree(context.Background(), "iss-root")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+	if len(tree.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks in tree, got %d", len(tree.Tasks))
+	}
+
+	taskEngine := enginepkg.NewTaskEngine()
+	graph, err := taskEngine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph returned error: %v", err)
+	}
+	if ready := taskEngine.GetNextAvailable(graph); len(ready) != 0 {
+		t.Fatalf("expected no runnable tasks, got %#v", ready)
+	}
+	if !taskEngine.IsComplete(graph) {
+		t.Fatalf("expected open root with terminal children to be complete")
 	}
 }
 
