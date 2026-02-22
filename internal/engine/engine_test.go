@@ -575,6 +575,26 @@ func TestTaskEngineCalculateConcurrencyAcrossTopologies(t *testing.T) {
 			want: 4,
 		},
 		{
+			name: "ignores finished tasks",
+			tree: &contracts.TaskTree{
+				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusClosed},
+				Tasks: map[string]contracts.Task{
+					"a": {ID: "a", Status: contracts.TaskStatusClosed},
+					"b": {ID: "b", Status: contracts.TaskStatusOpen},
+					"c": {ID: "c", Status: contracts.TaskStatusClosed},
+					"d": {ID: "d", Status: contracts.TaskStatusClosed},
+					"e": {ID: "e", Status: contracts.TaskStatusClosed},
+				},
+				Relations: []contracts.TaskRelation{
+					{FromID: "b", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "c", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "d", ToID: "a", Type: contracts.RelationDependsOn},
+					{FromID: "e", ToID: "a", Type: contracts.RelationDependsOn},
+				},
+			},
+			want: 1,
+		},
+		{
 			name: "max workers limit",
 			tree: &contracts.TaskTree{
 				Root: contracts.Task{ID: "a", Status: contracts.TaskStatusOpen},

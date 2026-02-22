@@ -204,15 +204,15 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 
 	maxParallel := 0
 	for len(currentLevel) > 0 {
-		if len(currentLevel) > maxParallel {
-			maxParallel = len(currentLevel)
-		}
-
 		nextLevel := make([]string, 0)
+		openAtLevel := 0
 		for _, taskID := range currentLevel {
 			node := graph.Nodes[taskID]
 			if node == nil {
 				continue
+			}
+			if node.Status == contracts.TaskStatusOpen {
+				openAtLevel++
 			}
 			for _, dependent := range node.Dependents {
 				if dependent == nil {
@@ -227,6 +227,9 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 					nextLevel = append(nextLevel, dependentID)
 				}
 			}
+		}
+		if openAtLevel > maxParallel {
+			maxParallel = openAtLevel
 		}
 		sort.Strings(nextLevel)
 		currentLevel = nextLevel
