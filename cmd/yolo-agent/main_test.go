@@ -1134,12 +1134,12 @@ profiles:
 `,
 			installMock: func(t *testing.T, manager contracts.TaskManager) {
 				t.Helper()
-				originalFactory := newTKTaskManager
+				originalFactory := newTKStorageBackend
 				t.Cleanup(func() {
-					newTKTaskManager = originalFactory
+					newTKStorageBackend = originalFactory
 				})
-				newTKTaskManager = func(string) (contracts.TaskManager, error) {
-					return manager, nil
+				newTKStorageBackend = func(string) (contracts.StorageBackend, error) {
+					return taskManagerStorageBackend{taskManager: manager}, nil
 				}
 			},
 		},

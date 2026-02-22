@@ -105,6 +105,10 @@ var newTKTaskManager = func(repoRoot string) (contracts.TaskManager, error) {
 	return tk.NewTaskManager(localRunner{dir: repoRoot}), nil
 }
 
+var newTKStorageBackend = func(repoRoot string) (contracts.StorageBackend, error) {
+	return tk.NewStorageBackend(localRunner{dir: repoRoot}), nil
+}
+
 var newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager, error) {
 	return githubtracker.NewTaskManager(cfg)
 }
@@ -193,6 +197,12 @@ func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile)
 
 func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfile) (contracts.StorageBackend, error) {
 	switch profile.Tracker.Type {
+	case trackerTypeTK:
+		backend, err := newTKStorageBackend(repoRoot)
+		if err != nil {
+			return nil, err
+		}
+		return backend, nil
 	case trackerTypeGitHub:
 		if profile.Tracker.GitHub == nil {
 			return nil, fmt.Errorf("tracker.github settings are required for profile %q", profile.Name)
@@ -222,7 +232,7 @@ func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfi
 			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
 		return backend, nil
-	case trackerTypeTK, trackerTypeLinear:
+	case trackerTypeLinear:
 		manager, err := buildTaskManagerForTracker(repoRoot, profile)
 		if err != nil {
 			return nil, err

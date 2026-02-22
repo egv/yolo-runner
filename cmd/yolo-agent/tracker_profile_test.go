@@ -512,6 +512,36 @@ func TestBuildStorageBackendForTrackerSupportsGitHub(t *testing.T) {
 	}
 }
 
+func TestBuildStorageBackendForTrackerSupportsTK(t *testing.T) {
+	originalFactory := newTKStorageBackend
+	t.Cleanup(func() {
+		newTKStorageBackend = originalFactory
+	})
+
+	repoRoot := t.TempDir()
+	var gotRepoRoot string
+	newTKStorageBackend = func(root string) (contracts.StorageBackend, error) {
+		gotRepoRoot = root
+		return staticStorageBackend{}, nil
+	}
+
+	backend, err := buildStorageBackendForTracker(repoRoot, resolvedTrackerProfile{
+		Name: "default",
+		Tracker: trackerModel{
+			Type: trackerTypeTK,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected tk storage backend to build, got %v", err)
+	}
+	if backend == nil {
+		t.Fatalf("expected non-nil tk storage backend")
+	}
+	if gotRepoRoot != repoRoot {
+		t.Fatalf("expected tk storage backend factory to receive repo root %q, got %q", repoRoot, gotRepoRoot)
+	}
+}
+
 func TestBuildTaskManagerForTrackerWrapsGitHubAuthErrors(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_invalid")
 	originalFactory := newGitHubTaskManager
@@ -567,12 +597,12 @@ func TestBuildTaskManagerForTrackerRejectsUnsupportedType(t *testing.T) {
 }
 
 func TestBuildStorageBackendForTrackerTKSkipsDanglingDependencyRelations(t *testing.T) {
-	originalFactory := newTKTaskManager
+	originalFactory := newTKStorageBackend
 	t.Cleanup(func() {
-		newTKTaskManager = originalFactory
+		newTKStorageBackend = originalFactory
 	})
-	newTKTaskManager = func(string) (contracts.TaskManager, error) {
-		return newFallbackScenarioTaskManager(), nil
+	newTKStorageBackend = func(string) (contracts.StorageBackend, error) {
+		return taskManagerStorageBackend{taskManager: newFallbackScenarioTaskManager()}, nil
 	}
 
 	backend, err := buildStorageBackendForTracker(t.TempDir(), resolvedTrackerProfile{
@@ -616,12 +646,12 @@ func TestBuildStorageBackendForTrackerLinearSkipsDanglingDependencyRelations(t *
 }
 
 func TestBuildStorageBackendForTrackerTKUsesTaskManagerTreeForCompletion(t *testing.T) {
-	originalFactory := newTKTaskManager
+	originalFactory := newTKStorageBackend
 	t.Cleanup(func() {
-		newTKTaskManager = originalFactory
+		newTKStorageBackend = originalFactory
 	})
-	newTKTaskManager = func(string) (contracts.TaskManager, error) {
-		return newFallbackCompletionTaskManager(), nil
+	newTKStorageBackend = func(string) (contracts.StorageBackend, error) {
+		return taskManagerStorageBackend{taskManager: newFallbackCompletionTaskManager()}, nil
 	}
 
 	backend, err := buildStorageBackendForTracker(t.TempDir(), resolvedTrackerProfile{
