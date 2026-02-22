@@ -731,6 +731,18 @@ func TestBuildStorageBackendForTrackerLinearUsesTaskManagerTreeForCompletion(t *
 	assertFallbackBackendTreatsOpenRootWithTerminalChildrenAsComplete(t, backend)
 }
 
+func TestTaskManagerStorageBackendGetTaskReturnsNilWhenTaskManagerReturnsEmptyTask(t *testing.T) {
+	backend := taskManagerStorageBackend{taskManager: staticTaskManager{}}
+
+	task, err := backend.GetTask(context.Background(), "missing")
+	if err != nil {
+		t.Fatalf("GetTask returned error: %v", err)
+	}
+	if task != nil {
+		t.Fatalf("expected nil task for missing lookup, got %#v", task)
+	}
+}
+
 func TestResolveProfileSelectionPolicyPrefersFlag(t *testing.T) {
 	got := resolveProfileSelectionPolicy(profileSelectionInput{
 		FlagValue: "qa",

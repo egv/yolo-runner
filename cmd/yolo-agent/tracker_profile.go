@@ -366,6 +366,9 @@ func (b taskManagerStorageBackend) GetTask(ctx context.Context, taskID string) (
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(task.ID) == "" {
+		return nil, nil
+	}
 	return &task, nil
 }
 
