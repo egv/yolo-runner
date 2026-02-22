@@ -20,6 +20,7 @@ We will refactor the task subsystem into two distinct layers:
 
 ### 1. Storage Backend Layer
 A pluggable abstraction responsible solely for data persistence operations:
+- StorageBackend handles persistence and retrieval of task data only.
 - Authentication with external services (GitHub, Linear, etc.)
 - Fetching task hierarchies and relationships
 - Persisting status updates and metadata
@@ -36,6 +37,7 @@ type StorageBackend interface {
 
 ### 2. Task Engine Layer
 A graph-based scheduler responsible for:
+- Storage and persistence remain in StorageBackend.
 - Building directed graphs from task relationships
 - Resolving dependencies to determine execution order
 - Calculating optimal concurrency based on graph structure
