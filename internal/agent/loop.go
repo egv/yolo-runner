@@ -65,6 +65,14 @@ type Loop struct {
 	workerStartHook func(workerID int)
 }
 
+type taskConcurrencyCalculator interface {
+	CalculateConcurrency(ctx context.Context, maxWorkers int) (int, error)
+}
+
+type taskCompletionChecker interface {
+	IsComplete(ctx context.Context) (bool, error)
+}
+
 func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
 	return &Loop{
 		tasks:          tasks,
@@ -78,10 +86,24 @@ func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events c
 	}
 }
 
+func NewLoopWithTaskEngine(storage contracts.StorageBackend, taskEngine contracts.TaskEngine, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
+	taskManager := newStorageEngineTaskManager(storage, taskEngine, options.ParentID)
+	return NewLoop(taskManager, runner, events, options)
+}
+
 func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 	summary := contracts.LoopSummary{}
 	if l.options.Concurrency <= 0 {
 		l.options.Concurrency = 1
+	}
+	if calculator, ok := l.tasks.(taskConcurrencyCalculator); ok {
+		recommended, err := calculator.CalculateConcurrency(ctx, l.options.Concurrency)
+		if err != nil {
+			return summary, err
+		}
+		if recommended > 0 {
+			l.options.Concurrency = recommended
+		}
 	}
 
 	if l.options.DryRun {
@@ -188,6 +210,15 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 		}
 
 		if len(inFlight) == 0 {
+			if completionChecker, ok := l.tasks.(taskCompletionChecker); ok {
+				complete, err := completionChecker.IsComplete(ctx)
+				if err != nil {
+					return summary, err
+				}
+				if !complete {
+					return summary, fmt.Errorf("task graph incomplete/stalled: no tasks in flight and no tasks available for parent %q", strings.TrimSpace(l.options.ParentID))
+				}
+			}
 			return summary, nil
 		}
 

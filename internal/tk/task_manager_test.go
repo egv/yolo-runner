@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
+	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
 )
 
 func TestTaskManagerSetTaskDataUsesAddNote(t *testing.T) {
@@ -139,6 +140,35 @@ func TestTaskManagerGetTaskIncludesDependencyMetadata(t *testing.T) {
 	}
 	if task.Metadata["dependencies"] != "d-1,d-2" {
 		t.Fatalf("expected dependency metadata, got %#v", task.Metadata)
+	}
+}
+
+func TestTaskManagerGetTaskTreeTreatsOpenRootWithTerminalChildrenAsComplete(t *testing.T) {
+	r := &fakeRunner{responses: map[string]string{
+		"tk query": `{"id":"root","status":"open","type":"epic","title":"Root"}` + "\n" +
+			`{"id":"root.1","status":"closed","type":"task","priority":1,"parent":"root","title":"Done child"}` + "\n" +
+			`{"id":"root.2","status":"failed","type":"task","priority":2,"parent":"root","title":"Failed child"}`,
+	}}
+	m := NewTaskManager(r)
+
+	tree, err := m.GetTaskTree(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("get task tree failed: %v", err)
+	}
+	if len(tree.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks in tree, got %d", len(tree.Tasks))
+	}
+
+	taskEngine := enginepkg.NewTaskEngine()
+	graph, err := taskEngine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph returned error: %v", err)
+	}
+	if ready := taskEngine.GetNextAvailable(graph); len(ready) != 0 {
+		t.Fatalf("expected no runnable tasks, got %#v", ready)
+	}
+	if !taskEngine.IsComplete(graph) {
+		t.Fatalf("expected open root with terminal children to be complete")
 	}
 }
 

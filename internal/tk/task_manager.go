@@ -2,6 +2,7 @@ package tk
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -99,6 +100,108 @@ func (m *TaskManager) GetTask(_ context.Context, taskID string) (contracts.Task,
 	}, nil
 }
 
+func (m *TaskManager) GetTaskTree(_ context.Context, rootID string) (*contracts.TaskTree, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, fmt.Errorf("parent task ID is required")
+	}
+
+	tickets, err := m.adapter.queryTickets()
+	if err != nil {
+		return nil, err
+	}
+
+	ticketsByID := make(map[string]ticket, len(tickets))
+	childrenByParent := make(map[string][]string, len(tickets))
+	for _, t := range tickets {
+		taskID := strings.TrimSpace(t.ID)
+		if taskID == "" {
+			continue
+		}
+		t.ID = taskID
+		t.Parent = strings.TrimSpace(t.Parent)
+		ticketsByID[taskID] = t
+		if t.Parent != "" {
+			childrenByParent[t.Parent] = append(childrenByParent[t.Parent], taskID)
+		}
+	}
+
+	if _, ok := ticketsByID[rootID]; !ok {
+		root := contracts.Task{
+			ID:     rootID,
+			Title:  rootID,
+			Status: contracts.TaskStatusOpen,
+		}
+		return &contracts.TaskTree{
+			Root:  root,
+			Tasks: map[string]contracts.Task{rootID: root},
+		}, nil
+	}
+
+	inScope := descendantTaskIDs(rootID, childrenByParent)
+	taskIDs := sortedTaskIDs(inScope)
+
+	tasks := make(map[string]contracts.Task, len(taskIDs))
+	depsByTask := make(map[string][]string, len(taskIDs))
+	for _, taskID := range taskIDs {
+		raw := ticketsByID[taskID]
+		parentID := strings.TrimSpace(raw.Parent)
+		if taskID == rootID {
+			parentID = ""
+		} else if _, ok := inScope[parentID]; !ok {
+			parentID = rootID
+		}
+
+		deps := filterDependencies(raw.Deps, inScope, taskID)
+		depsByTask[taskID] = deps
+
+		task := contracts.Task{
+			ID:          taskID,
+			Title:       fallbackTaskTitle(raw.Title, taskID),
+			Description: raw.Description,
+			Status:      fallbackTaskStatus(raw.Status),
+			ParentID:    parentID,
+		}
+		if len(deps) > 0 {
+			task.Metadata = map[string]string{"dependencies": strings.Join(deps, ",")}
+		}
+		tasks[taskID] = task
+	}
+
+	root := tasks[rootID]
+	relations := make([]contracts.TaskRelation, 0, len(taskIDs)*3)
+	relationSeen := map[string]struct{}{}
+	for _, taskID := range taskIDs {
+		task := tasks[taskID]
+		if taskID != rootID && task.ParentID != "" {
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: task.ParentID,
+				ToID:   taskID,
+				Type:   contracts.RelationParent,
+			})
+		}
+		for _, depID := range depsByTask[taskID] {
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: taskID,
+				ToID:   depID,
+				Type:   contracts.RelationDependsOn,
+			})
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: depID,
+				ToID:   taskID,
+				Type:   contracts.RelationBlocks,
+			})
+		}
+	}
+	sortTaskRelations(relations)
+
+	return &contracts.TaskTree{
+		Root:      root,
+		Tasks:     tasks,
+		Relations: relations,
+	}, nil
+}
+
 func (m *TaskManager) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
 	if err := m.adapter.UpdateStatus(taskID, string(status)); err != nil {
 		return err
@@ -184,4 +287,99 @@ func dependenciesSatisfied(task ticket, ticketsByID map[string]ticket) bool {
 		}
 	}
 	return true
+}
+
+func descendantTaskIDs(rootID string, childrenByParent map[string][]string) map[string]struct{} {
+	seen := map[string]struct{}{rootID: {}}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		children := append([]string(nil), childrenByParent[current]...)
+		sort.Strings(children)
+		for _, childID := range children {
+			if _, ok := seen[childID]; ok {
+				continue
+			}
+			seen[childID] = struct{}{}
+			queue = append(queue, childID)
+		}
+	}
+	return seen
+}
+
+func sortedTaskIDs(ids map[string]struct{}) []string {
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func filterDependencies(deps []string, inScope map[string]struct{}, taskID string) []string {
+	if len(deps) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	filtered := make([]string, 0, len(deps))
+	for _, depID := range deps {
+		depID = strings.TrimSpace(depID)
+		if depID == "" || depID == taskID {
+			continue
+		}
+		if _, ok := inScope[depID]; !ok {
+			continue
+		}
+		if _, ok := seen[depID]; ok {
+			continue
+		}
+		seen[depID] = struct{}{}
+		filtered = append(filtered, depID)
+	}
+	sort.Strings(filtered)
+	return filtered
+}
+
+func fallbackTaskTitle(title string, fallback string) string {
+	if strings.TrimSpace(title) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(title)
+}
+
+func fallbackTaskStatus(status string) contracts.TaskStatus {
+	normalized := contracts.TaskStatus(strings.TrimSpace(status))
+	if normalized == "" {
+		return contracts.TaskStatusOpen
+	}
+	return normalized
+}
+
+func appendUniqueTaskRelation(relations *[]contracts.TaskRelation, seen map[string]struct{}, relation contracts.TaskRelation) {
+	if relation.FromID == "" || relation.ToID == "" || relation.FromID == relation.ToID {
+		return
+	}
+	key := string(relation.Type) + "|" + relation.FromID + "|" + relation.ToID
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*relations = append(*relations, relation)
+}
+
+func sortTaskRelations(relations []contracts.TaskRelation) {
+	sort.Slice(relations, func(i, j int) bool {
+		if relations[i].Type != relations[j].Type {
+			return relations[i].Type < relations[j].Type
+		}
+		if relations[i].FromID != relations[j].FromID {
+			return relations[i].FromID < relations[j].FromID
+		}
+		if relations[i].ToID != relations[j].ToID {
+			return relations[i].ToID < relations[j].ToID
+		}
+		return false
+	})
 }

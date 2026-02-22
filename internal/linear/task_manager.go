@@ -199,6 +199,92 @@ func (m *TaskManager) GetTask(ctx context.Context, taskID string) (contracts.Tas
 	}, nil
 }
 
+func (m *TaskManager) GetTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, errors.New("parent task ID is required")
+	}
+
+	graph, statusByID, err := m.loadTaskGraphForParent(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if len(graph.Nodes) == 0 {
+		return m.rootOnlyTaskTree(ctx, rootID)
+	}
+	if _, ok := graph.Nodes[rootID]; !ok {
+		return m.rootOnlyTaskTree(ctx, rootID)
+	}
+
+	inScope := descendantNodeIDs(graph, rootID)
+	taskIDs := sortedNodeIDs(inScope)
+	tasks := make(map[string]contracts.Task, len(taskIDs))
+	depsByTask := make(map[string][]string, len(taskIDs))
+	relations := make([]contracts.TaskRelation, 0, len(taskIDs)*3)
+	relationSeen := map[string]struct{}{}
+
+	for _, taskID := range taskIDs {
+		node := graph.Nodes[taskID]
+		parentID := strings.TrimSpace(node.ParentID)
+		if taskID == rootID {
+			parentID = ""
+		} else if _, ok := inScope[parentID]; !ok {
+			parentID = rootID
+		}
+
+		status := statusByID[taskID]
+		if status == "" {
+			status = contracts.TaskStatusOpen
+		}
+
+		deps := filterNodeDependencies(node.Dependencies, inScope, taskID)
+		depsByTask[taskID] = deps
+
+		task := contracts.Task{
+			ID:          taskID,
+			Title:       fallbackText(node.Title, taskID),
+			Description: node.Description,
+			Status:      status,
+			ParentID:    parentID,
+		}
+		if len(deps) > 0 {
+			task.Metadata = map[string]string{"dependencies": strings.Join(deps, ",")}
+		}
+		tasks[taskID] = task
+
+		if taskID != rootID && parentID != "" {
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: parentID,
+				ToID:   taskID,
+				Type:   contracts.RelationParent,
+			})
+		}
+	}
+
+	for _, taskID := range taskIDs {
+		for _, depID := range depsByTask[taskID] {
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: taskID,
+				ToID:   depID,
+				Type:   contracts.RelationDependsOn,
+			})
+			appendUniqueTaskRelation(&relations, relationSeen, contracts.TaskRelation{
+				FromID: depID,
+				ToID:   taskID,
+				Type:   contracts.RelationBlocks,
+			})
+		}
+	}
+	sortTaskRelations(relations)
+
+	rootTask := tasks[rootID]
+	return &contracts.TaskTree{
+		Root:      rootTask,
+		Tasks:     tasks,
+		Relations: relations,
+	}, nil
+}
+
 func (m *TaskManager) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
@@ -782,6 +868,123 @@ func normalizeStateToken(raw string) string {
 	token = strings.ReplaceAll(token, "-", "")
 	token = strings.ReplaceAll(token, " ", "")
 	return token
+}
+
+func (m *TaskManager) rootOnlyTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error) {
+	rootTask, err := m.GetTask(ctx, rootID)
+	if err != nil {
+		rootTask = contracts.Task{
+			ID:     rootID,
+			Title:  rootID,
+			Status: contracts.TaskStatusOpen,
+		}
+	}
+	if strings.TrimSpace(rootTask.ID) == "" {
+		rootTask.ID = rootID
+	}
+	if strings.TrimSpace(rootTask.Title) == "" {
+		rootTask.Title = rootTask.ID
+	}
+	if rootTask.Status == "" {
+		rootTask.Status = contracts.TaskStatusOpen
+	}
+	rootTask.ParentID = ""
+	return &contracts.TaskTree{
+		Root:  rootTask,
+		Tasks: map[string]contracts.Task{rootTask.ID: rootTask},
+	}, nil
+}
+
+func descendantNodeIDs(graph TaskGraph, rootID string) map[string]struct{} {
+	childrenByParent := make(map[string][]string, len(graph.Nodes))
+	for nodeID, node := range graph.Nodes {
+		parentID := strings.TrimSpace(node.ParentID)
+		if parentID == "" {
+			continue
+		}
+		childrenByParent[parentID] = append(childrenByParent[parentID], nodeID)
+	}
+
+	seen := map[string]struct{}{rootID: {}}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		children := append([]string(nil), childrenByParent[current]...)
+		sort.Strings(children)
+		for _, childID := range children {
+			if _, ok := graph.Nodes[childID]; !ok {
+				continue
+			}
+			if _, ok := seen[childID]; ok {
+				continue
+			}
+			seen[childID] = struct{}{}
+			queue = append(queue, childID)
+		}
+	}
+	return seen
+}
+
+func sortedNodeIDs(ids map[string]struct{}) []string {
+	result := make([]string, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func filterNodeDependencies(dependencies []string, inScope map[string]struct{}, taskID string) []string {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	filtered := make([]string, 0, len(dependencies))
+	for _, depID := range dependencies {
+		depID = strings.TrimSpace(depID)
+		if depID == "" || depID == taskID {
+			continue
+		}
+		if _, ok := inScope[depID]; !ok {
+			continue
+		}
+		if _, ok := seen[depID]; ok {
+			continue
+		}
+		seen[depID] = struct{}{}
+		filtered = append(filtered, depID)
+	}
+	sort.Strings(filtered)
+	return filtered
+}
+
+func appendUniqueTaskRelation(relations *[]contracts.TaskRelation, seen map[string]struct{}, relation contracts.TaskRelation) {
+	if relation.FromID == "" || relation.ToID == "" || relation.FromID == relation.ToID {
+		return
+	}
+	key := string(relation.Type) + "|" + relation.FromID + "|" + relation.ToID
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*relations = append(*relations, relation)
+}
+
+func sortTaskRelations(relations []contracts.TaskRelation) {
+	sort.Slice(relations, func(i int, j int) bool {
+		if relations[i].Type != relations[j].Type {
+			return relations[i].Type < relations[j].Type
+		}
+		if relations[i].FromID != relations[j].FromID {
+			return relations[i].FromID < relations[j].FromID
+		}
+		if relations[i].ToID != relations[j].ToID {
+			return relations[i].ToID < relations[j].ToID
+		}
+		return false
+	})
 }
 
 func relationNodes(issue *linearIssuePayload) []linearRelationPayload {
