@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -331,6 +332,30 @@ func TestTaskEngineUpdateTaskStatusReturnsErrorWhenClosingTaskWithOpenDependenci
 	}
 }
 
+func TestTaskEngineUpdateTaskStatusReturnsErrorWhenTaskNotFound(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Status: contracts.TaskStatusClosed},
+			"task": {ID: "task", Title: "Task", Status: contracts.TaskStatusOpen},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	err = engine.UpdateTaskStatus(graph, "missing", contracts.TaskStatusClosed)
+	if err == nil {
+		t.Fatalf("UpdateTaskStatus() error = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), `task "missing" not found`) {
+		t.Fatalf("UpdateTaskStatus() error = %q, want missing task message", err)
+	}
+}
+
 func TestTaskEngineIsCompleteTreatsClosedFailedAndBlockedAsFinished(t *testing.T) {
 	engine := NewTaskEngine()
 	tree := &contracts.TaskTree{
@@ -351,6 +376,68 @@ func TestTaskEngineIsCompleteTreatsClosedFailedAndBlockedAsFinished(t *testing.T
 	if !engine.IsComplete(graph) {
 		t.Fatalf("IsComplete() = false, want true")
 	}
+}
+
+func TestTaskEngineConcurrentUpdateAndReadMaintainsConsistentAvailability(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
+		Tasks: map[string]contracts.Task{
+			"root":    {ID: "root", Status: contracts.TaskStatusClosed},
+			"dep":     {ID: "dep", Status: contracts.TaskStatusOpen},
+			"blocked": {ID: "blocked", Status: contracts.TaskStatusOpen},
+		},
+		Relations: []contracts.TaskRelation{
+			{FromID: "blocked", ToID: "dep", Type: contracts.RelationDependsOn},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 2000; i++ {
+			if err := engine.UpdateTaskStatus(graph, "dep", contracts.TaskStatusClosed); err != nil {
+				t.Errorf("UpdateTaskStatus(dep, closed) error = %v", err)
+				return
+			}
+			if err := engine.UpdateTaskStatus(graph, "dep", contracts.TaskStatusOpen); err != nil {
+				t.Errorf("UpdateTaskStatus(dep, open) error = %v", err)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 4000; i++ {
+			got := summaryIDs(engine.GetNextAvailable(graph))
+			if len(got) != 1 {
+				t.Errorf("GetNextAvailable() = %v, want single stable task", got)
+				return
+			}
+			if got[0] != "dep" && got[0] != "blocked" {
+				t.Errorf("GetNextAvailable() = %v, want [dep] or [blocked]", got)
+				return
+			}
+			if engine.IsComplete(graph) {
+				t.Errorf("IsComplete() = true while open tasks remain")
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
 }
 
 func TestTaskEngineCalculateConcurrencyAcrossTopologies(t *testing.T) {

@@ -232,7 +232,7 @@ func (e *TaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string,
 
 	node := graph.Nodes[taskID]
 	if node == nil {
-		return nil
+		return fmt.Errorf("task %q not found", taskID)
 	}
 	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(node) {
 		return fmt.Errorf("cannot close task %q: dependencies are not closed", taskID)
