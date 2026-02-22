@@ -126,6 +126,46 @@ func TestStorageBackendGetTaskTreeSupportsParentIssueURL(t *testing.T) {
 	assertRelation(t, tree.Relations, contracts.TaskRelation{FromID: "58", ToID: "60", Type: contracts.RelationParent})
 }
 
+func TestStorageBackendGetTaskTreePrefersParentIssueIDOverParentIssueURL(t *testing.T) {
+	t.Parallel()
+
+	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		switch r.URL.Path {
+		case "/repos/anomalyco/yolo-runner/issues/52":
+			_, _ = w.Write([]byte(`{"number":52,"title":"Root epic","body":"","state":"open","labels":[]}`))
+		case "/repos/anomalyco/yolo-runner/issues":
+			_, _ = w.Write([]byte(`[
+				{"number":52,"title":"Root epic","body":"","state":"open","labels":[]},
+				{"number":53,"title":"Unrelated epic","body":"","state":"open","labels":[]},
+				{"number":58,"title":"Child with conflicting parent fields","body":"","state":"open","parent_issue_id":52,"parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/53","labels":[]}
+			]`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	})
+
+	tree, err := backend.GetTaskTree(context.Background(), "52")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+
+	gotIDs := make([]string, 0, len(tree.Tasks))
+	for id := range tree.Tasks {
+		gotIDs = append(gotIDs, id)
+	}
+	sort.Strings(gotIDs)
+	wantIDs := []string{"52", "58"}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("expected task IDs %v, got %v", wantIDs, gotIDs)
+	}
+
+	if got := tree.Tasks["58"].ParentID; got != "52" {
+		t.Fatalf("expected task 58 parent 52, got %q", got)
+	}
+	assertRelation(t, tree.Relations, contracts.TaskRelation{FromID: "52", ToID: "58", Type: contracts.RelationParent})
+}
+
 func TestStorageBackendGetTaskIncludesParentAndDependencyMetadata(t *testing.T) {
 	t.Parallel()
 

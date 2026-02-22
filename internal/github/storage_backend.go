@@ -276,16 +276,13 @@ func sortTaskRelations(relations []contracts.TaskRelation) {
 }
 
 func parentIssueNumber(issue githubIssuePayload) int {
+	if issue.ParentIssueID != nil && *issue.ParentIssueID > 0 {
+		return *issue.ParentIssueID
+	}
 	if parentNumber := issueNumberFromURL(issue.ParentIssueURL); parentNumber > 0 {
 		return parentNumber
 	}
-	if issue.ParentIssueID == nil {
-		return 0
-	}
-	if *issue.ParentIssueID <= 0 {
-		return 0
-	}
-	return *issue.ParentIssueID
+	return 0
 }
 
 func issueNumberFromURL(rawURL string) int {
