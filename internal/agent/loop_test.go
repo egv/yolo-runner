@@ -475,6 +475,36 @@ func TestLoopStorageEnginePathUsesStorageBackendAndTaskEngine(t *testing.T) {
 	}
 }
 
+func TestStorageEngineTaskManagerSetTaskStatusPropagatesTaskEngineErrors(t *testing.T) {
+	storage := newSpyStorageBackend([]contracts.Task{
+		{ID: "root", Title: "Root", Status: contracts.TaskStatusClosed},
+		{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen, ParentID: "root"},
+	}, []contracts.TaskRelation{
+		{FromID: "root", ToID: "t-1", Type: contracts.RelationParent},
+	})
+	engine := newSpyTaskEngine(enginepkg.NewTaskEngine())
+	engine.updateTaskStatusErr = errors.New("graph update failed")
+	manager := newStorageEngineTaskManager(storage, engine, "root")
+
+	if _, err := manager.NextTasks(context.Background(), "root"); err != nil {
+		t.Fatalf("NextTasks failed: %v", err)
+	}
+
+	err := manager.SetTaskStatus(context.Background(), "t-1", contracts.TaskStatusClosed)
+	if err == nil {
+		t.Fatalf("expected SetTaskStatus to return task engine update error")
+	}
+	if !strings.Contains(err.Error(), "graph update failed") {
+		t.Fatalf("expected task engine update error, got %q", err.Error())
+	}
+	if engine.updateTaskStatusCalls == 0 {
+		t.Fatalf("expected task engine UpdateTaskStatus to be called")
+	}
+	if storage.statusSetCount("t-1", contracts.TaskStatusClosed) == 0 {
+		t.Fatalf("expected storage SetTaskStatus to be called before surfacing error")
+	}
+}
+
 func TestLoopWithTaskEngineTreatsOpenRootWithTerminalChildrenAsComplete(t *testing.T) {
 	storage := newSpyStorageBackend([]contracts.Task{
 		{ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
@@ -2399,6 +2429,7 @@ type spyTaskEngine struct {
 	nextAvailableCalls        int
 	calculateConcurrencyCalls int
 	updateTaskStatusCalls     int
+	updateTaskStatusErr       error
 	isCompleteCalls           int
 }
 
@@ -2423,6 +2454,9 @@ func (s *spyTaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts co
 
 func (s *spyTaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string, status contracts.TaskStatus) error {
 	s.updateTaskStatusCalls++
+	if s.updateTaskStatusErr != nil {
+		return s.updateTaskStatusErr
+	}
 	return s.delegate.UpdateTaskStatus(graph, taskID, status)
 }
 

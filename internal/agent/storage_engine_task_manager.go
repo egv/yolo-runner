@@ -62,7 +62,9 @@ func (m *storageEngineTaskManager) SetTaskStatus(ctx context.Context, taskID str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.graph != nil {
-		_ = m.engine.UpdateTaskStatus(m.graph, taskID, status)
+		if err := m.engine.UpdateTaskStatus(m.graph, taskID, status); err != nil {
+			return err
+		}
 	}
 	return nil
 }
