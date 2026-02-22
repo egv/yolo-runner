@@ -62,6 +62,43 @@ func TestTaskEngineBuildGraphParentChildRelations(t *testing.T) {
 	}
 }
 
+func TestTaskEngineBuildGraphUsesTaskParentIDWhenParentRelationsMissing(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
+			"a":    {ID: "a", Title: "A", Status: contracts.TaskStatusOpen, ParentID: "root"},
+			"b":    {ID: "b", Title: "B", Status: contracts.TaskStatusOpen, ParentID: "a"},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	root := graph.Nodes["root"]
+	a := graph.Nodes["a"]
+	b := graph.Nodes["b"]
+	if root == nil || a == nil || b == nil {
+		t.Fatalf("expected nodes root/a/b to exist")
+	}
+
+	if a.Parent == nil || a.Parent.ID != "root" {
+		t.Fatalf("a.Parent = %#v, want root", a.Parent)
+	}
+	if b.Parent == nil || b.Parent.ID != "a" {
+		t.Fatalf("b.Parent = %#v, want a", b.Parent)
+	}
+	if got := childIDs(root.Children); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("root.Children = %v, want [a]", got)
+	}
+	if got := childIDs(a.Children); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("a.Children = %v, want [b]", got)
+	}
+}
+
 func TestTaskEngineBuildGraphDependencyAndDependentRelations(t *testing.T) {
 	engine := NewTaskEngine()
 	tree := &contracts.TaskTree{

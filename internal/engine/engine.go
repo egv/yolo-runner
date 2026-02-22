@@ -56,6 +56,32 @@ func (e *TaskEngine) BuildGraph(tree *contracts.TaskTree) (*contracts.TaskGraph,
 		dependencies[taskID] = nil
 	}
 
+	for _, taskID := range taskIDs {
+		if taskID == rootID {
+			continue
+		}
+
+		childNode := nodes[taskID]
+		parentID := strings.TrimSpace(childNode.Task.ParentID)
+		if parentID == "" {
+			continue
+		}
+
+		parentNode := nodes[parentID]
+		if parentNode == nil {
+			return nil, fmt.Errorf("task %q references unknown parent %q", taskID, parentID)
+		}
+		if err := linkParent(parentSeen, parentNode, childNode); err != nil {
+			return nil, err
+		}
+
+		parentEdgeKey := edgeKey(contracts.RelationParent, parentID, taskID)
+		if _, exists := edgeSeen[parentEdgeKey]; !exists {
+			edges = append(edges, contracts.TaskEdge{FromID: parentID, ToID: taskID, Type: contracts.RelationParent})
+			edgeSeen[parentEdgeKey] = struct{}{}
+		}
+	}
+
 	for _, relation := range tree.Relations {
 		fromID := strings.TrimSpace(relation.FromID)
 		toID := strings.TrimSpace(relation.ToID)
@@ -360,6 +386,7 @@ func linkParent(parentSeen map[string]struct{}, parent *contracts.TaskNode, chil
 	if child.Parent != nil && child.Parent.ID != parent.ID {
 		return fmt.Errorf("task %q has multiple parents: %q and %q", child.ID, child.Parent.ID, parent.ID)
 	}
+	child.Task.ParentID = parent.ID
 	child.Parent = parent
 	parent.Children = append(parent.Children, child)
 	parentSeen[pairKey] = struct{}{}
