@@ -138,7 +138,7 @@ func (e *TaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.Ta
 		if id == graph.RootID && len(node.Children) > 0 {
 			continue
 		}
-		if dependenciesSatisfied(node) {
+		if dependenciesSatisfied(graph.Nodes, node) {
 			available = append(available, contracts.TaskSummary{
 				ID:       node.ID,
 				Title:    node.Task.Title,
@@ -234,7 +234,7 @@ func (e *TaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string,
 	if node == nil {
 		return fmt.Errorf("task %q not found", taskID)
 	}
-	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(node) {
+	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(graph.Nodes, node) {
 		return fmt.Errorf("cannot close task %q: dependencies are not closed", taskID)
 	}
 	node.Status = status
@@ -561,9 +561,13 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 	return copy
 }
 
-func dependenciesSatisfied(node *contracts.TaskNode) bool {
+func dependenciesSatisfied(nodes map[string]*contracts.TaskNode, node *contracts.TaskNode) bool {
 	for _, dependency := range node.Dependencies {
-		if dependency == nil || dependency.Status != contracts.TaskStatusClosed {
+		if dependency == nil {
+			return false
+		}
+		graphDependency, exists := nodes[dependency.ID]
+		if !exists || graphDependency == nil || graphDependency.Status != contracts.TaskStatusClosed {
 			return false
 		}
 	}
