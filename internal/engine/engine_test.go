@@ -297,6 +297,33 @@ func TestTaskEngineGetNextAvailableReturnsEmptySliceForNilOrEmptyGraph(t *testin
 	}
 }
 
+func TestTaskEngineGetNextAvailableSkipsTasksWithMissingDependencyNodes(t *testing.T) {
+	engine := NewTaskEngine()
+	graph := &contracts.TaskGraph{
+		RootID: "root",
+		Nodes: map[string]*contracts.TaskNode{
+			"root": {
+				ID:     "root",
+				Task:   contracts.Task{ID: "root", Title: "Root", Status: contracts.TaskStatusClosed},
+				Status: contracts.TaskStatusClosed,
+			},
+			"task": {
+				ID:     "task",
+				Task:   contracts.Task{ID: "task", Title: "Task", Status: contracts.TaskStatusOpen},
+				Status: contracts.TaskStatusOpen,
+				Dependencies: []*contracts.TaskNode{
+					{ID: "missing-dep", Status: contracts.TaskStatusClosed},
+				},
+			},
+		},
+	}
+
+	got := engine.GetNextAvailable(graph)
+	if len(got) != 0 {
+		t.Fatalf("GetNextAvailable() = %v, want no runnable tasks when dependency node is missing", summaryIDs(got))
+	}
+}
+
 func TestTaskEngineUpdateTaskStatusReturnsErrorWhenClosingTaskWithOpenDependencies(t *testing.T) {
 	engine := NewTaskEngine()
 	tree := &contracts.TaskTree{
