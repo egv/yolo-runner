@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/anomalyco/yolo-runner/internal/contracts"
 	"github.com/anomalyco/yolo-runner/internal/engine"
@@ -230,6 +231,40 @@ func TestStorageBackendAndTaskEngineEndToEndFiftyTasksCompletes(t *testing.T) {
 	}
 }
 
+func TestStorageBackendAndTaskEngineEndToEndOneHundredFiftyTasksCompletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	fixture := newStorageEngineFixture(t, buildLayeredIssueSet(52, 150, 10))
+	taskEngine := engine.NewTaskEngine()
+
+	tree, err := fixture.backend.GetTaskTree(ctx, "52")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+
+	graph, err := taskEngine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph returned error: %v", err)
+	}
+	if len(graph.Nodes) != 151 {
+		t.Fatalf("expected 151 nodes (root + 150 tasks), got %d", len(graph.Nodes))
+	}
+
+	processed := executeWorkflowToNoRemainingRunnableTasks(t, ctx, fixture.backend, taskEngine, graph)
+	if len(processed) != 150 {
+		t.Fatalf("expected 150 processed tasks, got %d", len(processed))
+	}
+	assertDependencyOrder(t, graph, processed)
+
+	if err := setTaskStatusInStorageAndGraph(ctx, fixture.backend, taskEngine, graph, graph.RootID, contracts.TaskStatusClosed); err != nil {
+		t.Fatalf("close root task: %v", err)
+	}
+	if !taskEngine.IsComplete(graph) {
+		t.Fatalf("expected graph to be complete after processing 150 tasks and closing root")
+	}
+}
+
 func executeWorkflowToNoRemainingRunnableTasks(
 	t *testing.T,
 	ctx context.Context,
@@ -434,7 +469,7 @@ func (f *storageEngineFixture) handleRequest(w http.ResponseWriter, r *http.Requ
 	}
 
 	if r.URL.Path == "/repos/anomalyco/yolo-runner/issues" && r.Method == http.MethodGet {
-		f.writeIssueListResponse(w)
+		f.writeIssueListResponse(w, r)
 		return
 	}
 
@@ -464,7 +499,7 @@ func (f *storageEngineFixture) handleRequest(w http.ResponseWriter, r *http.Requ
 	}
 }
 
-func (f *storageEngineFixture) writeIssueListResponse(w http.ResponseWriter) {
+func (f *storageEngineFixture) writeIssueListResponse(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -475,6 +510,25 @@ func (f *storageEngineFixture) writeIssueListResponse(w http.ResponseWriter) {
 	sort.Slice(issues, func(i int, j int) bool {
 		return issues[i].Number < issues[j].Number
 	})
+
+	page, ok := parsePositiveInt(r.URL.Query().Get("page"))
+	if !ok {
+		page = 1
+	}
+	perPage, ok := parsePositiveInt(r.URL.Query().Get("per_page"))
+	if !ok {
+		perPage = issuesPerPage
+	}
+	start := (page - 1) * perPage
+	if start < 0 || start >= len(issues) {
+		issues = []githubIssuePayload{}
+	} else {
+		end := start + perPage
+		if end > len(issues) {
+			end = len(issues)
+		}
+		issues = issues[start:end]
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(issues); err != nil {
