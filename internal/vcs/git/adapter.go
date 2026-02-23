@@ -1,7 +1,7 @@
 package git
 
 import (
-	"github.com/anomalyco/yolo-runner/internal/exec"
+	"github.com/egv/yolo-runner/internal/exec"
 )
 
 // GitCommandAdapter adapts exec.CommandRunner to the git Runner interface
