@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/egv/yolo-runner/v2/internal/version"
 )
 
 const (
@@ -40,6 +42,7 @@ type updateAsset struct {
 
 type updateOptions struct {
 	releaseTag string
+	check      bool
 	osName     string
 	arch       string
 	installDir string
@@ -73,6 +76,16 @@ func runUpdate(args []string, stdout io.Writer, stderr io.Writer, client *http.C
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to resolve release %q: %v\n", options.releaseTag, err)
 		return 1
+	}
+	if options.check {
+		if strings.ToLower(options.releaseTag) != "latest" {
+			resolvedRelease, err = resolveUpdateRelease(client, "latest", options.releaseAPI)
+			if err != nil {
+				fmt.Fprintf(stderr, "failed to resolve release latest: %v\n", err)
+				return 1
+			}
+		}
+		return updateCheck(stdout, resolvedRelease.TagName)
 	}
 
 	artifactName := updateArtifactName(options.osName, options.arch)
@@ -146,6 +159,7 @@ func parseUpdateOptions(args []string) (updateOptions, error) {
 	fs := flag.NewFlagSet("yolo-runner update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	releaseTag := fs.String("release", "latest", "Release tag to install (or latest)")
+	check := fs.Bool("check", false, "Check latest release without installing")
 	osInput := fs.String("os", "", "Target OS (linux, darwin, windows)")
 	archInput := fs.String("arch", "", "Target architecture (amd64, arm64)")
 	installDir := fs.String("install-dir", "", "Directory to place installed binaries")
@@ -172,11 +186,41 @@ func parseUpdateOptions(args []string) (updateOptions, error) {
 
 	return updateOptions{
 		releaseTag: strings.ToLower(strings.TrimSpace(*releaseTag)),
+		check:      *check,
 		osName:     osName,
 		arch:       arch,
 		installDir: strings.TrimSpace(*installDir),
 		releaseAPI: strings.TrimRight(strings.TrimSpace(*releaseAPI), "/"),
 	}, nil
+}
+
+func normalizeVersionTag(versionTag string) string {
+	normalized := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(versionTag)), "v")
+	if normalized == "" {
+		return versionTag
+	}
+	return normalized
+}
+
+func updateCheck(stdout io.Writer, latestTag string) int {
+	current := strings.TrimSpace(version.Version)
+	if current == "" {
+		current = "unknown"
+	}
+	latest := strings.TrimSpace(latestTag)
+	if latest == "" {
+		latest = "unknown"
+	}
+
+	status := "update available"
+	if normalizeVersionTag(current) == normalizeVersionTag(latest) {
+		status = "up to date"
+	}
+
+	fmt.Fprintf(stdout, "current version: %s\n", current)
+	fmt.Fprintf(stdout, "latest release: %s\n", latest)
+	fmt.Fprintf(stdout, "status: %s\n", status)
+	return 0
 }
 
 func resolveUpdateRelease(ctxClient *http.Client, releaseTag, apiBase string) (updateRelease, error) {

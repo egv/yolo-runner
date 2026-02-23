@@ -12,6 +12,7 @@ func TestReadmeDocumentsUpdateUsageAndConstraints(t *testing.T) {
 	required := []string{
 		"## update",
 		"--release",
+		"--check",
 		"pin to a specific tag",
 		"/releases/latest",
 		"checksums",

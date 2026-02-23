@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/egv/yolo-runner/v2/internal/version"
 )
 
 func TestYoloRunnerUpdateResolvesLatestAndPinnedRelease(t *testing.T) {
@@ -91,6 +93,72 @@ func TestYoloRunnerUpdateResolvesLatestAndPinnedRelease(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(content)); got != "version=pinned" {
 		t.Fatalf("pinned binary content mismatch = %q", got)
+	}
+}
+
+func TestYoloRunnerUpdateCheckReportsLatestRelease(t *testing.T) {
+	artifactName := updateArtifactName("linux", "amd64")
+	server := newUpdateTestServer(t, map[string]testReleaseFixture{
+		"/repos/egv/yolo-runner/releases/latest": {
+			tag: "v2.4.0",
+			assets: map[string][]byte{
+				artifactName: []byte("unused"),
+			},
+		},
+	})
+	defer server.Close()
+
+	original := version.Version
+	version.Version = "v2.3.0"
+	t.Cleanup(func() {
+		version.Version = original
+	})
+
+	stdout, stderr, code := runUpdateCommand(t, []string{
+		"--release-api", server.URL() + "/repos/egv/yolo-runner",
+		"--check",
+	}, nil)
+	if code != 0 {
+		t.Fatalf("check mode should succeed: %q", stderr)
+	}
+	if !strings.Contains(stdout, "latest release: v2.4.0") {
+		t.Fatalf("expected latest release output, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "status: update available") {
+		t.Fatalf("expected update availability output, got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "current version: v2.3.0") {
+		t.Fatalf("expected current version output, got: %q", stdout)
+	}
+}
+
+func TestYoloRunnerUpdateCheckReportsUpToDate(t *testing.T) {
+	artifactName := updateArtifactName("linux", "amd64")
+	server := newUpdateTestServer(t, map[string]testReleaseFixture{
+		"/repos/egv/yolo-runner/releases/latest": {
+			tag: "v2.4.0",
+			assets: map[string][]byte{
+				artifactName: []byte("unused"),
+			},
+		},
+	})
+	defer server.Close()
+
+	original := version.Version
+	version.Version = "v2.4.0"
+	t.Cleanup(func() {
+		version.Version = original
+	})
+
+	stdout, stderr, code := runUpdateCommand(t, []string{
+		"--release-api", server.URL() + "/repos/egv/yolo-runner",
+		"--check",
+	}, nil)
+	if code != 0 {
+		t.Fatalf("check mode should succeed when up to date: %q", stderr)
+	}
+	if !strings.Contains(stdout, "status: up to date") {
+		t.Fatalf("expected up-to-date output, got: %q", stdout)
 	}
 }
 

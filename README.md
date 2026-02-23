@@ -109,10 +109,13 @@ Use `update` to refresh `yolo-runner` from GitHub release artifacts.
 Flags:
 
 - `--release` (default `latest`): install the latest release, or pin to a specific tag like `v1.2.3`.
+- `--check` (default false): only check for the latest release and print update status.
 - `--os` (default local OS): target OS (`linux`, `darwin`, `windows`).
 - `--arch` (default local architecture): target architecture (`amd64`, `arm64`).
 - `--install-dir`: optional destination directory (defaults to platform-specific `~/.local/bin`, or `%LOCALAPPDATA%/yolo-runner/bin` on Windows).
 - `--release-api`: base GitHub releases API URL (default `https://api.github.com/repos/egv/yolo-runner`).
+
+The check mode uses `/releases/latest` and prints the current and latest versions.
 
 Resolution and selection behavior:
 
