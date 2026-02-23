@@ -59,6 +59,6 @@ Following strict TDD, write tests for graph building, dependency resolution, and
 --- FAIL: TestTaskGraphIsCompleteReturnsTrueWhenAllTasksFinished (0.00s)
     graph_test.go:462: TaskGraph.IsComplete is not implemented
 FAIL
-FAIL	github.com/anomalyco/yolo-runner/internal/scheduler	0.517s
+FAIL	github.com/egv/yolo-runner/internal/scheduler	0.517s
 FAIL
 ```
