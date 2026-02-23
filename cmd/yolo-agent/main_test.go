@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/linear"
 )
 
 func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/logging"
+	"github.com/egv/yolo-runner/internal/logging"
 	acp "github.com/ironpark/acp-go"
 	"golang.org/x/term"
 )

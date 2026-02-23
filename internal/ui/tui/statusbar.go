@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/runner"
 )
 
 // StatusBar is a Bubble Tea component for rendering TUI status bar at the bottom

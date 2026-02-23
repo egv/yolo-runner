@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anomalyco/yolo-runner/internal/ui/tui"
+	"github.com/egv/yolo-runner/internal/ui/tui"
 )
 
 type tuiLogWriter struct {

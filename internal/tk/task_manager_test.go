@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
+	"github.com/egv/yolo-runner/internal/contracts"
+	enginepkg "github.com/egv/yolo-runner/internal/engine"
 )
 
 func TestTaskManagerSetTaskDataUsesAddNote(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 type runWithACPFunc func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onUpdate func(string)) error

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 // StorageBackend adapts Linear issues to the storage-only contracts.StorageBackend API.

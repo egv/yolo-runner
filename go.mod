@@ -1,4 +1,4 @@
-module github.com/anomalyco/yolo-runner
+module github.com/egv/yolo-runner
 
 go 1.25.5
 

@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
-	"github.com/anomalyco/yolo-runner/internal/logging"
-	"github.com/anomalyco/yolo-runner/internal/ui/tui"
+	"github.com/egv/yolo-runner/internal/contracts"
+	enginepkg "github.com/egv/yolo-runner/internal/engine"
+	"github.com/egv/yolo-runner/internal/logging"
+	"github.com/egv/yolo-runner/internal/ui/tui"
 )
 
 func TestLoopCompletesTask(t *testing.T) {

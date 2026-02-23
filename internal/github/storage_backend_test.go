@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 func TestStorageBackendGetTaskTreeReturnsOnlyRootDescendants(t *testing.T) {
@@ -18,9 +18,9 @@ func TestStorageBackendGetTaskTreeReturnsOnlyRootDescendants(t *testing.T) {
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/52":
+		case "/repos/egv/yolo-runner/issues/52":
 			_, _ = w.Write([]byte(`{"number":52,"title":"Distribution & Installation","body":"Root epic","state":"open","labels":[]}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			if got := r.URL.Query().Get("state"); got != "all" {
 				t.Fatalf("expected state=all, got %q", got)
 			}
@@ -34,7 +34,7 @@ func TestStorageBackendGetTaskTreeReturnsOnlyRootDescendants(t *testing.T) {
 				{"number":60,"title":"Task 60","body":"depends-on:#59\nblocked-by:#999","state":"open","parent_issue_id":58,"labels":[{"name":"depends-on:#59"}]},
 				{"number":53,"title":"Unrelated Epic","body":"","state":"open","labels":[]},
 				{"number":70,"title":"Child of unrelated","body":"","state":"open","parent_issue_id":53,"labels":[]},
-				{"number":80,"title":"PR","body":"","state":"open","labels":[],"pull_request":{"url":"https://api.github.com/repos/anomalyco/yolo-runner/pulls/80"}}
+				{"number":80,"title":"PR","body":"","state":"open","labels":[],"pull_request":{"url":"https://api.github.com/repos/egv/yolo-runner/pulls/80"}}
 			]`))
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -86,15 +86,15 @@ func TestStorageBackendGetTaskTreeSupportsParentIssueURL(t *testing.T) {
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/52":
+		case "/repos/egv/yolo-runner/issues/52":
 			_, _ = w.Write([]byte(`{"number":52,"title":"Root epic","body":"","state":"open","labels":[]}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			_, _ = w.Write([]byte(`[
 				{"number":52,"title":"Root epic","body":"","state":"open","labels":[]},
-				{"number":58,"title":"Child A","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/52","labels":[]},
-				{"number":60,"title":"Grandchild","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/58","labels":[]},
+				{"number":58,"title":"Child A","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/egv/yolo-runner/issues/52","labels":[]},
+				{"number":60,"title":"Grandchild","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/egv/yolo-runner/issues/58","labels":[]},
 				{"number":53,"title":"Unrelated root","body":"","state":"open","labels":[]},
-				{"number":70,"title":"Unrelated child","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/53","labels":[]}
+				{"number":70,"title":"Unrelated child","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/egv/yolo-runner/issues/53","labels":[]}
 			]`))
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -132,13 +132,13 @@ func TestStorageBackendGetTaskTreePrefersParentIssueIDOverParentIssueURL(t *test
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/52":
+		case "/repos/egv/yolo-runner/issues/52":
 			_, _ = w.Write([]byte(`{"number":52,"title":"Root epic","body":"","state":"open","labels":[]}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			_, _ = w.Write([]byte(`[
 				{"number":52,"title":"Root epic","body":"","state":"open","labels":[]},
 				{"number":53,"title":"Unrelated epic","body":"","state":"open","labels":[]},
-				{"number":58,"title":"Child with conflicting parent fields","body":"","state":"open","parent_issue_id":52,"parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/53","labels":[]}
+				{"number":58,"title":"Child with conflicting parent fields","body":"","state":"open","parent_issue_id":52,"parent_issue_url":"https://api.github.com/repos/egv/yolo-runner/issues/53","labels":[]}
 			]`))
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -172,7 +172,7 @@ func TestStorageBackendGetTaskIncludesParentAndDependencyMetadata(t *testing.T) 
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/60":
+		case "/repos/egv/yolo-runner/issues/60":
 			_, _ = w.Write([]byte(`{
 				"number": 60,
 				"title": "Task 60",
@@ -181,7 +181,7 @@ func TestStorageBackendGetTaskIncludesParentAndDependencyMetadata(t *testing.T) 
 				"parent_issue_id": 58,
 				"labels": [{"name":"depends-on:#59"}]
 			}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			_, _ = w.Write([]byte(`[
 				{"number":58,"title":"Task 58","body":"","state":"open","parent_issue_id":52,"labels":[]},
 				{"number":59,"title":"Task 59","body":"","state":"closed","parent_issue_id":52,"labels":[]},
@@ -213,19 +213,19 @@ func TestStorageBackendGetTaskSupportsParentIssueURL(t *testing.T) {
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/60":
+		case "/repos/egv/yolo-runner/issues/60":
 			_, _ = w.Write([]byte(`{
 				"number": 60,
 				"title": "Task 60",
 				"body": "",
 				"state": "open",
-				"parent_issue_url": "https://api.github.com/repos/anomalyco/yolo-runner/issues/58",
+				"parent_issue_url": "https://api.github.com/repos/egv/yolo-runner/issues/58",
 				"labels": []
 			}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			_, _ = w.Write([]byte(`[
 				{"number":58,"title":"Task 58","body":"","state":"open","labels":[]},
-				{"number":60,"title":"Task 60","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/anomalyco/yolo-runner/issues/58","labels":[]}
+				{"number":60,"title":"Task 60","body":"","state":"open","parent_issue_url":"https://api.github.com/repos/egv/yolo-runner/issues/58","labels":[]}
 			]`))
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -248,11 +248,11 @@ func TestStorageBackendBacksOffWhenRateLimitApproaching(t *testing.T) {
 	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues/60":
+		case "/repos/egv/yolo-runner/issues/60":
 			w.Header().Set("X-RateLimit-Remaining", "1")
 			w.Header().Set("X-RateLimit-Reset", "1700000003")
 			_, _ = w.Write([]byte(`{"number":60,"title":"Task 60","body":"","state":"open","labels":[]}`))
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			_, _ = w.Write([]byte(`[{"number":60,"title":"Task 60","body":"","state":"open","labels":[]}]`))
 		default:
 			t.Fatalf("unexpected request path %q", r.URL.Path)
@@ -295,8 +295,8 @@ func newGitHubStorageTestBackend(t *testing.T, handler func(t *testing.T, r *htt
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Helper()
-		if r.URL.Path == "/repos/anomalyco/yolo-runner" {
-			_, _ = w.Write([]byte(`{"full_name":"anomalyco/yolo-runner"}`))
+		if r.URL.Path == "/repos/egv/yolo-runner" {
+			_, _ = w.Write([]byte(`{"full_name":"egv/yolo-runner"}`))
 			return
 		}
 		handler(t, r, w)
@@ -304,7 +304,7 @@ func newGitHubStorageTestBackend(t *testing.T, handler func(t *testing.T, r *htt
 	t.Cleanup(server.Close)
 
 	backend, err := NewStorageBackend(Config{
-		Owner:       "anomalyco",
+		Owner:       "egv",
 		Repo:        "yolo-runner",
 		Token:       "ghp_test",
 		APIEndpoint: server.URL,

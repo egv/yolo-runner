@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/linear"
-	"github.com/anomalyco/yolo-runner/internal/linear/webhook"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/linear/webhook"
 )
 
 type boundaryTestRunner struct {

@@ -3,7 +3,7 @@ package tk
 import (
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts/conformance"
+	"github.com/egv/yolo-runner/internal/contracts/conformance"
 )
 
 func TestTaskManagerConformance(t *testing.T) {

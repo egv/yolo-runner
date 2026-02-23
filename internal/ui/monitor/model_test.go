@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 func TestModelTracksCurrentTaskPhaseAgeAndHistory(t *testing.T) {

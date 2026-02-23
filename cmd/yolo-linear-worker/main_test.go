@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/linear/webhook"
+	"github.com/egv/yolo-runner/internal/linear/webhook"
 )
 
 func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {

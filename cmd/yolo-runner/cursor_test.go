@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
-	"github.com/anomalyco/yolo-runner/internal/ui"
+	"github.com/egv/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/ui"
 )
 
 func TestCursorVisibleAfterProgressOutput(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/linear"
 )
 
 const defaultMaxBodyBytes = int64(1 << 20)

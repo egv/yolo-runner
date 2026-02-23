@@ -123,6 +123,26 @@ func TestInstallScriptPlanModeReportsPlatformAndInstallCoordinates(t *testing.T)
 	}
 }
 
+func TestInstallScriptPlanModeUsesEgvReleaseBaseByDefault(t *testing.T) {
+	repoRoot := testRepoRoot(t)
+
+	out, err := runInstallScript(repoRoot, []string{"--plan", "--os", "Linux", "--arch", "amd64"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("run install.sh --plan failed: %v\noutput: %s", err, out)
+	}
+
+	plan := parsePlanOutput(out)
+	wantArtifactURL := "https://github.com/egv/yolo-runner/releases/latest/download/yolo-runner_linux_amd64.tar.gz"
+	if gotArtifactURL := plan["artifact_url"]; gotArtifactURL != wantArtifactURL {
+		t.Fatalf("artifact_url = %q, want %q", gotArtifactURL, wantArtifactURL)
+	}
+
+	wantChecksumURL := "https://github.com/egv/yolo-runner/releases/latest/download/checksums-yolo-runner_linux_amd64.tar.gz.txt"
+	if gotChecksumURL := plan["checksum_url"]; gotChecksumURL != wantChecksumURL {
+		t.Fatalf("checksum_url = %q, want %q", gotChecksumURL, wantChecksumURL)
+	}
+}
+
 func TestInstallScriptRejectsUnsupportedPlatforms(t *testing.T) {
 	t.Parallel()
 	repoRoot := testRepoRoot(t)

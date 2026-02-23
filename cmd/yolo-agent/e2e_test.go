@@ -16,14 +16,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/claude"
-	"github.com/anomalyco/yolo-runner/internal/codex"
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	githubtracker "github.com/anomalyco/yolo-runner/internal/github"
-	"github.com/anomalyco/yolo-runner/internal/kimi"
-	"github.com/anomalyco/yolo-runner/internal/linear"
-	"github.com/anomalyco/yolo-runner/internal/tk"
-	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
+	"github.com/egv/yolo-runner/internal/claude"
+	"github.com/egv/yolo-runner/internal/codex"
+	"github.com/egv/yolo-runner/internal/contracts"
+	githubtracker "github.com/egv/yolo-runner/internal/github"
+	"github.com/egv/yolo-runner/internal/kimi"
+	"github.com/egv/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/tk"
+	"github.com/egv/yolo-runner/internal/ui/monitor"
 )
 
 func TestE2E_YoloAgentRunCompletesSeededTKTask(t *testing.T) {
@@ -666,7 +666,7 @@ profiles:
       type: github
       github:
         scope:
-          owner: anomalyco
+          owner: egv
           repo: yolo-runner
         auth:
           token_env: GITHUB_TOKEN
@@ -708,9 +708,9 @@ profiles:
 		}
 
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner":
-			writeJSON(t, w, http.StatusOK, map[string]any{"full_name": "anomalyco/yolo-runner"})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner/issues":
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/egv/yolo-runner":
+			writeJSON(t, w, http.StatusOK, map[string]any{"full_name": "egv/yolo-runner"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/egv/yolo-runner/issues":
 			if got := r.URL.Query().Get("state"); got != "all" {
 				t.Fatalf("expected state=all query, got %q", got)
 			}
@@ -729,12 +729,12 @@ profiles:
 				issuePayload(rootIssueNumber, "GitHub e2e root", root),
 				issuePayload(taskIssueNumber, "Implement GitHub e2e demo", issue),
 			})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102":
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/egv/yolo-runner/issues/102":
 			stateMu.Lock()
 			issue := issueState
 			stateMu.Unlock()
 			writeJSON(t, w, http.StatusOK, issuePayload(taskIssueNumber, "Implement GitHub e2e demo", issue))
-		case r.Method == http.MethodPatch && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102":
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/egv/yolo-runner/issues/102":
 			var payload struct {
 				State string `json:"state"`
 			}
@@ -746,7 +746,7 @@ profiles:
 			statusTransitions = append(statusTransitions, issueState)
 			stateMu.Unlock()
 			writeJSON(t, w, http.StatusOK, map[string]any{"number": taskIssueNumber})
-		case r.Method == http.MethodPost && r.URL.Path == "/repos/anomalyco/yolo-runner/issues/102/comments":
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/egv/yolo-runner/issues/102/comments":
 			writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1})
 		default:
 			t.Fatalf("unexpected GitHub API request: %s %s", r.Method, r.URL.String())
@@ -756,8 +756,8 @@ profiles:
 
 	originalFactory := newGitHubTaskManager
 	newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager, error) {
-		if cfg.Owner != "anomalyco" {
-			return nil, errors.New("expected owner anomalyco")
+		if cfg.Owner != "egv" {
+			return nil, errors.New("expected owner egv")
 		}
 		if cfg.Repo != "yolo-runner" {
 			return nil, errors.New("expected repository yolo-runner")

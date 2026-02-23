@@ -5,7 +5,7 @@ set -euo pipefail
 ACTION="install"
 INPUT_OS=""
 INPUT_ARCH=""
-RELEASE_BASE_URL="https://github.com/anomalyco/yolo-runner/releases/latest/download"
+RELEASE_BASE_URL="https://github.com/egv/yolo-runner/releases/latest/download"
 FORCED_INSTALL_DIR=""
 CHECKSUM_ARTIFACT=""
 CHECKSUM_MANIFEST=""

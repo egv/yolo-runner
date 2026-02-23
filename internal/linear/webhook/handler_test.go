@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/linear"
 )
 
 type captureDispatcher struct {

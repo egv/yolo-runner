@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 func TestStorageBackendGetTaskTreeReturnsHierarchyWithDependencies(t *testing.T) {

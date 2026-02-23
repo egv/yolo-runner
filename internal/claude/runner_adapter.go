@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 const defaultBinary = "claude"

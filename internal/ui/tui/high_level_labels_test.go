@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/runner"
 )
 
 func TestTUIOnlyShowsHighLevelActionLabels(t *testing.T) {

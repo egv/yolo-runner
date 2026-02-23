@@ -123,3 +123,16 @@ func TestInstallMatrixEntriesIncludeCommandAndSuccessCriteria(t *testing.T) {
 	}
 }
 
+func TestInstallMatrixUsesCurrentRepositoryForReleaseAndInstallerURLs(t *testing.T) {
+	matrix := readRepoFile(t, "docs", "install-matrix.md")
+
+	requiredStrings := []string{
+		"https://github.com/egv/yolo-runner/releases/latest/download",
+		"https://raw.githubusercontent.com/egv/yolo-runner/main/install.sh",
+	}
+	for _, needle := range requiredStrings {
+		if !strings.Contains(matrix, needle) {
+			t.Fatalf("install matrix missing expected URL %q", needle)
+		}
+	}
+}

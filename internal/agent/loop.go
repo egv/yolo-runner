@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/scheduler"
-	"github.com/anomalyco/yolo-runner/internal/tk"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/scheduler"
+	"github.com/egv/yolo-runner/internal/tk"
 )
 
 type taskRuntimeConfig struct {

@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/claude"
-	"github.com/anomalyco/yolo-runner/internal/codex"
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/kimi"
-	"github.com/anomalyco/yolo-runner/internal/linear"
-	"github.com/anomalyco/yolo-runner/internal/linear/webhook"
-	"github.com/anomalyco/yolo-runner/internal/opencode"
+	"github.com/egv/yolo-runner/internal/claude"
+	"github.com/egv/yolo-runner/internal/codex"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/kimi"
+	"github.com/egv/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/linear/webhook"
+	"github.com/egv/yolo-runner/internal/opencode"
 )
 
 const (

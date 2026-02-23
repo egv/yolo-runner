@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
-	"github.com/anomalyco/yolo-runner/internal/ui/tui"
+	"github.com/egv/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/ui/tui"
 )
 
 type captureTUIProgram struct {

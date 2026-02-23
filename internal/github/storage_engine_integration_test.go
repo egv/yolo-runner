@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/engine"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/engine"
 )
 
 func TestStorageBackendAndTaskEngineEpic52RunsOnlyEightSubTasks(t *testing.T) {
@@ -401,7 +401,7 @@ func newPullRequestPayload(number int, title string) githubIssuePayload {
 		PullRequest: &struct {
 			URL string `json:"url"`
 		}{
-			URL: "https://api.github.com/repos/anomalyco/yolo-runner/pulls/" + strconv.Itoa(number),
+			URL: "https://api.github.com/repos/egv/yolo-runner/pulls/" + strconv.Itoa(number),
 		},
 	}
 }
@@ -435,7 +435,7 @@ func newStorageEngineFixture(t *testing.T, issues []githubIssuePayload) *storage
 	t.Cleanup(fixture.server.Close)
 
 	backend, err := NewStorageBackend(Config{
-		Owner:       "anomalyco",
+		Owner:       "egv",
 		Repo:        "yolo-runner",
 		Token:       "ghp_test",
 		APIEndpoint: fixture.server.URL,
@@ -463,17 +463,17 @@ func (f *storageEngineFixture) setIssueState(number int, state string) {
 func (f *storageEngineFixture) handleRequest(w http.ResponseWriter, r *http.Request) {
 	f.t.Helper()
 
-	if r.URL.Path == "/repos/anomalyco/yolo-runner" && r.Method == http.MethodGet {
-		_, _ = w.Write([]byte(`{"full_name":"anomalyco/yolo-runner"}`))
+	if r.URL.Path == "/repos/egv/yolo-runner" && r.Method == http.MethodGet {
+		_, _ = w.Write([]byte(`{"full_name":"egv/yolo-runner"}`))
 		return
 	}
 
-	if r.URL.Path == "/repos/anomalyco/yolo-runner/issues" && r.Method == http.MethodGet {
+	if r.URL.Path == "/repos/egv/yolo-runner/issues" && r.Method == http.MethodGet {
 		f.writeIssueListResponse(w, r)
 		return
 	}
 
-	const issuePrefix = "/repos/anomalyco/yolo-runner/issues/"
+	const issuePrefix = "/repos/egv/yolo-runner/issues/"
 	if !strings.HasPrefix(r.URL.Path, issuePrefix) {
 		f.t.Fatalf("unexpected request path %q", r.URL.Path)
 	}

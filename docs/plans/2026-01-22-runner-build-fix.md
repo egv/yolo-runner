@@ -54,7 +54,7 @@ Update `RunOnceOptions` struct to include:
 
 Ensure `internal/runner/runner.go` imports:
 - `context`
-- `github.com/anomalyco/yolo-runner/internal/ui`
+- `github.com/egv/yolo-runner/internal/ui`
 
 **Step 4: Update call sites for new option types**
 
@@ -131,7 +131,7 @@ Expected: PASS
 
 **Step 1: Verify module path**
 
-Use Read tool on `go.mod` to confirm module path is `github.com/anomalyco/yolo-runner`.
+Use Read tool on `go.mod` to confirm module path is `github.com/egv/yolo-runner`.
 
 **Step 2: Search for incorrect imports**
 

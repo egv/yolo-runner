@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/opencode"
-	"github.com/anomalyco/yolo-runner/internal/runner"
-	"github.com/anomalyco/yolo-runner/internal/ui/tui"
+	"github.com/egv/yolo-runner/internal/opencode"
+	"github.com/egv/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/ui/tui"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

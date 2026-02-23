@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/runner"
 )
 
 // TestModelUsesMarkdownBubbleForThoughts verifies that the model uses MarkdownBubble

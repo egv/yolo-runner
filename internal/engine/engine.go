@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 // TaskEngine builds and evaluates in-memory task graphs over contracts types.

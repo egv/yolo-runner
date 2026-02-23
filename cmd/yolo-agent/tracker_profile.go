@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	githubtracker "github.com/anomalyco/yolo-runner/internal/github"
-	"github.com/anomalyco/yolo-runner/internal/linear"
-	"github.com/anomalyco/yolo-runner/internal/tk"
+	"github.com/egv/yolo-runner/internal/contracts"
+	githubtracker "github.com/egv/yolo-runner/internal/github"
+	"github.com/egv/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/tk"
 )
 
 const (

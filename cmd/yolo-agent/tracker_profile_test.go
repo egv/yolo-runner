@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	enginepkg "github.com/anomalyco/yolo-runner/internal/engine"
-	githubtracker "github.com/anomalyco/yolo-runner/internal/github"
-	"github.com/anomalyco/yolo-runner/internal/linear"
+	"github.com/egv/yolo-runner/internal/contracts"
+	enginepkg "github.com/egv/yolo-runner/internal/engine"
+	githubtracker "github.com/egv/yolo-runner/internal/github"
+	"github.com/egv/yolo-runner/internal/linear"
 )
 
 func TestResolveTrackerProfileDefaultsToTKWhenConfigMissing(t *testing.T) {
@@ -232,7 +232,7 @@ profiles:
       type: github
       github:
         scope:
-          owner: anomalyco
+          owner: egv
         auth:
           token_env: GITHUB_TOKEN
 `)
@@ -258,7 +258,7 @@ profiles:
       type: github
       github:
         scope:
-          owner: anomalyco
+          owner: egv
           repo: yolo-runner
 `)
 
@@ -283,7 +283,7 @@ profiles:
       type: github
       github:
         scope:
-          owner: anomalyco
+          owner: egv
           repo: yolo-runner
         auth:
           token_env: GITHUB_TOKEN
@@ -310,7 +310,7 @@ profiles:
       type: github
       github:
         scope:
-          owner: anomalyco
+          owner: egv
           repo: yolo-runner,another-repo
         auth:
           token_env: GITHUB_TOKEN
@@ -441,7 +441,7 @@ func TestBuildTaskManagerForTrackerSupportsGitHub(t *testing.T) {
 			Type: trackerTypeGitHub,
 			GitHub: &githubTrackerModel{
 				Scope: githubScopeModel{
-					Owner: "anomalyco",
+					Owner: "egv",
 					Repo:  "yolo-runner",
 				},
 				Auth: githubAuthModel{
@@ -456,7 +456,7 @@ func TestBuildTaskManagerForTrackerSupportsGitHub(t *testing.T) {
 	if manager == nil {
 		t.Fatalf("expected non-nil github task manager")
 	}
-	if got.Owner != "anomalyco" {
+	if got.Owner != "egv" {
 		t.Fatalf("expected owner to be wired, got %q", got.Owner)
 	}
 	if got.Repo != "yolo-runner" {
@@ -486,7 +486,7 @@ func TestBuildStorageBackendForTrackerSupportsGitHub(t *testing.T) {
 			Type: trackerTypeGitHub,
 			GitHub: &githubTrackerModel{
 				Scope: githubScopeModel{
-					Owner: "anomalyco",
+					Owner: "egv",
 					Repo:  "yolo-runner",
 				},
 				Auth: githubAuthModel{
@@ -501,7 +501,7 @@ func TestBuildStorageBackendForTrackerSupportsGitHub(t *testing.T) {
 	if backend == nil {
 		t.Fatalf("expected non-nil github storage backend")
 	}
-	if got.Owner != "anomalyco" {
+	if got.Owner != "egv" {
 		t.Fatalf("expected owner to be wired, got %q", got.Owner)
 	}
 	if got.Repo != "yolo-runner" {
@@ -595,7 +595,7 @@ func TestBuildTaskManagerForTrackerWrapsGitHubAuthErrors(t *testing.T) {
 			Type: trackerTypeGitHub,
 			GitHub: &githubTrackerModel{
 				Scope: githubScopeModel{
-					Owner: "anomalyco",
+					Owner: "egv",
 					Repo:  "yolo-runner",
 				},
 				Auth: githubAuthModel{

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 // StorageBackend adapts GitHub Issues to the storage-only contracts.StorageBackend API.

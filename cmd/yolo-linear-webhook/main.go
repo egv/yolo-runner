@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/linear/webhook"
+	"github.com/egv/yolo-runner/internal/linear/webhook"
 )
 
 type runConfig struct {

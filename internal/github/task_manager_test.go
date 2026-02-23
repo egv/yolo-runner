@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts"
 )
 
 func TestNewTaskManagerRequiresOwner(t *testing.T) {
@@ -23,7 +23,7 @@ func TestNewTaskManagerRequiresOwner(t *testing.T) {
 }
 
 func TestNewTaskManagerRequiresRepo(t *testing.T) {
-	_, err := NewTaskManager(Config{Owner: "anomalyco", Token: "ghp_test"})
+	_, err := NewTaskManager(Config{Owner: "egv", Token: "ghp_test"})
 	if err == nil {
 		t.Fatalf("expected missing repository to fail")
 	}
@@ -33,7 +33,7 @@ func TestNewTaskManagerRequiresRepo(t *testing.T) {
 }
 
 func TestNewTaskManagerRequiresToken(t *testing.T) {
-	_, err := NewTaskManager(Config{Owner: "anomalyco", Repo: "yolo-runner"})
+	_, err := NewTaskManager(Config{Owner: "egv", Repo: "yolo-runner"})
 	if err == nil {
 		t.Fatalf("expected missing token to fail")
 	}
@@ -44,19 +44,19 @@ func TestNewTaskManagerRequiresToken(t *testing.T) {
 
 func TestNewTaskManagerProbesConfiguredRepository(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/anomalyco/yolo-runner" {
-			t.Fatalf("expected probe path /repos/anomalyco/yolo-runner, got %q", r.URL.Path)
+		if r.URL.Path != "/repos/egv/yolo-runner" {
+			t.Fatalf("expected probe path /repos/egv/yolo-runner, got %q", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer ghp_test" {
 			t.Fatalf("expected bearer authorization, got %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"full_name":"anomalyco/yolo-runner"}`))
+		_, _ = w.Write([]byte(`{"full_name":"egv/yolo-runner"}`))
 	}))
 	t.Cleanup(server.Close)
 
 	manager, err := NewTaskManager(Config{
-		Owner:       "anomalyco",
+		Owner:       "egv",
 		Repo:        "yolo-runner",
 		Token:       "ghp_test",
 		APIEndpoint: server.URL,
@@ -79,7 +79,7 @@ func TestNewTaskManagerWrapsProbeAuthErrors(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	_, err := NewTaskManager(Config{
-		Owner:       "anomalyco",
+		Owner:       "egv",
 		Repo:        "yolo-runner",
 		Token:       "ghp_invalid",
 		APIEndpoint: server.URL,
@@ -104,7 +104,7 @@ func TestTaskManagerNextTasksFiltersUnsatisfiedDependenciesAndSortsByPriority(t 
 		if r.Method != http.MethodGet {
 			t.Fatalf("expected GET request, got %s", r.Method)
 		}
-		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues" {
+		if r.URL.Path != "/repos/egv/yolo-runner/issues" {
 			t.Fatalf("expected issues path, got %q", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer ghp_test" {
@@ -126,7 +126,7 @@ func TestTaskManagerNextTasksFiltersUnsatisfiedDependenciesAndSortsByPriority(t 
   {"number":3,"title":"Ready high","body":"","state":"open","labels":[{"name":"p0"}]},
   {"number":4,"title":"Ready low","body":"","state":"open","labels":[{"name":"priority:2"},{"name":"depends-on:#2"}]},
   {"number":5,"title":"Blocked task","body":"blocked-by: #1","state":"open","labels":[]},
-  {"number":40,"title":"Automation PR","body":"","state":"open","labels":[{"name":"p0"}],"pull_request":{"url":"https://api.github.com/repos/anomalyco/yolo-runner/pulls/40"}}
+  {"number":40,"title":"Automation PR","body":"","state":"open","labels":[{"name":"p0"}],"pull_request":{"url":"https://api.github.com/repos/egv/yolo-runner/pulls/40"}}
 ]`))
 	})
 
@@ -156,7 +156,7 @@ func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing
 
 	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
-		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues" {
+		if r.URL.Path != "/repos/egv/yolo-runner/issues" {
 			t.Fatalf("expected issues path, got %q", r.URL.Path)
 		}
 		_, _ = w.Write([]byte(`[
@@ -185,7 +185,7 @@ func TestTaskManagerGetTaskMapsIssueDetailsAndDependencyMetadata(t *testing.T) {
 	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
 		t.Helper()
 		switch r.URL.Path {
-		case "/repos/anomalyco/yolo-runner/issues":
+		case "/repos/egv/yolo-runner/issues":
 			if got := r.URL.Query().Get("state"); got != "all" {
 				t.Fatalf("expected state=all for dependency lookup, got %q", got)
 			}
@@ -195,7 +195,7 @@ func TestTaskManagerGetTaskMapsIssueDetailsAndDependencyMetadata(t *testing.T) {
   {"number":3,"title":"Dep B","body":"","state":"open","labels":[]},
   {"number":8,"title":"Implement read path","body":"Depends on #3\n- blocked by #2\nblocked-by: #8\nblocked-by: #999","state":"open","labels":[{"name":"depends-on:#2"},{"name":"blocked-by:#3, #3, #999"}]}
 ]`))
-		case "/repos/anomalyco/yolo-runner/issues/8":
+		case "/repos/egv/yolo-runner/issues/8":
 			_, _ = w.Write([]byte(`{
   "number": 8,
   "title": "Implement read path",
@@ -241,7 +241,7 @@ func TestTaskManagerSetTaskStatusUpdatesIssueStateForLifecycle(t *testing.T) {
 		if r.Method != http.MethodPatch {
 			t.Fatalf("expected PATCH request, got %s", r.Method)
 		}
-		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues/8" {
+		if r.URL.Path != "/repos/egv/yolo-runner/issues/8" {
 			t.Fatalf("expected issue update path, got %q", r.URL.Path)
 		}
 
@@ -308,7 +308,7 @@ func TestTaskManagerSetTaskDataWritesSortedComments(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST request, got %s", r.Method)
 		}
-		if r.URL.Path != "/repos/anomalyco/yolo-runner/issues/8/comments" {
+		if r.URL.Path != "/repos/egv/yolo-runner/issues/8/comments" {
 			t.Fatalf("expected comments path, got %q", r.URL.Path)
 		}
 		var payload struct {
@@ -360,8 +360,8 @@ func newGitHubTestManager(t *testing.T, handler func(t *testing.T, r *http.Reque
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Helper()
-		if r.URL.Path == "/repos/anomalyco/yolo-runner" {
-			_, _ = w.Write([]byte(`{"full_name":"anomalyco/yolo-runner"}`))
+		if r.URL.Path == "/repos/egv/yolo-runner" {
+			_, _ = w.Write([]byte(`{"full_name":"egv/yolo-runner"}`))
 			return
 		}
 		handler(t, r, w)
@@ -369,7 +369,7 @@ func newGitHubTestManager(t *testing.T, handler func(t *testing.T, r *http.Reque
 	t.Cleanup(server.Close)
 
 	manager, err := NewTaskManager(Config{
-		Owner:       "anomalyco",
+		Owner:       "egv",
 		Repo:        "yolo-runner",
 		Token:       "ghp_test",
 		APIEndpoint: server.URL,

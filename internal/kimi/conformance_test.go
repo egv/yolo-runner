@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/contracts/conformance"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/contracts/conformance"
 )
 
 func TestCLIRunnerAdapterConformance(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/anomalyco/yolo-runner/internal/runner"
+	"github.com/egv/yolo-runner/internal/runner"
 )
 
 // This file contains comprehensive tests for StatusBar formatting behavior.

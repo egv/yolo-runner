@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/yolo-runner/internal/contracts"
-	"github.com/anomalyco/yolo-runner/internal/ui/monitor"
+	"github.com/egv/yolo-runner/internal/contracts"
+	"github.com/egv/yolo-runner/internal/ui/monitor"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
