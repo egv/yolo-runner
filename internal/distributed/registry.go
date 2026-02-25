@@ -86,7 +86,8 @@ func (r *ExecutorRegistry) Register(payload ExecutorRegistrationPayload) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pruneExpired(r.now())
+	now := r.now()
+	r.pruneExpired(now)
 	id := strings.TrimSpace(payload.ExecutorID)
 	if id == "" {
 		return
@@ -95,10 +96,8 @@ func (r *ExecutorRegistry) Register(payload ExecutorRegistrationPayload) {
 		ID:           id,
 		Capabilities: NewCapabilitySet(payload.Capabilities...),
 		Metadata:     payload.Metadata,
-		SeenAt:       payload.StartedAt.UTC(),
-	}
-	if advert.SeenAt.IsZero() {
-		advert.SeenAt = r.now()
+		// Liveness must be based on local receipt time to avoid clock-skew false negatives.
+		SeenAt: now,
 	}
 	r.executors[id] = advert
 }
@@ -109,7 +108,8 @@ func (r *ExecutorRegistry) Heartbeat(payload ExecutorHeartbeatPayload) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pruneExpired(r.now())
+	now := r.now()
+	r.pruneExpired(now)
 	existing, ok := r.executors[payload.ExecutorID]
 	if !ok {
 		existing = ExecutorAdvertisement{
@@ -118,10 +118,7 @@ func (r *ExecutorRegistry) Heartbeat(payload ExecutorHeartbeatPayload) {
 			Metadata:     make(map[string]string),
 		}
 	}
-	existing.SeenAt = payload.SeenAt.UTC()
-	if existing.SeenAt.IsZero() {
-		existing.SeenAt = r.now()
-	}
+	existing.SeenAt = now
 	if existing.Metadata == nil {
 		existing.Metadata = make(map[string]string)
 	}
