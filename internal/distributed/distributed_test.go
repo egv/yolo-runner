@@ -99,6 +99,34 @@ func TestExecutorRegistryRoutesByCapabilitiesAndEvictsStale(t *testing.T) {
 	}
 }
 
+func TestExecutorRegistryUsesReceiptTimeForLiveness(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	clock := now
+	registry := NewExecutorRegistry(2*time.Second, func() time.Time { return clock })
+
+	registry.Register(ExecutorRegistrationPayload{
+		ExecutorID:   "skewed-exec",
+		Capabilities: []Capability{CapabilityImplement},
+		StartedAt:    now.Add(-10 * time.Minute), // stale remote timestamp should not mark executor offline
+	})
+	if _, err := registry.Pick(CapabilityImplement); err != nil {
+		t.Fatalf("expected executor to be available after registration despite skewed timestamp: %v", err)
+	}
+
+	registry.Heartbeat(ExecutorHeartbeatPayload{
+		ExecutorID: "skewed-exec",
+		SeenAt:     now.Add(-9 * time.Minute), // stale remote timestamp should not evict executor
+	})
+	if _, err := registry.Pick(CapabilityImplement); err != nil {
+		t.Fatalf("expected executor to remain available after heartbeat despite skewed timestamp: %v", err)
+	}
+
+	clock = clock.Add(3 * time.Second)
+	if _, err := registry.Pick(CapabilityImplement); err == nil {
+		t.Fatalf("expected executor to expire after ttl based on local receipt time")
+	}
+}
+
 func TestMastermindRoutesTaskBasedOnCapabilities(t *testing.T) {
 	bus := NewMemoryBus()
 	ctx, cancel := context.WithCancel(context.Background())
