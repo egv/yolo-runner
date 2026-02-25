@@ -27,6 +27,8 @@ adapter: command
 binary: gemini
 args:
   - exec
+  - --model
+  - "{{model}}"
   - --prompt
   - "{{prompt}}"
 supports_review: true

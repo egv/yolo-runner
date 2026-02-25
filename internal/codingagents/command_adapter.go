@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"regexp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,8 @@ type GenericCLIRunnerAdapter struct {
 	runner  CommandRunner
 	now     func() time.Time
 }
+
+var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERDICT\s*:\s*(pass|fail)(?:\s*DONE)?\s*$`)
 
 func NewGenericCLIRunnerAdapter(backend string, binary string, args []string, runner CommandRunner) *GenericCLIRunnerAdapter {
 	if strings.TrimSpace(backend) == "" {
@@ -159,6 +162,12 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 		"backend": a.backend,
 		"status":  string(result.Status),
 	}
+	if request.Mode == contracts.RunnerModeReview {
+		if verdict, ok := structuredReviewVerdict(logPath); ok {
+			result.Artifacts["review_verdict"] = verdict
+			result.ReviewReady = strings.EqualFold(verdict, "pass")
+		}
+	}
 	if strings.TrimSpace(request.Model) != "" {
 		result.Artifacts["model"] = strings.TrimSpace(request.Model)
 	}
@@ -183,6 +192,34 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 		return result, nil
 	}
 	return result, nil
+}
+
+func structuredReviewVerdict(logPath string) (string, bool) {
+	if strings.TrimSpace(logPath) == "" {
+		return "", false
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		return "", false
+	}
+	normalized := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(string(content))
+	if normalized == "" {
+		return "", false
+	}
+	lastVerdict := ""
+	found := false
+	for _, line := range strings.Split(normalized, "\n") {
+		matches := structuredReviewVerdictLinePattern.FindStringSubmatch(line)
+		if len(matches) < 2 {
+			continue
+		}
+		lastVerdict = strings.ToLower(matches[1])
+		found = true
+	}
+	if !found {
+		return "", false
+	}
+	return lastVerdict, true
 }
 
 func resolveLogPath(request contracts.RunnerRequest, backend string) string {
