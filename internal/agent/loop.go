@@ -414,7 +414,18 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 	}
 
 	reviewRetries := 0
+	if count, err := metadataRetryCount(task.Metadata, "review_retry_count"); err == nil {
+		reviewRetries = count
+	}
 	reviewRetryFeedback := ""
+	if feedback := reviewRetryBlockersFromMetadata(task.Metadata); feedback != "" {
+		reviewRetryFeedback = feedback
+	}
+	completionRetries := 0
+	if count, err := metadataRetryCount(task.Metadata, "completion_retry_count"); err == nil {
+		completionRetries = count
+	}
+	completionAddendum := strings.TrimSpace(task.Metadata["completion_addendum"])
 	implementModel := taskRuntime.model
 	if implementModel == "" {
 		implementModel = strings.TrimSpace(l.options.Model)
@@ -462,7 +473,14 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 			RepoRoot: taskRepoRoot,
 			Model:    implementModel,
 			Timeout:  taskRuntime.timeout,
-			Prompt:   buildImplementPrompt(task, reviewRetryFeedback, reviewRetries, l.options.TDDMode),
+			Prompt: buildImplementPrompt(
+				task,
+				reviewRetryFeedback,
+				reviewRetries,
+				completionAddendum,
+				completionRetries,
+				l.options.TDDMode,
+			),
 			Metadata: requestMetadata,
 		}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
 		if err != nil {
@@ -838,6 +856,70 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					continue
 				}
 			}
+
+			if !reviewFail {
+				completionReason := strings.TrimSpace(result.Reason)
+				if completionReason == "" {
+					completionReason = "implementation completion failed"
+				}
+				if completionRetries < l.options.MaxRetries {
+					completionRetries++
+					completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries, completionReason)
+					retryData := map[string]string{"completion_retry_count": fmt.Sprintf("%d", completionRetries)}
+					retryData["completion_addendum"] = completionAddendum
+					retryData = appendDecisionMetadata(retryData, "retry", completionReason)
+					retryData = appendReviewOutcomeMetadata(retryData, result)
+					retryData["triage_reason"] = completionReason
+					if err := l.tasks.SetTaskData(ctx, task.ID, retryData); err != nil {
+						return summary, err
+					}
+					if task.Metadata == nil {
+						task.Metadata = map[string]string{}
+					}
+					for key, value := range retryData {
+						task.Metadata[key] = value
+					}
+					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: retryData, Timestamp: time.Now().UTC()})
+					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusOpen); err != nil {
+						return summary, err
+					}
+					continue
+				}
+
+				completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries+1, completionReason)
+				blockedData := map[string]string{
+					"triage_status":          "blocked",
+					"completion_retry_count":  fmt.Sprintf("%d", completionRetries),
+					"completion_addendum":     completionAddendum,
+					"triage_reason":           completionReason,
+				}
+				blockedData = appendDecisionMetadata(blockedData, "blocked", completionReason)
+				blockedData = appendReviewOutcomeMetadata(blockedData, result)
+				if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
+					return summary, err
+				}
+				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
+					return summary, err
+				}
+				finishedMetadata := map[string]string{
+					"triage_status":          "blocked",
+					"triage_reason":          completionReason,
+					"completion_retry_count":  fmt.Sprintf("%d", completionRetries),
+					"completion_addendum":     completionAddendum,
+				}
+				finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", completionReason)
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
+				if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
+					return summary, err
+				}
+				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
+				if err := l.clearTaskTerminalState(task.ID); err != nil {
+					return summary, err
+				}
+				summary.Blocked++
+				return summary, nil
+			}
+
 			failedData := map[string]string{"triage_status": "failed"}
 			if result.Reason != "" {
 				failedData["triage_reason"] = result.Reason
@@ -1303,6 +1385,34 @@ func reviewRetryPromptContext(metadata map[string]string) (int, string) {
 		return 0, ""
 	}
 	return retryAttempt, reviewRetryBlockersFromMetadata(metadata)
+}
+
+func metadataRetryCount(metadata map[string]string, key string) (int, error) {
+	if len(metadata) == 0 {
+		return 0, fmt.Errorf("metadata missing")
+	}
+	raw := strings.TrimSpace(metadata[key])
+	if raw == "" {
+		return 0, fmt.Errorf("metadata missing")
+	}
+	retryCount, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, err
+	}
+	return retryCount, nil
+}
+
+func appendCompletionAddendum(previous string, attempt int, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "implementation completion failed"
+	}
+	entry := fmt.Sprintf("Attempt %d failure: %s", attempt, reason)
+	previous = strings.TrimSpace(previous)
+	if previous == "" {
+		return entry
+	}
+	return previous + "\n" + entry
 }
 
 func taskQualityScore(metadata map[string]string) (int, bool) {
@@ -2262,26 +2372,37 @@ func reviewRetryBlockersFromMetadata(metadata map[string]string) string {
 	return ""
 }
 
-func buildImplementPrompt(task contracts.Task, reviewFeedback string, reviewRetryCount int, tddMode bool) string {
+func buildImplementPrompt(task contracts.Task, reviewFeedback string, reviewRetryCount int, completionFeedback string, completionRetryCount int, tddMode bool) string {
 	prompt := buildPrompt(task, contracts.RunnerModeImplement, tddMode)
 	feedback := strings.TrimSpace(reviewFeedback)
-	if feedback == "" || reviewRetryCount <= 0 {
-		return prompt
+	if feedback != "" && reviewRetryCount > 0 {
+		prompt = strings.Join([]string{
+			prompt,
+			strings.Join([]string{
+				fmt.Sprintf("Review Remediation Loop: Attempt %d", reviewRetryCount),
+				"A previous review run failed. Address all blocking review comments before requesting review again.",
+				"REVIEW_FAIL_FEEDBACK:",
+				feedback,
+			}, "\n"),
+		}, "\n\n")
 	}
-	sections := []string{
-		prompt,
-		strings.Join([]string{
-			fmt.Sprintf("Review Remediation Loop: Attempt %d", reviewRetryCount),
-			"A previous review run failed. Address all blocking review comments before requesting review again.",
-			"REVIEW_FAIL_FEEDBACK:",
-			feedback,
-		}, "\n"),
+
+	completionFeedback = strings.TrimSpace(completionFeedback)
+	if completionFeedback != "" && completionRetryCount > 0 {
+		prompt = strings.Join([]string{
+			prompt,
+			strings.Join([]string{
+				fmt.Sprintf("Completion Remediation Loop: Attempt %d", completionRetryCount),
+				"REMEDIATION_ADDENDUM:",
+				completionFeedback,
+			}, "\n"),
+		}, "\n\n")
 	}
-	return strings.Join(sections, "\n\n")
+	return prompt
 }
 
 func buildMergeConflictRemediationPrompt(task contracts.Task, taskBranch string, mergeFailureReason string) string {
-	base := buildImplementPrompt(task, "", 0, false)
+	base := buildImplementPrompt(task, "", 0, "", 0, false)
 	sections := []string{
 		base,
 		strings.Join([]string{
@@ -2324,7 +2445,10 @@ func isReviewFailResult(result contracts.RunnerResult) bool {
 		return false
 	}
 	lower := strings.ToLower(reason)
-	return strings.HasPrefix(lower, "review rejected") || strings.Contains(lower, "review verdict returned fail")
+	return strings.HasPrefix(lower, "review rejected") ||
+		strings.Contains(lower, "review verdict returned fail") ||
+		strings.Contains(lower, "review feedback") ||
+		strings.Contains(lower, "failing acceptance criteria")
 }
 
 func shouldUseModelFallbackForFailure(result contracts.RunnerResult, currentModel string, fallbackModel string) bool {
