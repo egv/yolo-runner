@@ -285,9 +285,11 @@ func TestExecutorWorkerForwardsRunnerProgressToMonitorEvents(t *testing.T) {
 		t.Fatalf("publish dispatch: %v", err)
 	}
 
-	events := make([]contracts.Event, 0, 2)
+	outputsBySource := map[string]int{}
+	gotRunnerStarted := false
+	gotRunnerFinished := false
 	timeout := time.After(1 * time.Second)
-	for len(events) < 2 {
+	for !gotRunnerFinished || len(outputsBySource) < 2 {
 		select {
 		case raw := <-monitorCh:
 			if raw.Type != EventTypeMonitorEvent {
@@ -300,21 +302,32 @@ func TestExecutorWorkerForwardsRunnerProgressToMonitorEvents(t *testing.T) {
 			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
 				t.Fatalf("unmarshal monitor payload: %v", err)
 			}
-			events = append(events, payload.Event)
+			switch payload.Event.Type {
+			case contracts.EventTypeRunnerStarted:
+				gotRunnerStarted = true
+			case contracts.EventTypeRunnerFinished:
+				gotRunnerFinished = true
+			case contracts.EventTypeRunnerOutput:
+				source := strings.TrimSpace(payload.Event.Metadata["source"])
+				if source == "" {
+					source = "stdout"
+				}
+				outputsBySource[source]++
+			}
 		case <-timeout:
 			t.Fatalf("timed out waiting for progress events")
 		}
 	}
 
 	_ = readTaskResultPayload(t, resultCh)
-	if len(events) < 2 {
-		t.Fatalf("expected two progress events, got %d", len(events))
+	if !gotRunnerStarted || !gotRunnerFinished {
+		t.Fatalf("expected runner started and finished events for execution")
 	}
-	if events[0].Type != contracts.EventTypeRunnerOutput || events[0].Metadata["source"] != "stdout" {
-		t.Fatalf("expected stdout runner output event, got %#v", events[0])
+	if outputsBySource["stdout"] == 0 {
+		t.Fatalf("expected at least one runner_output event with source stdout")
 	}
-	if events[1].Type != contracts.EventTypeRunnerOutput || events[1].Metadata["source"] != "stderr" {
-		t.Fatalf("expected stderr runner output event, got %#v", events[1])
+	if outputsBySource["stderr"] == 0 {
+		t.Fatalf("expected at least one runner_output event with source stderr")
 	}
 }
 

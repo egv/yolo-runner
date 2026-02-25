@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,18 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/github"
 	"github.com/egv/yolo-runner/v2/internal/linear"
 )
+
+type runnerTransportRequest struct {
+	TaskID     string               `json:"task_id"`
+	ParentID   string               `json:"parent_id"`
+	Prompt     string               `json:"prompt"`
+	Mode       contracts.RunnerMode `json:"mode"`
+	Model      string               `json:"model"`
+	RepoRoot   string               `json:"repo_root"`
+	Timeout    time.Duration        `json:"timeout"`
+	MaxRetries int                  `json:"max_retries"`
+	Metadata   map[string]string    `json:"metadata,omitempty"`
+}
 
 func TestRunMainParsesFlagsAndInvokesRun(t *testing.T) {
 	called := false
@@ -906,6 +919,350 @@ func TestRunMainParsesDistributedExecutorRoleAndConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.distributedExecutorCapabilities, []distributed.Capability{distributed.CapabilityImplement, distributed.CapabilityReview, distributed.CapabilityServiceProxy}) {
 		t.Fatalf("unexpected capabilities: %#v", got.distributedExecutorCapabilities)
+	}
+}
+
+func TestRunDistributedExecutorSelectsAgentFromCatalogByMetadataQuery(t *testing.T) {
+	repoRoot := t.TempDir()
+	catalogDir := filepath.Join(repoRoot, ".yolo-runner", "coding-agents")
+	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
+		t.Fatalf("create catalog dir: %v", err)
+	}
+	if err := writeAgentCatalogForTest(t, catalogDir, `
+name: agent-go-alpha
+adapter: command
+binary: /bin/true
+capabilities:
+  languages:
+    - go
+  features:
+    - implement
+`); err != nil {
+		t.Fatalf("write alpha agent: %v", err)
+	}
+	if err := writeAgentCatalogForTest(t, catalogDir, `
+name: agent-go-zeta
+adapter: command
+binary: /bin/true
+capabilities:
+  languages:
+    - go
+  features:
+    - implement
+`); err != nil {
+		t.Fatalf("write zeta agent: %v", err)
+	}
+	if err := writeAgentCatalogForTest(t, catalogDir, `
+name: agent-python
+adapter: command
+binary: /bin/true
+capabilities:
+  languages:
+    - python
+  features:
+    - implement
+`); err != nil {
+		t.Fatalf("write python agent: %v", err)
+	}
+
+	originalBusFactory := newDistributedBus
+	t.Cleanup(func() {
+		newDistributedBus = originalBusFactory
+	})
+	bus := distributed.NewMemoryBus()
+	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+		return bus, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	executorErrCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		executorErrCh <- runDistributedExecutor(ctx, runConfig{
+			repoRoot:                        repoRoot,
+			role:                            agentRoleWorker,
+			backend:                         "agent-go-alpha",
+			distributedBusPrefix:            "unit",
+			distributedExecutorCapabilities: []distributed.Capability{distributed.CapabilityImplement},
+			distributedHeartbeatInterval:    50 * time.Millisecond,
+			distributedRequestTimeout:       500 * time.Millisecond,
+			distributedRegistryTTL:          1 * time.Second,
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		executorErr := <-executorErrCh
+		if executorErr != nil && !errors.Is(executorErr, context.Canceled) {
+			t.Fatalf("executor returned error: %v", executorErr)
+		}
+	})
+
+	subjects := distributed.DefaultEventSubjects("unit")
+	resultCh, unsubscribeResult, err := bus.Subscribe(ctx, subjects.TaskResult)
+	if err != nil {
+		t.Fatalf("subscribe task result: %v", err)
+	}
+	defer unsubscribeResult()
+
+	registerCh, unsubscribeRegister, err := bus.Subscribe(ctx, subjects.Register)
+	if err != nil {
+		t.Fatalf("subscribe register: %v", err)
+	}
+	defer unsubscribeRegister()
+	select {
+	case raw := <-registerCh:
+		if raw.Type != distributed.EventTypeExecutorRegistered {
+			t.Fatalf("unexpected event type on register subject: %q", raw.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for executor registration")
+	case executorErr := <-executorErrCh:
+		t.Fatalf("executor returned error before registration: %v", executorErr)
+	}
+	select {
+	case executorErr := <-executorErrCh:
+		t.Fatalf("executor exited before task dispatch: %v", executorErr)
+	default:
+	}
+	monitorCh, unsubscribeMonitor, err := bus.Subscribe(ctx, subjects.MonitorEvent)
+	if err != nil {
+		t.Fatalf("subscribe monitor: %v", err)
+	}
+	defer unsubscribeMonitor()
+
+	dispatchTask := func(taskID string, correlationID string, metadata map[string]string) distributed.TaskResultPayload {
+		requestRaw, err := json.Marshal(runnerTransportRequest{
+			TaskID:   taskID,
+			Metadata: metadata,
+		})
+		if err != nil {
+			t.Fatalf("marshal runner request: %v", err)
+		}
+		dispatch := distributed.TaskDispatchPayload{
+			CorrelationID:        correlationID,
+			TaskID:               taskID,
+			RequiredCapabilities: []distributed.Capability{distributed.CapabilityImplement},
+			Request:              requestRaw,
+		}
+		dispatchEnv, err := distributed.NewEventEnvelope(distributed.EventTypeTaskDispatch, "client", correlationID, dispatch)
+		if err != nil {
+			t.Fatalf("build dispatch envelope: %v", err)
+		}
+		if err := bus.Publish(ctx, subjects.TaskDispatch, dispatchEnv); err != nil {
+			t.Fatalf("publish dispatch: %v", err)
+		}
+		return readDistributedTaskResult(t, resultCh, correlationID)
+	}
+
+	readEventForTask := func(taskID, backend string) {
+		hasSelection := false
+		hasExecution := false
+		timeout := time.After(2 * time.Second)
+		for !(hasSelection && hasExecution) {
+			select {
+			case raw := <-monitorCh:
+				if raw.Type != distributed.EventTypeMonitorEvent {
+					continue
+				}
+				payload := distributed.MonitorEventPayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+					t.Fatalf("unmarshal monitor payload: %v", err)
+				}
+				if payload.Event.TaskID != taskID {
+					continue
+				}
+				if payload.Event.Metadata["backend"] != backend {
+					continue
+				}
+				switch payload.Event.Type {
+				case contracts.EventTypeRunnerStarted:
+					hasSelection = true
+				case contracts.EventTypeRunnerFinished:
+					hasExecution = true
+				}
+			case <-timeout:
+				t.Fatalf("timed out waiting for monitor events for task %q", taskID)
+			}
+		}
+	}
+
+	capabilityResult := dispatchTask("capability-task", "cap-correlation", map[string]string{
+		"language": "go",
+		"feature":  "implement",
+	})
+	if capabilityResult.Result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected capability query result completed, got %q", capabilityResult.Result.Status)
+	}
+	if got := capabilityResult.Result.Artifacts["backend"]; got != "agent-go-alpha" {
+		t.Fatalf("expected lexical agent selection agent-go-alpha, got %q", got)
+	}
+	readEventForTask("capability-task", "agent-go-alpha")
+
+	explicitResult := dispatchTask("explicit-task", "explicit-correlation", map[string]string{
+		"agent": "agent-go-zeta",
+	})
+	if explicitResult.Result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected explicit selection result completed, got %q", explicitResult.Result.Status)
+	}
+	if explicitResult.Result.Artifacts["backend"] != "agent-go-zeta" {
+		t.Fatalf("expected explicit backend agent-go-zeta, got %q", explicitResult.Result.Artifacts["backend"])
+	}
+	readEventForTask("explicit-task", "agent-go-zeta")
+}
+
+func TestRunDistributedExecutorRejectsAgentSelectionWhenCredentialsMissing(t *testing.T) {
+	repoRoot := t.TempDir()
+	catalogDir := filepath.Join(repoRoot, ".yolo-runner", "coding-agents")
+	if err := os.MkdirAll(catalogDir, 0o755); err != nil {
+		t.Fatalf("create catalog dir: %v", err)
+	}
+	markerPath := filepath.Join(repoRoot, "should-not-run.txt")
+	if err := writeAgentCatalogForTest(t, catalogDir, fmt.Sprintf(`
+name: locked-go
+adapter: command
+binary: /bin/sh
+args:
+  - -c
+  - "touch %s"
+capabilities:
+  languages:
+    - go
+  features:
+    - implement
+required_credentials:
+  - LOCKED_BACKEND_TOKEN
+`, markerPath)); err != nil {
+		t.Fatalf("write locked backend: %v", err)
+	}
+
+	originalBusFactory := newDistributedBus
+	t.Cleanup(func() {
+		newDistributedBus = originalBusFactory
+	})
+	bus := distributed.NewMemoryBus()
+	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+		return bus, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	executorErrCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		executorErrCh <- runDistributedExecutor(ctx, runConfig{
+			repoRoot:                        repoRoot,
+			role:                            agentRoleWorker,
+			backend:                         "locked-go",
+			distributedBusPrefix:            "unit",
+			distributedExecutorCapabilities: []distributed.Capability{distributed.CapabilityImplement},
+			distributedHeartbeatInterval:    50 * time.Millisecond,
+			distributedRequestTimeout:       500 * time.Millisecond,
+			distributedRegistryTTL:          1 * time.Second,
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		executorErr := <-executorErrCh
+		if executorErr != nil && !errors.Is(executorErr, context.Canceled) {
+			t.Fatalf("executor returned error: %v", executorErr)
+		}
+	})
+
+	subjects := distributed.DefaultEventSubjects("unit")
+	resultCh, unsubscribeResult, err := bus.Subscribe(ctx, subjects.TaskResult)
+	if err != nil {
+		t.Fatalf("subscribe task result: %v", err)
+	}
+	defer unsubscribeResult()
+	registerCh, unsubscribeRegister, err := bus.Subscribe(ctx, subjects.Register)
+	if err != nil {
+		t.Fatalf("subscribe register: %v", err)
+	}
+	defer unsubscribeRegister()
+	select {
+	case raw := <-registerCh:
+		if raw.Type != distributed.EventTypeExecutorRegistered {
+			t.Fatalf("unexpected event type on register subject: %q", raw.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for executor registration")
+	case executorErr := <-executorErrCh:
+		t.Fatalf("executor returned error before registration: %v", executorErr)
+	}
+	select {
+	case executorErr := <-executorErrCh:
+		t.Fatalf("executor exited before task dispatch: %v", executorErr)
+	default:
+	}
+
+	requestRaw, err := json.Marshal(runnerTransportRequest{
+		TaskID:   "missing-credential-task",
+		Metadata: map[string]string{"agent": "locked-go"},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	dispatch := distributed.TaskDispatchPayload{
+		CorrelationID:        "missing-credential",
+		TaskID:               "missing-credential-task",
+		RequiredCapabilities: []distributed.Capability{distributed.CapabilityImplement},
+		Request:              requestRaw,
+	}
+	dispatchEnv, err := distributed.NewEventEnvelope(distributed.EventTypeTaskDispatch, "client", "missing-credential", dispatch)
+	if err != nil {
+		t.Fatalf("build dispatch envelope: %v", err)
+	}
+	if err := bus.Publish(ctx, subjects.TaskDispatch, dispatchEnv); err != nil {
+		t.Fatalf("publish dispatch: %v", err)
+	}
+
+	result := readDistributedTaskResult(t, resultCh, "missing-credential")
+	if result.Result.Status != contracts.RunnerResultFailed {
+		t.Fatalf("expected failed result when credential missing, got %q", result.Result.Status)
+	}
+	if !strings.Contains(strings.TrimSpace(result.Error), "missing auth token from LOCKED_BACKEND_TOKEN") {
+		t.Fatalf("expected missing credential error, got %q", result.Error)
+	}
+	if _, err := os.Stat(markerPath); err == nil {
+		t.Fatalf("expected backend command not to run when credentials are missing")
+	}
+}
+
+func writeAgentCatalogForTest(t *testing.T, catalogDir string, payload string) error {
+	t.Helper()
+	name := fmt.Sprintf("agent-%d.yaml", time.Now().UnixNano())
+	return os.WriteFile(filepath.Join(catalogDir, name), []byte(payload), 0o644)
+}
+
+func readDistributedTaskResult(t *testing.T, ch <-chan distributed.EventEnvelope, correlationID string) distributed.TaskResultPayload {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case raw := <-ch:
+			if raw.Type != distributed.EventTypeTaskResult {
+				continue
+			}
+			if raw.CorrelationID != correlationID {
+				continue
+			}
+			payload := distributed.TaskResultPayload{}
+			if len(raw.Payload) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal task result: %v", err)
+			}
+			return payload
+		case <-timeout:
+			t.Fatalf("timed out waiting for task result")
+		}
 	}
 }
 
