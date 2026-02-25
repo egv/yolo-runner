@@ -756,6 +756,46 @@ func TestRunMainAcceptsGeminiBackend(t *testing.T) {
 	}
 }
 
+func TestRunMainRejectsGeminiBackendWithoutAuthToken(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	called := false
+	stderrText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--backend", "gemini", "--model", "gemini-2.0-pro"}, func(context.Context, runConfig) error {
+			called = true
+			return nil
+		})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+	if called {
+		t.Fatalf("expected run function not to be called when auth is missing")
+	}
+	if !strings.Contains(stderrText, "missing auth token from GEMINI_API_KEY") {
+		t.Fatalf("expected missing auth token error, got %q", stderrText)
+	}
+}
+
+func TestRunMainRejectsGeminiBackendWithUnsupportedModel(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "token")
+	called := false
+	stderrText := captureStderr(t, func() {
+		code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--backend", "gemini", "--model", "gpt-5.3-codex"}, func(context.Context, runConfig) error {
+			called = true
+			return nil
+		})
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+	})
+	if called {
+		t.Fatalf("expected run function not to be called for unsupported model")
+	}
+	if !strings.Contains(stderrText, "unsupported model") || !strings.Contains(stderrText, "supported:") {
+		t.Fatalf("expected unsupported-model validation error, got %q", stderrText)
+	}
+}
+
 func TestRunMainAcceptsClaudeBackend(t *testing.T) {
 	called := false
 	var got runConfig

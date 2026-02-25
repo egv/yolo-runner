@@ -18,6 +18,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/claude"
 	"github.com/egv/yolo-runner/v2/internal/codex"
+	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	githubtracker "github.com/egv/yolo-runner/v2/internal/github"
 	"github.com/egv/yolo-runner/v2/internal/opencode"
@@ -1203,6 +1204,125 @@ profiles:
 	}
 }
 
+func TestE2E_GeminiLinearProfileProcessesAndClosesIssue(t *testing.T) {
+	repo := initSeededRepo(t)
+
+	taskManager := newInMemoryTaskManager(contracts.Task{
+		ID:       "t-gemini-1",
+		Title:    "Implement Gemini e2e demo",
+		ParentID: "root",
+		Status:   contracts.TaskStatusOpen,
+	})
+
+	catalog, err := codingagents.LoadCatalog(repo)
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	definition, ok := catalog.Backend(backendGemini)
+	if !ok {
+		t.Fatalf("expected builtin gemini backend in catalog")
+	}
+
+	argsCapturePath := filepath.Join(t.TempDir(), "gemini-args.txt")
+	geminiBinary := writeFakeGeminiBinary(t, argsCapturePath)
+	geminiRunner := codingagents.NewGenericCLIRunnerAdapter(definition.Name, geminiBinary, definition.Args, nil)
+	fakeVCS := &fakeVCS{}
+
+	originalStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = writePipe
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	runErr := runWithComponents(context.Background(), runConfig{
+		repoRoot: repo,
+		rootID:   "root",
+		backend:  backendGemini,
+		model:    "gemini-2.0-pro",
+		maxTasks: 1,
+		stream:   true,
+	}, taskManager, geminiRunner, fakeVCS)
+	if runErr != nil {
+		t.Fatalf("run failed: %v", runErr)
+	}
+	if err := writePipe.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	raw, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if err := readPipe.Close(); err != nil {
+		t.Fatalf("close reader: %v", err)
+	}
+
+	events := decodeNDJSONEvents(t, raw)
+	sawRunStarted := false
+	sawGeminiBackend := false
+	sawGeminiRunnerFinished := false
+	sawReviewPassVerdict := false
+	for _, event := range events {
+		if event.Type == contracts.EventTypeRunStarted {
+			sawRunStarted = true
+			if event.Metadata["backend"] == backendGemini {
+				sawGeminiBackend = true
+			}
+			continue
+		}
+		if event.Type != contracts.EventTypeRunnerFinished {
+			continue
+		}
+		if event.Metadata["backend"] == backendGemini {
+			sawGeminiRunnerFinished = true
+		}
+		if event.Metadata["backend"] == backendGemini && strings.TrimSpace(event.Metadata["review_verdict"]) == "pass" {
+			sawReviewPassVerdict = true
+		}
+	}
+	if !sawRunStarted {
+		t.Fatalf("expected run_started event in stream, got %q", string(raw))
+	}
+	if !sawGeminiBackend {
+		t.Fatalf("expected run_started metadata backend=%q, got %q", backendGemini, string(raw))
+	}
+	if !sawGeminiRunnerFinished {
+		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendGemini, string(raw))
+	}
+	if !sawReviewPassVerdict {
+		t.Fatalf("expected gemini review verdict metadata to include pass, got %q", string(raw))
+	}
+
+	task, err := taskManager.GetTask(context.Background(), "t-gemini-1")
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected issue %q to be closed, got %q", "t-gemini-1", task.Status)
+	}
+
+	rawArgs, err := os.ReadFile(argsCapturePath)
+	if err != nil {
+		t.Fatalf("read gemini args capture: %v", err)
+	}
+	argText := strings.TrimSpace(string(rawArgs))
+	if argText == "" {
+		t.Fatalf("expected fake gemini binary to capture invocation args")
+	}
+	if !strings.Contains(argText, "exec") {
+		t.Fatalf("expected captured args to include exec, got %q", argText)
+	}
+	if !strings.Contains(argText, "--model") || !strings.Contains(argText, "gemini-2.0-pro") {
+		t.Fatalf("expected captured args to include --model gemini-2.0-pro, got %q", argText)
+	}
+	if !strings.Contains(argText, "--prompt") {
+		t.Fatalf("expected captured args to include prompt arg, got %q", argText)
+	}
+}
+
 func TestE2E_OpencodeMigratedDefaultsFromConfig(t *testing.T) {
 	repo := initSeededRepo(t)
 
@@ -1702,6 +1822,17 @@ func writeFakeKimiBinary(t *testing.T) string {
 	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
 	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake kimi binary: %v", err)
+	}
+	return binaryPath
+}
+
+func writeFakeGeminiBinary(t *testing.T, capturePath string) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "fake-gemini")
+	escapedCapturePath := strings.ReplaceAll(capturePath, "\"", "\\\"")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"" + escapedCapturePath + "\"\nprintf 'REVIEW_VERDICT: pass\\n'\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gemini binary: %v", err)
 	}
 	return binaryPath
 }

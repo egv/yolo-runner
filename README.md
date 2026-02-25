@@ -362,7 +362,7 @@ Common options:
 - `--events PATH` write events to file
 - `--retry-budget N` max retries per task (default: 5)
 - `--profile NAME` use tracker profile from config
-- `--backend codex|claude|kimi|opencode` agent backend
+- `--backend codex|claude|kimi|gemini|opencode` agent backend
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
 
@@ -459,7 +459,7 @@ Precedence rules:
 
 Validation rules for `agent.*` values:
 
-- `agent.backend` must be one of `opencode`, `codex`, `claude`, `kimi`.
+- `agent.backend` must be one of `opencode`, `codex`, `claude`, `kimi`, `gemini`.
 - `agent.concurrency` must be greater than `0`.
 - `agent.runner_timeout` must be greater than or equal to `0`.
 - `agent.watchdog_timeout` must be greater than `0`.
@@ -467,6 +467,23 @@ Validation rules for `agent.*` values:
 - `agent.retry_budget` must be greater than or equal to `0`.
 
 Invalid config values fail startup with field-specific errors that reference `.yolo-runner/config.yaml`.
+
+### Gemini backend setup
+
+To use the Gemini backend:
+
+- Ensure the `gemini` CLI is on `PATH`.
+- Set `GEMINI_API_KEY` in your environment.
+- Point `agent.backend` to `gemini` in `.yolo-runner/config.yaml`, or pass `--backend gemini`.
+- Select an allowed model like `gemini-2.5-flash` or `gemini-2.0-pro`.
+
+Example:
+
+```yaml
+agent:
+  backend: gemini
+  model: gemini-2.5-flash
+```
 
 ### `yolo-agent config` init/validate workflow
 
