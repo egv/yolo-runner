@@ -16,6 +16,7 @@ type ExecutorWorkerOptions struct {
 	Bus               Bus
 	Runner            contracts.AgentRunner
 	Backends          map[string]contracts.AgentRunner
+	AgentResolver     func(map[string]string) (string, contracts.AgentRunner, error)
 	Backend           string
 	Subjects          EventSubjects
 	Capabilities      []Capability
@@ -33,6 +34,7 @@ type ExecutorWorker struct {
 	bus               Bus
 	runner            contracts.AgentRunner
 	backends          map[string]contracts.AgentRunner
+	agentResolver     func(map[string]string) (string, contracts.AgentRunner, error)
 	defaultBackend    string
 	subjects          EventSubjects
 	capabilities      CapabilitySet
@@ -55,6 +57,7 @@ func NewExecutorWorker(cfg ExecutorWorkerOptions) *ExecutorWorker {
 		bus:               cfg.Bus,
 		runner:            cfg.Runner,
 		backends:          normalizeRunnerBackends(cfg.Backends),
+		agentResolver:     cfg.AgentResolver,
 		defaultBackend:    strings.TrimSpace(strings.ToLower(cfg.Backend)),
 		subjects:          subjects,
 		capabilities:      NewCapabilitySet(cfg.Capabilities...),
@@ -210,7 +213,23 @@ func (w *ExecutorWorker) handleDispatch(ctx context.Context, env EventEnvelope) 
 		requestCtx = context.Background()
 	}
 
-	backend, requestRunner := w.resolveRunner(request.Metadata)
+	backend, requestRunner, err := w.resolveRunner(request.Metadata)
+	if err != nil {
+		response := TaskResultPayload{
+			CorrelationID: payload.CorrelationID,
+			ExecutorID:    w.ID(),
+			Result: contracts.RunnerResult{
+				Status: contracts.RunnerResultFailed,
+				Reason: err.Error(),
+			},
+			Error: err.Error(),
+		}
+		responseEnv, envErr := NewEventEnvelope(EventTypeTaskResult, w.ID(), payload.CorrelationID, response)
+		if envErr == nil {
+			_ = w.bus.Publish(requestCtx, w.subjects.TaskResult, responseEnv)
+		}
+		return
+	}
 	if requestRunner == nil {
 		finalErr := fmt.Errorf("no runner configured for backend %q", backend)
 		response := TaskResultPayload{
@@ -235,8 +254,16 @@ func (w *ExecutorWorker) handleDispatch(ctx context.Context, env EventEnvelope) 
 	}
 	var finalResult contracts.RunnerResult
 	var finalErr error
+	w.emitRunnerEvent(requestCtx, request.TaskID, contracts.EventTypeRunnerStarted, map[string]string{
+		"backend": backend,
+		"phase":   "selection",
+	})
 attemptLoop:
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		w.emitRunnerEvent(requestCtx, request.TaskID, contracts.EventTypeRunnerStarted, map[string]string{
+			"backend": backend,
+			"attempt": strconv.Itoa(attempt),
+		})
 		if requestCtx.Err() != nil {
 			finalErr = requestCtx.Err()
 			break
@@ -278,10 +305,19 @@ attemptLoop:
 		if w.postExecutionHook != nil {
 			w.postExecutionHook(requestCtx, attemptRequest, result, err, attempt)
 		}
-		if err == nil && result.Status == contracts.RunnerResultCompleted {
-			break
+		finishMetadata := map[string]string{
+			"backend": backend,
+			"attempt": strconv.Itoa(attempt),
+			"status":  string(result.Status),
 		}
-		if attempt >= maxAttempts {
+		if strings.TrimSpace(result.Reason) != "" {
+			finishMetadata["reason"] = result.Reason
+		}
+		if err != nil {
+			finishMetadata["error"] = err.Error()
+		}
+		w.emitRunnerEvent(requestCtx, request.TaskID, contracts.EventTypeRunnerFinished, finishMetadata)
+		if err == nil && result.Status == contracts.RunnerResultCompleted {
 			break
 		}
 		if requestCtx.Err() != nil {
@@ -321,7 +357,15 @@ func normalizeRunnerBackends(runners map[string]contracts.AgentRunner) map[strin
 	return normalized
 }
 
-func (w *ExecutorWorker) resolveRunner(metadata map[string]string) (string, contracts.AgentRunner) {
+func (w *ExecutorWorker) resolveRunner(metadata map[string]string) (string, contracts.AgentRunner, error) {
+	if w.agentResolver != nil {
+		backend, runner, err := w.agentResolver(cloneStringMap(metadata))
+		if err != nil {
+			return "", nil, err
+		}
+		return backend, runner, nil
+	}
+
 	backend := strings.TrimSpace(strings.ToLower(metadata["backend"]))
 	if backend == "" {
 		backend = w.defaultBackend
@@ -330,12 +374,18 @@ func (w *ExecutorWorker) resolveRunner(metadata map[string]string) (string, cont
 		backend = "default"
 	}
 	if selected, ok := w.backends[backend]; ok && selected != nil {
-		return backend, selected
+		return backend, selected, nil
 	}
 	if w.runner != nil {
-		return backend, w.runner
+		return backend, w.runner, nil
 	}
-	return backend, w.runner
+	if len(w.backends) == 0 {
+		return backend, nil, fmt.Errorf("no runner configured for backend %q", backend)
+	}
+	if _, exists := w.backends[backend]; exists {
+		return "", nil, fmt.Errorf("backend %q has nil runner", backend)
+	}
+	return backend, nil, fmt.Errorf("no runner configured for backend %q", backend)
 }
 
 func (w *ExecutorWorker) requestTimeoutFor(request contracts.RunnerRequest) time.Duration {
@@ -378,6 +428,34 @@ func (w *ExecutorWorker) progressForwarder(ctx context.Context, taskID string, a
 		}
 		_ = w.bus.Publish(ctx, w.subjects.MonitorEvent, progressEnv)
 	}
+}
+
+func (w *ExecutorWorker) emitRunnerEvent(ctx context.Context, taskID string, eventType contracts.EventType, metadata map[string]string) {
+	if w.bus == nil || w.subjects.MonitorEvent == "" {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata = cloneStringMap(metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	if _, ok := metadata["backend"]; !ok {
+		metadata["backend"] = w.defaultBackend
+	}
+	event := contracts.Event{
+		Type:      eventType,
+		TaskID:    taskID,
+		WorkerID:  w.ID(),
+		Metadata:  metadata,
+		Timestamp: time.Now().UTC(),
+	}
+	eventEnvelope, envelopeErr := NewEventEnvelope(EventTypeMonitorEvent, w.ID(), "", MonitorEventPayload{Event: event})
+	if envelopeErr != nil {
+		return
+	}
+	_ = w.bus.Publish(ctx, w.subjects.MonitorEvent, eventEnvelope)
 }
 
 func contextForExecution(parent context.Context, timeout time.Duration) (context.Context, func()) {

@@ -608,9 +608,12 @@ func runDistributedExecutor(ctx context.Context, cfg runConfig) error {
 		_ = bus.Close()
 	}()
 
-	runner, err := buildRunnerAdapter(cfg)
+	runners, err := buildDistributedAgentRunners(cfg)
 	if err != nil {
 		return err
+	}
+	if len(runners) == 0 {
+		return fmt.Errorf("no coding agents available for distributed execution")
 	}
 	subjects := distributed.DefaultEventSubjects(cfg.distributedBusPrefix)
 	executorID := strings.TrimSpace(cfg.distributedRoleID)
@@ -618,15 +621,152 @@ func runDistributedExecutor(ctx context.Context, cfg runConfig) error {
 		executorID = "executor"
 	}
 	worker := distributed.NewExecutorWorker(distributed.ExecutorWorkerOptions{
-		ID:                executorID,
-		Bus:               bus,
-		Runner:            runner,
+		ID:       executorID,
+		Bus:      bus,
+		Backends: runners,
+		AgentResolver: func(metadata map[string]string) (string, contracts.AgentRunner, error) {
+			return resolveDistributedRunnerSelection(cfg, runners, metadata)
+		},
 		Subjects:          subjects,
 		Capabilities:      cfg.distributedExecutorCapabilities,
 		HeartbeatInterval: cfg.distributedHeartbeatInterval,
 		RequestTimeout:    cfg.distributedRequestTimeout,
 	})
 	return worker.Start(ctx)
+}
+
+func buildDistributedAgentRunners(cfg runConfig) (map[string]contracts.AgentRunner, error) {
+	names := cfg.codingAgents.Names()
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no coding agent backends configured")
+	}
+	runners := make(map[string]contracts.AgentRunner, len(names))
+	for _, name := range names {
+		name = normalizeBackend(name)
+		if name == "" {
+			continue
+		}
+		agentCfg := cfg
+		agentCfg.backend = name
+		runner, err := buildRunnerAdapter(agentCfg)
+		if err != nil {
+			return nil, fmt.Errorf("build runner for backend %q: %w", name, err)
+		}
+		runners[name] = runner
+	}
+	return runners, nil
+}
+
+func resolveDistributedRunnerSelection(cfg runConfig, runners map[string]contracts.AgentRunner, metadata map[string]string) (string, contracts.AgentRunner, error) {
+	selectedBackend := resolveAgentBackendFromMetadata(metadata, cfg.codingAgents, cfg.backend)
+	selectedBackend = normalizeBackend(selectedBackend)
+	if selectedBackend == "" {
+		return "", nil, fmt.Errorf("agent selection resolved to empty backend")
+	}
+	runner, ok := runners[selectedBackend]
+	if !ok || runner == nil {
+		return "", nil, fmt.Errorf("no runner configured for backend %q", selectedBackend)
+	}
+	if err := cfg.codingAgents.ValidateBackendUsage(selectedBackend, "", os.Getenv); err != nil {
+		return "", nil, err
+	}
+	return selectedBackend, runner, nil
+}
+
+func resolveAgentBackendFromMetadata(metadata map[string]string, catalog codingagents.Catalog, defaultBackend string) string {
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	explicitBackend := strings.TrimSpace(strings.ToLower(metadata["backend"]))
+	if explicitBackend == "" {
+		explicitBackend = strings.TrimSpace(strings.ToLower(metadata["agent"]))
+	}
+	if explicitBackend == "" {
+		explicitBackend = strings.TrimSpace(strings.ToLower(metadata["agent_name"]))
+	}
+	if explicitBackend != "" {
+		return explicitBackend
+	}
+
+	languages := parseMetadataCSV(metadata["language"])
+	if len(languages) == 0 {
+		languages = parseMetadataCSV(metadata["languages"])
+	}
+	features := parseMetadataCSV(metadata["feature"])
+	if len(features) == 0 {
+		features = parseMetadataCSV(metadata["features"])
+	}
+	if len(languages) == 0 && len(features) == 0 {
+		return normalizeBackend(defaultBackend)
+	}
+
+	matches := make([]string, 0, 2)
+	for _, name := range catalog.Names() {
+		definition, ok := catalog.Backend(name)
+		if !ok {
+			continue
+		}
+		if !backendMatchesCapabilities(definition, languages, features) {
+			continue
+		}
+		matches = append(matches, name)
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		return normalizeBackend(defaultBackend)
+	}
+	return matches[0]
+}
+
+func parseMetadataCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(strings.ToLower(part))
+		if value == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range values {
+			if existing == value {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
+}
+
+func backendMatchesCapabilities(definition codingagents.BackendDefinition, languages []string, features []string) bool {
+	if len(languages) > 0 {
+		for _, language := range languages {
+			if !containsStringIgnoreCase(definition.Capabilities.Languages, language) {
+				return false
+			}
+		}
+	}
+	if len(features) > 0 {
+		for _, feature := range features {
+			if !containsStringIgnoreCase(definition.Capabilities.Features, feature) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func containsStringIgnoreCase(values []string, raw string) bool {
+	target := strings.TrimSpace(strings.ToLower(raw))
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
 }
 
 type distributedMastermindRunner struct {
