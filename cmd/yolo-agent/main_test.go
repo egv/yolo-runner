@@ -281,6 +281,37 @@ func TestRunMainAcceptsAgentBackendFlag(t *testing.T) {
 	}
 }
 
+func TestRunMainDefaultsModelFromBackendWhenConfigOmitsModel(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+agent:
+  backend: codex
+`)
+
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", repoRoot, "--root", "root-1", "--agent-backend", "codex"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.model != "gpt-5.3-codex" {
+		t.Fatalf("expected model fallback from backend, got %q", got.model)
+	}
+}
+
 func TestRunMainParsesProfileFlag(t *testing.T) {
 	called := false
 	var got runConfig

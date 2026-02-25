@@ -42,11 +42,12 @@ func (f commandRunnerFunc) Run(ctx context.Context, spec CommandSpec) error {
 
 type CLIRunnerAdapter struct {
 	binary string
+	args   []string
 	runner CommandRunner
 	now    func() time.Time
 }
 
-func NewCLIRunnerAdapter(binary string, runner CommandRunner) *CLIRunnerAdapter {
+func NewCLIRunnerAdapter(binary string, runner CommandRunner, args ...string) *CLIRunnerAdapter {
 	resolvedBinary := strings.TrimSpace(binary)
 	if resolvedBinary == "" {
 		resolvedBinary = defaultBinary
@@ -54,8 +55,10 @@ func NewCLIRunnerAdapter(binary string, runner CommandRunner) *CLIRunnerAdapter 
 	if runner == nil {
 		runner = commandRunnerFunc(runCommand)
 	}
+	normalizedArgs := append([]string(nil), args...)
 	return &CLIRunnerAdapter{
 		binary: resolvedBinary,
+		args:    normalizedArgs,
 		runner: runner,
 		now:    time.Now,
 	}
@@ -129,7 +132,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 
 	runErr := a.runner.Run(runCtx, CommandSpec{
 		Binary: a.binary,
-		Args:   buildArgs(request),
+		Args:   a.buildArgs(request),
 		Dir:    request.RepoRoot,
 		Stdout: stdoutWriter,
 		Stderr: stderrWriter,
@@ -175,7 +178,48 @@ func resolveLogPath(request contracts.RunnerRequest) string {
 	return filepath.Join("runner-logs", "claude", "claude-run.jsonl")
 }
 
-func buildArgs(request contracts.RunnerRequest) []string {
+func (a *CLIRunnerAdapter) buildArgs(request contracts.RunnerRequest) []string {
+	if len(a.args) > 0 {
+		return resolveBackendArgs(a.args, "claude", request)
+	}
+	return defaultBuildArgs(request)
+}
+
+func resolveBackendArgs(raw []string, backend string, request contracts.RunnerRequest) []string {
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = "claude"
+	}
+	requestBackend := strings.TrimSpace(request.Metadata["backend"])
+	if requestBackend != "" {
+		backend = requestBackend
+	}
+
+	out := make([]string, 0, len(raw))
+	template := map[string]string{
+		"{{backend}}":      backend,
+		"{{backend-name}}": backend,
+		"{{model}}":        strings.TrimSpace(request.Model),
+		"{{prompt}}":       strings.TrimSpace(request.Prompt),
+		"{{task_id}}":      strings.TrimSpace(request.TaskID),
+		"{{repo_root}}":    strings.TrimSpace(request.RepoRoot),
+		"{{mode}}":         strings.TrimSpace(string(request.Mode)),
+	}
+
+	for _, value := range raw {
+		text := strings.TrimSpace(value)
+		for placeholder, replacement := range template {
+			text = strings.ReplaceAll(text, placeholder, replacement)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
+func defaultBuildArgs(request contracts.RunnerRequest) []string {
 	args := []string{"--print", "--output-format", "text"}
 	if model := strings.TrimSpace(request.Model); model != "" {
 		args = append(args, "--model", model)

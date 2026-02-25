@@ -95,6 +95,9 @@ func newLinearSessionJobProcessorFromEnv() (*linearSessionJobProcessor, error) {
 		return nil, err
 	}
 	model := strings.TrimSpace(os.Getenv(envLinearWorkerModel))
+	if model == "" {
+		model = catalogBackendDefaultModel(codingAgents, backend)
+	}
 	if err := codingAgents.ValidateBackendUsage(backend, model, os.Getenv); err != nil {
 		return nil, err
 	}
@@ -131,6 +134,14 @@ func newLinearSessionJobProcessorFromEnv() (*linearSessionJobProcessor, error) {
 	}, nil
 }
 
+func catalogBackendDefaultModel(catalog codingagents.Catalog, backend string) string {
+	definition, ok := catalog.Backend(backend)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(definition.Model)
+}
+
 func resolveLinearWorkerRunnerTimeout() (time.Duration, error) {
 	raw := strings.TrimSpace(os.Getenv(envLinearWorkerRunnerTimeout))
 	if raw == "" {
@@ -153,16 +164,21 @@ func newLinearWorkerRunner(catalog codingagents.Catalog, backend string, binary 
 	if !ok {
 		return nil, fmt.Errorf("unsupported linear worker backend %q", backend)
 	}
+	adapterBinary := strings.TrimSpace(definition.Binary)
+	if binary = strings.TrimSpace(binary); binary != "" {
+		adapterBinary = binary
+	}
+	command := append([]string{}, definition.Args...)
 
 	switch strings.ToLower(strings.TrimSpace(definition.Adapter)) {
 	case "opencode":
-		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, "", ""), nil
+		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, "", "", adapterBinary, command...), nil
 	case "codex":
-		return codex.NewCLIRunnerAdapter(binary, nil), nil
+		return codex.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "claude":
-		return claude.NewCLIRunnerAdapter(binary, nil), nil
+		return claude.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "kimi":
-		return kimi.NewCLIRunnerAdapter(binary, nil), nil
+		return kimi.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "command":
 		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil), nil
 	default:

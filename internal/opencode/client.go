@@ -152,7 +152,7 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 	return RunWithACPAndUpdates(ctx, issueID, repoRoot, prompt, model, configRoot, configDir, logPath, runner, acpClient, nil)
 }
 
-func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onLineUpdate func(string)) error {
+func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onLineUpdate func(string), command ...string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -183,6 +183,9 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 	}
 
 	args := BuildACPArgsWithModel(repoRoot, model)
+	if len(command) > 0 {
+		args = command
+	}
 	env := BuildEnv(nil, configRoot, configDir, model)
 	process, err := runner.Start(args, env, logPath)
 	if err != nil {

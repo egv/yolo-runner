@@ -2,6 +2,13 @@ name: codex
 type: codex
 backend: codex
 model: gpt-5.3-codex
+binary: codex
+args:
+  - "exec"
+  - "--dangerously-bypass-approvals-and-sandbox"
+  - "--model"
+  - "{{model}}"
+  - "{{prompt}}"
 capabilities:
   languages:
     - go

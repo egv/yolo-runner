@@ -2,6 +2,14 @@ name: opencode
 type: opencode
 backend: opencode
 model: zai-coding-plan/glm-4.7
+binary: opencode
+args:
+  - acp
+  - --print-logs
+  - --log-level
+  - DEBUG
+  - --cwd
+  - "{{repo_root}}"
 capabilities:
   languages:
     - go

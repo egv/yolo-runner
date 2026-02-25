@@ -1,7 +1,17 @@
 name: kimi
 type: kimi
 backend: kimi
+binary: kimi
 model: kimi-k2
+args:
+  - --print
+  - --output-format
+  - text
+  - --yolo
+  - --model
+  - "{{model}}"
+  - --prompt
+  - "{{prompt}}"
 capabilities:
   languages:
     - go

@@ -88,6 +88,31 @@ func TestCLIRunnerAdapterRunsCodexAndStreamsProgress(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterBuildsCommandFromConfiguredArgsTemplate(t *testing.T) {
+	repoRoot := t.TempDir()
+	var gotSpec CommandSpec
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		gotSpec = spec
+		return nil
+	}), "--backend={{backend}}", "--model", "{{model}}", "--prompt", "{{prompt}}", "--task-id={{task_id}}", "--repo={{repo_root}}", "--mode={{mode}}")
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-1",
+		RepoRoot: repoRoot,
+		Prompt:   "implement codex",
+		Model:    "openai/gpt-5.3-codex",
+		Mode:     contracts.RunnerModeReview,
+		Metadata: map[string]string{"backend": "codex"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"--backend=codex", "--model", "openai/gpt-5.3-codex", "--prompt", "implement codex", "--task-id=task-1", "--repo=" + repoRoot, "--mode=review"}
+	if !reflect.DeepEqual(gotSpec.Args, expected) {
+		t.Fatalf("unexpected templated args: %#v", gotSpec.Args)
+	}
+}
+
 func TestCLIRunnerAdapterSetsReviewReadyOnStructuredPassVerdict(t *testing.T) {
 	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
 		_, _ = io.WriteString(spec.Stdout, "REVIEW_VERDICT: pass\n")

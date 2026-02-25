@@ -290,6 +290,20 @@ func TestLinearSessionJobProcessorCreated_AutoTransitionsDelegatedIssueToFirstSt
 	}
 }
 
+func TestNewLinearSessionJobProcessorFromEnvFallsBackModelFromBackendWhenUnset(t *testing.T) {
+	t.Setenv(envLinearWorkerBackend, "codex")
+	t.Setenv(envLinearWorkerRepoRoot, t.TempDir())
+	t.Setenv(envLinearToken, "lin_api_test")
+
+	processor, err := newLinearSessionJobProcessorFromEnv()
+	if err != nil {
+		t.Fatalf("newLinearSessionJobProcessorFromEnv returned error: %v", err)
+	}
+	if processor.model != "gpt-5.3-codex" {
+		t.Fatalf("expected model fallback from backend catalog, got %q", processor.model)
+	}
+}
+
 func TestLinearSessionJobProcessorProcessTreatsFailedAndBlockedResultsAsErrors(t *testing.T) {
 	testCases := []struct {
 		name           string
