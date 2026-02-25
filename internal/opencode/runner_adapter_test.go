@@ -31,7 +31,7 @@ func TestCLIRunnerAdapterImplementsContract(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterAcceptsNilContextWhenTimeoutIsSet(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string), _ ...string) error {
 		if ctx == nil {
 			t.Fatalf("expected non-nil context")
 		}
@@ -59,8 +59,108 @@ func TestCLIRunnerAdapterNilAdapterReturnsError(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterBuildsCommandFromConfiguredTemplate(t *testing.T) {
+	repoRoot := t.TempDir()
+	var captured []string
+	adapter := &CLIRunnerAdapter{
+		command: []string{"opencode", "acp", "--print-logs", "--log-level", "DEBUG", "--cwd", "{{repo_root}}", "--model", "{{model}}", "{{prompt}}", "{{backend}}", "{{task_id}}", "{{mode}}"},
+		runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string), command ...string) error {
+			captured = append([]string(nil), command...)
+			return nil
+		},
+	}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-1",
+		RepoRoot: repoRoot,
+		Prompt:   "review this",
+		Model:    "zai-coding-plan/glm-4.7",
+		Mode:     contracts.RunnerModeReview,
+		Metadata: map[string]string{"backend": "opencode"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	expected := []string{"opencode", "acp", "--print-logs", "--log-level", "DEBUG", "--cwd", repoRoot, "--model", "zai-coding-plan/glm-4.7", "review this", "opencode", "task-1", string(contracts.RunnerModeReview)}
+	if len(captured) != len(expected) {
+		t.Fatalf("expected %d command args, got %d: %#v", len(expected), len(captured), captured)
+	}
+	for i, want := range expected {
+		if captured[i] != want {
+			t.Fatalf("expected %q at %d, got %q", want, i, captured[i])
+		}
+	}
+}
+
+func TestCLIRunnerAdapterBuildsDefaultCommandWithConfiguredBinary(t *testing.T) {
+	repoRoot := t.TempDir()
+	var captured []string
+	adapter := &CLIRunnerAdapter{
+		binary: "/tmp/custom-opencode",
+		runWithACP: func(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ string, _ string, _ Runner, _ ACPClient, _ func(string), command ...string) error {
+			captured = append([]string(nil), command...)
+			return nil
+		},
+	}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-1",
+		RepoRoot: repoRoot,
+		Prompt:   "do x",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	expected := []string{"/tmp/custom-opencode", "acp", "--print-logs", "--log-level", "DEBUG", "--cwd", repoRoot}
+	if len(captured) != len(expected) {
+		t.Fatalf("expected %d command args, got %d: %#v", len(expected), len(captured), captured)
+	}
+	for i, want := range expected {
+		if captured[i] != want {
+			t.Fatalf("expected %q at %d, got %q", want, i, captured[i])
+		}
+	}
+}
+
+func TestCLIRunnerAdapterBuildsConfiguredCommandWithConfiguredBinary(t *testing.T) {
+	repoRoot := t.TempDir()
+	var captured []string
+	adapter := NewCLIRunnerAdapter(CommandRunner{}, nil, "", "", "/tmp/custom-opencode", "acp", "--print-logs", "--cwd", "{{repo_root}}")
+	adapter.runWithACP = func(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ string, _ string, _ Runner, _ ACPClient, _ func(string), command ...string) error {
+		captured = append([]string(nil), command...)
+		return nil
+	}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-1",
+		RepoRoot: repoRoot,
+		Prompt:   "do x",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	expected := []string{"/tmp/custom-opencode", "acp", "--print-logs", "--cwd", repoRoot}
+	if len(captured) != len(expected) {
+		t.Fatalf("expected %d command args, got %d: %#v", len(expected), len(captured), captured)
+	}
+	for i, want := range expected {
+		if captured[i] != want {
+			t.Fatalf("expected %q at %d, got %q", want, i, captured[i])
+		}
+	}
+}
+
 func TestCLIRunnerAdapterMapsSuccessToCompleted(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		return nil
 	}}
 
@@ -74,7 +174,7 @@ func TestCLIRunnerAdapterMapsSuccessToCompleted(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterMapsStallToBlocked(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		return &StallError{Category: "no_output"}
 	}}
 
@@ -88,7 +188,7 @@ func TestCLIRunnerAdapterMapsStallToBlocked(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterMapsGenericErrorToFailed(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		return errors.New("boom")
 	}}
 
@@ -102,7 +202,7 @@ func TestCLIRunnerAdapterMapsGenericErrorToFailed(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterAppliesRequestTimeoutToRunContext(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string), _ ...string) error {
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			t.Fatalf("expected timeout deadline on context")
@@ -123,7 +223,7 @@ func TestCLIRunnerAdapterAppliesRequestTimeoutToRunContext(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterAppliesWatchdogMetadataToRunContext(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, _ Runner, _ ACPClient, _ func(string), _ ...string) error {
 		config := watchdogRuntimeConfigFromContext(ctx)
 		if config.Timeout != 3*time.Second {
 			t.Fatalf("expected watchdog timeout=3s, got %s", config.Timeout)
@@ -156,7 +256,7 @@ func TestCLIRunnerAdapterAppliesWatchdogMetadataToRunContext(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterMapsDeadlineExceededToBlockedTimeout(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		return context.DeadlineExceeded
 	}}
 
@@ -173,7 +273,7 @@ func TestCLIRunnerAdapterMapsDeadlineExceededToBlockedTimeout(t *testing.T) {
 }
 
 func TestCLIRunnerAdapterMapsInitFailureToFailed(t *testing.T) {
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		return errors.New("serena initialization failed: missing config")
 	}}
 
@@ -192,7 +292,7 @@ func TestCLIRunnerAdapterMapsInitFailureToFailed(t *testing.T) {
 func TestCLIRunnerAdapterSetsReviewReadyFromStructuredPassVerdict(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		line := "{\"message\":\"agent_message \\\"REVIEW_VERDICT: pass\\\\n\\\"\"}\n"
 		return os.WriteFile(logPath, []byte(line), 0o644)
 	}}
@@ -212,7 +312,7 @@ func TestCLIRunnerAdapterSetsReviewReadyFromStructuredPassVerdict(t *testing.T) 
 func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenVerdictMissing(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		line := "{\"message\":\"agent_message \\\"Looks good to me\\\\n\\\"\"}\n"
 		return os.WriteFile(logPath, []byte(line), 0o644)
 	}}
@@ -232,7 +332,7 @@ func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenVerdictMissing(t *testing.T) 
 func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenStructuredVerdictFails(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		line := "{\"message\":\"agent_message \\\"REVIEW_VERDICT: fail\\\\n\\\"\"}\n"
 		return os.WriteFile(logPath, []byte(line), 0o644)
 	}}
@@ -252,7 +352,7 @@ func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenStructuredVerdictFails(t *tes
 func TestCLIRunnerAdapterExtractsStructuredReviewFailFeedback(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		lines := []string{
 			`{"message":"agent_message \"REVIEW_VERDICT: fail\\n\""}`,
 			`{"message":"agent_message \"REVIEW_FAIL_FEEDBACK: missing e2e assertion for retry path\\n\""}`,
@@ -278,7 +378,7 @@ func TestCLIRunnerAdapterExtractsStructuredReviewFailFeedback(t *testing.T) {
 func TestCLIRunnerAdapterLeavesReviewReadyFalseWhenOnlyPassFailTemplatePresent(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "review.jsonl")
-	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
 		line := "{\"message\":\"agent_message \\\"Respond with REVIEW_VERDICT: pass/fail and explain why\\\\n\\\"\"}\n"
 		return os.WriteFile(logPath, []byte(line), 0o644)
 	}}
@@ -355,7 +455,7 @@ func TestHasStructuredPassVerdictRejectsFailWithDoneSuffix(t *testing.T) {
 func TestCLIRunnerAdapterForwardsACPUpdatesToProgressCallback(t *testing.T) {
 	seen := []string{}
 	seenTypes := []string{}
-	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onUpdate func(string)) error {
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onUpdate func(string), command ...string) error {
 		if onUpdate != nil {
 			onUpdate("⏳ tool call started: read")
 			onUpdate("line output")

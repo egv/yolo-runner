@@ -252,6 +252,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if selectedModel == "" {
+		selectedModel = catalogBackendDefaultModel(codingAgents, selectedBackend)
+	}
 	if err := codingAgents.ValidateBackendUsage(selectedBackend, selectedModel, os.Getenv); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -457,13 +460,14 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 
 	switch definition.Adapter {
 	case "opencode":
-		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir()), nil
+		command := append([]string{}, definition.Args...)
+		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir(), definition.Binary, command...), nil
 	case "codex":
-		return codex.NewCLIRunnerAdapter("", nil), nil
+		return codex.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "claude":
-		return claude.NewCLIRunnerAdapter("", nil), nil
+		return claude.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "kimi":
-		return kimi.NewCLIRunnerAdapter("", nil), nil
+		return kimi.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "command":
 		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil), nil
 	default:

@@ -15,14 +15,16 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
-type runWithACPFunc func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onUpdate func(string)) error
+type runWithACPFunc func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onUpdate func(string), command ...string) error
 
 type CLIRunnerAdapter struct {
 	runner     Runner
 	acpClient  ACPClient
+	binary     string
 	configRoot string
 	configDir  string
 	runWithACP runWithACPFunc
+	command    []string
 }
 
 var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERDICT\s*:\s*(pass|fail)(?:\s*DONE)?\s*$`)
@@ -30,17 +32,26 @@ var structuredReviewFailFeedbackLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW
 var tokenRedactionPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 
 const (
+	defaultBinary = "opencode"
+
 	watchdogTimeoutMetadataKey  = "watchdog_timeout"
 	watchdogIntervalMetadataKey = "watchdog_interval"
 	watchdogLogDirMetadataKey   = "watchdog_opencode_log_dir"
 )
 
-func NewCLIRunnerAdapter(runner Runner, acpClient ACPClient, configRoot string, configDir string) *CLIRunnerAdapter {
+func NewCLIRunnerAdapter(runner Runner, acpClient ACPClient, configRoot string, configDir string, binary string, command ...string) *CLIRunnerAdapter {
+	normalizedCommand := append([]string(nil), command...)
+	normalizedBinary := strings.TrimSpace(binary)
+	if normalizedBinary == "" {
+		normalizedBinary = defaultBinary
+	}
 	return &CLIRunnerAdapter{
 		runner:     runner,
 		acpClient:  acpClient,
+		binary:     normalizedBinary,
 		configRoot: configRoot,
 		configDir:  configDir,
+		command:    normalizedCommand,
 		runWithACP: RunWithACPAndUpdates,
 	}
 }
@@ -66,6 +77,10 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	if run == nil {
 		run = RunWithACPAndUpdates
 	}
+	command := a.command
+	if len(command) > 0 {
+		command = append([]string{}, command...)
+	}
 	progress := request.OnProgress
 	runCtx := ctx
 	var cancel context.CancelFunc
@@ -74,6 +89,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		defer cancel()
 	}
 	runCtx = withWatchdogRuntimeConfig(runCtx, watchdogRuntimeConfigFromMetadata(request.Metadata))
+	builtCommand := a.buildCommand(request, command)
 	err := run(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, func(line string) {
 		if progress == nil {
 			return
@@ -83,7 +99,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 			return
 		}
 		progress(contracts.RunnerProgress{Type: progressType, Message: normalized, Timestamp: time.Now().UTC()})
-	})
+	}, builtCommand...)
 	if err == nil && runCtx.Err() != nil {
 		err = runCtx.Err()
 	}
@@ -99,6 +115,60 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		result.ReviewReady = hasStructuredPassVerdict(logPath)
 	}
 	return result, nil
+}
+
+func (a *CLIRunnerAdapter) buildCommand(request contracts.RunnerRequest, command []string) []string {
+	if len(command) > 0 {
+		resolved := resolveBackendArgs(command, "opencode", request)
+		binary := strings.TrimSpace(a.binary)
+		if binary != "" && len(resolved) > 0 && resolved[0] != binary {
+			resolved = append([]string{binary}, resolved...)
+		}
+		return resolved
+	}
+	return defaultBuildArgs(a.binary, request)
+}
+
+func defaultBuildArgs(binary string, request contracts.RunnerRequest) []string {
+	args := BuildACPArgsWithModel(strings.TrimSpace(request.RepoRoot), strings.TrimSpace(request.Model))
+	if trimmedBinary := strings.TrimSpace(binary); trimmedBinary != "" && len(args) > 0 {
+		args[0] = trimmedBinary
+	}
+	return args
+}
+
+func resolveBackendArgs(raw []string, backend string, request contracts.RunnerRequest) []string {
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = "opencode"
+	}
+	requestBackend := strings.TrimSpace(request.Metadata["backend"])
+	if requestBackend != "" {
+		backend = requestBackend
+	}
+
+	out := make([]string, 0, len(raw))
+	template := map[string]string{
+		"{{backend}}":      backend,
+		"{{backend-name}}": backend,
+		"{{model}}":        strings.TrimSpace(request.Model),
+		"{{prompt}}":       strings.TrimSpace(request.Prompt),
+		"{{task_id}}":      strings.TrimSpace(request.TaskID),
+		"{{repo_root}}":    strings.TrimSpace(request.RepoRoot),
+		"{{mode}}":         strings.TrimSpace(string(request.Mode)),
+	}
+
+	for _, value := range raw {
+		text := strings.TrimSpace(value)
+		for placeholder, replacement := range template {
+			text = strings.ReplaceAll(text, placeholder, replacement)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	return out
 }
 
 func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.RunnerResult, runErr error, logPath string) map[string]string {

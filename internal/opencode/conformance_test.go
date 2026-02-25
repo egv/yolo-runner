@@ -19,7 +19,7 @@ func TestCLIRunnerAdapterConformance(t *testing.T) {
 		NewAdapter: func(t *testing.T, scenario conformance.Scenario) contracts.AgentRunner {
 			t.Helper()
 			return &CLIRunnerAdapter{
-				runWithACP: func(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ string, logPath string, _ Runner, _ ACPClient, onUpdate func(string)) error {
+				runWithACP: func(_ context.Context, _ string, _ string, _ string, _ string, _ string, _ string, logPath string, _ Runner, _ ACPClient, onUpdate func(string), _ ...string) error {
 					switch scenario {
 					case conformance.ScenarioSuccess:
 						if onUpdate != nil {

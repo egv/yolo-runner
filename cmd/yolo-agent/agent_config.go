@@ -39,9 +39,13 @@ func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel, catalog codingag
 	if err != nil {
 		return yoloAgentConfigDefaults{}, err
 	}
+	configuredModel := strings.TrimSpace(model.Model)
+	if configuredModel == "" {
+		configuredModel = catalogBackendDefaultModel(catalog, backend)
+	}
 	defaults := yoloAgentConfigDefaults{
 		Backend: backend,
-		Model:   strings.TrimSpace(model.Model),
+		Model:   configuredModel,
 		Mode:    mode,
 	}
 
@@ -88,6 +92,14 @@ func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel, catalog codingag
 	defaults.WatchdogInterval = durationValue
 
 	return defaults, nil
+}
+
+func catalogBackendDefaultModel(catalog codingagents.Catalog, backend string) string {
+	definition, ok := catalog.Backend(backend)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(definition.Model)
 }
 
 func normalizeAndValidateAgentBackend(raw string, catalog codingagents.Catalog) (string, error) {

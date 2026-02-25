@@ -720,7 +720,7 @@ func runDistributedExecutor(ctx context.Context, cfg distributedRunnerConfig) er
 		cfg.configDir = filepath.Join(cfg.configRoot, "opencode")
 	}
 
-	adapter := opencode.NewCLIRunnerAdapter(defaultOpenCodeRunner{}, nil, cfg.configRoot, cfg.configDir)
+	adapter := opencode.NewCLIRunnerAdapter(defaultOpenCodeRunner{}, nil, cfg.configRoot, cfg.configDir, "")
 	executorID := cfg.executorID
 	if executorID == "" {
 		executorID = "executor"

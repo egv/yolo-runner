@@ -78,6 +78,18 @@ func TestResolveYoloAgentConfigDefaultsParsesConfiguredMode(t *testing.T) {
 	}
 }
 
+func TestResolveYoloAgentConfigDefaultsFallsBackToBackendModel(t *testing.T) {
+	defaults, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
+		Backend: "codex",
+	}, testCatalog(t))
+	if err != nil {
+		t.Fatalf("expected config defaults to parse, got %v", err)
+	}
+	if defaults.Model != "gpt-5.3-codex" {
+		t.Fatalf("expected model fallback from backend definition, got %q", defaults.Model)
+	}
+}
+
 func TestResolveYoloAgentConfigDefaultsRejectsUnsupportedMode(t *testing.T) {
 	_, err := resolveYoloAgentConfigDefaults(yoloAgentConfigModel{
 		Mode: "unsupported",

@@ -20,6 +20,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/codex"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	githubtracker "github.com/egv/yolo-runner/v2/internal/github"
+	"github.com/egv/yolo-runner/v2/internal/opencode"
 	"github.com/egv/yolo-runner/v2/internal/kimi"
 	"github.com/egv/yolo-runner/v2/internal/linear"
 	"github.com/egv/yolo-runner/v2/internal/tk"
@@ -1202,6 +1203,80 @@ profiles:
 	}
 }
 
+func TestE2E_OpencodeMigratedDefaultsFromConfig(t *testing.T) {
+	repo := initSeededRepo(t)
+
+	taskID := "t-opencode-1"
+	taskManager := newInMemoryTaskManager(contracts.Task{
+		ID:       taskID,
+		Title:    "Implement opencode e2e demo",
+		ParentID: "root",
+		Status:   contracts.TaskStatusOpen,
+	})
+	fakeBinaryPath := filepath.Join(t.TempDir(), "fake-opencode")
+	recordingRunner := &opencodeCommandCapturingRunner{}
+	fakeACPClient := opencode.ACPClientFunc(func(_ context.Context, _ string, logPath string) error {
+		if strings.TrimSpace(logPath) == "" {
+			return nil
+		}
+		line := "{\"message\":\"agent_message \\\"REVIEW_VERDICT: pass\\\\n\\\"\"}\n"
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return err
+		}
+		_, writeErr := f.WriteString(line)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
+	})
+	opencodeRunner := opencode.NewCLIRunnerAdapter(recordingRunner, fakeACPClient, "", "", fakeBinaryPath,
+		"acp", "--print-logs", "--log-level", "DEBUG", "--cwd", "{{repo_root}}")
+	fakeVCS := &fakeVCS{}
+
+	if err := runWithComponents(context.Background(), runConfig{
+		repoRoot: repo,
+		rootID:   "root",
+		backend:  backendOpenCode,
+		model:    "zai-coding-plan/glm-4.7",
+		maxTasks: 1,
+	}, taskManager, opencodeRunner, fakeVCS); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	task, err := taskManager.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected task to be closed, got %s", task.Status)
+	}
+
+	commands := recordingRunner.calls()
+	if len(commands) < 2 {
+		t.Fatalf("expected at least two opencode invocations, got %#v", commands)
+	}
+	for _, commandLine := range commands {
+		parts := append([]string(nil), commandLine...)
+		if len(parts) == 0 {
+			t.Fatalf("expected command args for opencode invocation, got %q", commandLine)
+		}
+		if got := parts[0]; got != fakeBinaryPath {
+			t.Fatalf("expected configured binary in command args[0], got %#v", commandLine)
+		}
+		if len(parts) < 7 {
+			t.Fatalf("expected opencode command with default args, got %#v", commandLine)
+		}
+		if parts[1] != "acp" || parts[2] != "--print-logs" || parts[3] != "--log-level" || parts[4] != "DEBUG" || parts[5] != "--cwd" {
+			t.Fatalf("unexpected opencode command prefix: %q", commandLine)
+		}
+		if strings.TrimSpace(parts[6]) == "" {
+			t.Fatalf("expected --cwd value in opencode command: %q", commandLine)
+		}
+	}
+}
+
 func TestE2E_ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage(t *testing.T) {
 	if _, err := exec.LookPath("tk"); err != nil {
 		t.Skip("tk CLI is required for e2e test")
@@ -1627,6 +1702,53 @@ func writeFakeKimiBinary(t *testing.T) string {
 	script := "#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"
 	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake kimi binary: %v", err)
+	}
+	return binaryPath
+}
+
+type opencodeCommandCapturingRunner struct {
+	mu    sync.Mutex
+	invocations [][]string
+}
+
+func (r *opencodeCommandCapturingRunner) Start(args []string, _ map[string]string, _ string) (opencode.Process, error) {
+	r.record(args)
+	return opencodeNoopProcess{}, nil
+}
+
+func (r *opencodeCommandCapturingRunner) calls() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]string, len(r.invocations))
+	for i, call := range r.invocations {
+		out[i] = append([]string(nil), call...)
+	}
+	return out
+}
+
+func (r *opencodeCommandCapturingRunner) record(args []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invocations = append(r.invocations, append([]string(nil), args...))
+}
+
+type opencodeNoopProcess struct{}
+
+func (opencodeNoopProcess) Wait() error { return nil }
+func (opencodeNoopProcess) Kill() error { return nil }
+
+func writeFakeOpencodeBinary(t *testing.T, capturePath string) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "fake-opencode")
+	escapedCapturePath := strings.ReplaceAll(capturePath, "\"", "\\\"")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$#|$*\" >> \"" + escapedCapturePath + "\"\\n"
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode binary: %v", err)
+	}
+	if capturePath != "" {
+		if err := os.WriteFile(capturePath, []byte{}, 0o644); err != nil {
+			t.Fatalf("initialize opencode args capture file: %v", err)
+		}
 	}
 	return binaryPath
 }
