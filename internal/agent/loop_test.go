@@ -206,6 +206,8 @@ func TestBuildImplementPromptIncludesReviewFeedbackWhenRetrying(t *testing.T) {
 		contracts.Task{ID: "t-1", Title: "Task 1", Description: "Implement behavior"},
 		"add RED/GREEN note evidence to ticket",
 		1,
+		"",
+		0,
 		false,
 	)
 
@@ -217,6 +219,73 @@ func TestBuildImplementPromptIncludesReviewFeedbackWhenRetrying(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "add RED/GREEN note evidence to ticket") {
 		t.Fatalf("expected review feedback body in prompt, got %q", prompt)
+	}
+}
+
+func TestLoopRetriesFailedImplementationWithCompletionAddendumThenSucceeds(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultFailed, Reason: "lint check failed: missing import"},
+		{Status: contracts.RunnerResultCompleted},
+	}}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 1})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completion after addendum retry, got %#v", summary)
+	}
+	if len(run.requests) != 2 {
+		t.Fatalf("expected initial failure retry pair, got %d requests", len(run.requests))
+	}
+	for i, request := range run.requests {
+		if request.Mode != contracts.RunnerModeImplement {
+			t.Fatalf("expected request %d mode=implement, got %s", i, request.Mode)
+		}
+	}
+	retryPrompt := run.requests[1].Prompt
+	if !strings.Contains(retryPrompt, "Completion Remediation Loop: Attempt 1") {
+		t.Fatalf("expected completion retry marker in prompt, got %q", retryPrompt)
+	}
+	if !strings.Contains(retryPrompt, "lint check failed: missing import") {
+		t.Fatalf("expected retry prompt to include addendum, got %q", retryPrompt)
+	}
+	if got := mgr.dataByID["t-1"]["completion_retry_count"]; got != "1" {
+		t.Fatalf("expected completion_retry_count=1, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["completion_addendum"]; !strings.Contains(got, "Attempt 1 failure: lint check failed: missing import") {
+		t.Fatalf("expected completion addendum to capture initial failure, got %q", got)
+	}
+}
+
+func TestLoopBlocksAfterCompletionRetriesExhausted(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultFailed, Reason: "attempt one did not converge"},
+		{Status: contracts.RunnerResultFailed, Reason: "attempt two still not converged"},
+	}}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 1})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Blocked != 1 {
+		t.Fatalf("expected blocked summary after retry exhaustion, got %#v", summary)
+	}
+	if mgr.statusByID["t-1"] != contracts.TaskStatusBlocked {
+		t.Fatalf("expected blocked status after retry exhaustion, got %s", mgr.statusByID["t-1"])
+	}
+	if got := mgr.dataByID["t-1"]["triage_status"]; got != "blocked" {
+		t.Fatalf("expected triage_status=blocked, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["completion_retry_count"]; got != "1" {
+		t.Fatalf("expected completion_retry_count=1 after exhaustion, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "attempt two still not converged" {
+		t.Fatalf("expected final completion failure reason, got %q", got)
 	}
 }
 
@@ -954,7 +1023,7 @@ func TestLoopUsesFinalUnresolvedBlockerSummaryAfterReviewRetryExhausted(t *testi
 	}
 }
 
-func TestLoopDoesNotRetryNonReviewFailureWhenRetryBudgetRemains(t *testing.T) {
+func TestLoopRetriesNonReviewFailureWithCompletionRetryBudget(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
 		{Status: contracts.RunnerResultFailed, Reason: "lint failed"},
@@ -966,14 +1035,20 @@ func TestLoopDoesNotRetryNonReviewFailureWhenRetryBudgetRemains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	if summary.Failed != 1 {
-		t.Fatalf("expected non-review failure to fail immediately, got %#v", summary)
+	if summary.Completed != 1 {
+		t.Fatalf("expected completion after retrying once, got %#v", summary)
 	}
-	if len(run.modes) != 1 || run.modes[0] != contracts.RunnerModeImplement {
-		t.Fatalf("expected exactly one implement run with no retry, got modes=%#v", run.modes)
+	if len(run.modes) != 2 || run.modes[0] != contracts.RunnerModeImplement || run.modes[1] != contracts.RunnerModeImplement {
+		t.Fatalf("expected two implement runs with completion retry, got modes=%#v", run.modes)
 	}
 	if got := mgr.dataByID["t-1"]["review_retry_count"]; got != "" {
 		t.Fatalf("expected no review_retry_count for non-review failure, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["completion_retry_count"]; got != "1" {
+		t.Fatalf("expected completion_retry_count=1 for completion retry, got %q", got)
+	}
+	if got := mgr.dataByID["t-1"]["completion_addendum"]; !strings.Contains(got, "Attempt 1 failure: lint failed") {
+		t.Fatalf("expected completion addendum to capture failure, got %q", got)
 	}
 }
 
@@ -2918,8 +2993,8 @@ func TestLoopWritesObservabilityPipelineArtifactsForFailedTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	if summary.Failed != 1 {
-		t.Fatalf("expected failed summary, got %#v", summary)
+	if summary.Blocked != 1 {
+		t.Fatalf("expected blocked summary, got %#v", summary)
 	}
 
 	expected := filepath.Join(repoRoot, "runner-logs", "epic-1", "t-1", "opencode", "t-1.jsonl")
@@ -2949,7 +3024,7 @@ func TestLoopWritesObservabilityPipelineArtifactsForFailedTask(t *testing.T) {
 	if len(taskData) == 0 {
 		t.Fatalf("expected task_data_updated event for failed task")
 	}
-	if taskData[len(taskData)-1].Metadata["decision"] != "failed" {
+	if taskData[len(taskData)-1].Metadata["decision"] != "blocked" {
 		t.Fatalf("expected failed decision in task_data_updated metadata, got %#v", taskData[len(taskData)-1].Metadata)
 	}
 
@@ -2957,7 +3032,7 @@ func TestLoopWritesObservabilityPipelineArtifactsForFailedTask(t *testing.T) {
 	if len(taskFinished) == 0 {
 		t.Fatalf("expected task_finished event for failed task")
 	}
-	if taskFinished[len(taskFinished)-1].Metadata["decision"] != "failed" {
+	if taskFinished[len(taskFinished)-1].Metadata["decision"] != "blocked" {
 		t.Fatalf("expected failed decision in task_finished metadata, got %#v", taskFinished[len(taskFinished)-1].Metadata)
 	}
 
@@ -2965,8 +3040,8 @@ func TestLoopWritesObservabilityPipelineArtifactsForFailedTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected event file %q, got err %v", eventsPath, err)
 	}
-	if !strings.Contains(string(eventsFile), "\"decision\":\"failed\"") {
-		t.Fatalf("expected decision metadata in events file, got %q", string(eventsFile))
+	if !strings.Contains(string(eventsFile), "\"decision\":\"blocked\"") {
+		t.Fatalf("expected blocked decision metadata in events file, got %q", string(eventsFile))
 	}
 
 	browser, err := tui.NewLogBrowser(filepath.Join(repoRoot, "runner-logs"))
@@ -3151,8 +3226,8 @@ func TestLoopEmitsTaskDataUpdatedEventForFailedTriage(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected one task_data_updated event, got %d", len(events))
 	}
-	if events[0].Metadata["triage_status"] != "failed" {
-		t.Fatalf("expected triage_status=failed, got %#v", events[0].Metadata)
+	if events[0].Metadata["triage_status"] != "blocked" {
+		t.Fatalf("expected triage_status=blocked, got %#v", events[0].Metadata)
 	}
 	if events[0].Metadata["triage_reason"] != "lint failed" {
 		t.Fatalf("expected triage_reason in metadata, got %#v", events[0].Metadata)
@@ -3174,11 +3249,11 @@ func TestLoopEmitsTaskFinishedMetadataForFailedTriage(t *testing.T) {
 	if len(finished) != 1 {
 		t.Fatalf("expected one task_finished event, got %d", len(finished))
 	}
-	if finished[0].Message != string(contracts.TaskStatusFailed) {
-		t.Fatalf("expected task_finished message=failed, got %q", finished[0].Message)
+	if finished[0].Message != string(contracts.TaskStatusBlocked) {
+		t.Fatalf("expected task_finished message=blocked, got %q", finished[0].Message)
 	}
-	if finished[0].Metadata["triage_status"] != "failed" {
-		t.Fatalf("expected triage_status=failed on task_finished metadata, got %#v", finished[0].Metadata)
+	if finished[0].Metadata["triage_status"] != "blocked" {
+		t.Fatalf("expected triage_status=blocked on task_finished metadata, got %#v", finished[0].Metadata)
 	}
 	if finished[0].Metadata["triage_reason"] != "lint failed" {
 		t.Fatalf("expected triage_reason=lint failed on task_finished metadata, got %#v", finished[0].Metadata)
