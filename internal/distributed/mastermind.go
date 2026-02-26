@@ -703,16 +703,6 @@ func (m *Mastermind) handleTaskStatusUpdate(ctx context.Context, env EventEnvelo
 	request.Status = contracts.TaskStatus(strings.TrimSpace(string(request.Status)))
 	request.Backends = canonicalTaskStatusUpdatesBackends(request.Backends)
 	request.Metadata = sanitizeTaskStatusMetadata(request.Metadata)
-
-	if request.TaskID == "" {
-		return fmt.Errorf("task id is required for task status update")
-	}
-	if request.Status == "" {
-		return m.rejectStatusUpdate(ctx, request, "missing status")
-	}
-	if m.statusUpdateAuthToken != "" && request.AuthToken != m.statusUpdateAuthToken {
-		return m.rejectStatusUpdate(ctx, request, "missing or invalid auth token")
-	}
 	if request.CommandID == "" {
 		request.CommandID = env.CorrelationID
 		if request.CommandID == "" {
@@ -725,6 +715,16 @@ func (m *Mastermind) handleTaskStatusUpdate(ctx context.Context, env EventEnvelo
 		return m.AckStatusUpdate(ctx, prior)
 	}
 	m.taskStatusMu.RUnlock()
+
+	if request.TaskID == "" {
+		return fmt.Errorf("task id is required for task status update")
+	}
+	if request.Status == "" {
+		return m.rejectStatusUpdate(ctx, request, "missing status")
+	}
+	if m.statusUpdateAuthToken != "" && request.AuthToken != m.statusUpdateAuthToken {
+		return m.rejectStatusUpdate(ctx, request, "missing or invalid auth token")
+	}
 
 	backends := request.Backends
 	if len(backends) == 0 {
