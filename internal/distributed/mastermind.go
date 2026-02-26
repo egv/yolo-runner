@@ -57,6 +57,7 @@ type Mastermind struct {
 	taskGraphSyncInterval time.Duration
 	taskStatusMu          sync.RWMutex
 	taskStatusVersions    map[string]map[string]int64
+	taskStatusCommands    map[string]TaskStatusUpdateAckPayload
 	taskGraphs            map[string]TaskGraphSnapshotPayload
 	taskGraphsMu          sync.RWMutex
 }
@@ -103,6 +104,7 @@ func NewMastermind(cfg MastermindOptions) *Mastermind {
 		taskGraphSyncRoots:    canonicalFilterValues(cfg.TaskGraphSyncRoots),
 		taskGraphSyncInterval: cfg.TaskGraphSyncInterval,
 		taskStatusVersions:    make(map[string]map[string]int64),
+		taskStatusCommands:    make(map[string]TaskStatusUpdateAckPayload),
 		taskGraphs:            map[string]TaskGraphSnapshotPayload{},
 	}
 }
@@ -636,6 +638,10 @@ func (m *Mastermind) PublishTaskStatusUpdate(ctx context.Context, req TaskStatus
 	return req.CommandID, m.bus.Publish(ctx, m.subjects.TaskStatusUpdate, env)
 }
 
+func (m *Mastermind) PublishTaskStatusUpdateCommand(ctx context.Context, req TaskStatusUpdateCommandPayload) (string, error) {
+	return m.PublishTaskStatusUpdate(ctx, req)
+}
+
 func (m *Mastermind) AckStatusUpdate(ctx context.Context, payload TaskStatusUpdateAckPayload) error {
 	if m == nil || m.bus == nil {
 		return fmt.Errorf("mastermind bus is required")
@@ -643,6 +649,19 @@ func (m *Mastermind) AckStatusUpdate(ctx context.Context, payload TaskStatusUpda
 	payload.CommandID = strings.TrimSpace(payload.CommandID)
 	payload.TaskID = strings.TrimSpace(payload.TaskID)
 	payload.Backends = canonicalTaskStatusUpdatesBackends(payload.Backends)
+	if payload.Result == "" {
+		if payload.Success {
+			payload.Result = "ok"
+		} else {
+			payload.Result = "error"
+		}
+	}
+	if payload.Result == "ok" {
+		payload.Success = true
+	}
+	if !payload.Success && payload.Reason == "" {
+		payload.Reason = strings.TrimSpace(payload.Message)
+	}
 	env, err := NewEventEnvelope(EventTypeTaskStatusAck, m.id, payload.CommandID, payload)
 	if err != nil {
 		return err
@@ -700,6 +719,12 @@ func (m *Mastermind) handleTaskStatusUpdate(ctx context.Context, env EventEnvelo
 			request.CommandID = generateTaskStatusCommandID(m.clock)
 		}
 	}
+	m.taskStatusMu.RLock()
+	if prior, ok := m.taskStatusCommands[request.CommandID]; ok {
+		m.taskStatusMu.RUnlock()
+		return m.AckStatusUpdate(ctx, prior)
+	}
+	m.taskStatusMu.RUnlock()
 
 	backends := request.Backends
 	if len(backends) == 0 {
@@ -759,7 +784,7 @@ func (m *Mastermind) handleTaskStatusUpdate(ctx context.Context, env EventEnvelo
 	}
 	m.taskStatusMu.Unlock()
 
-	return m.AckStatusUpdate(ctx, TaskStatusUpdateAckPayload{
+	ack := TaskStatusUpdateAckPayload{
 		TaskStatusUpdateResultPayload: TaskStatusUpdateResultPayload{
 			CommandID: request.CommandID,
 			TaskID:    request.TaskID,
@@ -767,14 +792,41 @@ func (m *Mastermind) handleTaskStatusUpdate(ctx context.Context, env EventEnvelo
 			Backends:  backends,
 			Versions:  newVersions,
 			Result:    "ok",
+			Success:   true,
 		},
-	})
+	}
+	m.taskStatusMu.Lock()
+	m.taskStatusCommands[request.CommandID] = ack
+	m.taskStatusMu.Unlock()
+	return m.AckStatusUpdate(ctx, ack)
 }
 
 func (m *Mastermind) rejectStatusUpdate(_ context.Context, request TaskStatusUpdatePayload, reason string) error {
 	if m == nil {
 		return fmt.Errorf("mastermind unavailable: %s", reason)
 	}
+	ack := TaskStatusUpdateAckPayload{
+		TaskStatusUpdateResultPayload: TaskStatusUpdateResultPayload{
+			CommandID: request.CommandID,
+			TaskID:    request.TaskID,
+			Status:    request.Status,
+			Backends:  request.Backends,
+			Result:    "error",
+			Message:   reason,
+			Reason:    reason,
+			Success:   false,
+		},
+	}
+	if request.CommandID != "" {
+		m.taskStatusMu.Lock()
+		if existing, ok := m.taskStatusCommands[request.CommandID]; ok {
+			ack = existing
+		} else {
+			m.taskStatusCommands[request.CommandID] = ack
+		}
+		m.taskStatusMu.Unlock()
+	}
+	_ = m.AckStatusUpdate(context.Background(), ack)
 	return m.RejectStatusUpdate(context.Background(), TaskStatusUpdateRejectPayload{
 		TaskStatusUpdateResultPayload: TaskStatusUpdateResultPayload{
 			CommandID: request.CommandID,
