@@ -52,6 +52,33 @@ func TestMakefileHasEventStreamSmokeTarget(t *testing.T) {
 	}
 }
 
+func TestMakefileHasDistributedSmokeTarget(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	makefilePath := filepath.Join(repoRoot, "Makefile")
+	contents, err := os.ReadFile(makefilePath)
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+
+	makefile := string(contents)
+	if !strings.Contains(makefile, "smoke-distributed-e2e:") {
+		t.Fatalf("Makefile missing smoke-distributed-e2e target")
+	}
+	if !strings.Contains(makefile, "./scripts/distributed-smoke.sh") {
+		t.Fatalf("smoke-distributed-e2e target must invoke scripts/distributed-smoke.sh")
+	}
+	if !strings.Contains(makefile, "distributed-dev-up:") {
+		t.Fatalf("Makefile missing distributed-dev-up target")
+	}
+	if !strings.Contains(makefile, "docker compose -f dev/distributed/docker-compose.yml up -d redis nats") {
+		t.Fatalf("distributed-dev-up target must start redis and nats via docker compose")
+	}
+}
+
 func TestMakefileHasConfigCommandSmokeTarget(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {

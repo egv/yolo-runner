@@ -18,3 +18,22 @@ jobs:
           go-version-file: go.mod
       - name: Run tests
         run: go test ./...
+
+  distributed-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run distributed smoke harness
+        run: make smoke-distributed-e2e
+      - name: Upload distributed smoke events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributed-smoke-events
+          path: runner-logs/distributed-smoke/*.events.jsonl
+          if-no-files-found: warn

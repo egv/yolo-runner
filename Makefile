@@ -11,6 +11,15 @@ smoke-config-commands:
 smoke-event-stream:
 	$(MAKE) smoke-agent-tui
 
+distributed-dev-up:
+	docker compose -f dev/distributed/docker-compose.yml up -d redis nats
+
+distributed-dev-down:
+	docker compose -f dev/distributed/docker-compose.yml down -v
+
+smoke-distributed-e2e:
+	./scripts/distributed-smoke.sh
+
 release-gate-e8:
 	go test ./cmd/yolo-agent -run 'TestE2E_(CodexTKConcurrency2LandsViaMergeQueue|ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage|KimiLinearProfileProcessesAndClosesIssue|GitHubProfileProcessesAndClosesIssue)$$' -count=1
 	go test ./internal/docs -run 'Test(MakefileDefinesE8ReleaseGateChecklistTarget|ReadmeDocumentsE8ReleaseGateChecklist|MigrationDocumentsE8ReleaseGateMigrationInstructions)$$' -count=1
