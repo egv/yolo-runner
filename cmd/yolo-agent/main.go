@@ -84,6 +84,8 @@ type runConfig struct {
 	distributedRegistryTTL          time.Duration
 	distributedReviewDefaultModel   string
 	distributedReviewLargerModel    string
+	distributedRewriteDefaultModel  string
+	distributedRewriteLargerModel   string
 	distributedEventBus             distributed.Bus
 }
 
@@ -167,6 +169,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	distributedRegistryTTL := fs.Duration("distributed-registry-ttl", 30*time.Second, "Executor registration TTL in mastermind role")
 	distributedReviewDefaultModel := fs.String("distributed-review-default-model", "", "Default model used by mastermind for review service requests")
 	distributedReviewLargerModel := fs.String("distributed-review-larger-model", "", "Larger model used by mastermind when review policy requests larger-model review")
+	distributedRewriteDefaultModel := fs.String("distributed-rewrite-default-model", "", "Default model used by mastermind for task-rewrite service requests")
+	distributedRewriteLargerModel := fs.String("distributed-rewrite-larger-model", "", "Larger model used by mastermind when rewrite policy requests larger-model rewrite")
 	var err error
 	if err = fs.Parse(args); err != nil {
 		return 1
@@ -325,6 +329,14 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if selectedDistributedReviewLargerModel == "" {
 		selectedDistributedReviewLargerModel = selectedDistributedReviewDefaultModel
 	}
+	selectedDistributedRewriteDefaultModel := strings.TrimSpace(*distributedRewriteDefaultModel)
+	if selectedDistributedRewriteDefaultModel == "" {
+		selectedDistributedRewriteDefaultModel = selectedModel
+	}
+	selectedDistributedRewriteLargerModel := strings.TrimSpace(*distributedRewriteLargerModel)
+	if selectedDistributedRewriteLargerModel == "" {
+		selectedDistributedRewriteLargerModel = selectedDistributedRewriteDefaultModel
+	}
 	if selectedDistributedHeartbeatInterval <= 0 {
 		fmt.Fprintln(os.Stderr, "--distributed-heartbeat-interval must be greater than 0")
 		return 1
@@ -379,6 +391,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		distributedRegistryTTL:          selectedDistributedRegistryTTL,
 		distributedReviewDefaultModel:   selectedDistributedReviewDefaultModel,
 		distributedReviewLargerModel:    selectedDistributedReviewLargerModel,
+		distributedRewriteDefaultModel:  selectedDistributedRewriteDefaultModel,
+		distributedRewriteLargerModel:   selectedDistributedRewriteLargerModel,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
@@ -976,11 +990,34 @@ func mastermindServiceHandler(cfg runConfig, localRunner contracts.AgentRunner) 
 			)
 		},
 	})
+	rewriteHandler := distributed.NewMastermindTaskRewriteRequestHandler(distributed.MastermindTaskRewriteRequestHandlerOptions{
+		RewriteRunner:       localRunner,
+		DefaultRewriteModel: strings.TrimSpace(cfg.distributedRewriteDefaultModel),
+		LargerRewriteModel:  strings.TrimSpace(cfg.distributedRewriteLargerModel),
+		MaxRetries:          maxInt(0, cfg.retryBudget),
+		AttemptTimeout:      cfg.distributedRequestTimeout,
+		RetryDelay:          50 * time.Millisecond,
+		DecisionLogger: func(_ context.Context, entry distributed.TaskRewriteDecisionLog) {
+			fmt.Fprintf(os.Stderr, "mastermind rewrite request_id=%s correlation_id=%s task_id=%s service=%s model=%s policy=%s attempts=%d failure=%q\n",
+				entry.RequestID,
+				entry.CorrelationID,
+				entry.TaskID,
+				entry.Service,
+				entry.SelectedModel,
+				entry.PolicyReason,
+				entry.Attempts,
+				entry.Failure,
+			)
+		},
+	})
 	fallbackHandler := defaultServiceHandler(localRunner)
 	return func(ctx context.Context, request distributed.ServiceRequestPayload) (distributed.ServiceResponsePayload, error) {
 		service := normalizeDistributedServiceName(request.Service)
 		if isReviewServiceName(service) {
 			return reviewHandler.Handle(ctx, request)
+		}
+		if isTaskRewriteServiceName(service) {
+			return rewriteHandler.Handle(ctx, request)
 		}
 		if fallbackHandler == nil {
 			return distributed.ServiceResponsePayload{}, fmt.Errorf("service handler unavailable")
@@ -1041,6 +1078,12 @@ func isReviewServiceName(service string) bool {
 	return service == distributed.ServiceNameReview ||
 		service == string(distributed.CapabilityLargerModel) ||
 		service == "review-with-larger-model"
+}
+
+func isTaskRewriteServiceName(service string) bool {
+	return service == distributed.ServiceNameTaskRewrite ||
+		service == string(distributed.CapabilityRewriteTask) ||
+		service == "rewrite-task"
 }
 
 func maxInt(a int, b int) int {

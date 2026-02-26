@@ -922,6 +922,138 @@ func TestMastermindReviewRequestHandlerRespondsWithStructuredReviewResult(t *tes
 	}
 }
 
+func TestMastermindTaskRewriteRequestHandlerRespondsWithStructuredRewriteResult(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var receivedMode contracts.RunnerMode
+	var receivedModeMu sync.Mutex
+	rewriteRunner := &scriptedReviewRunner{
+		runFn: func(_ int, _ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+			receivedModeMu.Lock()
+			receivedMode = request.Mode
+			receivedModeMu.Unlock()
+			if request.Model != "gpt-5.3-codex-large" {
+				return contracts.RunnerResult{
+					Status: contracts.RunnerResultFailed,
+					Reason: "wrong model selected",
+				}, fmt.Errorf("wrong model selected")
+			}
+			return contracts.RunnerResult{
+				Status: contracts.RunnerResultCompleted,
+				Artifacts: map[string]string{
+					"rewrite_task_description": "Updated task description with clarified scope.",
+					"rewrite_acceptance_criteria": strings.Join([]string{
+						"AC-1: include correlation IDs in request and response",
+						"AC-2: preserve task storage by default",
+					}, "\n"),
+					"rewrite_assumptions": strings.Join([]string{
+						"event bus is reachable",
+						"rewrite requests are advisory only",
+					}, "\n"),
+					"rewrite_rationale": "Tightened acceptance criteria and removed ambiguous wording.",
+				},
+			}, nil
+		},
+	}
+
+	var decisions []TaskRewriteDecisionLog
+	var decisionsMu sync.Mutex
+	handler := NewMastermindTaskRewriteRequestHandler(MastermindTaskRewriteRequestHandlerOptions{
+		RewriteRunner:       rewriteRunner,
+		DefaultRewriteModel: "gpt-5.3-codex",
+		LargerRewriteModel:  "gpt-5.3-codex-large",
+		DecisionLogger: func(_ context.Context, entry TaskRewriteDecisionLog) {
+			decisionsMu.Lock()
+			decisions = append(decisions, entry)
+			decisionsMu.Unlock()
+		},
+	})
+
+	mastermind := NewMastermind(MastermindOptions{
+		ID:             "mastermind",
+		Bus:            bus,
+		RegistryTTL:    2 * time.Second,
+		ServiceHandler: handler.Handle,
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:           "executor",
+		Bus:          bus,
+		Runner:       fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted}},
+		Capabilities: []Capability{CapabilityImplement},
+	})
+	go func() { _ = executor.Start(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+
+	response, err := executor.RequestTaskRewrite(ctx, ServiceRequestPayload{
+		RequestID:     "req-rewrite-1",
+		CorrelationID: "corr-rewrite-1",
+		TaskID:        "t-rewrite",
+		Metadata: map[string]string{
+			"rewrite_policy": "larger_model",
+			"prompt":         "Rewrite this task with explicit assumptions.",
+			"repo_root":      "/repo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("request task rewrite service: %v", err)
+	}
+	if response.RequestID != "req-rewrite-1" {
+		t.Fatalf("expected request id req-rewrite-1, got %q", response.RequestID)
+	}
+	if response.CorrelationID != "corr-rewrite-1" {
+		t.Fatalf("expected correlation id corr-rewrite-1, got %q", response.CorrelationID)
+	}
+	if response.RewriteResult == nil {
+		t.Fatalf("expected structured rewrite result payload")
+	}
+	if response.RewriteResult.RevisedTaskDescription == "" {
+		t.Fatalf("expected non-empty revised task description")
+	}
+	if len(response.RewriteResult.RevisedAcceptanceCriteria) != 2 {
+		t.Fatalf("expected two revised acceptance criteria, got %v", response.RewriteResult.RevisedAcceptanceCriteria)
+	}
+	if len(response.RewriteResult.Assumptions) != 2 {
+		t.Fatalf("expected two assumptions, got %v", response.RewriteResult.Assumptions)
+	}
+	if response.RewriteResult.Rationale == "" {
+		t.Fatalf("expected non-empty rewrite rationale")
+	}
+	if response.RewriteResult.SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected selected model gpt-5.3-codex-large, got %q", response.RewriteResult.SelectedModel)
+	}
+	if response.RewriteResult.PolicyReason != "policy:larger_model" {
+		t.Fatalf("expected policy reason policy:larger_model, got %q", response.RewriteResult.PolicyReason)
+	}
+	if response.Artifacts["mode"] != string(contracts.RunnerModeReview) {
+		t.Fatalf("expected mode artifact %q, got %q", contracts.RunnerModeReview, response.Artifacts["mode"])
+	}
+
+	receivedModeMu.Lock()
+	mode := receivedMode
+	receivedModeMu.Unlock()
+	if mode != contracts.RunnerModeReview {
+		t.Fatalf("expected rewrite runner mode %q, got %q", contracts.RunnerModeReview, mode)
+	}
+
+	decisionsMu.Lock()
+	defer decisionsMu.Unlock()
+	if len(decisions) != 1 {
+		t.Fatalf("expected one decision log entry, got %d", len(decisions))
+	}
+	if decisions[0].SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected logged selected model gpt-5.3-codex-large, got %q", decisions[0].SelectedModel)
+	}
+	if decisions[0].PolicyReason != "policy:larger_model" {
+		t.Fatalf("expected logged policy reason policy:larger_model, got %q", decisions[0].PolicyReason)
+	}
+}
+
 func TestMastermindReviewRequestHandlerRetriesDeterministicallyAfterTimeout(t *testing.T) {
 	runner := &scriptedReviewRunner{
 		runFn: func(attempt int, ctx context.Context, _ contracts.RunnerRequest) (contracts.RunnerResult, error) {
