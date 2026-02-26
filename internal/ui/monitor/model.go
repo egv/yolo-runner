@@ -32,6 +32,7 @@ type Model struct {
 	workers            map[string]workerLane
 	landing            map[string]landingState
 	triage             map[string]triageState
+	queueFilter        string
 }
 
 type Snapshot struct {
@@ -46,22 +47,24 @@ type PerformanceSnapshot struct {
 }
 
 type UIState struct {
-	CurrentTask     string
-	Phase           string
-	LastOutputAge   string
-	StatusSummary   string
-	StatusMetrics   statusMetrics
-	StatusBar       []string
-	Performance     []string
-	PanelLines      []UIPanelLine
-	RunParams       []string
-	WorkerSummaries []UIWorkerSummary
-	Queue           []string
-	TaskGraph       []string
-	TaskDetails     []string
-	Landing         []string
-	Triage          []string
-	History         []string
+	CurrentTask       string
+	Phase             string
+	LastOutputAge     string
+	StatusSummary     string
+	StatusMetrics     statusMetrics
+	StatusBar         []string
+	Performance       []string
+	PanelLines        []UIPanelLine
+	RunParams         []string
+	WorkerSummaries   []UIWorkerSummary
+	Queue             []string
+	QueueFilter       string
+	TaskGraph         []string
+	TaskDetails       []string
+	ExecutorDashboard []string
+	Landing           []string
+	Triage            []string
+	History           []string
 }
 
 type UIPanelLine struct {
@@ -143,6 +146,11 @@ type triageState struct {
 	reason    string
 }
 
+const (
+	queueFilterAll    = "all"
+	queueFilterActive = "active"
+)
+
 func NewModel(now func() time.Time) *Model {
 	if now == nil {
 		now = time.Now
@@ -167,6 +175,7 @@ func NewModel(now func() time.Time) *Model {
 		workers:        map[string]workerLane{},
 		landing:        map[string]landingState{},
 		triage:         map[string]triageState{},
+		queueFilter:    queueFilterAll,
 	}
 }
 
@@ -246,6 +255,8 @@ func (m *Model) HandleKey(key string) {
 			m.panelExpand[current.id] = false
 			m.panelRowsDirty = true
 		}
+	case "f":
+		m.CycleQueueFilter()
 	}
 }
 
@@ -445,22 +456,24 @@ func (m *Model) UIState() UIState {
 	}
 	taskDetails := renderTaskDetails(m.root.Tasks[selectedTaskID])
 	return UIState{
-		CurrentTask:     renderCurrentTask(m.currentTask, m.currentTitle),
-		Phase:           emptyAsNA(m.phase),
-		LastOutputAge:   ageSince(m.now(), m.lastOutputAt),
-		StatusSummary:   fmt.Sprintf("⏱ %s  %s  ✅%d  🟡%d  ❌%d/%d  👷 %d%%  📦 %d  ⚡ %s", metrics.runtime, metrics.activity, metrics.completed, metrics.blocked, metrics.failed, metrics.total, metrics.workerUtilization, metrics.queueDepth, metrics.throughput),
-		StatusMetrics:   metrics,
-		StatusBar:       renderStatusBar(metrics),
-		Performance:     renderPerformance(m.PerformanceSnapshot()),
-		PanelLines:      m.uiPanelLines(),
-		RunParams:       renderRunParameters(m.runParams),
-		WorkerSummaries: m.uiWorkerSummaries(),
-		Queue:           renderQueueRows(m.root.Tasks),
-		TaskGraph:       renderTaskGraphRows(m.root.Tasks),
-		TaskDetails:     taskDetails,
-		Landing:         renderLandingQueue(m.landing),
-		Triage:          renderTriage(m.triage),
-		History:         append([]string{}, m.history...),
+		CurrentTask:       renderCurrentTask(m.currentTask, m.currentTitle),
+		Phase:             emptyAsNA(m.phase),
+		LastOutputAge:     ageSince(m.now(), m.lastOutputAt),
+		StatusSummary:     fmt.Sprintf("⏱ %s  %s  ✅%d  🟡%d  ❌%d/%d  👷 %d%%  📦 %d  ⚡ %s", metrics.runtime, metrics.activity, metrics.completed, metrics.blocked, metrics.failed, metrics.total, metrics.workerUtilization, metrics.queueDepth, metrics.throughput),
+		StatusMetrics:     metrics,
+		StatusBar:         renderStatusBar(metrics),
+		Performance:       renderPerformance(m.PerformanceSnapshot()),
+		PanelLines:        m.uiPanelLines(),
+		RunParams:         renderRunParameters(m.runParams),
+		WorkerSummaries:   m.uiWorkerSummaries(),
+		Queue:             renderQueueRows(m.root.Tasks, m.queueFilter),
+		QueueFilter:       normalizeQueueFilter(m.queueFilter),
+		TaskGraph:         renderTaskGraphRows(m.root.Tasks),
+		TaskDetails:       taskDetails,
+		ExecutorDashboard: renderExecutorDashboard(metrics, m.root.Workers, m.root.Tasks, m.queueFilter),
+		Landing:           renderLandingQueue(m.landing),
+		Triage:            renderTriage(m.triage),
+		History:           append([]string{}, m.history...),
 	}
 }
 
@@ -558,6 +571,7 @@ func (m *Model) View() string {
 	lines := []string{
 		"Run Parameters:",
 		"Status Bar:",
+		"Executor Dashboard:",
 		"Performance:",
 		"Panels:",
 		"Current Task: " + renderCurrentTask(m.currentTask, m.currentTitle),
@@ -566,12 +580,15 @@ func (m *Model) View() string {
 		"Workers:",
 	}
 	perf := m.PerformanceSnapshot()
-	lines = append(lines, renderStatusBar(m.deriveStatusMetrics())...)
+	metrics := m.deriveStatusMetrics()
+	lines = append(lines, renderStatusBar(metrics)...)
+	lines = append(lines, renderExecutorDashboard(metrics, m.root.Workers, m.root.Tasks, m.queueFilter)...)
 	lines = append(lines, renderPerformance(perf)...)
 	lines = append(lines, renderPanels(m.panelRows(), m.panelCursor, m.viewportHeight)...)
 	lines = append(lines, renderRunParameters(m.runParams)...)
 	lines = append(lines, "Queue:")
-	lines = append(lines, renderQueueRows(m.root.Tasks)...)
+	lines = append(lines, "- filter="+normalizeQueueFilter(m.queueFilter))
+	lines = append(lines, renderQueueRows(m.root.Tasks, m.queueFilter)...)
 	lines = append(lines, "Task Graph:")
 	lines = append(lines, renderTaskGraphRows(m.root.Tasks)...)
 	lines = append(lines, renderWorkers(m.workers)...)
@@ -654,7 +671,7 @@ func (m *Model) panelRows() []panelRow {
 
 	rows = append(rows, queueRow)
 	if queueRow.expanded {
-		for _, taskID := range sortedQueueTaskIDs(m.root.Tasks) {
+		for _, taskID := range sortedQueueTaskIDs(m.root.Tasks, m.queueFilter) {
 			task := m.root.Tasks[taskID]
 			rows = append(rows, panelRow{
 				id:          "queue:task:" + task.TaskID,
@@ -970,11 +987,14 @@ func renderRunParameters(params map[string]string) []string {
 	return lines
 }
 
-func renderQueueRows(tasks map[string]TaskState) []string {
+func renderQueueRows(tasks map[string]TaskState, filter string) []string {
 	if len(tasks) == 0 {
 		return []string{"- n/a"}
 	}
-	ids := sortedQueueTaskIDs(tasks)
+	ids := sortedQueueTaskIDs(tasks, filter)
+	if len(ids) == 0 {
+		return []string{"- n/a"}
+	}
 	lines := make([]string, 0, len(ids))
 	for _, taskID := range ids {
 		lines = append(lines, "- "+renderQueueRowLabel(tasks[taskID]))
@@ -1005,15 +1025,22 @@ func renderQueueRowLabel(task TaskState) string {
 	return line + " [" + strings.Join(parts, ", ") + "]"
 }
 
-func sortedQueueTaskIDs(tasks map[string]TaskState) []string {
+func sortedQueueTaskIDs(tasks map[string]TaskState, filter string) []string {
+	filter = normalizeQueueFilter(filter)
 	ids := make([]string, 0, len(tasks))
 	for id, task := range tasks {
+		if !taskMatchesQueueFilter(task, filter) {
+			continue
+		}
 		if task.QueuePos > 0 || task.Priority != 0 {
 			ids = append(ids, id)
 		}
 	}
 	if len(ids) == 0 {
 		for id := range tasks {
+			if !taskMatchesQueueFilter(tasks[id], filter) {
+				continue
+			}
 			ids = append(ids, id)
 		}
 	}
@@ -1029,6 +1056,62 @@ func sortedQueueTaskIDs(tasks map[string]TaskState) []string {
 		return left.TaskID < right.TaskID
 	})
 	return ids
+}
+
+func normalizeQueueFilter(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", queueFilterAll:
+		return queueFilterAll
+	case queueFilterActive:
+		return queueFilterActive
+	default:
+		return queueFilterAll
+	}
+}
+
+func (m *Model) CycleQueueFilter() {
+	if m == nil {
+		return
+	}
+	switch normalizeQueueFilter(m.queueFilter) {
+	case queueFilterAll:
+		m.queueFilter = queueFilterActive
+	default:
+		m.queueFilter = queueFilterAll
+	}
+	m.panelRowsDirty = true
+}
+
+func taskMatchesQueueFilter(task TaskState, filter string) bool {
+	switch normalizeQueueFilter(filter) {
+	case queueFilterActive:
+		return !isTerminalStatus(normalizeTerminalStatus(task.TerminalStatus))
+	default:
+		return true
+	}
+}
+
+func renderExecutorDashboard(metrics statusMetrics, workers map[string]WorkerState, tasks map[string]TaskState, queueFilter string) []string {
+	totalWorkers := len(workers)
+	activeWorkers := 0
+	for _, worker := range workers {
+		task, ok := tasks[worker.CurrentTaskID]
+		if ok && !isTerminalStatus(normalizeTerminalStatus(task.TerminalStatus)) {
+			activeWorkers++
+		}
+	}
+	idleWorkers := totalWorkers - activeWorkers
+	if idleWorkers < 0 {
+		idleWorkers = 0
+	}
+	queueTotal := len(sortedQueueTaskIDs(tasks, queueFilterAll))
+	queueVisible := len(sortedQueueTaskIDs(tasks, queueFilter))
+	return []string{
+		fmt.Sprintf("- workers_total=%d workers_active=%d workers_idle=%d", totalWorkers, activeWorkers, idleWorkers),
+		fmt.Sprintf("- queue_filter=%s queue_visible=%d queue_total=%d", normalizeQueueFilter(queueFilter), queueVisible, queueTotal),
+		fmt.Sprintf("- tasks_total=%d completed=%d in_progress=%d blocked=%d failed=%d", metrics.total, metrics.completed, metrics.inProgress, metrics.blocked, metrics.failed),
+		fmt.Sprintf("- worker_utilization=%d%% throughput=%s", metrics.workerUtilization, metrics.throughput),
+	}
 }
 
 func renderGraphRows(tasks map[string]TaskState) []string {
