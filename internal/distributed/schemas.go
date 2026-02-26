@@ -91,14 +91,17 @@ type ExecutorRegistrationPayload struct {
 }
 
 type ExecutorHeartbeatPayload struct {
-	ExecutorID     string            `json:"executor_id"`
-	InstanceID     string            `json:"instance_id,omitempty"`
-	SeenAt         time.Time         `json:"seen_at"`
-	CurrentLoad    int               `json:"current_load,omitempty"`
-	AvailableSlots int               `json:"available_slots,omitempty"`
-	MaxConcurrency int               `json:"max_concurrency,omitempty"`
-	HealthStatus   string            `json:"health_status,omitempty"`
-	Metadata       map[string]string `json:"metadata,omitempty"`
+	ExecutorID        string                           `json:"executor_id"`
+	InstanceID        string                           `json:"instance_id,omitempty"`
+	SeenAt            time.Time                        `json:"seen_at"`
+	CurrentLoad       int                              `json:"current_load,omitempty"`
+	AvailableSlots    int                              `json:"available_slots,omitempty"`
+	MaxConcurrency    int                              `json:"max_concurrency,omitempty"`
+	HealthStatus      string                           `json:"health_status,omitempty"`
+	EnvironmentProbes ExecutorEnvironmentFeatureProbes `json:"environment_probes,omitempty"`
+	CredentialFlags   map[string]bool                  `json:"credential_flags,omitempty"`
+	ResourceHints     ExecutorResourceHints            `json:"resource_hints,omitempty"`
+	Metadata          map[string]string                `json:"metadata,omitempty"`
 }
 
 type ExecutorOfflinePayload struct {

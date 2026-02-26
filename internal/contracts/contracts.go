@@ -135,7 +135,7 @@ type RunnerRequest struct {
 	Model      string
 	RepoRoot   string
 	Timeout    time.Duration
-	MaxRetries int           `json:"max_retries"`
+	MaxRetries int `json:"max_retries"`
 	Metadata   map[string]string
 	OnProgress func(RunnerProgress)
 }
@@ -197,6 +197,8 @@ const (
 	EventTypeRunStarted            EventType = "run_started"
 	EventTypeRunFinished           EventType = "run_finished"
 	EventTypeTaskStarted           EventType = "task_started"
+	EventTypeTaskCompleted         EventType = "task_completed"
+	EventTypeTaskFailed            EventType = "task_failed"
 	EventTypeTaskFinished          EventType = "task_finished"
 	EventTypeRunnerStarted         EventType = "runner_started"
 	EventTypeRunnerFinished        EventType = "runner_finished"

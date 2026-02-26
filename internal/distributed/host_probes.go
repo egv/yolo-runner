@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+var defaultCredentialEnvVars = []string{
+	"GITHUB_TOKEN",
+	"GITLAB_TOKEN",
+	"OPENAI_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"GEMINI_API_KEY",
+	"GOOGLE_API_KEY",
+	"AWS_ACCESS_KEY_ID",
+	"AWS_SESSION_TOKEN",
+	"AZURE_OPENAI_API_KEY",
+}
+
 func DetectEnvironmentFeatureProbes() ExecutorEnvironmentFeatureProbes {
 	return ExecutorEnvironmentFeatureProbes{
 		HasGo:     commandAvailable("go"),
@@ -24,6 +36,18 @@ func DetectResourceHints() ExecutorResourceHints {
 		CPUCores: runtime.NumCPU(),
 		MemGB:    detectMemGB(),
 	}
+}
+
+func DetectCredentialPresenceFlags() map[string]bool {
+	flags := make(map[string]bool, len(defaultCredentialEnvVars))
+	for _, name := range defaultCredentialEnvVars {
+		normalized := strings.TrimSpace(name)
+		if normalized == "" {
+			continue
+		}
+		flags["has_env:"+normalized] = strings.TrimSpace(os.Getenv(normalized)) != ""
+	}
+	return flags
 }
 
 func commandAvailable(name string) bool {
