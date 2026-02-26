@@ -71,6 +71,9 @@ func NewMastermind(cfg MastermindOptions) *Mastermind {
 	if subjects.Register == "" {
 		subjects = DefaultEventSubjects("yolo")
 	}
+	if subjects.Offline == "" {
+		subjects.Offline = subjects.Register
+	}
 	statusUpdateBackends := map[string]TaskStatusWriter{}
 	for rawBackend, backend := range cfg.StatusUpdateBackends {
 		backendID := strings.ToLower(strings.TrimSpace(rawBackend))
@@ -121,16 +124,24 @@ func (m *Mastermind) Start(ctx context.Context) error {
 		unregister()
 		return err
 	}
+	offlineCh, unsubscribeOffline, err := m.bus.Subscribe(ctx, m.subjects.Offline)
+	if err != nil {
+		unregister()
+		unsubscribeHeartbeat()
+		return err
+	}
 	serviceCh, unsubscribeService, err := m.bus.Subscribe(ctx, m.subjects.ServiceRequest)
 	if err != nil {
 		unregister()
 		unsubscribeHeartbeat()
+		unsubscribeOffline()
 		return err
 	}
 	statusUpdateCh, unsubscribeStatusUpdate, err := m.bus.Subscribe(ctx, m.subjects.TaskStatusUpdate)
 	if err != nil {
 		unregister()
 		unsubscribeHeartbeat()
+		unsubscribeOffline()
 		unsubscribeService()
 		return err
 	}
@@ -173,6 +184,28 @@ func (m *Mastermind) Start(ctx context.Context) error {
 					continue
 				}
 				m.registry.Heartbeat(heartbeat)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer unsubscribeOffline()
+		for {
+			select {
+			case raw, ok := <-offlineCh:
+				if !ok {
+					return
+				}
+				offline := ExecutorOfflinePayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &offline); err != nil {
+					continue
+				}
+				m.registry.Unregister(offline)
 			case <-ctx.Done():
 				return
 			}
@@ -344,26 +377,26 @@ func (m *Mastermind) handleServiceRequest(ctx context.Context, env EventEnvelope
 
 func requestForTransport(request contracts.RunnerRequest) (json.RawMessage, error) {
 	type runnerTransportRequest struct {
-		TaskID   string               `json:"task_id"`
-		ParentID string               `json:"parent_id"`
-		Prompt   string               `json:"prompt"`
-		Mode     contracts.RunnerMode `json:"mode"`
-		Model    string               `json:"model"`
-		RepoRoot string               `json:"repo_root"`
-		Timeout  time.Duration        `json:"timeout"`
-		MaxRetries int               `json:"max_retries"`
-		Metadata map[string]string    `json:"metadata,omitempty"`
+		TaskID     string               `json:"task_id"`
+		ParentID   string               `json:"parent_id"`
+		Prompt     string               `json:"prompt"`
+		Mode       contracts.RunnerMode `json:"mode"`
+		Model      string               `json:"model"`
+		RepoRoot   string               `json:"repo_root"`
+		Timeout    time.Duration        `json:"timeout"`
+		MaxRetries int                  `json:"max_retries"`
+		Metadata   map[string]string    `json:"metadata,omitempty"`
 	}
 	transport := runnerTransportRequest{
-		TaskID:   request.TaskID,
-		ParentID: request.ParentID,
-		Prompt:   request.Prompt,
-		Mode:     request.Mode,
-		Model:    request.Model,
-		RepoRoot: request.RepoRoot,
-		Timeout:  request.Timeout,
+		TaskID:     request.TaskID,
+		ParentID:   request.ParentID,
+		Prompt:     request.Prompt,
+		Mode:       request.Mode,
+		Model:      request.Model,
+		RepoRoot:   request.RepoRoot,
+		Timeout:    request.Timeout,
 		MaxRetries: request.MaxRetries,
-		Metadata: request.Metadata,
+		Metadata:   request.Metadata,
 	}
 	raw, err := json.Marshal(transport)
 	if err != nil {
@@ -432,9 +465,9 @@ func (m *Mastermind) startTaskGraphSync(ctx context.Context) {
 						changes = []string{"task-graph-updated"}
 					}
 					diff := TaskGraphDiffPayload{
-						Backend:  backendID,
-						RootID:   rootID,
-						Changes:  changes,
+						Backend: backendID,
+						RootID:  rootID,
+						Changes: changes,
 						Metadata: map[string]string{
 							"published_by": m.id,
 							"published_at": m.clock().Format(time.RFC3339Nano),

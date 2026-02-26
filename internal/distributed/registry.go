@@ -32,10 +32,23 @@ func normalizeCapability(value Capability) Capability {
 }
 
 type ExecutorAdvertisement struct {
-	ID           string
-	Capabilities CapabilitySet
-	Metadata     map[string]string
-	SeenAt       time.Time
+	ID                      string
+	InstanceID              string
+	Hostname                string
+	Capabilities            CapabilitySet
+	SupportedPipelines      []string
+	SupportedAgents         []string
+	DeclaredCapabilities    ExecutorDeclaredCapabilities
+	EnvironmentProbes       ExecutorEnvironmentFeatureProbes
+	CredentialFlags         map[string]bool
+	ResourceHints           ExecutorResourceHints
+	MaxConcurrency          int
+	CurrentLoad             int
+	AvailableSlots          int
+	HealthStatus            string
+	CapabilitySchemaVersion string
+	Metadata                map[string]string
+	SeenAt                  time.Time
 }
 
 type ExecutorRegistry struct {
@@ -84,6 +97,9 @@ func (r *ExecutorRegistry) Register(payload ExecutorRegistrationPayload) {
 	if r == nil {
 		return
 	}
+	if err := ValidateExecutorRegistrationPayload(payload); err != nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
@@ -93,11 +109,27 @@ func (r *ExecutorRegistry) Register(payload ExecutorRegistrationPayload) {
 		return
 	}
 	advert := ExecutorAdvertisement{
-		ID:           id,
-		Capabilities: NewCapabilitySet(payload.Capabilities...),
-		Metadata:     payload.Metadata,
+		ID:                      id,
+		InstanceID:              strings.TrimSpace(payload.InstanceID),
+		Hostname:                strings.TrimSpace(payload.Hostname),
+		Capabilities:            NewCapabilitySet(payload.Capabilities...),
+		SupportedPipelines:      normalizeStringSlice(payload.SupportedPipelines),
+		SupportedAgents:         normalizeStringSlice(payload.SupportedAgents),
+		DeclaredCapabilities:    payload.DeclaredCapabilities,
+		EnvironmentProbes:       payload.EnvironmentProbes,
+		CredentialFlags:         copyRegistryBoolMap(payload.CredentialFlags),
+		ResourceHints:           payload.ResourceHints,
+		MaxConcurrency:          payload.MaxConcurrency,
+		CurrentLoad:             0,
+		AvailableSlots:          payload.MaxConcurrency,
+		HealthStatus:            "healthy",
+		CapabilitySchemaVersion: strings.TrimSpace(payload.CapabilitySchemaVersion),
+		Metadata:                payload.Metadata,
 		// Liveness must be based on local receipt time to avoid clock-skew false negatives.
 		SeenAt: now,
+	}
+	if advert.CapabilitySchemaVersion == "" {
+		advert.CapabilitySchemaVersion = CapabilitySchemaVersionV1
 	}
 	r.executors[id] = advert
 }
@@ -106,26 +138,53 @@ func (r *ExecutorRegistry) Heartbeat(payload ExecutorHeartbeatPayload) {
 	if r == nil {
 		return
 	}
+	if err := ValidateExecutorHeartbeatPayload(payload); err != nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
 	r.pruneExpired(now)
-	existing, ok := r.executors[payload.ExecutorID]
+	executorID := strings.TrimSpace(payload.ExecutorID)
+	if executorID == "" {
+		return
+	}
+	existing, ok := r.executors[executorID]
 	if !ok {
 		existing = ExecutorAdvertisement{
-			ID:           payload.ExecutorID,
+			ID:           executorID,
 			Capabilities: NewCapabilitySet(),
 			Metadata:     make(map[string]string),
 		}
 	}
 	existing.SeenAt = now
+	existing.InstanceID = strings.TrimSpace(payload.InstanceID)
+	existing.CurrentLoad = payload.CurrentLoad
+	existing.AvailableSlots = payload.AvailableSlots
+	existing.MaxConcurrency = payload.MaxConcurrency
+	if strings.TrimSpace(payload.HealthStatus) != "" {
+		existing.HealthStatus = strings.TrimSpace(payload.HealthStatus)
+	}
 	if existing.Metadata == nil {
 		existing.Metadata = make(map[string]string)
 	}
 	for key, value := range payload.Metadata {
 		existing.Metadata[key] = strings.TrimSpace(value)
 	}
-	r.executors[payload.ExecutorID] = existing
+	r.executors[executorID] = existing
+}
+
+func (r *ExecutorRegistry) Unregister(payload ExecutorOfflinePayload) {
+	if r == nil {
+		return
+	}
+	id := strings.TrimSpace(payload.ExecutorID)
+	if id == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.executors, id)
 }
 
 func (r *ExecutorRegistry) IsAvailable(executorID string, now time.Time) bool {
@@ -167,4 +226,40 @@ func (r *ExecutorRegistry) Pick(requirements ...Capability) (ExecutorAdvertiseme
 		return candidates[i].SeenAt.After(candidates[j].SeenAt)
 	})
 	return candidates[0], nil
+}
+
+func normalizeStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.TrimSpace(strings.ToLower(value))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func copyRegistryBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for key, value := range values {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = value
+	}
+	return out
 }
