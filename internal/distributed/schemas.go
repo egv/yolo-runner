@@ -154,6 +154,7 @@ type ServiceResponsePayload struct {
 	CorrelationID string            `json:"correlation_id"`
 	ExecutorID    string            `json:"executor_id"`
 	Service       string            `json:"service"`
+	ReviewResult  *ReviewResult     `json:"review_result,omitempty"`
 	Artifacts     map[string]string `json:"artifacts,omitempty"`
 	Error         string            `json:"error,omitempty"`
 }

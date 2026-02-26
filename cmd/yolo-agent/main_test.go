@@ -1287,8 +1287,11 @@ func TestMaybeWrapWithMastermindProvidesServiceHandlerToExecuteRequests(t *testi
 	t.Cleanup(cancel)
 
 	wrappedRunner, distributedBus, closeDistributed, err := maybeWrapWithMastermind(ctx, runConfig{
-		role:                 agentRoleMaster,
-		distributedBusPrefix: "unit",
+		role:                          agentRoleMaster,
+		distributedBusPrefix:          "unit",
+		distributedRequestTimeout:     500 * time.Millisecond,
+		distributedReviewDefaultModel: "gpt-5.3-codex",
+		distributedReviewLargerModel:  "gpt-5.3-codex-large",
 	}, serviceRunner, nil)
 	if distributedBus == nil {
 		t.Fatalf("expected distributed bus from mastermind wrapper")
@@ -1358,14 +1361,111 @@ func TestMaybeWrapWithMastermindProvidesServiceHandlerToExecuteRequests(t *testi
 	if req.Mode != contracts.RunnerModeReview {
 		t.Fatalf("expected runner mode %q, got %q", contracts.RunnerModeReview, req.Mode)
 	}
-	if req.Model != "larger" {
-		t.Fatalf("expected model %q, got %q", "larger", req.Model)
+	if req.Model != "gpt-5.3-codex-large" {
+		t.Fatalf("expected model %q, got %q", "gpt-5.3-codex-large", req.Model)
 	}
 	if req.RepoRoot != "/workspace" {
 		t.Fatalf("expected repo_root %q, got %q", "/workspace", req.RepoRoot)
 	}
 	if req.Timeout != 500*time.Millisecond {
 		t.Fatalf("expected timeout %s, got %s", 500*time.Millisecond, req.Timeout)
+	}
+}
+
+func TestMaybeWrapWithMastermindRequestReviewReturnsStructuredReviewResult(t *testing.T) {
+	originalBusFactory := newDistributedBus
+	t.Cleanup(func() {
+		newDistributedBus = originalBusFactory
+	})
+
+	bus := distributed.NewMemoryBus()
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
+		return bus, nil
+	}
+
+	serviceRunner := &serviceTrackingRunner{
+		result: contracts.RunnerResult{
+			Status: contracts.RunnerResultCompleted,
+			Artifacts: map[string]string{
+				"review_verdict":       "fail",
+				"review_fail_feedback": "missing retry test coverage",
+			},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	wrappedRunner, distributedBus, closeDistributed, err := maybeWrapWithMastermind(ctx, runConfig{
+		role:                          agentRoleMaster,
+		distributedBusPrefix:          "unit",
+		distributedRequestTimeout:     500 * time.Millisecond,
+		distributedReviewDefaultModel: "gpt-5.3-codex",
+		distributedReviewLargerModel:  "gpt-5.3-codex-large",
+	}, serviceRunner, nil)
+	if distributedBus == nil {
+		t.Fatalf("expected distributed bus from mastermind wrapper")
+	}
+	if err != nil {
+		t.Fatalf("expected mastermind setup to succeed, got %v", err)
+	}
+	if closeDistributed == nil {
+		t.Fatalf("expected close callback for mastermind wrapper")
+	}
+	t.Cleanup(func() {
+		_ = closeDistributed()
+	})
+
+	mm, ok := wrappedRunner.(distributedMastermindRunner)
+	if !ok {
+		t.Fatalf("expected wrapped runner to be distributed mastermind runner, got %T", wrappedRunner)
+	}
+	if err := mm.mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	executor := distributed.NewExecutorWorker(distributed.ExecutorWorkerOptions{
+		ID:           "executor",
+		Bus:          bus,
+		Runner:       serviceRunner,
+		Subjects:     distributed.DefaultEventSubjects("unit"),
+		Capabilities: []distributed.Capability{distributed.CapabilityReview},
+	})
+	go func() {
+		_ = executor.Start(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	response, err := executor.RequestReview(ctx, distributed.ServiceRequestPayload{
+		TaskID: "task-1",
+		Metadata: map[string]string{
+			"review_policy": "larger_model",
+			"prompt":        "Please review this change",
+			"repo_root":     "/workspace",
+		},
+	})
+	if err != nil {
+		t.Fatalf("executor RequestReview failed: %v", err)
+	}
+	if response.ReviewResult == nil {
+		t.Fatalf("expected structured review_result payload")
+	}
+	if response.ReviewResult.Verdict != distributed.ReviewVerdictFail {
+		t.Fatalf("expected review verdict fail, got %q", response.ReviewResult.Verdict)
+	}
+	if response.ReviewResult.BlockingFeedback != "missing retry test coverage" {
+		t.Fatalf("expected review blocking feedback to round-trip, got %q", response.ReviewResult.BlockingFeedback)
+	}
+	if response.ReviewResult.SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected selected review model %q, got %q", "gpt-5.3-codex-large", response.ReviewResult.SelectedModel)
+	}
+
+	req, ok := serviceRunner.lastRequest()
+	if !ok {
+		t.Fatalf("expected local runner request")
+	}
+	if req.Model != "gpt-5.3-codex-large" {
+		t.Fatalf("expected review runner model %q, got %q", "gpt-5.3-codex-large", req.Model)
 	}
 }
 

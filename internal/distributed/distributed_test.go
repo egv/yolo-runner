@@ -46,6 +46,29 @@ func (r *scriptedRunner) attempts() int {
 	return r.calls
 }
 
+type scriptedReviewRunner struct {
+	mu    sync.Mutex
+	calls int
+	runFn func(attempt int, ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error)
+}
+
+func (r *scriptedReviewRunner) Run(ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.mu.Lock()
+	r.calls++
+	attempt := r.calls
+	r.mu.Unlock()
+	if r.runFn == nil {
+		return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+	}
+	return r.runFn(attempt, ctx, request)
+}
+
+func (r *scriptedReviewRunner) attempts() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
 func TestParseEventEnvelopeSupportsLegacyAndV1Schemas(t *testing.T) {
 	t.Run("legacy event defaults to v0", func(t *testing.T) {
 		legacyPayload := []byte(`{"type":"executor_registered","source":"old-exec","payload":{"executor_id":"exec-1","capabilities":["implement"]}}`)
@@ -791,6 +814,156 @@ func TestExecutorCanRequestReviewAndTaskRewriteServices(t *testing.T) {
 	sort.Strings(received)
 	if strings.Join(received, ",") != ServiceNameReview+","+ServiceNameTaskRewrite {
 		t.Fatalf("expected review and rewrite requests, got %v", received)
+	}
+}
+
+func TestMastermindReviewRequestHandlerRespondsWithStructuredReviewResult(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reviewRunner := &scriptedReviewRunner{
+		runFn: func(_ int, _ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+			if request.Model != "gpt-5.3-codex-large" {
+				return contracts.RunnerResult{
+					Status: contracts.RunnerResultFailed,
+					Reason: "wrong model selected",
+				}, fmt.Errorf("wrong model selected")
+			}
+			return contracts.RunnerResult{
+				Status: contracts.RunnerResultCompleted,
+				Artifacts: map[string]string{
+					"review_verdict":       "fail",
+					"review_fail_feedback": "missing tests for retry path",
+				},
+			}, nil
+		},
+	}
+
+	var decisions []ReviewDecisionLog
+	var decisionsMu sync.Mutex
+	handler := NewMastermindReviewRequestHandler(MastermindReviewRequestHandlerOptions{
+		ReviewRunner:       reviewRunner,
+		DefaultReviewModel: "gpt-5.3-codex",
+		LargerReviewModel:  "gpt-5.3-codex-large",
+		MaxRetries:         1,
+		AttemptTimeout:     200 * time.Millisecond,
+		DecisionLogger: func(_ context.Context, entry ReviewDecisionLog) {
+			decisionsMu.Lock()
+			decisions = append(decisions, entry)
+			decisionsMu.Unlock()
+		},
+	})
+
+	mastermind := NewMastermind(MastermindOptions{
+		ID:             "mastermind",
+		Bus:            bus,
+		RegistryTTL:    2 * time.Second,
+		ServiceHandler: handler.Handle,
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:           "executor",
+		Bus:          bus,
+		Runner:       fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted}},
+		Capabilities: []Capability{CapabilityImplement},
+	})
+	go func() { _ = executor.Start(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+
+	response, err := executor.RequestReview(ctx, ServiceRequestPayload{
+		RequestID:     "req-1",
+		CorrelationID: "corr-1",
+		TaskID:        "t-review",
+		Metadata: map[string]string{
+			"review_policy": "larger_model",
+			"prompt":        "Please review this change",
+			"repo_root":     "/repo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("request review service: %v", err)
+	}
+	if response.RequestID != "req-1" {
+		t.Fatalf("expected request id req-1, got %q", response.RequestID)
+	}
+	if response.CorrelationID != "corr-1" {
+		t.Fatalf("expected correlation id corr-1, got %q", response.CorrelationID)
+	}
+	if response.ReviewResult == nil {
+		t.Fatalf("expected structured review result payload")
+	}
+	if response.ReviewResult.Verdict != ReviewVerdictFail {
+		t.Fatalf("expected verdict fail, got %q", response.ReviewResult.Verdict)
+	}
+	if response.ReviewResult.BlockingFeedback != "missing tests for retry path" {
+		t.Fatalf("expected blocking feedback to round-trip, got %q", response.ReviewResult.BlockingFeedback)
+	}
+	if response.ReviewResult.SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected selected model gpt-5.3-codex-large, got %q", response.ReviewResult.SelectedModel)
+	}
+	if response.ReviewResult.Pass {
+		t.Fatalf("expected failed review to report pass=false")
+	}
+
+	decisionsMu.Lock()
+	defer decisionsMu.Unlock()
+	if len(decisions) != 1 {
+		t.Fatalf("expected one decision log entry, got %d", len(decisions))
+	}
+	if decisions[0].SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected logged selected model gpt-5.3-codex-large, got %q", decisions[0].SelectedModel)
+	}
+	if decisions[0].Verdict != ReviewVerdictFail {
+		t.Fatalf("expected logged verdict fail, got %q", decisions[0].Verdict)
+	}
+}
+
+func TestMastermindReviewRequestHandlerRetriesDeterministicallyAfterTimeout(t *testing.T) {
+	runner := &scriptedReviewRunner{
+		runFn: func(attempt int, ctx context.Context, _ contracts.RunnerRequest) (contracts.RunnerResult, error) {
+			if attempt == 1 {
+				<-ctx.Done()
+				return contracts.RunnerResult{
+					Status: contracts.RunnerResultFailed,
+					Reason: "timeout",
+				}, ctx.Err()
+			}
+			return contracts.RunnerResult{
+				Status: contracts.RunnerResultCompleted,
+				Artifacts: map[string]string{
+					"review_verdict": "pass",
+				},
+			}, nil
+		},
+	}
+	handler := NewMastermindReviewRequestHandler(MastermindReviewRequestHandlerOptions{
+		ReviewRunner:       runner,
+		DefaultReviewModel: "gpt-5.3-codex",
+		MaxRetries:         1,
+		AttemptTimeout:     20 * time.Millisecond,
+	})
+
+	response, err := handler.Handle(context.Background(), ServiceRequestPayload{
+		RequestID:     "req-timeout",
+		CorrelationID: "corr-timeout",
+		TaskID:        "task-timeout",
+		Service:       ServiceNameReview,
+	})
+	if err != nil {
+		t.Fatalf("expected handler to recover after retry, got %v", err)
+	}
+	if runner.attempts() != 2 {
+		t.Fatalf("expected deterministic retry count 2, got %d", runner.attempts())
+	}
+	if response.ReviewResult == nil {
+		t.Fatalf("expected review result payload")
+	}
+	if response.ReviewResult.Verdict != ReviewVerdictPass {
+		t.Fatalf("expected final verdict pass, got %q", response.ReviewResult.Verdict)
 	}
 }
 
