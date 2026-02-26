@@ -15,6 +15,7 @@ const (
 	EventSchemaVersionV1      SchemaVersion = "1"
 	EventSchemaVersionV0      SchemaVersion = "0"
 	CapabilitySchemaVersionV1               = "1"
+	InboxSchemaVersionV1                    = "1"
 )
 
 type SchemaVersion string
@@ -32,6 +33,7 @@ const (
 	EventTypeTaskGraphSnapshot  EventType = "task_graph_snapshot"
 	EventTypeTaskGraphDiff      EventType = "task_graph_diff"
 	EventTypeTaskStatusUpdate   EventType = "task_status_update"
+	EventTypeTaskStatusCommand  EventType = EventTypeTaskStatusUpdate
 	EventTypeTaskStatusAck      EventType = "task_status_ack"
 	EventTypeTaskStatusReject   EventType = "task_status_reject"
 	EventTypeMonitorEvent       EventType = "monitor_event"
@@ -164,17 +166,21 @@ const (
 )
 
 type TaskGraphSnapshotPayload struct {
-	Backend  string             `json:"backend"`
-	RootID   string             `json:"root_id"`
-	TaskTree contracts.TaskTree `json:"task_tree"`
-	Metadata map[string]string  `json:"metadata,omitempty"`
+	SchemaVersion string              `json:"schema_version,omitempty"`
+	Graphs        []TaskGraphSnapshot `json:"graphs,omitempty"`
+	Backend       string              `json:"backend"`
+	RootID        string              `json:"root_id"`
+	TaskTree      contracts.TaskTree  `json:"task_tree"`
+	Metadata      map[string]string   `json:"metadata,omitempty"`
 }
 
 type TaskGraphDiffPayload struct {
-	Backend  string            `json:"backend"`
-	RootID   string            `json:"root_id"`
-	Changes  []string          `json:"changes"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	SchemaVersion string            `json:"schema_version,omitempty"`
+	Graphs        []TaskGraphDiff   `json:"graphs,omitempty"`
+	Backend       string            `json:"backend"`
+	RootID        string            `json:"root_id"`
+	Changes       []string          `json:"changes"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 type TaskStatusUpdatePayload struct {
@@ -188,6 +194,8 @@ type TaskStatusUpdatePayload struct {
 	AuthToken       string               `json:"auth_token,omitempty"`
 }
 
+type TaskStatusUpdateCommandPayload = TaskStatusUpdatePayload
+
 type TaskStatusUpdateResultPayload struct {
 	CommandID string               `json:"command_id"`
 	TaskID    string               `json:"task_id"`
@@ -196,6 +204,8 @@ type TaskStatusUpdateResultPayload struct {
 	Versions  map[string]int64     `json:"versions"`
 	Result    string               `json:"result"`
 	Message   string               `json:"message,omitempty"`
+	Success   bool                 `json:"success,omitempty"`
+	Reason    string               `json:"reason,omitempty"`
 }
 
 type TaskStatusUpdateAckPayload struct {
@@ -216,10 +226,126 @@ type TaskGraphSubscriptionFilter struct {
 	RootIDs  []string
 }
 
+type TaskGraphSnapshot struct {
+	GraphRef      string          `json:"graph_ref"`
+	SourceContext SourceContext   `json:"source_context,omitempty"`
+	Nodes         []TaskGraphNode `json:"nodes"`
+}
+
+type TaskGraphDiff struct {
+	GraphRef      string          `json:"graph_ref"`
+	SourceContext SourceContext   `json:"source_context,omitempty"`
+	UpsertNodes   []TaskGraphNode `json:"upsert_nodes,omitempty"`
+	DeleteTaskIDs []string        `json:"delete_task_ids,omitempty"`
+	ChangedFields []string        `json:"changed_fields,omitempty"`
+}
+
+type TaskGraphNode struct {
+	TaskID        string               `json:"task_id"`
+	ParentTaskID  string               `json:"parent_task_id,omitempty"`
+	Title         string               `json:"title,omitempty"`
+	Status        contracts.TaskStatus `json:"status,omitempty"`
+	GraphRef      string               `json:"graph_ref"`
+	TaskRef       TaskRef              `json:"task_ref"`
+	SourceContext SourceContext        `json:"source_context,omitempty"`
+	WorkspaceSpec *WorkspaceSpec       `json:"workspace_spec,omitempty"`
+	Requirements  []TaskRequirement    `json:"requirements,omitempty"`
+	Metadata      map[string]string    `json:"metadata,omitempty"`
+}
+
+type TaskRef struct {
+	BackendInstance string `json:"backend_instance,omitempty"`
+	BackendType     string `json:"backend_type"`
+	BackendNativeID string `json:"backend_native_id"`
+}
+
+type SourceContext struct {
+	Provider     string `json:"provider,omitempty"`
+	Repository   string `json:"repository,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	Project      string `json:"project,omitempty"`
+}
+
+type WorkspaceSpec struct {
+	Kind    string `json:"kind"`
+	RepoURL string `json:"repo_url,omitempty"`
+	Ref     string `json:"ref,omitempty"`
+}
+
+type TaskRequirement struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type TaskGraphEvent struct {
 	Type     EventType                 `json:"type"`
 	Snapshot *TaskGraphSnapshotPayload `json:"snapshot,omitempty"`
 	Diff     *TaskGraphDiffPayload     `json:"diff,omitempty"`
+}
+
+func normalizeInboxSchemaVersion(version string) (string, error) {
+	normalized := strings.TrimSpace(version)
+	if normalized == "" {
+		return InboxSchemaVersionV1, nil
+	}
+	if normalized != InboxSchemaVersionV1 {
+		return "", fmt.Errorf("unsupported inbox schema version %q", normalized)
+	}
+	return normalized, nil
+}
+
+func (p TaskGraphSnapshotPayload) NormalizeGraphs() ([]TaskGraphSnapshot, error) {
+	if _, err := normalizeInboxSchemaVersion(p.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if len(p.Graphs) > 0 {
+		out := make([]TaskGraphSnapshot, 0, len(p.Graphs))
+		for _, graph := range p.Graphs {
+			graph.GraphRef = strings.TrimSpace(graph.GraphRef)
+			if graph.GraphRef == "" {
+				return nil, fmt.Errorf("graph_ref is required")
+			}
+			for i := range graph.Nodes {
+				graph.Nodes[i].GraphRef = strings.TrimSpace(graph.Nodes[i].GraphRef)
+				if graph.Nodes[i].GraphRef == "" {
+					graph.Nodes[i].GraphRef = graph.GraphRef
+				}
+			}
+			out = append(out, graph)
+		}
+		return out, nil
+	}
+	backend := strings.TrimSpace(p.Backend)
+	rootID := strings.TrimSpace(p.RootID)
+	if backend == "" || rootID == "" {
+		return nil, nil
+	}
+	taskIDs := make([]string, 0, len(p.TaskTree.Tasks))
+	for taskID := range p.TaskTree.Tasks {
+		taskIDs = append(taskIDs, taskID)
+	}
+	sort.Strings(taskIDs)
+	nodes := make([]TaskGraphNode, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		task := p.TaskTree.Tasks[taskID]
+		nodes = append(nodes, TaskGraphNode{
+			TaskID:       strings.TrimSpace(task.ID),
+			ParentTaskID: strings.TrimSpace(task.ParentID),
+			Title:        strings.TrimSpace(task.Title),
+			Status:       task.Status,
+			GraphRef:     rootID,
+			TaskRef: TaskRef{
+				BackendType:     backend,
+				BackendNativeID: strings.TrimSpace(task.ID),
+			},
+			Metadata: task.Metadata,
+		})
+	}
+	return []TaskGraphSnapshot{{
+		GraphRef: rootID,
+		Nodes:    nodes,
+	}}, nil
 }
 
 func canonicalTaskStatusUpdatesBackends(backends []string) []string {
