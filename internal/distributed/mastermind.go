@@ -53,6 +53,9 @@ type MastermindOptions struct {
 	TaskGraphSyncStatuses   []contracts.TaskStatus
 	TaskGraphSyncLabels     []string
 	TaskGraphSyncInterval   time.Duration
+	SchedulerQueuePrefix    string
+	SchedulerBackpressure   float64
+	SchedulerTickInterval   time.Duration
 }
 
 type TaskDispatchRequest struct {
@@ -82,6 +85,7 @@ type Mastermind struct {
 	taskStatusCommands      map[string]TaskStatusUpdateAckPayload
 	taskGraphs              map[string]TaskGraphSnapshotPayload
 	taskGraphsMu            sync.RWMutex
+	scheduler               *mastermindScheduler
 }
 
 const (
@@ -134,6 +138,14 @@ func NewMastermind(cfg MastermindOptions) *Mastermind {
 		taskStatusVersions:      make(map[string]map[string]int64),
 		taskStatusCommands:      make(map[string]TaskStatusUpdateAckPayload),
 		taskGraphs:              map[string]TaskGraphSnapshotPayload{},
+		scheduler: newMastermindScheduler(mastermindSchedulerOptions{
+			queuePrefix:      cfg.SchedulerQueuePrefix,
+			backpressure:     cfg.SchedulerBackpressure,
+			tickInterval:     cfg.SchedulerTickInterval,
+			statusAuthToken:  strings.TrimSpace(cfg.StatusUpdateAuthToken),
+			clock:            cfg.Clock,
+			defaultQueueName: "queue.tasks",
+		}),
 	}
 }
 
@@ -175,6 +187,36 @@ func (m *Mastermind) Start(ctx context.Context) error {
 		unsubscribeService()
 		return err
 	}
+	taskGraphSnapshotCh, unsubscribeTaskGraphSnapshot, err := m.bus.Subscribe(ctx, m.subjects.TaskGraphSnapshot)
+	if err != nil {
+		unregister()
+		unsubscribeHeartbeat()
+		unsubscribeOffline()
+		unsubscribeService()
+		unsubscribeStatusUpdate()
+		return err
+	}
+	taskGraphDiffCh, unsubscribeTaskGraphDiff, err := m.bus.Subscribe(ctx, m.subjects.TaskGraphDiff)
+	if err != nil {
+		unregister()
+		unsubscribeHeartbeat()
+		unsubscribeOffline()
+		unsubscribeService()
+		unsubscribeStatusUpdate()
+		unsubscribeTaskGraphSnapshot()
+		return err
+	}
+	monitorCh, unsubscribeMonitor, err := m.bus.Subscribe(ctx, m.subjects.MonitorEvent)
+	if err != nil {
+		unregister()
+		unsubscribeHeartbeat()
+		unsubscribeOffline()
+		unsubscribeService()
+		unsubscribeStatusUpdate()
+		unsubscribeTaskGraphSnapshot()
+		unsubscribeTaskGraphDiff()
+		return err
+	}
 
 	go func() {
 		defer unregister()
@@ -214,6 +256,7 @@ func (m *Mastermind) Start(ctx context.Context) error {
 					continue
 				}
 				m.registry.Heartbeat(heartbeat)
+				m.triggerScheduler(ctx)
 			case <-ctx.Done():
 				return
 			}
@@ -276,7 +319,79 @@ func (m *Mastermind) Start(ctx context.Context) error {
 		}
 	}()
 
+	go func() {
+		defer unsubscribeTaskGraphSnapshot()
+		for {
+			select {
+			case raw, ok := <-taskGraphSnapshotCh:
+				if !ok {
+					return
+				}
+				payload := TaskGraphSnapshotPayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+					continue
+				}
+				m.schedulerApplySnapshot(payload)
+				m.triggerScheduler(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer unsubscribeTaskGraphDiff()
+		for {
+			select {
+			case raw, ok := <-taskGraphDiffCh:
+				if !ok {
+					return
+				}
+				payload := TaskGraphDiffPayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+					continue
+				}
+				m.schedulerApplyDiff(payload)
+				m.triggerScheduler(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer unsubscribeMonitor()
+		for {
+			select {
+			case raw, ok := <-monitorCh:
+				if !ok {
+					return
+				}
+				payload := MonitorEventPayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+					continue
+				}
+				changed := m.schedulerApplyMonitorEvent(payload.Event)
+				if changed {
+					m.triggerScheduler(ctx)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	go m.startTaskGraphSync(ctx)
+	go m.startSchedulerLoop(ctx)
 
 	return nil
 }
