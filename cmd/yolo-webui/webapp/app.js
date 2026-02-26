@@ -138,6 +138,12 @@
     const queue = state.Queue || [];
     const workers = state.WorkerSummaries || [];
     const graph = state.TaskGraph || [];
+    const statusBar = state.StatusBar || [];
+    const runParams = state.RunParams || [];
+    const performance = state.Performance || [];
+    const executorDashboard = state.ExecutorDashboard || [];
+    const landing = state.Landing || [];
+    const triage = state.Triage || [];
 
     const saveSource = () => {
       requestJSON(
@@ -354,6 +360,30 @@
         ),
         React.createElement(Panel, { title: "Task History" },
           React.createElement("pre", { className: "detail-block" }, (state.History || []).join("\n") || "- no history")
+        )
+      ),
+      React.createElement("section", { className: "layout--half" },
+        React.createElement(Panel, { title: "Status Bar" },
+          React.createElement("pre", { className: "detail-block" }, statusBar.join("\n") || "- no status rows")
+        ),
+        React.createElement(Panel, { title: "Run Parameters" },
+          React.createElement("pre", { className: "detail-block" }, runParams.join("\n") || "- no run parameters")
+        )
+      ),
+      React.createElement("section", { className: "layout--half" },
+        React.createElement(Panel, { title: "Performance" },
+          React.createElement("pre", { className: "detail-block" }, performance.join("\n") || "- no performance metrics")
+        ),
+        React.createElement(Panel, { title: "Executor Dashboard" },
+          React.createElement("pre", { className: "detail-block" }, executorDashboard.join("\n") || "- no executor data")
+        )
+      ),
+      React.createElement("section", { className: "layout--half" },
+        React.createElement(Panel, { title: "Landing Queue" },
+          React.createElement("pre", { className: "detail-block" }, landing.join("\n") || "- no landing tasks")
+        ),
+        React.createElement(Panel, { title: "Triage" },
+          React.createElement("pre", { className: "detail-block" }, triage.join("\n") || "- no triage tasks")
         )
       )
     );
