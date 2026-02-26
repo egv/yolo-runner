@@ -156,6 +156,68 @@ func TestMastermindTaskStatusUpdateCommandIsIdempotentByCommandID(t *testing.T) 
 	}
 }
 
+func TestMastermindTaskStatusDuplicateCommandIDSkipsAuthRejection(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &fakeTaskStatusBackend{t: t}
+	subjects := DefaultEventSubjects("unit")
+	mastermind := NewMastermind(MastermindOptions{
+		ID:             "mastermind",
+		Bus:            bus,
+		Subjects:       subjects,
+		RegistryTTL:    2 * time.Second,
+		RequestTimeout: 2 * time.Second,
+		StatusUpdateBackends: map[string]TaskStatusWriter{
+			"tk": backend,
+		},
+		StatusUpdateAuthToken: "token",
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+	ackCh, unsubscribeAck, err := bus.Subscribe(ctx, subjects.TaskStatusUpdateAck)
+	if err != nil {
+		t.Fatalf("subscribe ack: %v", err)
+	}
+	defer unsubscribeAck()
+	rejectCh, unsubscribeReject, err := bus.Subscribe(ctx, subjects.TaskStatusUpdateReject)
+	if err != nil {
+		t.Fatalf("subscribe reject: %v", err)
+	}
+	defer unsubscribeReject()
+
+	cmd := TaskStatusUpdateCommandPayload{
+		CommandID: "cmd-idempotent-auth-1",
+		Backends:  []string{"tk"},
+		TaskID:    "task-1",
+		Status:    contracts.TaskStatusClosed,
+		Comment:   "ship it",
+		AuthToken: "token",
+	}
+	if _, err := mastermind.PublishTaskStatusUpdateCommand(ctx, cmd); err != nil {
+		t.Fatalf("publish first command: %v", err)
+	}
+	_ = readTaskStatusUpdateAck(t, ackCh)
+
+	cmd.AuthToken = "wrong-token"
+	if _, err := mastermind.PublishTaskStatusUpdateCommand(ctx, cmd); err != nil {
+		t.Fatalf("publish duplicate command: %v", err)
+	}
+	ack := readTaskStatusUpdateAck(t, ackCh)
+	if !ack.Success {
+		t.Fatalf("expected duplicate command to keep success ack")
+	}
+	if calls, _ := backend.callsFor("task-1"); calls != 1 {
+		t.Fatalf("expected idempotent command to write status once, got %d", calls)
+	}
+	select {
+	case reject := <-rejectCh:
+		t.Fatalf("did not expect reject event for duplicate command, got type=%q", reject.Type)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestMastermindPublishesFailureAckForRejectedStatusCommand(t *testing.T) {
 	bus := NewMemoryBus()
 	ctx, cancel := context.WithCancel(context.Background())
