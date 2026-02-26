@@ -307,3 +307,25 @@ func TestNATSBusQueueAckNackErrorsPropagate(t *testing.T) {
 	}
 	stopA()
 }
+
+func TestNATSBusPublishAcceptsNilContext(t *testing.T) {
+	conn := &fakeNATSBusConnection{}
+	bus := &NATSBus{conn: conn}
+
+	env, err := NewEventEnvelope(EventTypeTaskResult, "executor", "corr", TaskResultPayload{
+		CorrelationID: "corr",
+		Result:        contracts.RunnerResult{Status: contracts.RunnerResultCompleted},
+	})
+	if err != nil {
+		t.Fatalf("build envelope: %v", err)
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("publish should not panic with nil context: %v", rec)
+		}
+	}()
+	if err := bus.Publish(nil, "events", env); err != nil {
+		t.Fatalf("publish should succeed with nil context: %v", err)
+	}
+}

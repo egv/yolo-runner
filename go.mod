@@ -3,13 +3,17 @@ module github.com/egv/yolo-runner/v2
 go 1.25.5
 
 require (
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/ironpark/acp-go v0.0.0-20250912060836-d127df3b2709
+	github.com/nats-io/nats-server/v2 v2.10.22
 	github.com/nats-io/nats.go v1.36.0
 	github.com/redis/go-redis/v9 v9.12.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	golang.org/x/net v0.33.0
 	golang.org/x/term v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -42,16 +46,14 @@ require (
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/nats-io/jwt/v2 v2.5.8 // indirect
-	github.com/nats-io/nats-server/v2 v2.10.22 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
-	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
 	golang.org/x/time v0.7.0 // indirect

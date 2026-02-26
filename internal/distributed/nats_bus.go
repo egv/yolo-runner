@@ -64,6 +64,9 @@ func NewNATSBus(address string, opts ...BusBackendOptions) (*NATSBus, error) {
 }
 
 func (b *NATSBus) Publish(ctx context.Context, subject string, event EventEnvelope) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return err
