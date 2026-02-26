@@ -158,6 +158,11 @@ type ServiceResponsePayload struct {
 	Error         string            `json:"error,omitempty"`
 }
 
+const (
+	ServiceNameReview      = "review"
+	ServiceNameTaskRewrite = "rewrite_task"
+)
+
 type TaskGraphSnapshotPayload struct {
 	Backend  string             `json:"backend"`
 	RootID   string             `json:"root_id"`

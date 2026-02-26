@@ -3,7 +3,9 @@ package distributed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -726,6 +728,218 @@ func TestExecutorCanRequestServiceFromMastermind(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatalf("expected service handler to run")
 	}
+}
+
+func TestExecutorCanRequestReviewAndTaskRewriteServices(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	requestedServices := make(chan string, 2)
+	mastermind := NewMastermind(MastermindOptions{
+		ID:          "mastermind",
+		Bus:         bus,
+		RegistryTTL: 2 * time.Second,
+		ServiceHandler: func(_ context.Context, request ServiceRequestPayload) (ServiceResponsePayload, error) {
+			requestedServices <- request.Service
+			return ServiceResponsePayload{
+				Artifacts: map[string]string{
+					"service": request.Service,
+					"task_id": request.TaskID,
+				},
+			}, nil
+		},
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:           "executor",
+		Bus:          bus,
+		Runner:       fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted}},
+		Capabilities: []Capability{CapabilityImplement},
+	})
+	go func() { _ = executor.Start(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+
+	reviewResponse, err := executor.RequestReview(ctx, ServiceRequestPayload{TaskID: "t-review"})
+	if err != nil {
+		t.Fatalf("request review service: %v", err)
+	}
+	if reviewResponse.Artifacts["service"] != ServiceNameReview {
+		t.Fatalf("expected review service response, got %v", reviewResponse.Artifacts)
+	}
+
+	rewriteResponse, err := executor.RequestTaskRewrite(ctx, ServiceRequestPayload{TaskID: "t-rewrite"})
+	if err != nil {
+		t.Fatalf("request task rewrite service: %v", err)
+	}
+	if rewriteResponse.Artifacts["service"] != ServiceNameTaskRewrite {
+		t.Fatalf("expected rewrite service response, got %v", rewriteResponse.Artifacts)
+	}
+
+	var received []string
+	for i := 0; i < 2; i++ {
+		select {
+		case service := <-requestedServices:
+			received = append(received, service)
+		case <-time.After(1 * time.Second):
+			t.Fatalf("expected mastermind to receive service request %d", i+1)
+		}
+	}
+	sort.Strings(received)
+	if strings.Join(received, ",") != ServiceNameReview+","+ServiceNameTaskRewrite {
+		t.Fatalf("expected review and rewrite requests, got %v", received)
+	}
+}
+
+func TestExecutorRequestServiceManagesPendingQueueWithSharedResponseSubscription(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subjects := DefaultEventSubjects("unit")
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:             "executor",
+		Bus:            bus,
+		Subjects:       subjects,
+		Runner:         fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted}},
+		Capabilities:   []Capability{CapabilityImplement},
+		RequestTimeout: 500 * time.Millisecond,
+	})
+
+	requestCh, unsubscribe, err := bus.Subscribe(ctx, subjects.ServiceRequest)
+	if err != nil {
+		t.Fatalf("subscribe service request: %v", err)
+	}
+	defer unsubscribe()
+
+	type requestEnvelope struct {
+		env     EventEnvelope
+		payload ServiceRequestPayload
+	}
+	receivedAll := make(chan []requestEnvelope, 1)
+	releaseResponses := make(chan struct{})
+	go func() {
+		received := make([]requestEnvelope, 0, 3)
+		for len(received) < 3 {
+			raw := <-requestCh
+			payload := ServiceRequestPayload{}
+			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+				continue
+			}
+			received = append(received, requestEnvelope{env: raw, payload: payload})
+		}
+		receivedAll <- received
+		<-releaseResponses
+		for i := len(received) - 1; i >= 0; i-- {
+			resp := ServiceResponsePayload{
+				RequestID:     received[i].payload.RequestID,
+				CorrelationID: received[i].payload.CorrelationID,
+				ExecutorID:    received[i].payload.ExecutorID,
+				Service:       received[i].payload.Service,
+				Artifacts: map[string]string{
+					"service": received[i].payload.Service,
+					"task_id": received[i].payload.TaskID,
+				},
+			}
+			env, err := NewEventEnvelope(EventTypeServiceResponse, "mastermind", resp.CorrelationID, resp)
+			if err != nil {
+				continue
+			}
+			_ = bus.Publish(ctx, subjects.ServiceResult, env)
+		}
+	}()
+
+	errCh := make(chan error, 3)
+	responseCh := make(chan ServiceResponsePayload, 3)
+	for _, taskID := range []string{"task-a", "task-b", "task-c"} {
+		taskID := taskID
+		go func() {
+			response, requestErr := executor.RequestService(ctx, ServiceRequestPayload{
+				TaskID:   taskID,
+				Service:  ServiceNameReview,
+				Metadata: map[string]string{"task": taskID},
+			})
+			if requestErr != nil {
+				errCh <- requestErr
+				return
+			}
+			responseCh <- response
+		}()
+	}
+
+	var received []requestEnvelope
+	select {
+	case received = <-receivedAll:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for in-flight service requests")
+	}
+
+	if got := executor.pendingServiceRequestCount(); got != 3 {
+		t.Fatalf("expected 3 pending service requests, got %d", got)
+	}
+	if got := memorySubscriberCount(bus, subjects.ServiceResult); got != 1 {
+		t.Fatalf("expected single shared response subscriber, got %d", got)
+	}
+
+	close(releaseResponses)
+
+	results := map[string]string{}
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-errCh:
+			t.Fatalf("unexpected request error: %v", err)
+		case response := <-responseCh:
+			results[response.Artifacts["task_id"]] = response.Artifacts["service"]
+		case <-time.After(1 * time.Second):
+			t.Fatalf("timed out waiting for service response %d", i+1)
+		}
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 routed responses, got %v", results)
+	}
+	if got := executor.pendingServiceRequestCount(); got != 0 {
+		t.Fatalf("expected pending service queue to drain, got %d", got)
+	}
+	_ = received
+}
+
+func TestExecutorRequestServiceTimeoutCleansPendingQueue(t *testing.T) {
+	bus := NewMemoryBus()
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subjects := DefaultEventSubjects("unit")
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:             "executor",
+		Bus:            bus,
+		Subjects:       subjects,
+		Runner:         fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted}},
+		Capabilities:   []Capability{CapabilityImplement},
+		RequestTimeout: 40 * time.Millisecond,
+	})
+
+	_, err := executor.RequestService(context.Background(), ServiceRequestPayload{
+		TaskID:  "timeout-task",
+		Service: ServiceNameReview,
+	})
+	if err == nil {
+		t.Fatalf("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+	if got := executor.pendingServiceRequestCount(); got != 0 {
+		t.Fatalf("expected no pending requests after timeout, got %d", got)
+	}
+}
+
+func memorySubscriberCount(bus *MemoryBus, subject string) int {
+	bus.mu.RLock()
+	defer bus.mu.RUnlock()
+	return len(bus.channels[subject])
 }
 
 func TestMastermindReturnsErrorWhenExecutorDisconnects(t *testing.T) {
