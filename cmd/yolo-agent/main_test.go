@@ -1369,6 +1369,108 @@ func TestMaybeWrapWithMastermindProvidesServiceHandlerToExecuteRequests(t *testi
 	}
 }
 
+func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) {
+	originalBusFactory := newDistributedBus
+	t.Cleanup(func() {
+		newDistributedBus = originalBusFactory
+	})
+
+	bus := distributed.NewMemoryBus()
+	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+		return bus, nil
+	}
+
+	serviceRunner := &serviceTrackingRunner{
+		result: contracts.RunnerResult{
+			Status:    contracts.RunnerResultCompleted,
+			Artifacts: map[string]string{"local": "rewrite"},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	wrappedRunner, distributedBus, closeDistributed, err := maybeWrapWithMastermind(ctx, runConfig{
+		role:                 agentRoleMaster,
+		distributedBusPrefix: "unit",
+	}, serviceRunner, nil)
+	if distributedBus == nil {
+		t.Fatalf("expected distributed bus from mastermind wrapper")
+	}
+	if err != nil {
+		t.Fatalf("expected mastermind setup to succeed, got %v", err)
+	}
+	if closeDistributed == nil {
+		t.Fatalf("expected close callback for mastermind wrapper")
+	}
+	t.Cleanup(func() {
+		_ = closeDistributed()
+	})
+
+	mm, ok := wrappedRunner.(distributedMastermindRunner)
+	if !ok {
+		t.Fatalf("expected wrapped runner to be distributed mastermind runner, got %T", wrappedRunner)
+	}
+	if err := mm.mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	executor := distributed.NewExecutorWorker(distributed.ExecutorWorkerOptions{
+		ID:           "executor",
+		Bus:          bus,
+		Runner:       serviceRunner,
+		Subjects:     distributed.DefaultEventSubjects("unit"),
+		Capabilities: []distributed.Capability{distributed.CapabilityRewriteTask},
+	})
+	go func() {
+		_ = executor.Start(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	response, err := executor.RequestService(ctx, distributed.ServiceRequestPayload{
+		TaskID:  "task-3",
+		Service: "rewrite-task",
+		Metadata: map[string]string{
+			"prompt":    "Rewrite this task for implementation",
+			"parent_id": "parent-3",
+			"repo_root": "/workspace",
+			"timeout":   "750ms",
+		},
+	})
+	if err != nil {
+		t.Fatalf("executor RequestService failed: %v", err)
+	}
+	if response.Artifacts["local"] != "rewrite" {
+		t.Fatalf("expected local artifact %q, got %q", "rewrite", response.Artifacts["local"])
+	}
+	if response.Artifacts["service"] != "rewrite-task" {
+		t.Fatalf("expected service artifact %q, got %q", "rewrite-task", response.Artifacts["service"])
+	}
+	if response.Artifacts["mode"] != string(contracts.RunnerModeImplement) {
+		t.Fatalf("expected mode artifact %q, got %q", contracts.RunnerModeImplement, response.Artifacts["mode"])
+	}
+
+	req, ok := serviceRunner.lastRequest()
+	if !ok {
+		t.Fatalf("expected local runner request")
+	}
+	if req.ParentID != "parent-3" {
+		t.Fatalf("expected parent_id %q, got %q", "parent-3", req.ParentID)
+	}
+	if req.TaskID != "task-3" {
+		t.Fatalf("expected task_id %q, got %q", "task-3", req.TaskID)
+	}
+	if req.Mode != contracts.RunnerModeImplement {
+		t.Fatalf("expected runner mode %q, got %q", contracts.RunnerModeImplement, req.Mode)
+	}
+	if req.RepoRoot != "/workspace" {
+		t.Fatalf("expected repo_root %q, got %q", "/workspace", req.RepoRoot)
+	}
+	if req.Timeout != 750*time.Millisecond {
+		t.Fatalf("expected timeout %s, got %s", 750*time.Millisecond, req.Timeout)
+	}
+}
+
 func TestMaybeWrapWithMastermindRejectsUnsupportedServiceNames(t *testing.T) {
 	originalBusFactory := newDistributedBus
 	t.Cleanup(func() {
