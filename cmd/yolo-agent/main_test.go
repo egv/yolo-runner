@@ -1584,6 +1584,46 @@ func TestDefaultServiceHandlerRewriteFallsBackToConfiguredPolicyModel(t *testing
 	}
 }
 
+func TestDefaultServiceHandlerRewriteNormalizesBulletStructuredFields(t *testing.T) {
+	serviceRunner := &serviceTrackingRunner{
+		result: contracts.RunnerResult{
+			Status: contracts.RunnerResultCompleted,
+			Artifacts: map[string]string{
+				"rewrite.revised_task_description":    "Make service contracts explicit",
+				"rewrite.revised_acceptance_criteria": "- Correlation ID is echoed\n* Rewrite payload is structured",
+				"rewrite.assumptions":                 "1. Event bus supports request-response\n2) Rewrite runner is available",
+				"rewrite.rationale":                   "Removed ambiguity and made expectations verifiable.",
+			},
+		},
+	}
+	handler := defaultServiceHandler(serviceRunner)
+	if handler == nil {
+		t.Fatalf("expected default service handler")
+	}
+
+	response, err := handler(context.Background(), distributed.ServiceRequestPayload{
+		RequestID:     "req-policy-3",
+		CorrelationID: "corr-policy-3",
+		TaskID:        "task-policy-3",
+		Service:       "rewrite-task",
+		Metadata: map[string]string{
+			"prompt": "Rewrite this task",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected rewrite request to succeed, got %v", err)
+	}
+	if response.Rewrite == nil {
+		t.Fatalf("expected structured rewrite payload")
+	}
+	if got := strings.Join(response.Rewrite.RevisedAcceptanceCriteria, "|"); got != "Correlation ID is echoed|Rewrite payload is structured" {
+		t.Fatalf("expected normalized acceptance criteria, got %q", got)
+	}
+	if got := strings.Join(response.Rewrite.Assumptions, "|"); got != "Event bus supports request-response|Rewrite runner is available" {
+		t.Fatalf("expected normalized assumptions, got %q", got)
+	}
+}
+
 func TestMaybeWrapWithMastermindRejectsUnsupportedServiceNames(t *testing.T) {
 	originalBusFactory := newDistributedBus
 	t.Cleanup(func() {

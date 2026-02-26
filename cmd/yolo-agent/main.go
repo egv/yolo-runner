@@ -1075,13 +1075,31 @@ func parseStructuredList(raw string) []string {
 	})
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
+		part = normalizeStructuredListItem(part)
 		if part == "" {
 			continue
 		}
 		out = append(out, part)
 	}
 	return out
+}
+
+func normalizeStructuredListItem(raw string) string {
+	part := strings.TrimSpace(raw)
+	for _, bullet := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(part, bullet) {
+			part = strings.TrimSpace(strings.TrimPrefix(part, bullet))
+			break
+		}
+	}
+	index := 0
+	for index < len(part) && part[index] >= '0' && part[index] <= '9' {
+		index++
+	}
+	if index > 0 && index < len(part) && (part[index] == '.' || part[index] == ')') {
+		part = strings.TrimSpace(part[index+1:])
+	}
+	return part
 }
 
 func firstNonEmpty(values ...string) string {
