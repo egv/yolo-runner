@@ -82,6 +82,7 @@ type runConfig struct {
 	distributedHeartbeatInterval    time.Duration
 	distributedRequestTimeout       time.Duration
 	distributedRegistryTTL          time.Duration
+	distributedRewriteModel         string
 	distributedEventBus             distributed.Bus
 }
 
@@ -163,6 +164,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	distributedHeartbeatInterval := fs.Duration("distributed-heartbeat-interval", 5*time.Second, "Heartbeat interval in executor role")
 	distributedRequestTimeout := fs.Duration("distributed-request-timeout", 30*time.Second, "Request timeout for task dispatch in mastermind/executor roles")
 	distributedRegistryTTL := fs.Duration("distributed-registry-ttl", 30*time.Second, "Executor registration TTL in mastermind role")
+	distributedRewriteModel := fs.String("distributed-rewrite-model", "", "Preferred model policy for mastermind rewrite-task service")
 	var err error
 	if err = fs.Parse(args); err != nil {
 		return 1
@@ -365,6 +367,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		distributedHeartbeatInterval:    selectedDistributedHeartbeatInterval,
 		distributedRequestTimeout:       selectedDistributedRequestTimeout,
 		distributedRegistryTTL:          selectedDistributedRegistryTTL,
+		distributedRewriteModel:         strings.TrimSpace(*distributedRewriteModel),
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
@@ -503,12 +506,15 @@ func maybeWrapWithMastermind(ctx context.Context, cfg runConfig, localRunner con
 		id = "mastermind"
 	}
 	mastermind := distributed.NewMastermind(distributed.MastermindOptions{
-		ID:                    id,
-		Bus:                   bus,
-		Subjects:              subjects,
-		RegistryTTL:           cfg.distributedRegistryTTL,
-		RequestTimeout:        cfg.distributedRequestTimeout,
-		ServiceHandler:        defaultServiceHandler(localRunner),
+		ID:             id,
+		Bus:            bus,
+		Subjects:       subjects,
+		RegistryTTL:    cfg.distributedRegistryTTL,
+		RequestTimeout: cfg.distributedRequestTimeout,
+		ServiceHandler: defaultServiceHandler(localRunner, serviceHandlerOptions{
+			defaultRewriteModel: cfg.distributedRewriteModel,
+			auditWriter:         os.Stderr,
+		}),
 		StatusUpdateBackends:  toTaskStatusWriterMap(taskStatusBackends),
 		StatusUpdateAuthToken: strings.TrimSpace(os.Getenv(inboxAuthTokenEnv)),
 		TaskGraphSyncRoots:    []string{strings.TrimSpace(cfg.rootID)},
@@ -878,10 +884,20 @@ func (r distributedMastermindRunner) Run(ctx context.Context, request contracts.
 	})
 }
 
-func defaultServiceHandler(localRunner contracts.AgentRunner) distributed.ServiceHandler {
+type serviceHandlerOptions struct {
+	defaultRewriteModel string
+	auditWriter         io.Writer
+}
+
+func defaultServiceHandler(localRunner contracts.AgentRunner, options ...serviceHandlerOptions) distributed.ServiceHandler {
 	if localRunner == nil {
 		return nil
 	}
+	opts := serviceHandlerOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	opts.defaultRewriteModel = strings.TrimSpace(opts.defaultRewriteModel)
 
 	return func(ctx context.Context, request distributed.ServiceRequestPayload) (distributed.ServiceResponsePayload, error) {
 		if ctx == nil {
@@ -894,6 +910,13 @@ func defaultServiceHandler(localRunner contracts.AgentRunner) distributed.Servic
 		}
 
 		runnerRequest := buildServiceRunnerRequest(request, mode, model)
+		rewriteReason := ""
+		if service == normalizeDistributedServiceName(distributed.ServiceNameTaskRewrite) {
+			selectedModel, reason := resolveRewriteModelPolicy(runnerRequest.Metadata, opts.defaultRewriteModel, runnerRequest.Model)
+			runnerRequest.Model = selectedModel
+			rewriteReason = reason
+			logRewritePolicySelection(opts.auditWriter, request, selectedModel, reason)
+		}
 		result, err := localRunner.Run(ctx, runnerRequest)
 
 		response := distributed.ServiceResponsePayload{
@@ -930,6 +953,13 @@ func defaultServiceHandler(localRunner contracts.AgentRunner) distributed.Servic
 		}
 		if _, ok := response.Artifacts["mode"]; !ok {
 			response.Artifacts["mode"] = string(mode)
+		}
+		if service == normalizeDistributedServiceName(distributed.ServiceNameTaskRewrite) {
+			if rewriteReason != "" {
+				response.Artifacts["rewrite.model_selection_reason"] = rewriteReason
+			}
+			rewrite := extractStructuredRewriteResponse(request.Metadata, response.Artifacts)
+			response.Rewrite = &rewrite
 		}
 		return response, nil
 	}
@@ -976,6 +1006,92 @@ func buildServiceRunnerRequest(request distributed.ServiceRequestPayload, mode c
 		}
 	}
 	return runnerRequest
+}
+
+func resolveRewriteModelPolicy(metadata map[string]string, configuredDefault string, inheritedModel string) (string, string) {
+	if value := strings.TrimSpace(metadata["rewrite_model"]); value != "" {
+		return value, "request metadata override: rewrite_model"
+	}
+	if value := strings.TrimSpace(configuredDefault); value != "" {
+		return value, "mastermind rewrite policy default"
+	}
+	if value := strings.TrimSpace(inheritedModel); value != "" {
+		return value, "service metadata model"
+	}
+	return "", "runner default model"
+}
+
+func logRewritePolicySelection(w io.Writer, request distributed.ServiceRequestPayload, model string, reason string) {
+	if w == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "mastermind rewrite policy task_id=%s request_id=%s correlation_id=%s model=%s reason=%s\n",
+		strings.TrimSpace(request.TaskID),
+		strings.TrimSpace(request.RequestID),
+		strings.TrimSpace(request.CorrelationID),
+		strings.TrimSpace(model),
+		strings.TrimSpace(reason),
+	)
+}
+
+func extractStructuredRewriteResponse(metadata map[string]string, artifacts map[string]string) distributed.TaskRewritePayload {
+	description := firstNonEmpty(
+		artifacts["rewrite.revised_task_description"],
+		artifacts["revised_task_description"],
+		metadata["revised_task_description"],
+		metadata["task_description"],
+		metadata["prompt"],
+	)
+	criteria := parseStructuredList(firstNonEmpty(
+		artifacts["rewrite.revised_acceptance_criteria"],
+		artifacts["revised_acceptance_criteria"],
+		metadata["revised_acceptance_criteria"],
+		metadata["acceptance_criteria"],
+	))
+	assumptions := parseStructuredList(firstNonEmpty(
+		artifacts["rewrite.assumptions"],
+		artifacts["assumptions"],
+		metadata["assumptions"],
+	))
+	rationale := firstNonEmpty(
+		artifacts["rewrite.rationale"],
+		artifacts["rationale"],
+		metadata["rewrite_rationale"],
+	)
+	if rationale == "" {
+		rationale = "Task rewrite clarified intent and reduced ambiguity."
+	}
+	return distributed.TaskRewritePayload{
+		RevisedTaskDescription:    description,
+		RevisedAcceptanceCriteria: criteria,
+		Assumptions:               assumptions,
+		Rationale:                 rationale,
+	}
+}
+
+func parseStructuredList(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeDistributedServiceName(raw string) string {

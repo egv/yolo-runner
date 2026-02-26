@@ -1382,8 +1382,14 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 
 	serviceRunner := &serviceTrackingRunner{
 		result: contracts.RunnerResult{
-			Status:    contracts.RunnerResultCompleted,
-			Artifacts: map[string]string{"local": "rewrite"},
+			Status: contracts.RunnerResultCompleted,
+			Artifacts: map[string]string{
+				"local":                               "rewrite",
+				"rewrite.revised_task_description":    "Implement handler with strict schema validation",
+				"rewrite.revised_acceptance_criteria": "Add integration test\nAdd policy tests",
+				"rewrite.assumptions":                 "Executor has correlation id support\nMastermind has rewrite runner access",
+				"rewrite.rationale":                   "Clarifies scope and test expectations",
+			},
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1428,13 +1434,17 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 	time.Sleep(20 * time.Millisecond)
 
 	response, err := executor.RequestService(ctx, distributed.ServiceRequestPayload{
-		TaskID:  "task-3",
-		Service: "rewrite-task",
+		RequestID:     "rewrite-request-1",
+		CorrelationID: "rewrite-correlation-1",
+		TaskID:        "task-3",
+		Service:       "rewrite-task",
 		Metadata: map[string]string{
-			"prompt":    "Rewrite this task for implementation",
-			"parent_id": "parent-3",
-			"repo_root": "/workspace",
-			"timeout":   "750ms",
+			"prompt":        "Rewrite this task for implementation",
+			"parent_id":     "parent-3",
+			"repo_root":     "/workspace",
+			"timeout":       "750ms",
+			"model":         "base-model",
+			"rewrite_model": "larger-model",
 		},
 	})
 	if err != nil {
@@ -1446,8 +1456,32 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 	if response.Artifacts["service"] != "rewrite-task" {
 		t.Fatalf("expected service artifact %q, got %q", "rewrite-task", response.Artifacts["service"])
 	}
+	if response.CorrelationID != "rewrite-correlation-1" {
+		t.Fatalf("expected correlation_id %q, got %q", "rewrite-correlation-1", response.CorrelationID)
+	}
+	if response.RequestID != "rewrite-request-1" {
+		t.Fatalf("expected request_id %q, got %q", "rewrite-request-1", response.RequestID)
+	}
 	if response.Artifacts["mode"] != string(contracts.RunnerModeImplement) {
 		t.Fatalf("expected mode artifact %q, got %q", contracts.RunnerModeImplement, response.Artifacts["mode"])
+	}
+	if response.Artifacts["rewrite.model_selection_reason"] == "" {
+		t.Fatalf("expected rewrite model selection reason artifact")
+	}
+	if response.Rewrite == nil {
+		t.Fatalf("expected structured rewrite response")
+	}
+	if response.Rewrite.RevisedTaskDescription != "Implement handler with strict schema validation" {
+		t.Fatalf("expected revised task description, got %q", response.Rewrite.RevisedTaskDescription)
+	}
+	if got := strings.Join(response.Rewrite.RevisedAcceptanceCriteria, "|"); got != "Add integration test|Add policy tests" {
+		t.Fatalf("expected revised acceptance criteria, got %q", got)
+	}
+	if got := strings.Join(response.Rewrite.Assumptions, "|"); got != "Executor has correlation id support|Mastermind has rewrite runner access" {
+		t.Fatalf("expected rewrite assumptions, got %q", got)
+	}
+	if response.Rewrite.Rationale != "Clarifies scope and test expectations" {
+		t.Fatalf("expected rewrite rationale, got %q", response.Rewrite.Rationale)
 	}
 
 	req, ok := serviceRunner.lastRequest()
@@ -1463,11 +1497,90 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 	if req.Mode != contracts.RunnerModeImplement {
 		t.Fatalf("expected runner mode %q, got %q", contracts.RunnerModeImplement, req.Mode)
 	}
+	if req.Model != "larger-model" {
+		t.Fatalf("expected model %q, got %q", "larger-model", req.Model)
+	}
 	if req.RepoRoot != "/workspace" {
 		t.Fatalf("expected repo_root %q, got %q", "/workspace", req.RepoRoot)
 	}
 	if req.Timeout != 750*time.Millisecond {
 		t.Fatalf("expected timeout %s, got %s", 750*time.Millisecond, req.Timeout)
+	}
+}
+
+func TestDefaultServiceHandlerRewriteModelPolicySelection(t *testing.T) {
+	serviceRunner := &serviceTrackingRunner{
+		result: contracts.RunnerResult{
+			Status: contracts.RunnerResultCompleted,
+		},
+	}
+	handler := defaultServiceHandler(serviceRunner)
+	if handler == nil {
+		t.Fatalf("expected default service handler")
+	}
+
+	response, err := handler(context.Background(), distributed.ServiceRequestPayload{
+		RequestID:     "req-policy-1",
+		CorrelationID: "corr-policy-1",
+		TaskID:        "task-policy-1",
+		Service:       "rewrite-task",
+		Metadata: map[string]string{
+			"prompt":        "Rewrite this task",
+			"model":         "baseline-model",
+			"rewrite_model": "policy-model",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected rewrite request to succeed, got %v", err)
+	}
+	if response.Artifacts["rewrite.model_selection_reason"] == "" {
+		t.Fatalf("expected model selection reason artifact")
+	}
+
+	req, ok := serviceRunner.lastRequest()
+	if !ok {
+		t.Fatalf("expected runner request")
+	}
+	if req.Model != "policy-model" {
+		t.Fatalf("expected rewrite model policy to select %q, got %q", "policy-model", req.Model)
+	}
+}
+
+func TestDefaultServiceHandlerRewriteFallsBackToConfiguredPolicyModel(t *testing.T) {
+	serviceRunner := &serviceTrackingRunner{
+		result: contracts.RunnerResult{
+			Status: contracts.RunnerResultCompleted,
+		},
+	}
+	handler := defaultServiceHandler(serviceRunner, serviceHandlerOptions{
+		defaultRewriteModel: "configured-large-model",
+	})
+	if handler == nil {
+		t.Fatalf("expected default service handler")
+	}
+
+	response, err := handler(context.Background(), distributed.ServiceRequestPayload{
+		RequestID:     "req-policy-2",
+		CorrelationID: "corr-policy-2",
+		TaskID:        "task-policy-2",
+		Service:       "rewrite-task",
+		Metadata: map[string]string{
+			"prompt": "Rewrite this task",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected rewrite request to succeed, got %v", err)
+	}
+	if response.Artifacts["rewrite.model_selection_reason"] != "mastermind rewrite policy default" {
+		t.Fatalf("expected configured policy reason, got %q", response.Artifacts["rewrite.model_selection_reason"])
+	}
+
+	req, ok := serviceRunner.lastRequest()
+	if !ok {
+		t.Fatalf("expected runner request")
+	}
+	if req.Model != "configured-large-model" {
+		t.Fatalf("expected configured rewrite model %q, got %q", "configured-large-model", req.Model)
 	}
 }
 

@@ -152,12 +152,20 @@ type ServiceRequestPayload struct {
 }
 
 type ServiceResponsePayload struct {
-	RequestID     string            `json:"request_id"`
-	CorrelationID string            `json:"correlation_id"`
-	ExecutorID    string            `json:"executor_id"`
-	Service       string            `json:"service"`
-	Artifacts     map[string]string `json:"artifacts,omitempty"`
-	Error         string            `json:"error,omitempty"`
+	RequestID     string              `json:"request_id"`
+	CorrelationID string              `json:"correlation_id"`
+	ExecutorID    string              `json:"executor_id"`
+	Service       string              `json:"service"`
+	Artifacts     map[string]string   `json:"artifacts,omitempty"`
+	Rewrite       *TaskRewritePayload `json:"rewrite,omitempty"`
+	Error         string              `json:"error,omitempty"`
+}
+
+type TaskRewritePayload struct {
+	RevisedTaskDescription    string   `json:"revised_task_description"`
+	RevisedAcceptanceCriteria []string `json:"revised_acceptance_criteria,omitempty"`
+	Assumptions               []string `json:"assumptions,omitempty"`
+	Rationale                 string   `json:"rationale"`
 }
 
 const (
