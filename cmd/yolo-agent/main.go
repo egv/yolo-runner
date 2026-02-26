@@ -82,6 +82,8 @@ type runConfig struct {
 	distributedHeartbeatInterval    time.Duration
 	distributedRequestTimeout       time.Duration
 	distributedRegistryTTL          time.Duration
+	distributedReviewDefaultModel   string
+	distributedReviewLargerModel    string
 	distributedEventBus             distributed.Bus
 }
 
@@ -163,6 +165,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	distributedHeartbeatInterval := fs.Duration("distributed-heartbeat-interval", 5*time.Second, "Heartbeat interval in executor role")
 	distributedRequestTimeout := fs.Duration("distributed-request-timeout", 30*time.Second, "Request timeout for task dispatch in mastermind/executor roles")
 	distributedRegistryTTL := fs.Duration("distributed-registry-ttl", 30*time.Second, "Executor registration TTL in mastermind role")
+	distributedReviewDefaultModel := fs.String("distributed-review-default-model", "", "Default model used by mastermind for review service requests")
+	distributedReviewLargerModel := fs.String("distributed-review-larger-model", "", "Larger model used by mastermind when review policy requests larger-model review")
 	var err error
 	if err = fs.Parse(args); err != nil {
 		return 1
@@ -313,6 +317,14 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	selectedDistributedHeartbeatInterval := *distributedHeartbeatInterval
 	selectedDistributedRequestTimeout := *distributedRequestTimeout
 	selectedDistributedRegistryTTL := *distributedRegistryTTL
+	selectedDistributedReviewDefaultModel := strings.TrimSpace(*distributedReviewDefaultModel)
+	if selectedDistributedReviewDefaultModel == "" {
+		selectedDistributedReviewDefaultModel = selectedModel
+	}
+	selectedDistributedReviewLargerModel := strings.TrimSpace(*distributedReviewLargerModel)
+	if selectedDistributedReviewLargerModel == "" {
+		selectedDistributedReviewLargerModel = selectedDistributedReviewDefaultModel
+	}
 	if selectedDistributedHeartbeatInterval <= 0 {
 		fmt.Fprintln(os.Stderr, "--distributed-heartbeat-interval must be greater than 0")
 		return 1
@@ -365,6 +377,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		distributedHeartbeatInterval:    selectedDistributedHeartbeatInterval,
 		distributedRequestTimeout:       selectedDistributedRequestTimeout,
 		distributedRegistryTTL:          selectedDistributedRegistryTTL,
+		distributedReviewDefaultModel:   selectedDistributedReviewDefaultModel,
+		distributedReviewLargerModel:    selectedDistributedReviewLargerModel,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
@@ -508,7 +522,7 @@ func maybeWrapWithMastermind(ctx context.Context, cfg runConfig, localRunner con
 		Subjects:              subjects,
 		RegistryTTL:           cfg.distributedRegistryTTL,
 		RequestTimeout:        cfg.distributedRequestTimeout,
-		ServiceHandler:        defaultServiceHandler(localRunner),
+		ServiceHandler:        mastermindServiceHandler(cfg, localRunner),
 		StatusUpdateBackends:  toTaskStatusWriterMap(taskStatusBackends),
 		StatusUpdateAuthToken: strings.TrimSpace(os.Getenv(inboxAuthTokenEnv)),
 		TaskGraphSyncRoots:    []string{strings.TrimSpace(cfg.rootID)},
@@ -935,6 +949,46 @@ func defaultServiceHandler(localRunner contracts.AgentRunner) distributed.Servic
 	}
 }
 
+func mastermindServiceHandler(cfg runConfig, localRunner contracts.AgentRunner) distributed.ServiceHandler {
+	if localRunner == nil {
+		return nil
+	}
+
+	reviewHandler := distributed.NewMastermindReviewRequestHandler(distributed.MastermindReviewRequestHandlerOptions{
+		ReviewRunner:       localRunner,
+		DefaultReviewModel: strings.TrimSpace(cfg.distributedReviewDefaultModel),
+		LargerReviewModel:  strings.TrimSpace(cfg.distributedReviewLargerModel),
+		MaxRetries:         maxInt(0, cfg.retryBudget),
+		AttemptTimeout:     cfg.distributedRequestTimeout,
+		RetryDelay:         50 * time.Millisecond,
+		DecisionLogger: func(_ context.Context, entry distributed.ReviewDecisionLog) {
+			fmt.Fprintf(os.Stderr, "mastermind review request_id=%s correlation_id=%s task_id=%s service=%s model=%s policy=%s verdict=%s pass=%t attempts=%d failure=%q\n",
+				entry.RequestID,
+				entry.CorrelationID,
+				entry.TaskID,
+				entry.Service,
+				entry.SelectedModel,
+				entry.PolicyReason,
+				entry.Verdict,
+				entry.Pass,
+				entry.Attempts,
+				entry.Failure,
+			)
+		},
+	})
+	fallbackHandler := defaultServiceHandler(localRunner)
+	return func(ctx context.Context, request distributed.ServiceRequestPayload) (distributed.ServiceResponsePayload, error) {
+		service := normalizeDistributedServiceName(request.Service)
+		if isReviewServiceName(service) {
+			return reviewHandler.Handle(ctx, request)
+		}
+		if fallbackHandler == nil {
+			return distributed.ServiceResponsePayload{}, fmt.Errorf("service handler unavailable")
+		}
+		return fallbackHandler(ctx, request)
+	}
+}
+
 func serviceModeAndModel(service string) (contracts.RunnerMode, string, bool) {
 	switch service {
 	case string(distributed.CapabilityLargerModel), "review-with-larger-model":
@@ -981,6 +1035,19 @@ func buildServiceRunnerRequest(request distributed.ServiceRequestPayload, mode c
 func normalizeDistributedServiceName(raw string) string {
 	service := strings.TrimSpace(strings.ToLower(raw))
 	return strings.ReplaceAll(service, "_", "-")
+}
+
+func isReviewServiceName(service string) bool {
+	return service == distributed.ServiceNameReview ||
+		service == string(distributed.CapabilityLargerModel) ||
+		service == "review-with-larger-model"
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func copyStringMap(values map[string]string) map[string]string {
