@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +68,10 @@ type ExecutorWorker struct {
 	postExecutionHook  func(context.Context, contracts.RunnerRequest, contracts.RunnerResult, error, int)
 	clock              func() time.Time
 	activeLoad         int64
+	serviceMu          sync.Mutex
+	servicePending     map[string]chan ServiceResponsePayload
+	serviceSubErr      error
+	serviceSubOnce     sync.Once
 }
 
 func NewExecutorWorker(cfg ExecutorWorkerOptions) *ExecutorWorker {
@@ -650,55 +655,126 @@ func (w *ExecutorWorker) RequestService(ctx context.Context, request ServiceRequ
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := w.ensureServiceRouter(); err != nil {
+		return ServiceResponsePayload{}, err
+	}
+
+	waitCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := waitCtx.Deadline(); !hasDeadline {
+		timeout := w.requestTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		waitCtx, cancel = context.WithTimeout(waitCtx, timeout)
+	}
+	defer cancel()
+
 	if strings.TrimSpace(request.RequestID) == "" {
 		request.RequestID = strings.TrimSpace(request.TaskID) + "-" + strings.ReplaceAll(w.clock().Format(time.RFC3339Nano), ":", "")
+	}
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	if request.RequestID == "" {
+		request.RequestID = nextEventID()
 	}
 	request.ExecutorID = w.ID()
 	if strings.TrimSpace(request.CorrelationID) == "" {
 		request.CorrelationID = request.RequestID
 	}
-
-	responseCh, unsubscribeResponse, err := w.bus.Subscribe(ctx, w.subjects.ServiceResult)
-	if err != nil {
-		return ServiceResponsePayload{}, err
+	request.CorrelationID = strings.TrimSpace(request.CorrelationID)
+	request.Service = strings.TrimSpace(request.Service)
+	if request.Service == "" {
+		return ServiceResponsePayload{}, fmt.Errorf("service name is required")
 	}
-	defer unsubscribeResponse()
+	pendingKey := servicePendingKey(request.CorrelationID, request.RequestID)
+	responseCh := make(chan ServiceResponsePayload, 1)
+	w.serviceMu.Lock()
+	if w.servicePending == nil {
+		w.servicePending = map[string]chan ServiceResponsePayload{}
+	}
+	w.servicePending[pendingKey] = responseCh
+	w.serviceMu.Unlock()
+	defer func() {
+		w.serviceMu.Lock()
+		delete(w.servicePending, pendingKey)
+		w.serviceMu.Unlock()
+	}()
 
 	event, err := NewEventEnvelope(EventTypeServiceRequest, w.ID(), request.CorrelationID, request)
 	if err != nil {
 		return ServiceResponsePayload{}, err
 	}
-	if err := w.bus.Publish(ctx, w.subjects.ServiceRequest, event); err != nil {
+	if err := w.bus.Publish(waitCtx, w.subjects.ServiceRequest, event); err != nil {
 		return ServiceResponsePayload{}, err
 	}
 
 	for {
 		select {
-		case raw, ok := <-responseCh:
-			if !ok {
-				return ServiceResponsePayload{}, fmt.Errorf("service response channel closed")
-			}
-			if raw.CorrelationID != request.CorrelationID {
-				continue
-			}
-			response := ServiceResponsePayload{}
-			if len(raw.Payload) == 0 {
-				continue
-			}
-			if err := json.Unmarshal(raw.Payload, &response); err != nil {
-				continue
-			}
-			if response.RequestID != request.RequestID {
-				continue
-			}
+		case response := <-responseCh:
 			if response.Error != "" {
 				return response, fmt.Errorf("%s", response.Error)
 			}
 			return response, nil
-		case <-ctx.Done():
-			return ServiceResponsePayload{}, ctx.Err()
+		case <-waitCtx.Done():
+			return ServiceResponsePayload{}, waitCtx.Err()
 		}
 	}
+}
+
+func (w *ExecutorWorker) RequestReview(ctx context.Context, request ServiceRequestPayload) (ServiceResponsePayload, error) {
+	request.Service = ServiceNameReview
+	return w.RequestService(ctx, request)
+}
+
+func (w *ExecutorWorker) RequestTaskRewrite(ctx context.Context, request ServiceRequestPayload) (ServiceResponsePayload, error) {
+	request.Service = ServiceNameTaskRewrite
+	return w.RequestService(ctx, request)
+}
+
+func (w *ExecutorWorker) ensureServiceRouter() error {
+	if w == nil || w.bus == nil {
+		return fmt.Errorf("executor worker not ready")
+	}
+	w.serviceSubOnce.Do(func() {
+		responseCh, _, err := w.bus.Subscribe(context.Background(), w.subjects.ServiceResult)
+		if err != nil {
+			w.serviceSubErr = err
+			return
+		}
+		go func() {
+			for raw := range responseCh {
+				response := ServiceResponsePayload{}
+				if len(raw.Payload) == 0 {
+					continue
+				}
+				if err := json.Unmarshal(raw.Payload, &response); err != nil {
+					continue
+				}
+				pendingKey := servicePendingKey(response.CorrelationID, response.RequestID)
+				w.serviceMu.Lock()
+				pendingCh := w.servicePending[pendingKey]
+				w.serviceMu.Unlock()
+				if pendingCh == nil {
+					continue
+				}
+				select {
+				case pendingCh <- response:
+				default:
+				}
+			}
+		}()
+	})
+	return w.serviceSubErr
+}
+
+func servicePendingKey(correlationID string, requestID string) string {
+	return strings.TrimSpace(correlationID) + "|" + strings.TrimSpace(requestID)
+}
+
+func (w *ExecutorWorker) pendingServiceRequestCount() int {
+	w.serviceMu.Lock()
+	defer w.serviceMu.Unlock()
+	return len(w.servicePending)
 }
 
 func keys(values CapabilitySet) []Capability {
