@@ -188,6 +188,30 @@ func TestWebUIAppJSRouteServesReactBundle(t *testing.T) {
 	}
 }
 
+func TestWebUIAppJSIncludesTUIParityPanels(t *testing.T) {
+	state := newWebUIState("", "", distributed.NewMemoryBus())
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	rec := httptest.NewRecorder()
+	state.handleAppJS(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	requiredLabels := []string{
+		"Status Bar",
+		"Run Parameters",
+		"Performance",
+		"Executor Dashboard",
+		"Landing Queue",
+		"Triage",
+	}
+	for _, label := range requiredLabels {
+		if !strings.Contains(body, label) {
+			t.Fatalf("expected app bundle to include %q panel", label)
+		}
+	}
+}
+
 func TestParseMonitorEnvelopeSkipsWrongSourceFilter(t *testing.T) {
 	event, err := distributed.NewEventEnvelope(distributed.EventTypeMonitorEvent, "worker-2", "", distributed.MonitorEventPayload{
 		Event: contracts.Event{Type: contracts.EventTypeTaskStarted},
