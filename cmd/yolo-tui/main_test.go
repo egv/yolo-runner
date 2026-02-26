@@ -41,17 +41,17 @@ func TestRenderBodyShowsTaskDetailsForCurrentTask(t *testing.T) {
 		QueuePos:  2,
 		Priority:  7,
 		Metadata: map[string]string{
-			"parent_id":     "parent-1",
-			"dependencies":  "dep-1, dep-2",
-			"worker_id":     "worker-1",
+			"parent_id":    "parent-1",
+			"dependencies": "dep-1, dep-2",
+			"worker_id":    "worker-1",
 		},
 		Timestamp: now,
 	})
 	model.monitor.Apply(contracts.Event{
-		Type:     contracts.EventTypeRunnerCommandStarted,
-		TaskID:   "task-1",
-		TaskTitle:"Readable task",
-		Message:  "run",
+		Type:      contracts.EventTypeRunnerCommandStarted,
+		TaskID:    "task-1",
+		TaskTitle: "Readable task",
+		Message:   "run",
 	})
 	model.detailsCollapsed = false
 	body := model.renderBody()
@@ -76,7 +76,7 @@ func TestRunMainSupportsDistributedBusEventsFromEnvelope(t *testing.T) {
 	t.Cleanup(func() {
 		newDistributedBus = originalBusFactory
 	})
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 

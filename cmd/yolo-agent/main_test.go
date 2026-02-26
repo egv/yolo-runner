@@ -970,7 +970,7 @@ capabilities:
 		newDistributedBus = originalBusFactory
 	})
 	bus := distributed.NewMemoryBus()
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 
@@ -1145,7 +1145,7 @@ required_credentials:
 		newDistributedBus = originalBusFactory
 	})
 	bus := distributed.NewMemoryBus()
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 
@@ -1273,7 +1273,7 @@ func TestMaybeWrapWithMastermindProvidesServiceHandlerToExecuteRequests(t *testi
 	})
 
 	bus := distributed.NewMemoryBus()
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 
@@ -1376,7 +1376,7 @@ func TestMaybeWrapWithMastermindRejectsUnsupportedServiceNames(t *testing.T) {
 	})
 
 	bus := distributed.NewMemoryBus()
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 
@@ -1538,7 +1538,7 @@ profiles:
 		newDistributedBus = originalBusFactory
 	})
 	bus := distributed.NewMemoryBus()
-	newDistributedBus = func(_ string, _ string) (distributed.Bus, error) {
+	newDistributedBus = func(_ string, _ string, _ distributed.BusBackendOptions) (distributed.Bus, error) {
 		return bus, nil
 	}
 

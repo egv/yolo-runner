@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -46,22 +47,28 @@ const (
 )
 
 type EventEnvelope struct {
-	SchemaVersion SchemaVersion   `json:"schema_version"`
-	Type          EventType       `json:"type"`
-	CorrelationID string          `json:"correlation_id,omitempty"`
-	Source        string          `json:"source"`
-	Timestamp     time.Time       `json:"timestamp"`
-	Payload       json.RawMessage `json:"payload,omitempty"`
+	SchemaVersion  SchemaVersion   `json:"schema_version"`
+	Type           EventType       `json:"type"`
+	CorrelationID  string          `json:"correlation_id,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	ReplyTo        string          `json:"reply_to,omitempty"`
+	Source         string          `json:"source"`
+	Timestamp      time.Time       `json:"timestamp"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
 }
 
 type EventPayload struct {
-	SchemaVersion string                 `json:"schema_version,omitempty"`
-	Type          string                 `json:"type"`
-	CorrelationID string                 `json:"correlation_id,omitempty"`
-	Source        string                 `json:"source"`
-	Timestamp     string                 `json:"timestamp,omitempty"`
-	Payload       map[string]interface{} `json:"payload,omitempty"`
+	SchemaVersion  string                 `json:"schema_version,omitempty"`
+	Type           string                 `json:"type"`
+	CorrelationID  string                 `json:"correlation_id,omitempty"`
+	IdempotencyKey string                 `json:"idempotency_key,omitempty"`
+	ReplyTo        string                 `json:"reply_to,omitempty"`
+	Source         string                 `json:"source"`
+	Timestamp      string                 `json:"timestamp,omitempty"`
+	Payload        map[string]interface{} `json:"payload,omitempty"`
 }
+
+var eventIDCounter uint64
 
 type ExecutorRegistrationPayload struct {
 	ExecutorID   string            `json:"executor_id"`
@@ -191,13 +198,19 @@ func NewEventEnvelope(typ EventType, source string, correlationID string, payloa
 	if err != nil {
 		return EventEnvelope{}, fmt.Errorf("marshal payload: %w", err)
 	}
+	correlationID = strings.TrimSpace(correlationID)
+	if correlationID == "" {
+		correlationID = nextEventID()
+	}
+	idempotencyKey := nextEventID()
 	return EventEnvelope{
-		SchemaVersion: EventSchemaVersionV1,
-		Type:          typ,
-		CorrelationID: correlationID,
-		Source:        strings.TrimSpace(source),
-		Timestamp:     time.Now().UTC(),
-		Payload:       raw,
+		SchemaVersion:  EventSchemaVersionV1,
+		Type:           typ,
+		CorrelationID:  correlationID,
+		IdempotencyKey: idempotencyKey,
+		Source:         strings.TrimSpace(source),
+		Timestamp:      time.Now().UTC(),
+		Payload:        raw,
 	}, nil
 }
 
@@ -206,6 +219,12 @@ func ParseEventEnvelope(raw []byte) (EventEnvelope, error) {
 	if err := json.Unmarshal(raw, &evt); err == nil && evt.Type != "" {
 		if strings.TrimSpace(string(evt.SchemaVersion)) == "" {
 			evt.SchemaVersion = EventSchemaVersionV0
+		}
+		if strings.TrimSpace(evt.CorrelationID) == "" {
+			evt.CorrelationID = nextEventID()
+		}
+		if strings.TrimSpace(evt.IdempotencyKey) == "" {
+			evt.IdempotencyKey = nextEventID()
 		}
 		return evt, nil
 	}
@@ -239,6 +258,12 @@ func ParseEventEnvelope(raw []byte) (EventEnvelope, error) {
 		Timestamp:     legacy.Timestamp,
 		Payload:       payload,
 	}
+	if strings.TrimSpace(parsed.CorrelationID) == "" {
+		parsed.CorrelationID = nextEventID()
+	}
+	if strings.TrimSpace(parsed.IdempotencyKey) == "" {
+		parsed.IdempotencyKey = nextEventID()
+	}
 	if parsed.SchemaVersion == "" {
 		parsed.SchemaVersion = EventSchemaVersionV0
 	}
@@ -248,4 +273,9 @@ func ParseEventEnvelope(raw []byte) (EventEnvelope, error) {
 		}
 	}
 	return parsed, nil
+}
+
+func nextEventID() string {
+	seq := atomic.AddUint64(&eventIDCounter, 1)
+	return fmt.Sprintf("evt-%d-%d", time.Now().UTC().UnixNano(), seq)
 }
