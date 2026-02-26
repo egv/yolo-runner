@@ -1556,6 +1556,192 @@ func TestMastermindPublishesTaskGraphSnapshotsAndDiffsFromStatusBackends(t *test
 	}
 }
 
+func TestMastermindPublishesMergedTaskGraphSnapshotAndScopedDiffWithMonotonicVersion(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subjects := DefaultEventSubjects("unit")
+
+	repoABackend := &fakeTaskStatusBackend{t: t}
+	repoABackend.SetTaskTree("root-1", &contracts.TaskTree{
+		Root: contracts.Task{ID: "root-1", Title: "Repo A Root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root-1": {ID: "root-1", Title: "Repo A Root", Status: contracts.TaskStatusOpen, Metadata: map[string]string{"labels": "infra,urgent"}},
+		},
+	})
+	repoBBackend := &fakeTaskStatusBackend{t: t}
+	repoBBackend.SetTaskTree("root-1", &contracts.TaskTree{
+		Root: contracts.Task{ID: "root-1", Title: "Repo B Root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root-1": {ID: "root-1", Title: "Repo B Root", Status: contracts.TaskStatusOpen},
+		},
+	})
+
+	mastermind := NewMastermind(MastermindOptions{
+		ID:                    "mastermind",
+		Bus:                   bus,
+		Subjects:              subjects,
+		RegistryTTL:           2 * time.Second,
+		TaskGraphSyncInterval: 20 * time.Millisecond,
+		TaskGraphSources: []TaskGraphSource{
+			{
+				Backend:         repoABackend,
+				BackendType:     "github",
+				BackendInstance: "github-repo-a",
+				RootIDs:         []string{"root-1"},
+				SourceContext:   SourceContext{Provider: "github", Repository: "org/repo-a"},
+				WorkspaceSpec:   &WorkspaceSpec{Kind: "git", RepoURL: "https://github.com/org/repo-a", Ref: "main"},
+				Requirements:    []TaskRequirement{{Name: "github_token", Kind: "credential_flag"}},
+			},
+			{
+				Backend:         repoBBackend,
+				BackendType:     "github",
+				BackendInstance: "github-repo-b",
+				RootIDs:         []string{"root-1"},
+				SourceContext:   SourceContext{Provider: "github", Repository: "org/repo-b"},
+			},
+		},
+		StatusUpdateBackends: map[string]TaskStatusWriter{
+			"github-repo-a": repoABackend,
+			"github-repo-b": repoBBackend,
+		},
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+	graphCh, unsubscribeGraph, err := mastermind.SubscribeTaskGraph(ctx, TaskGraphSubscriptionFilter{})
+	if err != nil {
+		t.Fatalf("subscribe task graph: %v", err)
+	}
+	defer unsubscribeGraph()
+
+	snapshot := readNextTaskGraphEventOfType(t, graphCh, EventTypeTaskGraphSnapshot)
+	if snapshot.Snapshot == nil {
+		t.Fatalf("expected snapshot payload")
+	}
+	if got := snapshot.Snapshot.VersionID; got <= 0 {
+		t.Fatalf("expected version_id > 0, got %d", got)
+	}
+	if len(snapshot.Snapshot.Graphs) != 2 {
+		t.Fatalf("expected merged snapshot with 2 graphs, got %d", len(snapshot.Snapshot.Graphs))
+	}
+
+	var repoANode *TaskGraphNode
+	for i := range snapshot.Snapshot.Graphs {
+		graph := snapshot.Snapshot.Graphs[i]
+		for j := range graph.Nodes {
+			node := graph.Nodes[j]
+			if node.SourceContext.Repository == "org/repo-a" {
+				repoANode = &node
+			}
+		}
+	}
+	if repoANode == nil {
+		t.Fatalf("expected repo-a node in merged snapshot")
+	}
+	if repoANode.TaskRef.BackendInstance != "github-repo-a" || repoANode.TaskRef.BackendType != "github" || repoANode.TaskRef.BackendNativeID == "" {
+		t.Fatalf("unexpected task_ref for repo-a node: %+v", repoANode.TaskRef)
+	}
+	if repoANode.WorkspaceSpec == nil || repoANode.WorkspaceSpec.Kind != "git" {
+		t.Fatalf("expected git workspace spec on repo-a node")
+	}
+	if len(repoANode.Requirements) != 1 || repoANode.Requirements[0].Name != "github_token" {
+		t.Fatalf("expected requirement propagation for repo-a node")
+	}
+
+	repoABackend.SetTaskTree("root-1", &contracts.TaskTree{
+		Root: contracts.Task{ID: "root-1", Title: "Repo A Root", Status: contracts.TaskStatusClosed},
+		Tasks: map[string]contracts.Task{
+			"root-1": {ID: "root-1", Title: "Repo A Root", Status: contracts.TaskStatusClosed, Metadata: map[string]string{"labels": "infra,urgent"}},
+		},
+	})
+
+	diff := readTaskGraphDiffWithPredicate(t, graphCh, func(payload TaskGraphDiffPayload) bool {
+		if payload.VersionID <= snapshot.Snapshot.VersionID {
+			return false
+		}
+		if len(payload.Graphs) != 1 {
+			return false
+		}
+		return payload.Graphs[0].SourceContext.Repository == "org/repo-a"
+	})
+	if diff.Diff == nil {
+		t.Fatalf("expected diff payload")
+	}
+	if diff.Diff.VersionID <= snapshot.Snapshot.VersionID {
+		t.Fatalf("expected monotonic version increase, snapshot=%d diff=%d", snapshot.Snapshot.VersionID, diff.Diff.VersionID)
+	}
+	if len(diff.Diff.Graphs) != 1 {
+		t.Fatalf("expected only repo-a graph in diff, got %d graphs", len(diff.Diff.Graphs))
+	}
+	if diff.Diff.Graphs[0].SourceContext.Repository != "org/repo-a" {
+		t.Fatalf("expected diff scoped to repo-a, got %q", diff.Diff.Graphs[0].SourceContext.Repository)
+	}
+}
+
+func TestMastermindTaskGraphSyncPublishesPartialSnapshotWithWarningsOnBackendFailure(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subjects := DefaultEventSubjects("unit")
+
+	goodBackend := &fakeTaskStatusBackend{t: t}
+	goodBackend.SetTaskTree("root-ok", &contracts.TaskTree{
+		Root: contracts.Task{ID: "root-ok", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root-ok": {ID: "root-ok", Status: contracts.TaskStatusOpen},
+		},
+	})
+	failingBackend := &fakeTaskStatusBackend{t: t, getTaskTreeErr: map[string]error{"root-fail": errors.New("boom")}}
+
+	mastermind := NewMastermind(MastermindOptions{
+		ID:                    "mastermind",
+		Bus:                   bus,
+		Subjects:              subjects,
+		RegistryTTL:           2 * time.Second,
+		TaskGraphSyncInterval: 20 * time.Millisecond,
+		TaskGraphSources: []TaskGraphSource{
+			{
+				Backend:         goodBackend,
+				BackendType:     "tk",
+				BackendInstance: "tk-main",
+				RootIDs:         []string{"root-ok"},
+				SourceContext:   SourceContext{Provider: "tk", Project: "ok"},
+			},
+			{
+				Backend:         failingBackend,
+				BackendType:     "linear",
+				BackendInstance: "linear-main",
+				RootIDs:         []string{"root-fail"},
+				SourceContext:   SourceContext{Provider: "linear", Project: "fail"},
+			},
+		},
+		StatusUpdateBackends: map[string]TaskStatusWriter{
+			"tk-main":     goodBackend,
+			"linear-main": failingBackend,
+		},
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+	graphCh, unsubscribeGraph, err := mastermind.SubscribeTaskGraph(ctx, TaskGraphSubscriptionFilter{})
+	if err != nil {
+		t.Fatalf("subscribe task graph: %v", err)
+	}
+	defer unsubscribeGraph()
+
+	snapshot := readNextTaskGraphEventOfType(t, graphCh, EventTypeTaskGraphSnapshot)
+	if snapshot.Snapshot == nil {
+		t.Fatalf("expected snapshot payload")
+	}
+	if len(snapshot.Snapshot.Graphs) != 1 {
+		t.Fatalf("expected partial snapshot with one graph, got %d", len(snapshot.Snapshot.Graphs))
+	}
+	if len(snapshot.Snapshot.Warnings) == 0 {
+		t.Fatalf("expected warnings for failed backend")
+	}
+}
+
 func readTaskStatusUpdateAck(t *testing.T, ch <-chan EventEnvelope) TaskStatusUpdateAckPayload {
 	t.Helper()
 	timeout := time.After(1 * time.Second)
@@ -1643,13 +1829,35 @@ func readNextTaskGraphEventOfType(t *testing.T, ch <-chan TaskGraphEvent, eventT
 	}
 }
 
+func readTaskGraphDiffWithPredicate(t *testing.T, ch <-chan TaskGraphEvent, predicate func(TaskGraphDiffPayload) bool) TaskGraphEvent {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				t.Fatalf("task graph event channel closed")
+			}
+			if event.Type != EventTypeTaskGraphDiff || event.Diff == nil {
+				continue
+			}
+			if predicate == nil || predicate(*event.Diff) {
+				return event
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for matching task graph diff event")
+		}
+	}
+}
+
 type fakeTaskStatusBackend struct {
-	t          *testing.T
-	mu         sync.Mutex
-	taskStatus map[string]contracts.TaskStatus
-	data       map[string]map[string]string
-	calls      map[string]int
-	taskTrees  map[string]*contracts.TaskTree
+	t              *testing.T
+	mu             sync.Mutex
+	taskStatus     map[string]contracts.TaskStatus
+	data           map[string]map[string]string
+	calls          map[string]int
+	taskTrees      map[string]*contracts.TaskTree
+	getTaskTreeErr map[string]error
 }
 
 func (b *fakeTaskStatusBackend) GetTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error) {
@@ -1662,6 +1870,11 @@ func (b *fakeTaskStatusBackend) GetTaskTree(ctx context.Context, rootID string) 
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.getTaskTreeErr != nil {
+		if err, ok := b.getTaskTreeErr[rootID]; ok && err != nil {
+			return nil, err
+		}
+	}
 	if b.taskTrees != nil {
 		if tree, ok := b.taskTrees[rootID]; ok {
 			return cloneTaskTreeForTest(tree), nil

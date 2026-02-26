@@ -105,6 +105,56 @@ func TestTaskGraphSnapshotPayloadNormalizeRejectsUnknownSchemaVersion(t *testing
 	}
 }
 
+func TestTaskGraphDiffPayloadRoundTripSupportsVersionAndWarnings(t *testing.T) {
+	payload := TaskGraphDiffPayload{
+		SchemaVersion: InboxSchemaVersionV1,
+		VersionID:     42,
+		Warnings:      []string{"backend linear-eu unavailable"},
+		Graphs: []TaskGraphDiff{
+			{
+				GraphRef:      "github|repo-a|root-1",
+				SourceContext: SourceContext{Provider: "github", Repository: "org/repo-a"},
+				UpsertNodes: []TaskGraphNode{
+					{
+						TaskID:   "101",
+						GraphRef: "github|repo-a|root-1",
+						Status:   contracts.TaskStatusOpen,
+						TaskRef: TaskRef{
+							BackendInstance: "github-repo-a",
+							BackendType:     "github",
+							BackendNativeID: "101",
+						},
+						SourceContext: SourceContext{Provider: "github", Repository: "org/repo-a"},
+					},
+				},
+				DeleteTaskIDs: []string{"102"},
+				ChangedFields: []string{"status"},
+			},
+		},
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal diff: %v", err)
+	}
+	var decoded TaskGraphDiffPayload
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal diff: %v", err)
+	}
+	if decoded.VersionID != 42 {
+		t.Fatalf("expected version_id=42, got %d", decoded.VersionID)
+	}
+	if len(decoded.Warnings) != 1 {
+		t.Fatalf("expected one warning, got %d", len(decoded.Warnings))
+	}
+	if len(decoded.Graphs) != 1 {
+		t.Fatalf("expected one graph diff, got %d", len(decoded.Graphs))
+	}
+	if decoded.Graphs[0].UpsertNodes[0].TaskRef.BackendInstance != "github-repo-a" {
+		t.Fatalf("expected backend instance github-repo-a, got %q", decoded.Graphs[0].UpsertNodes[0].TaskRef.BackendInstance)
+	}
+}
+
 func TestMastermindTaskStatusUpdateCommandIsIdempotentByCommandID(t *testing.T) {
 	bus := NewMemoryBus()
 	ctx, cancel := context.WithCancel(context.Background())

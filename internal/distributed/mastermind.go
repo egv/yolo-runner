@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -24,18 +27,32 @@ type TaskGraphMatcher interface {
 	MatchTaskGraphFilters(filters TaskGraphSubscriptionFilter, backend string, rootID string) bool
 }
 
+type TaskGraphSource struct {
+	Backend         TaskStatusWriter
+	BackendType     string
+	BackendInstance string
+	RootIDs         []string
+	SourceContext   SourceContext
+	WorkspaceSpec   *WorkspaceSpec
+	Requirements    []TaskRequirement
+}
+
 type MastermindOptions struct {
-	ID                    string
-	Bus                   Bus
-	Subjects              EventSubjects
-	RegistryTTL           time.Duration
-	RequestTimeout        time.Duration
-	Clock                 func() time.Time
-	ServiceHandler        ServiceHandler
-	StatusUpdateBackends  map[string]TaskStatusWriter
-	StatusUpdateAuthToken string
-	TaskGraphSyncRoots    []string
-	TaskGraphSyncInterval time.Duration
+	ID                      string
+	Bus                     Bus
+	Subjects                EventSubjects
+	RegistryTTL             time.Duration
+	RequestTimeout          time.Duration
+	Clock                   func() time.Time
+	ServiceHandler          ServiceHandler
+	StatusUpdateBackends    map[string]TaskStatusWriter
+	StatusUpdateAuthToken   string
+	TaskGraphSyncRoots      []string
+	TaskGraphSources        []TaskGraphSource
+	TaskGraphSyncRepoScopes []string
+	TaskGraphSyncStatuses   []contracts.TaskStatus
+	TaskGraphSyncLabels     []string
+	TaskGraphSyncInterval   time.Duration
 }
 
 type TaskDispatchRequest struct {
@@ -44,22 +61,27 @@ type TaskDispatchRequest struct {
 }
 
 type Mastermind struct {
-	id                    string
-	bus                   Bus
-	subjects              EventSubjects
-	registry              *ExecutorRegistry
-	requestTimeout        time.Duration
-	clock                 func() time.Time
-	serviceHandler        ServiceHandler
-	statusUpdateBackends  map[string]TaskStatusWriter
-	statusUpdateAuthToken string
-	taskGraphSyncRoots    []string
-	taskGraphSyncInterval time.Duration
-	taskStatusMu          sync.RWMutex
-	taskStatusVersions    map[string]map[string]int64
-	taskStatusCommands    map[string]TaskStatusUpdateAckPayload
-	taskGraphs            map[string]TaskGraphSnapshotPayload
-	taskGraphsMu          sync.RWMutex
+	id                      string
+	bus                     Bus
+	subjects                EventSubjects
+	registry                *ExecutorRegistry
+	requestTimeout          time.Duration
+	clock                   func() time.Time
+	serviceHandler          ServiceHandler
+	statusUpdateBackends    map[string]TaskStatusWriter
+	statusUpdateAuthToken   string
+	taskGraphSyncRoots      []string
+	taskGraphSources        []TaskGraphSource
+	taskGraphSyncRepoScopes map[string]struct{}
+	taskGraphSyncStatuses   map[contracts.TaskStatus]struct{}
+	taskGraphSyncLabels     map[string]struct{}
+	taskGraphSyncInterval   time.Duration
+	taskGraphVersion        int64
+	taskStatusMu            sync.RWMutex
+	taskStatusVersions      map[string]map[string]int64
+	taskStatusCommands      map[string]TaskStatusUpdateAckPayload
+	taskGraphs              map[string]TaskGraphSnapshotPayload
+	taskGraphsMu            sync.RWMutex
 }
 
 const (
@@ -86,6 +108,8 @@ func NewMastermind(cfg MastermindOptions) *Mastermind {
 		}
 		statusUpdateBackends[backendID] = backend
 	}
+	taskGraphSyncRoots := canonicalFilterValues(cfg.TaskGraphSyncRoots)
+	taskGraphSources := normalizeTaskGraphSources(cfg.TaskGraphSources, statusUpdateBackends, taskGraphSyncRoots)
 	return &Mastermind{
 		id:             strings.TrimSpace(cfg.ID),
 		bus:            cfg.Bus,
@@ -98,14 +122,18 @@ func NewMastermind(cfg MastermindOptions) *Mastermind {
 			}
 			return time.Now().UTC()
 		},
-		serviceHandler:        cfg.ServiceHandler,
-		statusUpdateBackends:  statusUpdateBackends,
-		statusUpdateAuthToken: strings.TrimSpace(cfg.StatusUpdateAuthToken),
-		taskGraphSyncRoots:    canonicalFilterValues(cfg.TaskGraphSyncRoots),
-		taskGraphSyncInterval: cfg.TaskGraphSyncInterval,
-		taskStatusVersions:    make(map[string]map[string]int64),
-		taskStatusCommands:    make(map[string]TaskStatusUpdateAckPayload),
-		taskGraphs:            map[string]TaskGraphSnapshotPayload{},
+		serviceHandler:          cfg.ServiceHandler,
+		statusUpdateBackends:    statusUpdateBackends,
+		statusUpdateAuthToken:   strings.TrimSpace(cfg.StatusUpdateAuthToken),
+		taskGraphSyncRoots:      taskGraphSyncRoots,
+		taskGraphSources:        taskGraphSources,
+		taskGraphSyncRepoScopes: canonicalNormalizedSet(cfg.TaskGraphSyncRepoScopes),
+		taskGraphSyncStatuses:   canonicalTaskStatusSet(cfg.TaskGraphSyncStatuses),
+		taskGraphSyncLabels:     canonicalNormalizedSet(cfg.TaskGraphSyncLabels),
+		taskGraphSyncInterval:   cfg.TaskGraphSyncInterval,
+		taskStatusVersions:      make(map[string]map[string]int64),
+		taskStatusCommands:      make(map[string]TaskStatusUpdateAckPayload),
+		taskGraphs:              map[string]TaskGraphSnapshotPayload{},
 	}
 }
 
@@ -414,7 +442,8 @@ func (m *Mastermind) startTaskGraphSync(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if len(m.taskGraphSyncRoots) == 0 || len(m.taskGraphSyncBackends()) == 0 {
+	sources := m.taskGraphSyncSources()
+	if len(sources) == 0 {
 		return
 	}
 
@@ -423,67 +452,76 @@ func (m *Mastermind) startTaskGraphSync(ctx context.Context) {
 		interval = 5 * time.Second
 	}
 
-	previousSignatures := map[string]string{}
-	previousTrees := map[string]contracts.TaskTree{}
+	previousGraphs := map[string]TaskGraphSnapshot{}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	syncTaskGraphs := func() {
-		for _, backendID := range m.taskGraphSyncBackends() {
-			backend := m.statusUpdateBackends[backendID]
-			if backend == nil {
-				continue
-			}
-			for _, rootID := range m.taskGraphSyncRoots {
+		currentGraphs := map[string]TaskGraphSnapshot{}
+		warnings := make([]string, 0)
+		for _, source := range sources {
+			for _, rootID := range source.RootIDs {
 				rootID = strings.TrimSpace(rootID)
 				if rootID == "" {
 					continue
 				}
-				tree, err := backend.GetTaskTree(ctx, rootID)
-				if err != nil || tree == nil {
+				if len(m.taskGraphSyncRoots) > 0 && !containsString(m.taskGraphSyncRoots, rootID) {
 					continue
 				}
-				snapshot := TaskGraphSnapshotPayload{
-					Backend:  backendID,
-					RootID:   rootID,
-					TaskTree: *tree,
-					Metadata: map[string]string{
-						"published_by": m.id,
-						"published_at": m.clock().Format(time.RFC3339Nano),
-					},
-				}
-				snapshotEnv, err := NewEventEnvelope(EventTypeTaskGraphSnapshot, m.id, rootID, snapshot)
-				if err == nil {
-					_ = m.bus.Publish(ctx, m.subjects.TaskGraphSnapshot, snapshotEnv)
+				if !matchesTaskGraphSourceRepoScope(source, m.taskGraphSyncRepoScopes) {
+					continue
 				}
 
-				cacheKey := taskGraphCacheKey(backendID, rootID)
-				currentSig := buildTaskTreeSignature(&snapshot.TaskTree)
-				previousSig, hasPrevious := previousSignatures[cacheKey]
-				if hasPrevious && currentSig != "" && currentSig != previousSig {
-					previousTree := previousTrees[cacheKey]
-					changes := buildTaskGraphDiffChanges(previousTree, *tree)
-					if len(changes) == 0 {
-						changes = []string{"task-graph-updated"}
-					}
-					diff := TaskGraphDiffPayload{
-						Backend: backendID,
-						RootID:  rootID,
-						Changes: changes,
-						Metadata: map[string]string{
-							"published_by": m.id,
-							"published_at": m.clock().Format(time.RFC3339Nano),
-						},
-					}
-					diffEnv, err := NewEventEnvelope(EventTypeTaskGraphDiff, m.id, rootID, diff)
-					if err == nil {
-						_ = m.bus.Publish(ctx, m.subjects.TaskGraphDiff, diffEnv)
-					}
+				tree, err := source.Backend.GetTaskTree(ctx, rootID)
+				if err != nil || tree == nil {
+					warnings = append(warnings, fmt.Sprintf("task graph source %s/%s root %s unavailable", source.BackendType, source.BackendInstance, rootID))
+					continue
 				}
-				previousSignatures[cacheKey] = currentSig
-				previousTrees[cacheKey] = *cloneTaskTree(tree)
+				graph := buildTaskGraphSnapshot(source, rootID, *tree, m.taskGraphSyncStatuses, m.taskGraphSyncLabels)
+				if len(graph.Nodes) == 0 {
+					continue
+				}
+				currentGraphs[taskGraphSourceRootKey(source, rootID)] = graph
 			}
 		}
+
+		orderedGraphs := orderedTaskGraphSnapshots(currentGraphs)
+		snapshot := TaskGraphSnapshotPayload{
+			SchemaVersion: InboxSchemaVersionV1,
+			VersionID:     atomic.AddInt64(&m.taskGraphVersion, 1),
+			Graphs:        orderedGraphs,
+			Warnings:      warnings,
+			Metadata: map[string]string{
+				"published_by": m.id,
+				"published_at": m.clock().Format(time.RFC3339Nano),
+			},
+		}
+		populateLegacyTaskGraphSnapshotFields(&snapshot)
+		snapshotEnv, err := NewEventEnvelope(EventTypeTaskGraphSnapshot, m.id, "", snapshot)
+		if err == nil {
+			_ = m.bus.Publish(ctx, m.subjects.TaskGraphSnapshot, snapshotEnv)
+		}
+
+		graphDiffs := buildTaskGraphDiffs(previousGraphs, currentGraphs)
+		if len(graphDiffs) > 0 {
+			diff := TaskGraphDiffPayload{
+				SchemaVersion: InboxSchemaVersionV1,
+				VersionID:     atomic.AddInt64(&m.taskGraphVersion, 1),
+				Graphs:        graphDiffs,
+				Warnings:      warnings,
+				Metadata: map[string]string{
+					"published_by": m.id,
+					"published_at": m.clock().Format(time.RFC3339Nano),
+				},
+			}
+			populateLegacyTaskGraphDiffFields(&diff)
+			diffEnv, err := NewEventEnvelope(EventTypeTaskGraphDiff, m.id, "", diff)
+			if err == nil {
+				_ = m.bus.Publish(ctx, m.subjects.TaskGraphDiff, diffEnv)
+			}
+		}
+
+		previousGraphs = cloneTaskGraphSnapshotMap(currentGraphs)
 	}
 
 	syncTaskGraphs()
@@ -497,23 +535,17 @@ func (m *Mastermind) startTaskGraphSync(ctx context.Context) {
 	}
 }
 
-func (m *Mastermind) taskGraphSyncBackends() []string {
+func (m *Mastermind) taskGraphSyncSources() []TaskGraphSource {
 	if m == nil {
 		return nil
 	}
-	backendIDs := make([]string, 0, len(m.statusUpdateBackends))
-	for backendID, backend := range m.statusUpdateBackends {
-		if backend == nil {
-			continue
-		}
-		backendID = strings.ToLower(strings.TrimSpace(backendID))
-		if backendID == "" {
-			continue
-		}
-		backendIDs = append(backendIDs, backendID)
-	}
-	sort.Strings(backendIDs)
-	return backendIDs
+	out := append([]TaskGraphSource(nil), m.taskGraphSources...)
+	sort.Slice(out, func(i, j int) bool {
+		left := strings.ToLower(strings.TrimSpace(out[i].BackendType + "|" + out[i].BackendInstance + "|" + strings.Join(out[i].RootIDs, ",")))
+		right := strings.ToLower(strings.TrimSpace(out[j].BackendType + "|" + out[j].BackendInstance + "|" + strings.Join(out[j].RootIDs, ",")))
+		return left < right
+	})
+	return out
 }
 
 func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSubscriptionFilter) (<-chan TaskGraphEvent, func(), error) {
@@ -536,6 +568,9 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 	output := make(chan TaskGraphEvent, 32)
 	filters.Backends = canonicalTaskStatusUpdatesBackends(filters.Backends)
 	filters.RootIDs = canonicalFilterValues(filters.RootIDs)
+	filters.RepoScopes = canonicalFilterValues(filters.RepoScopes)
+	filters.Statuses = canonicalTaskStatusValues(filters.Statuses)
+	filters.Labels = canonicalFilterValues(filters.Labels)
 
 	closeOnce := sync.Once{}
 	unsubscribe := func() {
@@ -565,7 +600,7 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
 					continue
 				}
-				if !matchesTaskGraphFilter(payload.Backend, payload.RootID, filters) {
+				if !matchesTaskGraphSnapshotFilter(payload, filters) {
 					continue
 				}
 				m.taskGraphsMu.Lock()
@@ -594,7 +629,7 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 				if err := json.Unmarshal(raw.Payload, &payload); err != nil {
 					continue
 				}
-				if !matchesTaskGraphFilter(payload.Backend, payload.RootID, filters) {
+				if !matchesTaskGraphDiffFilter(payload, filters) {
 					continue
 				}
 				event := TaskGraphEvent{
@@ -842,6 +877,439 @@ func taskGraphCacheKey(backend, rootID string) string {
 	return strings.ToLower(strings.TrimSpace(backend)) + "|" + strings.TrimSpace(rootID)
 }
 
+func normalizeTaskGraphSources(configured []TaskGraphSource, statusBackends map[string]TaskStatusWriter, defaultRoots []string) []TaskGraphSource {
+	if len(configured) > 0 {
+		out := make([]TaskGraphSource, 0, len(configured))
+		for _, source := range configured {
+			if source.Backend == nil {
+				continue
+			}
+			normalized := source
+			normalized.BackendType = strings.ToLower(strings.TrimSpace(normalized.BackendType))
+			normalized.BackendInstance = strings.TrimSpace(normalized.BackendInstance)
+			if normalized.BackendType == "" {
+				normalized.BackendType = normalized.BackendInstance
+			}
+			if normalized.BackendInstance == "" {
+				normalized.BackendInstance = normalized.BackendType
+			}
+			if len(normalized.RootIDs) == 0 {
+				normalized.RootIDs = append([]string{}, defaultRoots...)
+			}
+			normalized.RootIDs = canonicalFilterValues(normalized.RootIDs)
+			normalized.Requirements = cloneTaskRequirements(normalized.Requirements)
+			normalized.WorkspaceSpec = cloneWorkspaceSpec(normalized.WorkspaceSpec)
+			normalized.SourceContext = normalizedTaskSourceContext(normalized.SourceContext)
+			if len(normalized.RootIDs) == 0 {
+				continue
+			}
+			out = append(out, normalized)
+		}
+		return out
+	}
+	if len(defaultRoots) == 0 {
+		return nil
+	}
+	out := make([]TaskGraphSource, 0, len(statusBackends))
+	for backendID, backend := range statusBackends {
+		if backend == nil {
+			continue
+		}
+		normalized := strings.ToLower(strings.TrimSpace(backendID))
+		if normalized == "" {
+			continue
+		}
+		out = append(out, TaskGraphSource{
+			Backend:         backend,
+			BackendType:     normalized,
+			BackendInstance: normalized,
+			RootIDs:         append([]string{}, defaultRoots...),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].BackendInstance < out[j].BackendInstance
+	})
+	return out
+}
+
+func canonicalNormalizedSet(values []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = struct{}{}
+	}
+	return out
+}
+
+func canonicalTaskStatusSet(statuses []contracts.TaskStatus) map[contracts.TaskStatus]struct{} {
+	out := map[contracts.TaskStatus]struct{}{}
+	for _, status := range statuses {
+		normalized := contracts.TaskStatus(strings.ToLower(strings.TrimSpace(string(status))))
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = struct{}{}
+	}
+	return out
+}
+
+func canonicalTaskStatusValues(statuses []contracts.TaskStatus) []contracts.TaskStatus {
+	set := canonicalTaskStatusSet(statuses)
+	if len(set) == 0 {
+		return nil
+	}
+	values := make([]contracts.TaskStatus, 0, len(set))
+	for status := range set {
+		values = append(values, status)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return strings.Compare(string(values[i]), string(values[j])) < 0
+	})
+	return values
+}
+
+func matchesTaskGraphSourceRepoScope(source TaskGraphSource, scopes map[string]struct{}) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+	candidates := []string{
+		strings.ToLower(strings.TrimSpace(source.SourceContext.Repository)),
+		normalizeRepositoryScope(source.WorkspaceSpec),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := scopes[candidate]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeRepositoryScope(spec *WorkspaceSpec) string {
+	if spec == nil {
+		return ""
+	}
+	raw := strings.TrimSpace(spec.RepoURL)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil {
+		path := strings.Trim(strings.TrimSpace(parsed.Path), "/")
+		path = strings.TrimSuffix(path, ".git")
+		return strings.ToLower(path)
+	}
+	return strings.ToLower(strings.Trim(strings.TrimSuffix(raw, ".git"), "/"))
+}
+
+func buildTaskGraphSnapshot(source TaskGraphSource, rootID string, tree contracts.TaskTree, statusFilters map[contracts.TaskStatus]struct{}, labelFilters map[string]struct{}) TaskGraphSnapshot {
+	taskIDs := make([]string, 0, len(tree.Tasks))
+	for taskID := range tree.Tasks {
+		taskIDs = append(taskIDs, taskID)
+	}
+	sort.Strings(taskIDs)
+	nodes := make([]TaskGraphNode, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		task := tree.Tasks[taskID]
+		if !matchesTaskGraphTaskFilters(task, statusFilters, labelFilters) {
+			continue
+		}
+		node := TaskGraphNode{
+			TaskID:       strings.TrimSpace(task.ID),
+			ParentTaskID: strings.TrimSpace(task.ParentID),
+			Title:        strings.TrimSpace(task.Title),
+			Status:       task.Status,
+			GraphRef:     strings.TrimSpace(rootID),
+			TaskRef: TaskRef{
+				BackendInstance: strings.TrimSpace(source.BackendInstance),
+				BackendType:     strings.TrimSpace(source.BackendType),
+				BackendNativeID: strings.TrimSpace(task.ID),
+			},
+			SourceContext: normalizedTaskSourceContext(source.SourceContext),
+			WorkspaceSpec: cloneWorkspaceSpec(source.WorkspaceSpec),
+			Requirements:  cloneTaskRequirements(source.Requirements),
+			Metadata:      sanitizeTaskStatusMetadata(task.Metadata),
+		}
+		if node.TaskRef.BackendType == "" {
+			node.TaskRef.BackendType = node.TaskRef.BackendInstance
+		}
+		if node.TaskRef.BackendInstance == "" {
+			node.TaskRef.BackendInstance = node.TaskRef.BackendType
+		}
+		nodes = append(nodes, node)
+	}
+	return TaskGraphSnapshot{
+		GraphRef:      strings.TrimSpace(rootID),
+		SourceContext: normalizedTaskSourceContext(source.SourceContext),
+		Nodes:         nodes,
+	}
+}
+
+func matchesTaskGraphTaskFilters(task contracts.Task, statusFilters map[contracts.TaskStatus]struct{}, labelFilters map[string]struct{}) bool {
+	if len(statusFilters) > 0 {
+		if _, ok := statusFilters[contracts.TaskStatus(strings.ToLower(strings.TrimSpace(string(task.Status))))]; !ok {
+			return false
+		}
+	}
+	if len(labelFilters) > 0 {
+		labels := taskLabels(task)
+		hasLabel := false
+		for _, label := range labels {
+			if _, ok := labelFilters[label]; ok {
+				hasLabel = true
+				break
+			}
+		}
+		if !hasLabel {
+			return false
+		}
+	}
+	return true
+}
+
+func taskLabels(task contracts.Task) []string {
+	if len(task.Metadata) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	labels := make([]string, 0)
+	for key, value := range task.Metadata {
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		normalizedValue := strings.TrimSpace(value)
+		switch {
+		case normalizedKey == "labels", normalizedKey == "label", strings.Contains(normalizedKey, "label"):
+			for _, part := range strings.Split(normalizedValue, ",") {
+				label := strings.ToLower(strings.TrimSpace(part))
+				if label == "" {
+					continue
+				}
+				if _, exists := seen[label]; exists {
+					continue
+				}
+				seen[label] = struct{}{}
+				labels = append(labels, label)
+			}
+		}
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+func taskGraphSourceRootKey(source TaskGraphSource, rootID string) string {
+	return strings.ToLower(strings.TrimSpace(source.BackendInstance)) + "|" + strings.TrimSpace(rootID)
+}
+
+func orderedTaskGraphSnapshots(graphs map[string]TaskGraphSnapshot) []TaskGraphSnapshot {
+	if len(graphs) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(graphs))
+	for key := range graphs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]TaskGraphSnapshot, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, cloneTaskGraphSnapshot(graphs[key]))
+	}
+	return out
+}
+
+func cloneTaskGraphSnapshotMap(in map[string]TaskGraphSnapshot) map[string]TaskGraphSnapshot {
+	if len(in) == 0 {
+		return map[string]TaskGraphSnapshot{}
+	}
+	out := make(map[string]TaskGraphSnapshot, len(in))
+	for key, graph := range in {
+		out[key] = cloneTaskGraphSnapshot(graph)
+	}
+	return out
+}
+
+func cloneTaskGraphSnapshot(graph TaskGraphSnapshot) TaskGraphSnapshot {
+	cloned := graph
+	cloned.SourceContext = normalizedTaskSourceContext(graph.SourceContext)
+	cloned.Nodes = append([]TaskGraphNode{}, graph.Nodes...)
+	for i := range cloned.Nodes {
+		cloned.Nodes[i].SourceContext = normalizedTaskSourceContext(cloned.Nodes[i].SourceContext)
+		cloned.Nodes[i].WorkspaceSpec = cloneWorkspaceSpec(cloned.Nodes[i].WorkspaceSpec)
+		cloned.Nodes[i].Requirements = cloneTaskRequirements(cloned.Nodes[i].Requirements)
+		cloned.Nodes[i].Metadata = sanitizeTaskStatusMetadata(cloned.Nodes[i].Metadata)
+	}
+	return cloned
+}
+
+func cloneWorkspaceSpec(spec *WorkspaceSpec) *WorkspaceSpec {
+	if spec == nil {
+		return nil
+	}
+	cloned := *spec
+	cloned.Kind = strings.TrimSpace(cloned.Kind)
+	cloned.RepoURL = strings.TrimSpace(cloned.RepoURL)
+	cloned.Ref = strings.TrimSpace(cloned.Ref)
+	return &cloned
+}
+
+func cloneTaskRequirements(requirements []TaskRequirement) []TaskRequirement {
+	if len(requirements) == 0 {
+		return nil
+	}
+	out := make([]TaskRequirement, 0, len(requirements))
+	for _, requirement := range requirements {
+		name := strings.TrimSpace(requirement.Name)
+		if name == "" {
+			continue
+		}
+		out = append(out, TaskRequirement{
+			Name:   name,
+			Kind:   strings.TrimSpace(requirement.Kind),
+			Detail: strings.TrimSpace(requirement.Detail),
+		})
+	}
+	return out
+}
+
+func normalizedTaskSourceContext(ctx SourceContext) SourceContext {
+	return SourceContext{
+		Provider:     strings.ToLower(strings.TrimSpace(ctx.Provider)),
+		Repository:   strings.TrimSpace(ctx.Repository),
+		Organization: strings.TrimSpace(ctx.Organization),
+		Project:      strings.TrimSpace(ctx.Project),
+	}
+}
+
+func populateLegacyTaskGraphSnapshotFields(payload *TaskGraphSnapshotPayload) {
+	if payload == nil || len(payload.Graphs) != 1 {
+		return
+	}
+	graph := payload.Graphs[0]
+	payload.RootID = strings.TrimSpace(graph.GraphRef)
+	if len(graph.Nodes) > 0 {
+		payload.Backend = strings.TrimSpace(graph.Nodes[0].TaskRef.BackendType)
+	}
+}
+
+func populateLegacyTaskGraphDiffFields(payload *TaskGraphDiffPayload) {
+	if payload == nil || len(payload.Graphs) != 1 {
+		return
+	}
+	graph := payload.Graphs[0]
+	payload.RootID = strings.TrimSpace(graph.GraphRef)
+	if len(graph.UpsertNodes) > 0 {
+		payload.Backend = strings.TrimSpace(graph.UpsertNodes[0].TaskRef.BackendType)
+	}
+	if payload.Backend == "" {
+		payload.Backend = strings.ToLower(strings.TrimSpace(graph.SourceContext.Provider))
+	}
+	if len(payload.Changes) == 0 {
+		if len(graph.ChangedFields) > 0 {
+			payload.Changes = append([]string{}, graph.ChangedFields...)
+		} else if len(graph.UpsertNodes) > 0 || len(graph.DeleteTaskIDs) > 0 {
+			payload.Changes = []string{"task-graph-updated"}
+		}
+	}
+}
+
+func buildTaskGraphDiffs(previous map[string]TaskGraphSnapshot, current map[string]TaskGraphSnapshot) []TaskGraphDiff {
+	diffs := make([]TaskGraphDiff, 0)
+	for key, currentGraph := range current {
+		previousGraph, exists := previous[key]
+		if !exists {
+			diffs = append(diffs, TaskGraphDiff{
+				GraphRef:      currentGraph.GraphRef,
+				SourceContext: currentGraph.SourceContext,
+				UpsertNodes:   append([]TaskGraphNode{}, currentGraph.Nodes...),
+				ChangedFields: []string{"graph_added"},
+			})
+			continue
+		}
+		upsert, deleted := diffTaskGraphNodes(previousGraph.Nodes, currentGraph.Nodes)
+		if len(upsert) == 0 && len(deleted) == 0 {
+			continue
+		}
+		changedFields := []string{"nodes"}
+		if len(upsert) > 0 {
+			changedFields = append(changedFields, "upsert_nodes")
+		}
+		if len(deleted) > 0 {
+			changedFields = append(changedFields, "delete_task_ids")
+		}
+		sort.Strings(changedFields)
+		diffs = append(diffs, TaskGraphDiff{
+			GraphRef:      currentGraph.GraphRef,
+			SourceContext: currentGraph.SourceContext,
+			UpsertNodes:   upsert,
+			DeleteTaskIDs: deleted,
+			ChangedFields: changedFields,
+		})
+	}
+	for key, previousGraph := range previous {
+		if _, exists := current[key]; exists {
+			continue
+		}
+		deleted := make([]string, 0, len(previousGraph.Nodes))
+		for _, node := range previousGraph.Nodes {
+			deleted = append(deleted, strings.TrimSpace(node.TaskID))
+		}
+		sort.Strings(deleted)
+		diffs = append(diffs, TaskGraphDiff{
+			GraphRef:      previousGraph.GraphRef,
+			SourceContext: previousGraph.SourceContext,
+			DeleteTaskIDs: deleted,
+			ChangedFields: []string{"graph_removed", "delete_task_ids"},
+		})
+	}
+	sort.Slice(diffs, func(i, j int) bool {
+		left := diffs[i].GraphRef + "|" + diffs[i].SourceContext.Repository + "|" + diffs[i].SourceContext.Project
+		right := diffs[j].GraphRef + "|" + diffs[j].SourceContext.Repository + "|" + diffs[j].SourceContext.Project
+		return left < right
+	})
+	return diffs
+}
+
+func diffTaskGraphNodes(previous []TaskGraphNode, current []TaskGraphNode) ([]TaskGraphNode, []string) {
+	previousByID := map[string]string{}
+	currentByID := map[string]TaskGraphNode{}
+	for _, node := range previous {
+		previousByID[strings.TrimSpace(node.TaskID)] = taskGraphNodeSignature(node)
+	}
+	for _, node := range current {
+		currentByID[strings.TrimSpace(node.TaskID)] = node
+	}
+	upsert := make([]TaskGraphNode, 0)
+	for taskID, node := range currentByID {
+		signature := taskGraphNodeSignature(node)
+		if previousSig, ok := previousByID[taskID]; ok && previousSig == signature {
+			continue
+		}
+		upsert = append(upsert, node)
+	}
+	deleted := make([]string, 0)
+	for taskID := range previousByID {
+		if _, ok := currentByID[taskID]; ok {
+			continue
+		}
+		deleted = append(deleted, taskID)
+	}
+	sort.Slice(upsert, func(i, j int) bool {
+		return upsert[i].TaskID < upsert[j].TaskID
+	})
+	sort.Strings(deleted)
+	return upsert, deleted
+}
+
+func taskGraphNodeSignature(node TaskGraphNode) string {
+	raw, err := json.Marshal(node)
+	if err != nil {
+		return strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	}
+	return string(raw)
+}
+
 func cloneTaskTree(tree *contracts.TaskTree) *contracts.TaskTree {
 	if tree == nil {
 		return nil
@@ -978,6 +1446,133 @@ func matchesTaskGraphFilter(backend string, rootID string, filters TaskGraphSubs
 		return false
 	}
 	return true
+}
+
+func matchesTaskGraphSnapshotFilter(payload TaskGraphSnapshotPayload, filters TaskGraphSubscriptionFilter) bool {
+	graphs, err := payload.NormalizeGraphs()
+	if err == nil && len(graphs) > 0 {
+		for _, graph := range graphs {
+			if matchesTaskGraphSnapshotGraphFilter(payload, graph, filters) {
+				return true
+			}
+		}
+		return false
+	}
+	return matchesTaskGraphFilter(payload.Backend, payload.RootID, filters)
+}
+
+func matchesTaskGraphDiffFilter(payload TaskGraphDiffPayload, filters TaskGraphSubscriptionFilter) bool {
+	if len(payload.Graphs) > 0 {
+		for _, graph := range payload.Graphs {
+			if matchesTaskGraphDiffGraphFilter(payload, graph, filters) {
+				return true
+			}
+		}
+		return false
+	}
+	return matchesTaskGraphFilter(payload.Backend, payload.RootID, filters)
+}
+
+func matchesTaskGraphSnapshotGraphFilter(payload TaskGraphSnapshotPayload, graph TaskGraphSnapshot, filters TaskGraphSubscriptionFilter) bool {
+	rootID := strings.TrimSpace(graph.GraphRef)
+	if rootID == "" {
+		rootID = strings.TrimSpace(payload.RootID)
+	}
+	backend := strings.ToLower(strings.TrimSpace(payload.Backend))
+	if len(graph.Nodes) > 0 {
+		backend = strings.ToLower(strings.TrimSpace(graph.Nodes[0].TaskRef.BackendType))
+	}
+	if !matchesTaskGraphFilter(backend, rootID, filters) {
+		return false
+	}
+	if len(filters.RepoScopes) > 0 {
+		matched := false
+		for _, scope := range filters.RepoScopes {
+			scope = strings.ToLower(strings.TrimSpace(scope))
+			if scope == "" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(graph.SourceContext.Repository), scope) {
+				matched = true
+				break
+			}
+			for _, node := range graph.Nodes {
+				if strings.EqualFold(strings.TrimSpace(node.SourceContext.Repository), scope) || strings.EqualFold(normalizeRepositoryScope(node.WorkspaceSpec), scope) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(filters.Statuses) == 0 && len(filters.Labels) == 0 {
+		return true
+	}
+	statusFilter := canonicalTaskStatusSet(filters.Statuses)
+	labelFilter := canonicalNormalizedSet(filters.Labels)
+	for _, node := range graph.Nodes {
+		task := contracts.Task{
+			Status:   node.Status,
+			Metadata: node.Metadata,
+		}
+		if matchesTaskGraphTaskFilters(task, statusFilter, labelFilter) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesTaskGraphDiffGraphFilter(payload TaskGraphDiffPayload, graph TaskGraphDiff, filters TaskGraphSubscriptionFilter) bool {
+	rootID := strings.TrimSpace(graph.GraphRef)
+	if rootID == "" {
+		rootID = strings.TrimSpace(payload.RootID)
+	}
+	backend := strings.ToLower(strings.TrimSpace(payload.Backend))
+	if len(graph.UpsertNodes) > 0 {
+		backend = strings.ToLower(strings.TrimSpace(graph.UpsertNodes[0].TaskRef.BackendType))
+	}
+	if !matchesTaskGraphFilter(backend, rootID, filters) {
+		return false
+	}
+	if len(filters.RepoScopes) > 0 {
+		matched := false
+		for _, scope := range filters.RepoScopes {
+			scope = strings.ToLower(strings.TrimSpace(scope))
+			if scope == "" {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(graph.SourceContext.Repository), scope) {
+				matched = true
+				break
+			}
+			for _, node := range graph.UpsertNodes {
+				if strings.EqualFold(strings.TrimSpace(node.SourceContext.Repository), scope) || strings.EqualFold(normalizeRepositoryScope(node.WorkspaceSpec), scope) {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(filters.Statuses) == 0 && len(filters.Labels) == 0 {
+		return true
+	}
+	statusFilter := canonicalTaskStatusSet(filters.Statuses)
+	labelFilter := canonicalNormalizedSet(filters.Labels)
+	for _, node := range graph.UpsertNodes {
+		task := contracts.Task{
+			Status:   node.Status,
+			Metadata: node.Metadata,
+		}
+		if matchesTaskGraphTaskFilters(task, statusFilter, labelFilter) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalFilterValues(values []string) []string {

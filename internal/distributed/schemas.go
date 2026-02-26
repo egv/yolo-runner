@@ -171,6 +171,8 @@ const (
 
 type TaskGraphSnapshotPayload struct {
 	SchemaVersion string              `json:"schema_version,omitempty"`
+	VersionID     int64               `json:"version_id,omitempty"`
+	Warnings      []string            `json:"warnings,omitempty"`
 	Graphs        []TaskGraphSnapshot `json:"graphs,omitempty"`
 	Backend       string              `json:"backend"`
 	RootID        string              `json:"root_id"`
@@ -180,6 +182,8 @@ type TaskGraphSnapshotPayload struct {
 
 type TaskGraphDiffPayload struct {
 	SchemaVersion string            `json:"schema_version,omitempty"`
+	VersionID     int64             `json:"version_id,omitempty"`
+	Warnings      []string          `json:"warnings,omitempty"`
 	Graphs        []TaskGraphDiff   `json:"graphs,omitempty"`
 	Backend       string            `json:"backend"`
 	RootID        string            `json:"root_id"`
@@ -226,8 +230,11 @@ type MonitorEventPayload struct {
 }
 
 type TaskGraphSubscriptionFilter struct {
-	Backends []string
-	RootIDs  []string
+	Backends   []string
+	RootIDs    []string
+	RepoScopes []string
+	Statuses   []contracts.TaskStatus
+	Labels     []string
 }
 
 type TaskGraphSnapshot struct {
