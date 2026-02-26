@@ -155,13 +155,14 @@ type ServiceRequestPayload struct {
 }
 
 type ServiceResponsePayload struct {
-	RequestID     string            `json:"request_id"`
-	CorrelationID string            `json:"correlation_id"`
-	ExecutorID    string            `json:"executor_id"`
-	Service       string            `json:"service"`
-	ReviewResult  *ReviewResult     `json:"review_result,omitempty"`
-	Artifacts     map[string]string `json:"artifacts,omitempty"`
-	Error         string            `json:"error,omitempty"`
+	RequestID     string             `json:"request_id"`
+	CorrelationID string             `json:"correlation_id"`
+	ExecutorID    string             `json:"executor_id"`
+	Service       string             `json:"service"`
+	ReviewResult  *ReviewResult      `json:"review_result,omitempty"`
+	RewriteResult *TaskRewriteResult `json:"rewrite_result,omitempty"`
+	Artifacts     map[string]string  `json:"artifacts,omitempty"`
+	Error         string             `json:"error,omitempty"`
 }
 
 const (

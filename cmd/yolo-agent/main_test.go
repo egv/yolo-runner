@@ -922,6 +922,39 @@ func TestRunMainParsesDistributedExecutorRoleAndConfig(t *testing.T) {
 	}
 }
 
+func TestRunMainParsesDistributedRewriteModelPolicyConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{
+		"--repo", tempDir,
+		"--role", agentRoleMaster,
+		"--root", "root-1",
+		"--backend", "codex",
+		"--model", "gpt-5.3-codex",
+		"--distributed-rewrite-default-model", "rewrite-default-model",
+		"--distributed-rewrite-larger-model", "rewrite-large-model",
+	}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.distributedRewriteDefaultModel != "rewrite-default-model" {
+		t.Fatalf("expected rewrite default model %q, got %q", "rewrite-default-model", got.distributedRewriteDefaultModel)
+	}
+	if got.distributedRewriteLargerModel != "rewrite-large-model" {
+		t.Fatalf("expected rewrite larger model %q, got %q", "rewrite-large-model", got.distributedRewriteLargerModel)
+	}
+}
+
 func TestRunDistributedExecutorSelectsAgentFromCatalogByMetadataQuery(t *testing.T) {
 	repoRoot := t.TempDir()
 	catalogDir := filepath.Join(repoRoot, ".yolo-runner", "coding-agents")
@@ -1482,16 +1515,25 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 
 	serviceRunner := &serviceTrackingRunner{
 		result: contracts.RunnerResult{
-			Status:    contracts.RunnerResultCompleted,
-			Artifacts: map[string]string{"local": "rewrite"},
+			Status: contracts.RunnerResultCompleted,
+			Artifacts: map[string]string{
+				"local":                       "rewrite",
+				"rewrite_task_description":    "Clarified description",
+				"rewrite_acceptance_criteria": "AC-1\nAC-2",
+				"rewrite_assumptions":         "assumption-1\nassumption-2",
+				"rewrite_rationale":           "Clarified scope and success criteria",
+			},
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	wrappedRunner, distributedBus, closeDistributed, err := maybeWrapWithMastermind(ctx, runConfig{
-		role:                 agentRoleMaster,
-		distributedBusPrefix: "unit",
+		role:                           agentRoleMaster,
+		distributedBusPrefix:           "unit",
+		distributedRequestTimeout:      500 * time.Millisecond,
+		distributedRewriteDefaultModel: "gpt-5.3-codex",
+		distributedRewriteLargerModel:  "gpt-5.3-codex-large",
 	}, serviceRunner, nil)
 	if distributedBus == nil {
 		t.Fatalf("expected distributed bus from mastermind wrapper")
@@ -1531,10 +1573,11 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 		TaskID:  "task-3",
 		Service: "rewrite-task",
 		Metadata: map[string]string{
-			"prompt":    "Rewrite this task for implementation",
-			"parent_id": "parent-3",
-			"repo_root": "/workspace",
-			"timeout":   "750ms",
+			"rewrite_policy": "larger_model",
+			"prompt":         "Rewrite this task for implementation",
+			"parent_id":      "parent-3",
+			"repo_root":      "/workspace",
+			"timeout":        "750ms",
 		},
 	})
 	if err != nil {
@@ -1546,8 +1589,29 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 	if response.Artifacts["service"] != "rewrite-task" {
 		t.Fatalf("expected service artifact %q, got %q", "rewrite-task", response.Artifacts["service"])
 	}
-	if response.Artifacts["mode"] != string(contracts.RunnerModeImplement) {
-		t.Fatalf("expected mode artifact %q, got %q", contracts.RunnerModeImplement, response.Artifacts["mode"])
+	if response.Artifacts["mode"] != string(contracts.RunnerModeReview) {
+		t.Fatalf("expected mode artifact %q, got %q", contracts.RunnerModeReview, response.Artifacts["mode"])
+	}
+	if response.RewriteResult == nil {
+		t.Fatalf("expected structured rewrite_result payload")
+	}
+	if response.RewriteResult.SelectedModel != "gpt-5.3-codex-large" {
+		t.Fatalf("expected selected rewrite model %q, got %q", "gpt-5.3-codex-large", response.RewriteResult.SelectedModel)
+	}
+	if response.RewriteResult.PolicyReason != "policy:larger_model" {
+		t.Fatalf("expected rewrite policy reason %q, got %q", "policy:larger_model", response.RewriteResult.PolicyReason)
+	}
+	if response.RewriteResult.RevisedTaskDescription != "Clarified description" {
+		t.Fatalf("expected revised description to round-trip, got %q", response.RewriteResult.RevisedTaskDescription)
+	}
+	if len(response.RewriteResult.RevisedAcceptanceCriteria) != 2 {
+		t.Fatalf("expected two revised acceptance criteria, got %v", response.RewriteResult.RevisedAcceptanceCriteria)
+	}
+	if len(response.RewriteResult.Assumptions) != 2 {
+		t.Fatalf("expected two assumptions, got %v", response.RewriteResult.Assumptions)
+	}
+	if response.RewriteResult.Rationale != "Clarified scope and success criteria" {
+		t.Fatalf("expected rationale to round-trip, got %q", response.RewriteResult.Rationale)
 	}
 
 	req, ok := serviceRunner.lastRequest()
@@ -1560,14 +1624,17 @@ func TestMaybeWrapWithMastermindProvidesRewriteTaskServiceHandler(t *testing.T) 
 	if req.TaskID != "task-3" {
 		t.Fatalf("expected task_id %q, got %q", "task-3", req.TaskID)
 	}
-	if req.Mode != contracts.RunnerModeImplement {
-		t.Fatalf("expected runner mode %q, got %q", contracts.RunnerModeImplement, req.Mode)
+	if req.Mode != contracts.RunnerModeReview {
+		t.Fatalf("expected runner mode %q, got %q", contracts.RunnerModeReview, req.Mode)
 	}
 	if req.RepoRoot != "/workspace" {
 		t.Fatalf("expected repo_root %q, got %q", "/workspace", req.RepoRoot)
 	}
 	if req.Timeout != 750*time.Millisecond {
 		t.Fatalf("expected timeout %s, got %s", 750*time.Millisecond, req.Timeout)
+	}
+	if req.Model != "gpt-5.3-codex-large" {
+		t.Fatalf("expected rewrite runner model %q, got %q", "gpt-5.3-codex-large", req.Model)
 	}
 }
 
