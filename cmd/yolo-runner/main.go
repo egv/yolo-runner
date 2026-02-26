@@ -17,9 +17,9 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/beads"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/exec"
 	"github.com/egv/yolo-runner/v2/internal/logging"
-	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/opencode"
 	"github.com/egv/yolo-runner/v2/internal/prompt"
 	"github.com/egv/yolo-runner/v2/internal/runner"
@@ -97,11 +97,11 @@ type runnerConfigAgent struct {
 }
 
 const (
-	runnerRoleLocal  = "local"
-	runnerRoleWorker = "executor"
-	runnerModeUI       = "ui"
-	runnerModeHeadless = "headless"
-	runnerConfigPath   = ".yolo-runner/config.yaml"
+	runnerRoleLocal           = "local"
+	runnerRoleWorker          = "executor"
+	runnerModeUI              = "ui"
+	runnerModeHeadless        = "headless"
+	runnerConfigPath          = ".yolo-runner/config.yaml"
 	runnerDistributedBusRedis = "redis"
 	runnerDistributedBusNATS  = "nats"
 )
@@ -152,12 +152,12 @@ var launchYoloTUI = func() (io.WriteCloser, func() error, error) {
 	}, nil
 }
 
-var newDistributedBus = func(backend string, address string) (distributed.Bus, error) {
+var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch backend {
 	case runnerDistributedBusRedis:
-		return distributed.NewRedisBus(address)
+		return distributed.NewRedisBus(address, opts)
 	case runnerDistributedBusNATS:
-		return distributed.NewNATSBus(address)
+		return distributed.NewNATSBus(address, opts)
 	default:
 		return nil, fmt.Errorf("unsupported distributed bus backend %q", backend)
 	}
@@ -426,31 +426,19 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		}
 		return 1
 	}
-	selectedDistributedBusBackend := strings.TrimSpace(*distributedBusBackend)
-	if selectedDistributedBusBackend == "" {
-		selectedDistributedBusBackend = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
-	}
-	if selectedDistributedBusBackend == "" {
-		selectedDistributedBusBackend = runnerDistributedBusRedis
-	}
-	selectedDistributedBusBackend, err = normalizeDistributedBusBackendForRunner(selectedDistributedBusBackend)
+	selectedDistributedBusConfig, err := resolveRunnerDistributedBusConfig(
+		*repoRoot,
+		*distributedBusBackend,
+		*distributedBusAddress,
+		*distributedBusPrefix,
+		os.Getenv,
+	)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		if exit != nil {
 			exit(1)
 		}
 		return 1
-	}
-	selectedDistributedBusAddress := strings.TrimSpace(*distributedBusAddress)
-	if selectedDistributedBusAddress == "" {
-		selectedDistributedBusAddress = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
-	}
-	selectedDistributedBusPrefix := strings.TrimSpace(*distributedBusPrefix)
-	if selectedDistributedBusPrefix == "" {
-		selectedDistributedBusPrefix = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
-	}
-	if selectedDistributedBusPrefix == "" {
-		selectedDistributedBusPrefix = "yolo"
 	}
 	selectedDistributedExecutorCapabilities, err := parseDistributedExecutorCapabilities(*distributedExecutorCapabilities)
 	if err != nil {
@@ -477,17 +465,18 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 
 	if selectedRole == runnerRoleWorker {
 		if err := runDistributedExecutor(context.Background(), distributedRunnerConfig{
-			repoRoot:             *repoRoot,
-			model:                *model,
-			busBackend:           selectedDistributedBusBackend,
-			busAddress:           selectedDistributedBusAddress,
-			busPrefix:            selectedDistributedBusPrefix,
-			executorID:           strings.TrimSpace(*distributedExecutorID),
-			capabilities:         selectedDistributedExecutorCapabilities,
-			heartbeatInterval:    *distributedHeartbeatInterval,
-			requestTimeout:       *distributedRequestTimeout,
-			configRoot:           strings.TrimSpace(*configRoot),
-			configDir:            strings.TrimSpace(*configDir),
+			repoRoot:          *repoRoot,
+			model:             *model,
+			busBackend:        selectedDistributedBusConfig.Backend,
+			busAddress:        selectedDistributedBusConfig.Address,
+			busPrefix:         selectedDistributedBusConfig.Prefix,
+			busOptions:        selectedDistributedBusConfig.BackendOptions(),
+			executorID:        strings.TrimSpace(*distributedExecutorID),
+			capabilities:      selectedDistributedExecutorCapabilities,
+			heartbeatInterval: *distributedHeartbeatInterval,
+			requestTimeout:    *distributedRequestTimeout,
+			configRoot:        strings.TrimSpace(*configRoot),
+			configDir:         strings.TrimSpace(*configDir),
 		}); err != nil {
 			fmt.Fprintln(stderr, err)
 			if exit != nil {
@@ -688,21 +677,22 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 }
 
 type distributedRunnerConfig struct {
-	repoRoot         string
-	model            string
-	busBackend       string
-	busAddress       string
-	busPrefix        string
-	executorID       string
-	capabilities     []distributed.Capability
+	repoRoot          string
+	model             string
+	busBackend        string
+	busAddress        string
+	busPrefix         string
+	busOptions        distributed.BusBackendOptions
+	executorID        string
+	capabilities      []distributed.Capability
 	heartbeatInterval time.Duration
 	requestTimeout    time.Duration
-	configRoot       string
-	configDir        string
+	configRoot        string
+	configDir         string
 }
 
 func runDistributedExecutor(ctx context.Context, cfg distributedRunnerConfig) error {
-	bus, err := newDistributedBus(cfg.busBackend, cfg.busAddress)
+	bus, err := newDistributedBus(cfg.busBackend, cfg.busAddress, cfg.busOptions)
 	if err != nil {
 		return err
 	}
@@ -763,6 +753,59 @@ func normalizeDistributedBusBackendForRunner(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid distributed bus backend %q (supported: %s, %s)", backend, runnerDistributedBusRedis, runnerDistributedBusNATS)
 	}
+}
+
+func resolveRunnerDistributedBusConfig(
+	repoRoot string,
+	flagBackend string,
+	flagAddress string,
+	flagPrefix string,
+	getenv func(string) string,
+) (distributed.DistributedBusConfig, error) {
+	configBus, err := distributed.LoadDistributedBusConfig(repoRoot)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+	configBus = configBus.ApplyDefaults(runnerDistributedBusRedis, "yolo")
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	selectedBackend := strings.TrimSpace(flagBackend)
+	if selectedBackend == "" {
+		selectedBackend = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
+	}
+	if selectedBackend == "" {
+		selectedBackend = configBus.Backend
+	}
+	selectedBackend, err = normalizeDistributedBusBackendForRunner(selectedBackend)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+
+	selectedAddress := strings.TrimSpace(flagAddress)
+	if selectedAddress == "" {
+		selectedAddress = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
+	}
+	if selectedAddress == "" {
+		selectedAddress = configBus.Address
+	}
+
+	selectedPrefix := strings.TrimSpace(flagPrefix)
+	if selectedPrefix == "" {
+		selectedPrefix = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = configBus.Prefix
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = "yolo"
+	}
+
+	configBus.Backend = selectedBackend
+	configBus.Address = selectedAddress
+	configBus.Prefix = selectedPrefix
+	return configBus, nil
 }
 
 func parseDistributedExecutorCapabilities(raw string) ([]distributed.Capability, error) {

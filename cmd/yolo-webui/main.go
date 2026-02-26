@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	_ "embed"
 	"io"
 	"net/http"
 	"os"
@@ -35,24 +35,26 @@ const (
 	defaultBusPrefix  = "yolo"
 )
 
-var newDistributedBus = func(backend string, address string) (distributed.Bus, error) {
+var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch strings.TrimSpace(backend) {
 	case "redis":
-		return distributed.NewRedisBus(address)
+		return distributed.NewRedisBus(address, opts)
 	case "nats":
-		return distributed.NewNATSBus(address)
+		return distributed.NewNATSBus(address, opts)
 	default:
 		return nil, fmt.Errorf("unsupported distributed bus backend %q", backend)
 	}
 }
 
 type runConfig struct {
+	repoRoot            string
 	listenAddr          string
 	authToken           string
 	busBackend          string
 	busAddress          string
 	busPrefix           string
 	busSource           string
+	busOptions          distributed.BusBackendOptions
 	taskStatusAuthToken string
 	taskStatusBackends  []string
 	shutdownTimeout     time.Duration
@@ -119,6 +121,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 
 	fs := flag.NewFlagSet("yolo-webui", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	repoRoot := fs.String("repo", ".", "Repository root")
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	authToken := fs.String("auth-token", "", "Bearer token required for /api and /ws requests (empty disables auth)")
 	busBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (redis, nats)")
@@ -132,36 +135,17 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		return 1
 	}
 
-	selectedBackend := strings.TrimSpace(*busBackend)
-	if selectedBackend == "" {
-		selectedBackend = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
-	}
-	if selectedBackend == "" {
-		selectedBackend = defaultBusBackend
-	}
-	selectedBackend, err := normalizeDistributedBusBackend(selectedBackend)
+	selectedBusConfig, err := resolveWebUIDistributedBusConfig(
+		*repoRoot,
+		*busBackend,
+		*busAddress,
+		*busPrefix,
+		*busSource,
+		os.Getenv,
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
-	}
-	selectedAddress := strings.TrimSpace(*busAddress)
-	if selectedAddress == "" {
-		selectedAddress = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
-	}
-	if selectedAddress == "" {
-		fmt.Fprintln(os.Stderr, "--distributed-bus-address is required")
-		return 1
-	}
-	selectedPrefix := strings.TrimSpace(*busPrefix)
-	if selectedPrefix == "" {
-		selectedPrefix = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
-	}
-	if selectedPrefix == "" {
-		selectedPrefix = defaultBusPrefix
-	}
-	selectedSource := strings.TrimSpace(*busSource)
-	if selectedSource == "" {
-		selectedSource = strings.TrimSpace(os.Getenv("YOLO_MONITOR_SOURCE_ID"))
 	}
 	if *shutdownTimeout <= 0 {
 		fmt.Fprintln(os.Stderr, "--shutdown-timeout must be greater than 0")
@@ -178,12 +162,14 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	}
 
 	cfg := runConfig{
+		repoRoot:            strings.TrimSpace(*repoRoot),
 		listenAddr:          listenAddr,
 		authToken:           strings.TrimSpace(*authToken),
-		busBackend:          selectedBackend,
-		busAddress:          selectedAddress,
-		busPrefix:           selectedPrefix,
-		busSource:           selectedSource,
+		busBackend:          selectedBusConfig.Backend,
+		busAddress:          selectedBusConfig.Address,
+		busPrefix:           selectedBusConfig.Prefix,
+		busSource:           selectedBusConfig.Source,
+		busOptions:          selectedBusConfig.BackendOptions(),
 		taskStatusAuthToken: strings.TrimSpace(*taskStatusAuthToken),
 		taskStatusBackends:  parseCommaSeparatedValues(*taskStatusBackends),
 		shutdownTimeout:     *shutdownTimeout,
@@ -196,7 +182,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 }
 
 func defaultRun(ctx context.Context, cfg runConfig) error {
-	bus, err := newDistributedBus(cfg.busBackend, cfg.busAddress)
+	bus, err := newDistributedBus(cfg.busBackend, cfg.busAddress, cfg.busOptions)
 	if err != nil {
 		return err
 	}
@@ -973,4 +959,70 @@ func normalizeDistributedBusBackend(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: redis, nats)", raw)
 	}
+}
+
+func resolveWebUIDistributedBusConfig(
+	repoRoot string,
+	flagBackend string,
+	flagAddress string,
+	flagPrefix string,
+	flagSource string,
+	getenv func(string) string,
+) (distributed.DistributedBusConfig, error) {
+	configBus, err := distributed.LoadDistributedBusConfig(repoRoot)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+	configBus = configBus.ApplyDefaults(defaultBusBackend, defaultBusPrefix)
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	selectedBackend := strings.TrimSpace(flagBackend)
+	if selectedBackend == "" {
+		selectedBackend = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
+	}
+	if selectedBackend == "" {
+		selectedBackend = configBus.Backend
+	}
+	selectedBackend, err = normalizeDistributedBusBackend(selectedBackend)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+
+	selectedAddress := strings.TrimSpace(flagAddress)
+	if selectedAddress == "" {
+		selectedAddress = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
+	}
+	if selectedAddress == "" {
+		selectedAddress = configBus.Address
+	}
+	if selectedAddress == "" {
+		return distributed.DistributedBusConfig{}, fmt.Errorf("--distributed-bus-address is required")
+	}
+
+	selectedPrefix := strings.TrimSpace(flagPrefix)
+	if selectedPrefix == "" {
+		selectedPrefix = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = configBus.Prefix
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = defaultBusPrefix
+	}
+
+	selectedSource := strings.TrimSpace(flagSource)
+	if selectedSource == "" {
+		selectedSource = strings.TrimSpace(getenv("YOLO_MONITOR_SOURCE_ID"))
+	}
+	if selectedSource == "" {
+		selectedSource = configBus.Source
+	}
+
+	configBus.Backend = selectedBackend
+	configBus.Address = selectedAddress
+	configBus.Prefix = selectedPrefix
+	configBus.Source = selectedSource
+	return configBus, nil
 }

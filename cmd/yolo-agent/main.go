@@ -75,6 +75,7 @@ type runConfig struct {
 	distributedBusBackend           string
 	distributedBusAddress           string
 	distributedBusPrefix            string
+	distributedBusOptions           distributed.BusBackendOptions
 	distributedRoleID               string
 	codingAgents                    codingagents.Catalog
 	distributedExecutorCapabilities []distributed.Capability
@@ -84,12 +85,12 @@ type runConfig struct {
 	distributedEventBus             distributed.Bus
 }
 
-var newDistributedBus = func(backend string, address string) (distributed.Bus, error) {
+var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch backend {
 	case distributedBusRedis:
-		return distributed.NewRedisBus(address)
+		return distributed.NewRedisBus(address, opts)
 	case distributedBusNATS:
-		return distributed.NewNATSBus(address)
+		return distributed.NewNATSBus(address, opts)
 	default:
 		return nil, fmt.Errorf("unsupported distributed bus backend %q", backend)
 	}
@@ -293,28 +294,16 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--retry-budget must be greater than or equal to 0")
 		return 1
 	}
-	selectedDistributedBusBackend := strings.TrimSpace(*distributedBusBackend)
-	if selectedDistributedBusBackend == "" {
-		selectedDistributedBusBackend = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
-	}
-	if selectedDistributedBusBackend == "" {
-		selectedDistributedBusBackend = distributedBusRedis
-	}
-	selectedDistributedBusBackend, err = normalizeDistributedBusBackend(selectedDistributedBusBackend)
+	selectedDistributedBusConfig, err := resolveAgentDistributedBusConfig(
+		*repo,
+		*distributedBusBackend,
+		*distributedBusAddress,
+		*distributedBusPrefix,
+		os.Getenv,
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
-	}
-	selectedDistributedBusAddress := strings.TrimSpace(*distributedBusAddress)
-	if selectedDistributedBusAddress == "" {
-		selectedDistributedBusAddress = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
-	}
-	selectedDistributedBusPrefix := strings.TrimSpace(*distributedBusPrefix)
-	if selectedDistributedBusPrefix == "" {
-		selectedDistributedBusPrefix = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
-	}
-	if selectedDistributedBusPrefix == "" {
-		selectedDistributedBusPrefix = "yolo"
 	}
 	selectedDistributedExecutorCapabilities, err := distributedExecutorCapabilitiesForBackend(codingAgents, selectedBackend, *distributedExecutorCapabilities, flagWasSet("distributed-executor-capabilities"))
 	if err != nil {
@@ -366,9 +355,10 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		watchdogInterval:                selectedWatchdogInterval,
 		eventsPath:                      *events,
 		role:                            selectedRole,
-		distributedBusBackend:           selectedDistributedBusBackend,
-		distributedBusAddress:           selectedDistributedBusAddress,
-		distributedBusPrefix:            selectedDistributedBusPrefix,
+		distributedBusBackend:           selectedDistributedBusConfig.Backend,
+		distributedBusAddress:           selectedDistributedBusConfig.Address,
+		distributedBusPrefix:            selectedDistributedBusConfig.Prefix,
+		distributedBusOptions:           selectedDistributedBusConfig.BackendOptions(),
 		distributedRoleID:               strings.TrimSpace(*distributedExecutorID),
 		codingAgents:                    codingAgents,
 		distributedExecutorCapabilities: selectedDistributedExecutorCapabilities,
@@ -503,7 +493,7 @@ func maybeWrapWithMastermind(ctx context.Context, cfg runConfig, localRunner con
 		return localRunner, nil, nil, nil
 	}
 	taskStatusBackends = discoverTaskStatusBackendsForMastermind(cfg, taskStatusBackends)
-	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress)
+	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress, cfg.distributedBusOptions)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -600,7 +590,7 @@ func runDistributedExecutor(ctx context.Context, cfg runConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress)
+	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress, cfg.distributedBusOptions)
 	if err != nil {
 		return err
 	}
@@ -1262,6 +1252,59 @@ func normalizeDistributedBusBackend(raw string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid distributed bus backend %q (supported: %s, %s)", backend, distributedBusRedis, distributedBusNATS)
 	}
+}
+
+func resolveAgentDistributedBusConfig(
+	repoRoot string,
+	flagBackend string,
+	flagAddress string,
+	flagPrefix string,
+	getenv func(string) string,
+) (distributed.DistributedBusConfig, error) {
+	configBus, err := distributed.LoadDistributedBusConfig(repoRoot)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+	configBus = configBus.ApplyDefaults(distributedBusRedis, "yolo")
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	selectedBackend := strings.TrimSpace(flagBackend)
+	if selectedBackend == "" {
+		selectedBackend = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
+	}
+	if selectedBackend == "" {
+		selectedBackend = configBus.Backend
+	}
+	selectedBackend, err = normalizeDistributedBusBackend(selectedBackend)
+	if err != nil {
+		return distributed.DistributedBusConfig{}, err
+	}
+
+	selectedAddress := strings.TrimSpace(flagAddress)
+	if selectedAddress == "" {
+		selectedAddress = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
+	}
+	if selectedAddress == "" {
+		selectedAddress = configBus.Address
+	}
+
+	selectedPrefix := strings.TrimSpace(flagPrefix)
+	if selectedPrefix == "" {
+		selectedPrefix = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = configBus.Prefix
+	}
+	if selectedPrefix == "" {
+		selectedPrefix = "yolo"
+	}
+
+	configBus.Backend = selectedBackend
+	configBus.Address = selectedAddress
+	configBus.Prefix = selectedPrefix
+	return configBus, nil
 }
 
 func parseDistributedExecutorCapabilities(raw string) ([]distributed.Capability, error) {
