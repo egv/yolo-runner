@@ -753,6 +753,51 @@ func TestModelCountsDoneTasksAsCompleted(t *testing.T) {
 	}
 }
 
+func TestModelProvidesExecutorDashboardAndQueueFiltering(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 30, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{
+		Type:      contracts.EventTypeRunStarted,
+		Metadata:  map[string]string{"root_id": "yr-root", "concurrency": "3"},
+		Timestamp: now.Add(-20 * time.Second),
+	})
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-done", TaskTitle: "Done", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-19 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-done", TaskTitle: "Done", WorkerID: "worker-0", Message: "done", Timestamp: now.Add(-18 * time.Second)})
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-failed", TaskTitle: "Failed", WorkerID: "worker-1", QueuePos: 2, Timestamp: now.Add(-17 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-failed", TaskTitle: "Failed", WorkerID: "worker-1", Message: "failed", Timestamp: now.Add(-16 * time.Second)})
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-active", TaskTitle: "Active", WorkerID: "worker-2", QueuePos: 3, Timestamp: now.Add(-15 * time.Second)})
+
+	state := model.UIState()
+	if len(state.ExecutorDashboard) == 0 {
+		t.Fatalf("expected executor dashboard lines, got %#v", state.ExecutorDashboard)
+	}
+	if !strings.Contains(strings.Join(state.ExecutorDashboard, "\n"), "workers_total=3") {
+		t.Fatalf("expected executor dashboard to include worker totals, got %#v", state.ExecutorDashboard)
+	}
+	if !strings.Contains(strings.Join(state.ExecutorDashboard, "\n"), "queue_filter=all") {
+		t.Fatalf("expected executor dashboard to include queue filter state, got %#v", state.ExecutorDashboard)
+	}
+	if len(state.Queue) < 3 {
+		t.Fatalf("expected unfiltered queue rows for all tasks, got %#v", state.Queue)
+	}
+
+	model.CycleQueueFilter()
+	filtered := model.UIState()
+	if !strings.Contains(strings.Join(filtered.ExecutorDashboard, "\n"), "queue_filter=active") {
+		t.Fatalf("expected active queue filter in dashboard, got %#v", filtered.ExecutorDashboard)
+	}
+	if len(filtered.Queue) != 1 {
+		t.Fatalf("expected active queue filter to keep one queued task, got %#v", filtered.Queue)
+	}
+	if !strings.Contains(filtered.Queue[0], "task-active") {
+		t.Fatalf("expected active queue filter to keep task-active, got %#v", filtered.Queue)
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

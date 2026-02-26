@@ -297,7 +297,7 @@ func newFullscreenModel(stream <-chan streamMsg, seed []contracts.Event, holdOpe
 		detailsCollapsed:  true,
 		historyCollapsed:  true,
 		activityCollapsed: false,
-		keyHint:           "🧭 jk/↑↓ move  h/l collapse  enter/space toggle  d details  a activity  H history  q quit",
+		keyHint:           "🧭 jk/↑↓ move  h/l collapse  enter/space toggle  f queue filter  d details  a activity  H history  q quit",
 	}
 	model.resizeViewport()
 	model.viewport.SetContent(model.renderBody())
@@ -373,6 +373,10 @@ func (m fullscreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.historyCollapsed = !m.historyCollapsed
 			m.viewport.SetContent(m.renderBody())
 			return m, nil
+		case "f":
+			m.monitor.CycleQueueFilter()
+			m.viewport.SetContent(m.renderBody())
+			return m, nil
 		case " ":
 			normalizedKey = "space"
 		}
@@ -432,8 +436,10 @@ func (m *fullscreenModel) renderBody() string {
 		panes = append(panes, renderPane(width, "📦 Details", stylePlainLines(details, width-4), lipgloss.Color("18")))
 	}
 
-	panes = append(panes, renderPane(width, "🗂 Queue (priority)", stylePlainLines(state.Queue, width-4), lipgloss.Color("20")))
+	queueTitle := fmt.Sprintf("🗂 Queue (priority, %s)", state.QueueFilter)
+	panes = append(panes, renderPane(width, queueTitle, stylePlainLines(state.Queue, width-4), lipgloss.Color("20")))
 	panes = append(panes, renderPane(width, "🌳 Task Graph", stylePlainLines(state.TaskGraph, width-4), lipgloss.Color("21")))
+	panes = append(panes, renderPane(width, "🧰 Executor Dashboard", stylePlainLines(state.ExecutorDashboard, width-4), lipgloss.Color("22")))
 	workerPane := renderPane(width, "👷 Workers", styleWorkerLines(state.WorkerSummaries, width-4), lipgloss.Color("19"))
 	panes = append(panes, workerPane)
 
