@@ -228,6 +228,38 @@ func (r *ExecutorRegistry) Pick(requirements ...Capability) (ExecutorAdvertiseme
 	return candidates[0], nil
 }
 
+func (r *ExecutorRegistry) Snapshot() []ExecutorAdvertisement {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	r.pruneExpired(now)
+	out := make([]ExecutorAdvertisement, 0, len(r.executors))
+	for _, executor := range r.executors {
+		cloned := executor
+		cloned.Capabilities = NewCapabilitySet(keys(executor.Capabilities)...)
+		cloned.SupportedPipelines = append([]string{}, executor.SupportedPipelines...)
+		cloned.SupportedAgents = append([]string{}, executor.SupportedAgents...)
+		cloned.CredentialFlags = copyRegistryBoolMap(executor.CredentialFlags)
+		if len(executor.Metadata) > 0 {
+			cloned.Metadata = make(map[string]string, len(executor.Metadata))
+			for key, value := range executor.Metadata {
+				cloned.Metadata[key] = value
+			}
+		}
+		out = append(out, cloned)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ID == out[j].ID {
+			return out[i].SeenAt.Before(out[j].SeenAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
 func normalizeStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return nil
