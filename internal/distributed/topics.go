@@ -3,6 +3,7 @@ package distributed
 type EventSubjects struct {
 	Register               string
 	Heartbeat              string
+	Offline                string
 	TaskDispatch           string
 	TaskResult             string
 	ServiceRequest         string
@@ -22,6 +23,7 @@ func DefaultEventSubjects(prefix string) EventSubjects {
 	return EventSubjects{
 		Register:               prefix + ".executor.register",
 		Heartbeat:              prefix + ".executor.heartbeat",
+		Offline:                prefix + ".executor.offline",
 		TaskDispatch:           prefix + ".task.dispatch",
 		TaskResult:             prefix + ".task.result",
 		ServiceRequest:         prefix + ".service.request",

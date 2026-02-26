@@ -611,16 +611,26 @@ func runDistributedExecutor(ctx context.Context, cfg runConfig) error {
 		executorID = "executor"
 	}
 	worker := distributed.NewExecutorWorker(distributed.ExecutorWorkerOptions{
-		ID:       executorID,
-		Bus:      bus,
-		Backends: runners,
+		ID:         executorID,
+		InstanceID: executorID + "-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		Hostname:   hostName(),
+		Bus:        bus,
+		Backends:   runners,
 		AgentResolver: func(metadata map[string]string) (string, contracts.AgentRunner, error) {
 			return resolveDistributedRunnerSelection(cfg, runners, metadata)
 		},
-		Subjects:          subjects,
-		Capabilities:      cfg.distributedExecutorCapabilities,
-		HeartbeatInterval: cfg.distributedHeartbeatInterval,
-		RequestTimeout:    cfg.distributedRequestTimeout,
+		Subjects:           subjects,
+		Capabilities:       cfg.distributedExecutorCapabilities,
+		SupportedPipelines: []string{"default"},
+		SupportedAgents:    sortedBackendNames(runners),
+		DeclaredLanguages:  declaredLanguagesForBackends(cfg.codingAgents, runners),
+		DeclaredFeatures:   declaredFeaturesForBackends(cfg.codingAgents, runners),
+		EnvironmentProbes:  distributed.DetectEnvironmentFeatureProbes(),
+		CredentialFlags:    credentialPresenceFlags(cfg.codingAgents, runners),
+		ResourceHints:      distributed.DetectResourceHints(),
+		MaxConcurrency:     cfg.concurrency,
+		HeartbeatInterval:  cfg.distributedHeartbeatInterval,
+		RequestTimeout:     cfg.distributedRequestTimeout,
 	})
 	return worker.Start(ctx)
 }
@@ -729,6 +739,102 @@ func parseMetadataCSV(raw string) []string {
 		values = append(values, value)
 	}
 	return values
+}
+
+func sortedBackendNames(runners map[string]contracts.AgentRunner) []string {
+	if len(runners) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(runners))
+	for name := range runners {
+		normalized := normalizeBackend(name)
+		if normalized == "" {
+			continue
+		}
+		names = append(names, normalized)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func declaredLanguagesForBackends(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) []string {
+	set := map[string]struct{}{}
+	for _, backend := range sortedBackendNames(runners) {
+		definition, ok := catalog.Backend(backend)
+		if !ok {
+			continue
+		}
+		for _, language := range definition.Capabilities.Languages {
+			normalized := strings.TrimSpace(strings.ToLower(language))
+			if normalized == "" {
+				continue
+			}
+			set[normalized] = struct{}{}
+		}
+	}
+	return sortedStringSet(set)
+}
+
+func declaredFeaturesForBackends(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) []string {
+	set := map[string]struct{}{}
+	for _, backend := range sortedBackendNames(runners) {
+		definition, ok := catalog.Backend(backend)
+		if !ok {
+			continue
+		}
+		for _, feature := range definition.Capabilities.Features {
+			normalized := strings.TrimSpace(strings.ToLower(feature))
+			if normalized == "" {
+				continue
+			}
+			set[normalized] = struct{}{}
+		}
+	}
+	return sortedStringSet(set)
+}
+
+func credentialPresenceFlags(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) map[string]bool {
+	envVars := map[string]struct{}{
+		"GITHUB_TOKEN": {},
+	}
+	for _, backend := range sortedBackendNames(runners) {
+		definition, ok := catalog.Backend(backend)
+		if !ok {
+			continue
+		}
+		for _, required := range definition.RequiredCredentials {
+			envName := strings.TrimSpace(required)
+			if envName == "" {
+				continue
+			}
+			envVars[envName] = struct{}{}
+		}
+	}
+	flags := make(map[string]bool, len(envVars))
+	for envName := range envVars {
+		flags["has_env:"+envName] = strings.TrimSpace(os.Getenv(envName)) != ""
+	}
+	return flags
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func hostName() string {
+	value, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func backendMatchesCapabilities(definition codingagents.BackendDefinition, languages []string, features []string) bool {

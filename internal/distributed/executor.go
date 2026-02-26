@@ -6,45 +6,67 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 type ExecutorWorkerOptions struct {
-	ID                string
-	Bus               Bus
-	Runner            contracts.AgentRunner
-	Backends          map[string]contracts.AgentRunner
-	AgentResolver     func(map[string]string) (string, contracts.AgentRunner, error)
-	Backend           string
-	Subjects          EventSubjects
-	Capabilities      []Capability
-	HeartbeatInterval time.Duration
-	RequestTimeout    time.Duration
-	Clock             func() time.Time
-	MaxRetries        int
-	RetryDelay        time.Duration
-	PreExecutionHook  func(context.Context, contracts.RunnerRequest, int)
-	PostExecutionHook func(context.Context, contracts.RunnerRequest, contracts.RunnerResult, error, int)
+	ID                 string
+	InstanceID         string
+	Hostname           string
+	Bus                Bus
+	Runner             contracts.AgentRunner
+	Backends           map[string]contracts.AgentRunner
+	AgentResolver      func(map[string]string) (string, contracts.AgentRunner, error)
+	Backend            string
+	Subjects           EventSubjects
+	Capabilities       []Capability
+	SupportedPipelines []string
+	SupportedAgents    []string
+	DeclaredLanguages  []string
+	DeclaredFeatures   []string
+	EnvironmentProbes  ExecutorEnvironmentFeatureProbes
+	CredentialFlags    map[string]bool
+	ResourceHints      ExecutorResourceHints
+	MaxConcurrency     int
+	HeartbeatInterval  time.Duration
+	RequestTimeout     time.Duration
+	Clock              func() time.Time
+	MaxRetries         int
+	RetryDelay         time.Duration
+	PreExecutionHook   func(context.Context, contracts.RunnerRequest, int)
+	PostExecutionHook  func(context.Context, contracts.RunnerRequest, contracts.RunnerResult, error, int)
 }
 
 type ExecutorWorker struct {
-	id                string
-	bus               Bus
-	runner            contracts.AgentRunner
-	backends          map[string]contracts.AgentRunner
-	agentResolver     func(map[string]string) (string, contracts.AgentRunner, error)
-	defaultBackend    string
-	subjects          EventSubjects
-	capabilities      CapabilitySet
-	heartbeatInterval time.Duration
-	requestTimeout    time.Duration
-	maxRetries        int
-	retryDelay        time.Duration
-	preExecutionHook  func(context.Context, contracts.RunnerRequest, int)
-	postExecutionHook func(context.Context, contracts.RunnerRequest, contracts.RunnerResult, error, int)
-	clock             func() time.Time
+	id                 string
+	instanceID         string
+	hostname           string
+	bus                Bus
+	runner             contracts.AgentRunner
+	backends           map[string]contracts.AgentRunner
+	agentResolver      func(map[string]string) (string, contracts.AgentRunner, error)
+	defaultBackend     string
+	subjects           EventSubjects
+	capabilities       CapabilitySet
+	supportedPipelines []string
+	supportedAgents    []string
+	declaredLanguages  []string
+	declaredFeatures   []string
+	environmentProbes  ExecutorEnvironmentFeatureProbes
+	credentialFlags    map[string]bool
+	resourceHints      ExecutorResourceHints
+	maxConcurrency     int
+	heartbeatInterval  time.Duration
+	requestTimeout     time.Duration
+	maxRetries         int
+	retryDelay         time.Duration
+	preExecutionHook   func(context.Context, contracts.RunnerRequest, int)
+	postExecutionHook  func(context.Context, contracts.RunnerRequest, contracts.RunnerResult, error, int)
+	clock              func() time.Time
+	activeLoad         int64
 }
 
 func NewExecutorWorker(cfg ExecutorWorkerOptions) *ExecutorWorker {
@@ -52,21 +74,42 @@ func NewExecutorWorker(cfg ExecutorWorkerOptions) *ExecutorWorker {
 	if subjects.Register == "" {
 		subjects = DefaultEventSubjects("yolo")
 	}
+	if subjects.Offline == "" {
+		subjects.Offline = subjects.Register
+	}
+	supportedPipelines := normalizeStringSet(cfg.SupportedPipelines)
+	if len(supportedPipelines) == 0 {
+		supportedPipelines = []string{"default"}
+	}
+	supportedAgents := normalizeStringSet(cfg.SupportedAgents)
+	if len(supportedAgents) == 0 {
+		supportedAgents = defaultSupportedAgents(cfg.Backends, cfg.Runner)
+	}
 	return &ExecutorWorker{
-		id:                strings.TrimSpace(cfg.ID),
-		bus:               cfg.Bus,
-		runner:            cfg.Runner,
-		backends:          normalizeRunnerBackends(cfg.Backends),
-		agentResolver:     cfg.AgentResolver,
-		defaultBackend:    strings.TrimSpace(strings.ToLower(cfg.Backend)),
-		subjects:          subjects,
-		capabilities:      NewCapabilitySet(cfg.Capabilities...),
-		heartbeatInterval: cfg.HeartbeatInterval,
-		requestTimeout:    cfg.RequestTimeout,
-		maxRetries:        cfg.MaxRetries,
-		retryDelay:        cfg.RetryDelay,
-		preExecutionHook:  cfg.PreExecutionHook,
-		postExecutionHook: cfg.PostExecutionHook,
+		id:                 strings.TrimSpace(cfg.ID),
+		instanceID:         strings.TrimSpace(cfg.InstanceID),
+		hostname:           strings.TrimSpace(cfg.Hostname),
+		bus:                cfg.Bus,
+		runner:             cfg.Runner,
+		backends:           normalizeRunnerBackends(cfg.Backends),
+		agentResolver:      cfg.AgentResolver,
+		defaultBackend:     strings.TrimSpace(strings.ToLower(cfg.Backend)),
+		subjects:           subjects,
+		capabilities:       NewCapabilitySet(cfg.Capabilities...),
+		supportedPipelines: supportedPipelines,
+		supportedAgents:    supportedAgents,
+		declaredLanguages:  normalizeStringSet(cfg.DeclaredLanguages),
+		declaredFeatures:   normalizeStringSet(cfg.DeclaredFeatures),
+		environmentProbes:  cfg.EnvironmentProbes,
+		credentialFlags:    copyBoolMap(cfg.CredentialFlags),
+		resourceHints:      cfg.ResourceHints,
+		maxConcurrency:     cfg.MaxConcurrency,
+		heartbeatInterval:  cfg.HeartbeatInterval,
+		requestTimeout:     cfg.RequestTimeout,
+		maxRetries:         cfg.MaxRetries,
+		retryDelay:         cfg.RetryDelay,
+		preExecutionHook:   cfg.PreExecutionHook,
+		postExecutionHook:  cfg.PostExecutionHook,
 		clock: func() time.Time {
 			if cfg.Clock != nil {
 				return cfg.Clock().UTC()
@@ -116,6 +159,7 @@ func (w *ExecutorWorker) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			_ = w.publishOffline("shutdown")
 			return ctx.Err()
 		case <-heartbeatTicker.C:
 			if err := w.publishHeartbeat(ctx); err != nil {
@@ -132,9 +176,19 @@ func (w *ExecutorWorker) Start(ctx context.Context) error {
 
 func (w *ExecutorWorker) publishRegistration(ctx context.Context) error {
 	registration := ExecutorRegistrationPayload{
-		ExecutorID:   w.ID(),
-		Capabilities: keys(w.capabilities),
-		StartedAt:    w.clock(),
+		ExecutorID:              w.ID(),
+		InstanceID:              w.instanceID,
+		Hostname:                w.hostname,
+		Capabilities:            keys(w.capabilities),
+		SupportedPipelines:      append([]string(nil), w.supportedPipelines...),
+		SupportedAgents:         append([]string(nil), w.supportedAgents...),
+		DeclaredCapabilities:    ExecutorDeclaredCapabilities{Languages: append([]string(nil), w.declaredLanguages...), Features: append([]string(nil), w.declaredFeatures...)},
+		EnvironmentProbes:       w.environmentProbes,
+		CredentialFlags:         copyBoolMap(w.credentialFlags),
+		ResourceHints:           w.resourceHints,
+		MaxConcurrency:          w.maxConcurrency,
+		CapabilitySchemaVersion: CapabilitySchemaVersionV1,
+		StartedAt:               w.clock(),
 	}
 	event, err := NewEventEnvelope(EventTypeExecutorRegistered, w.ID(), "", registration)
 	if err != nil {
@@ -144,9 +198,23 @@ func (w *ExecutorWorker) publishRegistration(ctx context.Context) error {
 }
 
 func (w *ExecutorWorker) publishHeartbeat(ctx context.Context) error {
+	currentLoad := int(atomic.LoadInt64(&w.activeLoad))
+	maxConcurrency := w.maxConcurrency
+	availableSlots := 0
+	if maxConcurrency > 0 {
+		availableSlots = maxConcurrency - currentLoad
+		if availableSlots < 0 {
+			availableSlots = 0
+		}
+	}
 	heartbeat := ExecutorHeartbeatPayload{
-		ExecutorID: w.ID(),
-		SeenAt:     w.clock(),
+		ExecutorID:     w.ID(),
+		InstanceID:     w.instanceID,
+		SeenAt:         w.clock(),
+		CurrentLoad:    currentLoad,
+		AvailableSlots: availableSlots,
+		MaxConcurrency: maxConcurrency,
+		HealthStatus:   "healthy",
 	}
 	event, err := NewEventEnvelope(EventTypeExecutorHeartbeat, w.ID(), "", heartbeat)
 	if err != nil {
@@ -199,6 +267,8 @@ func (w *ExecutorWorker) handleDispatch(ctx context.Context, env EventEnvelope) 
 		MaxRetries: transport.MaxRetries,
 		Metadata:   transport.Metadata,
 	}
+	atomic.AddInt64(&w.activeLoad, 1)
+	defer atomic.AddInt64(&w.activeLoad, -1)
 
 	maxRetries := request.MaxRetries
 	if maxRetries < 0 {
@@ -345,6 +415,22 @@ attemptLoop:
 	_ = w.bus.Publish(requestCtx, w.subjects.TaskResult, responseEnv)
 }
 
+func (w *ExecutorWorker) publishOffline(reason string) error {
+	payload := ExecutorOfflinePayload{
+		ExecutorID: w.ID(),
+		InstanceID: w.instanceID,
+		SeenAt:     w.clock(),
+		Reason:     strings.TrimSpace(reason),
+	}
+	event, err := NewEventEnvelope(EventTypeExecutorOffline, w.ID(), "", payload)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return w.bus.Publish(ctx, w.subjects.Offline, event)
+}
+
 func normalizeRunnerBackends(runners map[string]contracts.AgentRunner) map[string]contracts.AgentRunner {
 	normalized := map[string]contracts.AgentRunner{}
 	for backend, runner := range runners {
@@ -477,6 +563,58 @@ func cloneRunnerRequest(request contracts.RunnerRequest) contracts.RunnerRequest
 	}
 	clone.OnProgress = request.OnProgress
 	return clone
+}
+
+func normalizeStringSet(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.TrimSpace(strings.ToLower(value))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func copyBoolMap(values map[string]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values))
+	for key, value := range values {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = value
+	}
+	return out
+}
+
+func defaultSupportedAgents(backends map[string]contracts.AgentRunner, runner contracts.AgentRunner) []string {
+	if len(backends) > 0 {
+		names := make([]string, 0, len(backends))
+		for name := range backends {
+			names = append(names, name)
+		}
+		normalized := normalizeStringSet(names)
+		if len(normalized) > 0 {
+			return normalized
+		}
+	}
+	if runner != nil {
+		return []string{"default"}
+	}
+	return nil
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

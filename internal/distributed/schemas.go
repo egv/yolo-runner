@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	EventSchemaVersionV1 SchemaVersion = "1"
-	EventSchemaVersionV0 SchemaVersion = "0"
+	EventSchemaVersionV1      SchemaVersion = "1"
+	EventSchemaVersionV0      SchemaVersion = "0"
+	CapabilitySchemaVersionV1               = "1"
 )
 
 type SchemaVersion string
@@ -71,16 +72,57 @@ type EventPayload struct {
 var eventIDCounter uint64
 
 type ExecutorRegistrationPayload struct {
-	ExecutorID   string            `json:"executor_id"`
-	Capabilities []Capability      `json:"capabilities"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	StartedAt    time.Time         `json:"started_at"`
+	ExecutorID              string                           `json:"executor_id"`
+	InstanceID              string                           `json:"instance_id,omitempty"`
+	Hostname                string                           `json:"hostname,omitempty"`
+	Capabilities            []Capability                     `json:"capabilities"`
+	SupportedPipelines      []string                         `json:"supported_pipelines,omitempty"`
+	SupportedAgents         []string                         `json:"supported_agents,omitempty"`
+	DeclaredCapabilities    ExecutorDeclaredCapabilities     `json:"declared_capabilities,omitempty"`
+	EnvironmentProbes       ExecutorEnvironmentFeatureProbes `json:"environment_probes,omitempty"`
+	CredentialFlags         map[string]bool                  `json:"credential_flags,omitempty"`
+	ResourceHints           ExecutorResourceHints            `json:"resource_hints,omitempty"`
+	MaxConcurrency          int                              `json:"max_concurrency,omitempty"`
+	CapabilitySchemaVersion string                           `json:"capability_schema_version,omitempty"`
+	Metadata                map[string]string                `json:"metadata,omitempty"`
+	StartedAt               time.Time                        `json:"started_at"`
 }
 
 type ExecutorHeartbeatPayload struct {
+	ExecutorID     string            `json:"executor_id"`
+	InstanceID     string            `json:"instance_id,omitempty"`
+	SeenAt         time.Time         `json:"seen_at"`
+	CurrentLoad    int               `json:"current_load,omitempty"`
+	AvailableSlots int               `json:"available_slots,omitempty"`
+	MaxConcurrency int               `json:"max_concurrency,omitempty"`
+	HealthStatus   string            `json:"health_status,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+}
+
+type ExecutorOfflinePayload struct {
 	ExecutorID string            `json:"executor_id"`
+	InstanceID string            `json:"instance_id,omitempty"`
 	SeenAt     time.Time         `json:"seen_at"`
+	Reason     string            `json:"reason,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+type ExecutorDeclaredCapabilities struct {
+	Languages []string `json:"languages,omitempty"`
+	Features  []string `json:"features,omitempty"`
+}
+
+type ExecutorEnvironmentFeatureProbes struct {
+	HasGo     bool   `json:"has_go"`
+	HasGit    bool   `json:"has_git"`
+	HasDocker bool   `json:"has_docker"`
+	OS        string `json:"os,omitempty"`
+	Arch      string `json:"arch,omitempty"`
+}
+
+type ExecutorResourceHints struct {
+	CPUCores int     `json:"cpu_cores,omitempty"`
+	MemGB    float64 `json:"mem_gb,omitempty"`
 }
 
 type TaskDispatchPayload struct {
