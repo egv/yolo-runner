@@ -1,6 +1,6 @@
 ---
 id: kafka-design
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-03-01T11:00:00Z
@@ -9419,5 +9419,9 @@ triage_status=failed
 yolo.inbox.comment=Task: Design Kafka Topic Schema and Consumer Strategy
 
 **2026-03-01T16:54:51Z**
+
+yolo.inbox.comment=Task: Design Kafka Topic Schema and Consumer Strategy
+
+**2026-03-01T16:55:13Z**
 
 yolo.inbox.comment=Task: Design Kafka Topic Schema and Consumer Strategy
