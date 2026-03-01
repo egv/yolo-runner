@@ -423,19 +423,6 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 		}
 	}
 	correlationID := req.RunnerRequest.TaskID + "-" + strings.ReplaceAll(time.Now().UTC().Format(time.RFC3339Nano), ":", "")
-	dispatchTimeout := m.requestTimeout
-	if dispatchTimeout <= 0 {
-		dispatchTimeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, dispatchTimeout)
-	defer cancel()
-
-	resultCh, unsubResult, err := m.bus.Subscribe(ctx, m.subjects.TaskResult)
-	if err != nil {
-		return contracts.RunnerResult{}, err
-	}
-	defer unsubResult()
-
 	dispatch := TaskDispatchPayload{
 		CorrelationID:        correlationID,
 		TaskID:               req.RunnerRequest.TaskID,
@@ -457,36 +444,12 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 		return contracts.RunnerResult{}, err
 	}
 
-	// Wait for any executor to pick up the task and return a result
-	timeoutTicker := time.NewTicker(50 * time.Millisecond)
-	defer timeoutTicker.Stop()
-	for {
-		select {
-		case raw := <-resultCh:
-			if raw.CorrelationID != correlationID {
-				continue
-			}
-			payload := TaskResultPayload{}
-			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
-				continue
-			}
-			if strings.TrimSpace(payload.CorrelationID) != correlationID {
-				continue
-			}
-			if strings.TrimSpace(payload.ExecutorID) == "" {
-				payload.ExecutorID = strings.TrimSpace(payload.ExecutorID)
-			}
-			if payload.Error != "" {
-				return contracts.RunnerResult{}, fmt.Errorf("executor failed: %s", payload.Error)
-			}
-			return payload.Result, nil
-		case <-timeoutTicker.C:
-			// Just check if we should continue waiting - no specific executor to monitor
-			// The timeout will handle if no executor picks up the task
-		case <-ctx.Done():
-			return contracts.RunnerResult{}, fmt.Errorf("task dispatch timed out: %w", ctx.Err())
-		}
-	}
+	// Fire-and-forget: return immediately after publishing to queue
+	// The mastermind handles results asynchronously via TaskResult subscription
+	return contracts.RunnerResult{
+		Status: contracts.RunnerResultCompleted,
+		Reason: "Task dispatched to queue",
+	}, nil
 }
 
 func (m *Mastermind) handleServiceRequest(ctx context.Context, env EventEnvelope) error {
