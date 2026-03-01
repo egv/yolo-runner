@@ -3,11 +3,13 @@ package tk
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/egv/yolo-runner/v2/internal/runner"
+	"gopkg.in/yaml.v3"
 )
 
 type Runner interface {
@@ -257,29 +259,97 @@ func (a *Adapter) Sync() error {
 }
 
 func (a *Adapter) queryTickets() ([]ticket, error) {
-	output, err := a.runner.Run("tk", "query")
+	// List all ticket IDs from tk ready (includes open/in_progress)
+	readyOutput, err := a.runner.Run("tk", "ready")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tk ready failed: %w", err)
 	}
 
-	return parseTicketQuery(output)
-}
+	// Also get blocked tickets to have complete view
+	blockedOutput, _ := a.runner.Run("tk", "blocked")
 
-func parseTicketQuery(output string) ([]ticket, error) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	result := make([]ticket, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var t ticket
-		if err := json.Unmarshal([]byte(line), &t); err != nil {
-			return nil, err
+	// Collect all unique ticket IDs
+	idSet := make(map[string]struct{})
+	for _, id := range parseReadyIDs(readyOutput) {
+		idSet[id] = struct{}{}
+	}
+	for _, id := range parseReadyIDs(blockedOutput) {
+		idSet[id] = struct{}{}
+	}
+
+	// Fetch each ticket individually using tk show
+	result := make([]ticket, 0, len(idSet))
+	for id := range idSet {
+		t, err := a.fetchTicket(id)
+		if err != nil {
+			continue // Skip tickets we can't fetch
 		}
 		result = append(result, t)
 	}
+
 	return result, nil
+}
+
+func (a *Adapter) fetchTicket(id string) (ticket, error) {
+	output, err := a.runner.Run("tk", "show", id)
+	if err != nil {
+		return ticket{}, err
+	}
+	return parseTicketFromShowOutput(id, output)
+}
+
+func parseTicketFromShowOutput(id string, output string) (ticket, error) {
+	// Extract YAML frontmatter between --- delimiters
+	frontmatter, found, err := extractLeadingFrontmatter(output)
+	if err != nil || !found {
+		return ticket{}, fmt.Errorf("no frontmatter found")
+	}
+
+	// Parse YAML frontmatter
+	values := make(map[string]any)
+	if err := yaml.Unmarshal([]byte(frontmatter), &values); err != nil {
+		return ticket{}, fmt.Errorf("invalid frontmatter YAML: %w", err)
+	}
+
+	t := ticket{ID: id}
+
+	// Extract fields from frontmatter
+	if v, ok := values["title"].(string); ok {
+		t.Title = v
+	}
+	if v, ok := values["status"].(string); ok {
+		t.Status = v
+	}
+	if v, ok := values["type"].(string); ok {
+		t.Type = v
+	}
+	if v, ok := values["priority"]; ok {
+		t.Priority = v
+	}
+	if v, ok := values["parent"].(string); ok {
+		t.Parent = v
+	}
+	if v, ok := values["deps"]; ok {
+		t.Deps = parseDepsField(v)
+	}
+
+	return t, nil
+}
+
+func parseDepsField(v any) dependencyList {
+	switch val := v.(type) {
+	case string:
+		return parseDependencyString(val)
+	case []any:
+		deps := make(dependencyList, 0, len(val))
+		for _, d := range val {
+			if s, ok := d.(string); ok {
+				deps = append(deps, s)
+			}
+		}
+		return deps
+	}
+	return nil
 }
 
 func parseReadyIDs(output string) []string {
