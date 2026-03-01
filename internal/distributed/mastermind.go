@@ -422,10 +422,6 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 			capabilities = []Capability{CapabilityImplement}
 		}
 	}
-	executor, err := m.registry.Pick(capabilities...)
-	if err != nil {
-		return contracts.RunnerResult{}, err
-	}
 	correlationID := req.RunnerRequest.TaskID + "-" + strings.ReplaceAll(time.Now().UTC().Format(time.RFC3339Nano), ":", "")
 	dispatchTimeout := m.requestTimeout
 	if dispatchTimeout <= 0 {
@@ -443,7 +439,7 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 	dispatch := TaskDispatchPayload{
 		CorrelationID:        correlationID,
 		TaskID:               req.RunnerRequest.TaskID,
-		TargetExecutorID:     executor.ID,
+		TargetExecutorID:     "", // Empty means any executor can pick this up
 		RequiredCapabilities: capabilities,
 		Request:              nil,
 	}
@@ -461,6 +457,7 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 		return contracts.RunnerResult{}, err
 	}
 
+	// Wait for any executor to pick up the task and return a result
 	timeoutTicker := time.NewTicker(50 * time.Millisecond)
 	defer timeoutTicker.Stop()
 	for {
@@ -484,9 +481,8 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 			}
 			return payload.Result, nil
 		case <-timeoutTicker.C:
-			if !m.registry.IsAvailable(executor.ID, m.clock()) {
-				return contracts.RunnerResult{}, fmt.Errorf("executor %s disconnected", executor.ID)
-			}
+			// Just check if we should continue waiting - no specific executor to monitor
+			// The timeout will handle if no executor picks up the task
 		case <-ctx.Done():
 			return contracts.RunnerResult{}, fmt.Errorf("task dispatch timed out: %w", ctx.Err())
 		}
