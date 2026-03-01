@@ -366,6 +366,86 @@ Common options:
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
 
+### Distributed dogfooding (queues via Redis/NATS + Podman)
+
+Use the queue-backed transport with Redis or NATS, started via Podman Compose. Services bind to Tailscale (tailnet) addresses for security - only accessible from within your tailnet.
+
+```bash
+make build
+make distributed-dev-up
+
+export GITHUB_TOKEN=$(gh auth token)
+
+# Get your tailscale IP (or set YOLO_TAILNET_IP in .env)
+export YOLO_TAILNET_IP=$(tailscale ip -4)
+
+./bin/yolo-agent \
+  --repo . \
+  --root <root-id> \
+  --profile github \
+  --distributed-bus-backend redis \
+  --distributed-bus-address "redis://${YOLO_TAILNET_IP}:16379" \
+  --stream | ./bin/yolo-tui --events-stdin
+```
+
+Switch to NATS by changing the backend and address:
+
+```bash
+./bin/yolo-agent \
+  --repo . \
+  --root <root-id> \
+  --profile github \
+  --distributed-bus-backend nats \
+  --distributed-bus-address "nats://${YOLO_TAILNET_IP}:14222" \
+  --stream | ./bin/yolo-tui --events-stdin
+```
+
+When done, stop the containers:
+
+```bash
+make distributed-dev-down
+```
+
+#### Makefile targets for distributed dev
+
+```bash
+# Start Redis and NATS containers (bound to tailnet IP)
+make distributed-dev-up
+
+# Stop and remove containers with volumes
+make distributed-dev-down
+```
+
+These targets use `podman compose` with `dev/distributed/docker-compose.yml`. Services bind to `YOLO_TAILNET_IP` (default: `100.85.134.92`) so they're only accessible from your Tailscale network.
+
+#### Web UI for monitoring and control
+
+Start the web UI to monitor task queue, task graph, workers, and send control commands:
+
+```bash
+export YOLO_TAILNET_IP=$(tailscale ip -4)
+
+./bin/yolo-webui \
+  --repo . \
+  --listen "${YOLO_TAILNET_IP}:8080" \
+  --distributed-bus-backend redis \
+  --distributed-bus-address "redis://${YOLO_TAILNET_IP}:16379" \
+  --auth-token "${YOLO_WEBUI_TOKEN:-your-secret-token}"
+```
+
+Then open in your browser (only accessible from tailnet):
+
+```
+http://<your-tailnet-ip>:8080/?token=your-secret-token
+```
+
+Features:
+- Real-time task queue visualization
+- Task graph with status
+- Worker summaries
+- Control panel to change task status (blocked, in_progress, closed)
+- Run history and triage
+
 ### Streaming Mode (Real-time TUI)
 
 Stream events to TUI for real-time monitoring:
@@ -388,6 +468,31 @@ TDD mode with streaming:
 
 The TUI is decoder-safe: malformed JSONL lines are surfaced as warnings while valid events continue rendering.
 
+#### TUI Bus Mode (connect directly to Redis/NATS)
+
+Connect TUI directly to the distributed bus - useful when running agent separately or monitoring remote runs:
+
+```bash
+export YOLO_TAILNET_IP=$(tailscale ip -4)
+
+./bin/yolo-tui \
+  --repo . \
+  --events-bus \
+  --events-bus-backend redis \
+  --events-bus-address "redis://${YOLO_TAILNET_IP}:16379"
+```
+
+**TUI shows:**
+- Task queue with pending/ready tasks
+- Task graph with dependency tree and statuses
+- Worker summaries (active executors)
+- Run history and landing/triage outcomes
+- Real-time status bar with metrics
+
+**TUI vs Web UI:**
+- Use `yolo-tui` for terminal-based monitoring, local or SSH sessions
+- Use `yolo-webui` for browser access, remote monitoring, and sending control commands
+
 ### `yolo-agent` preflight (commit + push first)
 
 Always commit and push ticket/config changes before starting `yolo-agent`.
@@ -401,6 +506,7 @@ Quick preflight:
 ```
 git status --short
 git push
+export GITHUB_TOKEN=$(gh auth token)
 ./bin/yolo-agent --repo . --root <root-id> --backend codex --concurrency 3 --events "runner-logs/<run>.events.jsonl" --stream | ./bin/yolo-tui --events-stdin
 ```
 

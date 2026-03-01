@@ -2,10 +2,10 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "${YOLO_SMOKE_REDIS_PORT:-16379}:6379"
+      - "${YOLO_TAILNET_IP:-100.85.134.92}:${YOLO_SMOKE_REDIS_PORT:-16379}:6379"
 
   nats:
     image: nats:2.10-alpine
     command: ["-js"]
     ports:
-      - "${YOLO_SMOKE_NATS_PORT:-14222}:4222"
+      - "${YOLO_TAILNET_IP:-100.85.134.92}:${YOLO_SMOKE_NATS_PORT:-14222}:4222"

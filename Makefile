@@ -12,10 +12,10 @@ smoke-event-stream:
 	$(MAKE) smoke-agent-tui
 
 distributed-dev-up:
-	docker compose -f dev/distributed/docker-compose.yml up -d redis nats
+	podman compose -f dev/distributed/docker-compose.yml up -d redis nats
 
 distributed-dev-down:
-	docker compose -f dev/distributed/docker-compose.yml down -v
+	podman compose -f dev/distributed/docker-compose.yml down -v
 
 smoke-distributed-e2e:
 	./scripts/distributed-smoke.sh
