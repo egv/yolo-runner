@@ -1,6 +1,6 @@
 ---
 id: kafka-design
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-03-01T11:00:00Z
@@ -47,5 +47,9 @@ N/A (design task, no code)
 yolo.inbox.comment=blocked: no executor matches required capabilities/environment/credentials
 
 **2026-03-01T16:40:44Z**
+
+yolo.inbox.comment=Task: Design Kafka Topic Schema and Consumer Strategy
+
+**2026-03-01T16:49:18Z**
 
 yolo.inbox.comment=Task: Design Kafka Topic Schema and Consumer Strategy
