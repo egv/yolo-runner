@@ -1733,3 +1733,23 @@ triage_reason=review verdict missing explicit pass
 **2026-03-01T16:50:11Z**
 
 triage_status=failed
+
+**2026-03-01T16:50:14Z**
+
+decision=retry
+
+**2026-03-01T16:50:14Z**
+
+reason=review verdict missing explicit pass
+
+**2026-03-01T16:50:14Z**
+
+review_feedback=review verdict missing explicit pass
+
+**2026-03-01T16:50:14Z**
+
+review_retry_count=1
+
+**2026-03-01T16:50:14Z**
+
+triage_reason=review verdict missing explicit pass
