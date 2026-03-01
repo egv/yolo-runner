@@ -1,6 +1,6 @@
 ---
 id: kafka-design
-status: in_progress
+status: open
 deps: []
 links: []
 created: 2026-03-01T11:00:00Z
