@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -229,9 +230,10 @@ func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfi
 			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
 		}
 		backend, err := newGitHubStorageBackend(githubtracker.Config{
-			Owner: owner,
-			Repo:  repo,
-			Token: tokenValue,
+			Owner:     owner,
+			Repo:      repo,
+			Token:     tokenValue,
+			StatePath: filepath.Join(repoRoot, ".yolo-runner", fmt.Sprintf("github-state-%s-%s.json", owner, repo)),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)

@@ -12,7 +12,8 @@ import (
 
 // StorageBackend adapts GitHub Issues to the storage-only contracts.StorageBackend API.
 type StorageBackend struct {
-	manager *TaskManager
+	manager    *TaskManager
+	stateStore *localTaskStateStore
 }
 
 var _ contracts.StorageBackend = (*StorageBackend)(nil)
@@ -22,7 +23,7 @@ func NewStorageBackend(cfg Config) (*StorageBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StorageBackend{manager: manager}, nil
+	return &StorageBackend{manager: manager, stateStore: newLocalTaskStateStore(cfg.StatePath)}, nil
 }
 
 func (b *StorageBackend) GetTaskTree(ctx context.Context, rootID string) (*contracts.TaskTree, error) {
@@ -66,7 +67,7 @@ func (b *StorageBackend) GetTaskTree(ctx context.Context, rootID string) (*contr
 	relationSeen := make(map[string]struct{}, len(inScope)*3)
 
 	for _, issue := range inScope {
-		task := taskFromIssuePayload(issue, inScope)
+		task := b.taskFromIssuePayload(issue, inScope)
 		if issue.Number == rootNumber {
 			task.ParentID = ""
 		} else {
@@ -147,7 +148,7 @@ func (b *StorageBackend) GetTask(ctx context.Context, taskID string) (*contracts
 		return nil, err
 	}
 
-	task := taskFromIssuePayload(*issue, allIssues)
+	task := b.taskFromIssuePayload(*issue, allIssues)
 	return &task, nil
 }
 
@@ -162,22 +163,36 @@ func (b *StorageBackend) SetTaskData(ctx context.Context, taskID string, data ma
 	if b == nil || b.manager == nil {
 		return fmt.Errorf("github storage backend is not initialized")
 	}
+	if b.stateStore != nil && sameTaskData(b.stateStore.taskData(taskID), data) {
+		return nil
+	}
 	return b.manager.SetTaskData(ctx, taskID, data)
 }
 
-func (b *StorageBackend) PersistTaskStatusChange(context.Context, string, contracts.TaskStatus) error {
-	return nil
+func (b *StorageBackend) PersistTaskStatusChange(ctx context.Context, taskID string, status contracts.TaskStatus) error {
+	if b == nil || b.stateStore == nil {
+		return nil
+	}
+	return b.stateStore.PersistTaskStatusChange(ctx, taskID, status)
 }
 
-func (b *StorageBackend) PersistTaskDataChange(context.Context, string, map[string]string) error {
-	return nil
+func (b *StorageBackend) PersistTaskDataChange(ctx context.Context, taskID string, data map[string]string) error {
+	if b == nil || b.stateStore == nil {
+		return nil
+	}
+	return b.stateStore.PersistTaskDataChange(ctx, taskID, data)
 }
 
-func taskFromIssuePayload(issue githubIssuePayload, inScope []githubIssuePayload) contracts.Task {
+func (b *StorageBackend) taskFromIssuePayload(issue githubIssuePayload, inScope []githubIssuePayload) contracts.Task {
 	id := strconv.Itoa(issue.Number)
 	metadata := map[string]string{}
 	if deps := dependencyIDsForIssue(issue, inScope); len(deps) > 0 {
 		metadata["dependencies"] = strings.Join(deps, ",")
+	}
+	if b != nil && b.stateStore != nil {
+		for key, value := range b.stateStore.taskData(id) {
+			metadata[key] = value
+		}
 	}
 	if len(metadata) == 0 {
 		metadata = nil
@@ -192,10 +207,17 @@ func taskFromIssuePayload(issue githubIssuePayload, inScope []githubIssuePayload
 		ID:          id,
 		Title:       fallbackText(issue.Title, id),
 		Description: issue.Body,
-		Status:      taskStatusFromIssueState(issue.State),
+		Status:      b.effectiveTaskStatus(issue),
 		ParentID:    parentID,
 		Metadata:    metadata,
 	}
+}
+
+func (b *StorageBackend) effectiveTaskStatus(issue githubIssuePayload) contracts.TaskStatus {
+	if b == nil || b.stateStore == nil || issue.Number <= 0 {
+		return taskStatusFromIssueState(issue.State)
+	}
+	return b.stateStore.effectiveStatus(strconv.Itoa(issue.Number), issue.State)
 }
 
 func descendantIssuesForRoot(rootNumber int, issues []githubIssuePayload) []githubIssuePayload {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
@@ -328,18 +329,54 @@ func TestTaskManagerSetTaskDataWritesSortedComments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetTaskData returned error: %v", err)
 	}
-	want := []string{
+	want := strings.Join([]string{
+		"<!-- yolo-runner-task-data -->",
 		"landing_status=merge_blocked",
 		"triage_reason=needs manual input",
 		"triage_status=blocked",
+	}, "\n")
+	if len(written) != 1 {
+		t.Fatalf("expected 1 comment, got %d (%#v)", len(written), written)
 	}
-	if len(written) != len(want) {
-		t.Fatalf("expected %d comments, got %d (%#v)", len(want), len(written), written)
+	if written[0] != want {
+		t.Fatalf("expected comment body %q, got %q", want, written[0])
 	}
-	for idx, expected := range want {
-		if written[idx] != expected {
-			t.Fatalf("expected comment[%d]=%q, got %q", idx, expected, written[idx])
+}
+
+func TestTaskManagerSetTaskDataRetriesSecondaryRateLimit(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	manager := newGitHubTestManager(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST request, got %s", r.Method)
 		}
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation."}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	})
+
+	slept := []time.Duration{}
+	manager.sleep = func(d time.Duration) {
+		slept = append(slept, d)
+	}
+
+	err := manager.SetTaskData(context.Background(), "8", map[string]string{"triage_status": "blocked"})
+	if err != nil {
+		t.Fatalf("SetTaskData returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if len(slept) != 1 || slept[0] != time.Second {
+		t.Fatalf("expected one 1s retry sleep, got %#v", slept)
 	}
 }
 

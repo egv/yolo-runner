@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -280,6 +281,68 @@ func TestStorageBackendBacksOffWhenRateLimitApproaching(t *testing.T) {
 	}
 }
 
+func TestStorageBackendGetTaskTreeOverlaysPersistedBlockedStatusAndData(t *testing.T) {
+	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		switch r.URL.Path {
+		case "/repos/egv/yolo-runner/issues/40":
+			_, _ = w.Write([]byte(`{"number":40,"title":"Superepic","body":"","state":"open","labels":[]}`))
+		case "/repos/egv/yolo-runner/issues":
+			_, _ = w.Write([]byte(`[
+				{"number":40,"title":"Superepic","body":"","state":"open","labels":[]},
+				{"number":1,"title":"Epic 1","body":"","state":"open","parent_issue_id":40,"labels":[]},
+				{"number":6,"title":"Task 6","body":"","state":"open","parent_issue_id":1,"labels":[]}
+			]`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	})
+
+	if err := backend.PersistTaskStatusChange(context.Background(), "6", contracts.TaskStatusBlocked); err != nil {
+		t.Fatalf("PersistTaskStatusChange returned error: %v", err)
+	}
+	if err := backend.PersistTaskDataChange(context.Background(), "6", map[string]string{"triage_status": "blocked", "triage_reason": "needs tests first"}); err != nil {
+		t.Fatalf("PersistTaskDataChange returned error: %v", err)
+	}
+
+	tree, err := backend.GetTaskTree(context.Background(), "40")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+	task := tree.Tasks["6"]
+	if task.Status != contracts.TaskStatusBlocked {
+		t.Fatalf("expected task 6 to be blocked from persisted local state, got %s", task.Status)
+	}
+	if task.Metadata["triage_reason"] != "needs tests first" {
+		t.Fatalf("expected persisted triage_reason, got %#v", task.Metadata)
+	}
+}
+
+func TestStorageBackendSetTaskDataSkipsDuplicatePersistedWrite(t *testing.T) {
+	posts := 0
+	backend := newGitHubStorageTestBackend(t, func(t *testing.T, r *http.Request, w http.ResponseWriter) {
+		t.Helper()
+		if r.URL.Path == "/repos/egv/yolo-runner/issues/8/comments" && r.Method == http.MethodPost {
+			posts++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1}`))
+			return
+		}
+		t.Fatalf("unexpected request path %q", r.URL.Path)
+	})
+
+	seed := map[string]string{"triage_status": "blocked", "triage_reason": "needs manual input"}
+	if err := backend.PersistTaskDataChange(context.Background(), "8", seed); err != nil {
+		t.Fatalf("PersistTaskDataChange returned error: %v", err)
+	}
+	if err := backend.SetTaskData(context.Background(), "8", seed); err != nil {
+		t.Fatalf("SetTaskData returned error: %v", err)
+	}
+	if posts != 0 {
+		t.Fatalf("expected duplicate task data write to be skipped, got %d POSTs", posts)
+	}
+}
+
 func assertRelation(t *testing.T, relations []contracts.TaskRelation, want contracts.TaskRelation) {
 	t.Helper()
 	for _, rel := range relations {
@@ -309,6 +372,7 @@ func newGitHubStorageTestBackend(t *testing.T, handler func(t *testing.T, r *htt
 		Token:       "ghp_test",
 		APIEndpoint: server.URL,
 		HTTPClient:  server.Client(),
+		StatePath:   filepath.Join(t.TempDir(), "github-state.json"),
 	})
 	if err != nil {
 		t.Fatalf("build storage backend: %v", err)

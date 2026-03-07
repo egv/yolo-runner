@@ -35,6 +35,7 @@ type Config struct {
 	Token       string
 	APIEndpoint string
 	HTTPClient  HTTPClient
+	StatePath   string
 }
 
 type TaskManager struct {
@@ -239,18 +240,22 @@ func (m *TaskManager) SetTaskData(ctx context.Context, taskID string, data map[s
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-
+	commentLines := make([]string, 0, len(keys)+1)
+	commentLines = append(commentLines, "<!-- yolo-runner-task-data -->")
 	for _, key := range keys {
-		payload := map[string]string{
-			"body": key + "=" + entries[key],
-		}
-		statusCode, body, err := m.doGitHubJSON(ctx, http.MethodPost, requestURL, payload, maxReadResponseSize)
-		if err != nil {
-			return fmt.Errorf("write GitHub issue %d task data %q: %w", issueNumber, key, err)
-		}
-		if statusCode >= http.StatusBadRequest {
-			return fmt.Errorf("write GitHub issue %d task data %q: request failed with status %d: %s", issueNumber, key, statusCode, firstAPIError(body))
-		}
+		commentLines = append(commentLines, key+"="+entries[key])
+	}
+	payload := map[string]string{
+		"body": strings.Join(commentLines, "\n"),
+	}
+	statusCode, body, err := m.doGitHubJSON(ctx, http.MethodPost, requestURL, payload, maxReadResponseSize)
+	if err != nil {
+		firstKey := keys[0]
+		return fmt.Errorf("write GitHub issue %d task data %q: %w", issueNumber, firstKey, err)
+	}
+	if statusCode >= http.StatusBadRequest {
+		firstKey := keys[0]
+		return fmt.Errorf("write GitHub issue %d task data %q: request failed with status %d: %s", issueNumber, firstKey, statusCode, firstAPIError(body))
 	}
 	return nil
 }
@@ -322,37 +327,88 @@ func (m *TaskManager) doGitHubGET(ctx context.Context, requestURL string, maxBod
 }
 
 func (m *TaskManager) doGitHubJSON(ctx context.Context, method string, requestURL string, payload any, maxBodyBytes int64) (int, []byte, error) {
-	var requestBody io.Reader
+	var requestBody []byte
 	if payload != nil {
 		body, err := json.Marshal(payload)
 		if err != nil {
 			return 0, nil, fmt.Errorf("cannot encode request body: %w", err)
 		}
-		requestBody = bytes.NewReader(body)
+		requestBody = body
 	}
+	for attempt := 0; ; attempt++ {
+		var bodyReader io.Reader
+		if requestBody != nil {
+			bodyReader = bytes.NewReader(requestBody)
+		}
 
-	req, err := http.NewRequestWithContext(ctx, method, requestURL, requestBody)
-	if err != nil {
-		return 0, nil, fmt.Errorf("cannot build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Authorization", "Bearer "+m.token)
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+		req, err := http.NewRequestWithContext(ctx, method, requestURL, bodyReader)
+		if err != nil {
+			return 0, nil, fmt.Errorf("cannot build request: %w", err)
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("Authorization", "Bearer "+m.token)
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("request failed: %w", err)
+		resp, err := m.client.Do(req)
+		if err != nil {
+			return 0, nil, fmt.Errorf("request failed: %w", err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return 0, nil, fmt.Errorf("cannot read response: %w", readErr)
+		}
+		if wait, ok := secondaryRateLimitBackoff(resp.StatusCode, resp.Header, body, attempt); ok {
+			sleepFn := m.sleep
+			if sleepFn == nil {
+				sleepFn = time.Sleep
+			}
+			sleepFn(wait)
+			continue
+		}
+		m.maybeBackoffForRateLimit(resp.Header)
+		return resp.StatusCode, body, nil
 	}
-	defer resp.Body.Close()
+}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-	if err != nil {
-		return 0, nil, fmt.Errorf("cannot read response: %w", err)
+func secondaryRateLimitBackoff(statusCode int, headers http.Header, body []byte, attempt int) (time.Duration, bool) {
+	if statusCode != http.StatusForbidden && statusCode != http.StatusTooManyRequests {
+		return 0, false
 	}
-	m.maybeBackoffForRateLimit(resp.Header)
-	return resp.StatusCode, body, nil
+	message := strings.ToLower(strings.TrimSpace(firstAPIError(body)))
+	if !strings.Contains(message, "secondary rate limit") && !strings.Contains(message, "temporarily blocked from content creation") && !strings.Contains(message, "abuse detection") {
+		return 0, false
+	}
+	if attempt >= 3 {
+		return 0, false
+	}
+	if retryAfter := strings.TrimSpace(headers.Get("Retry-After")); retryAfter != "" {
+		if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+			wait := time.Duration(seconds) * time.Second
+			if wait > maxRateLimitBackoff {
+				wait = maxRateLimitBackoff
+			}
+			return wait, true
+		}
+	}
+	if resetRaw := strings.TrimSpace(headers.Get("X-RateLimit-Reset")); resetRaw != "" {
+		if resetUnix, err := strconv.ParseInt(resetRaw, 10, 64); err == nil {
+			wait := time.Until(time.Unix(resetUnix, 0))
+			if wait > 0 {
+				if wait > maxRateLimitBackoff {
+					wait = maxRateLimitBackoff
+				}
+				return wait, true
+			}
+		}
+	}
+	wait := time.Duration(attempt+1) * 5 * time.Second
+	if wait > maxRateLimitBackoff {
+		wait = maxRateLimitBackoff
+	}
+	return wait, true
 }
 
 func (m *TaskManager) maybeBackoffForRateLimit(headers http.Header) {

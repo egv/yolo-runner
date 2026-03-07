@@ -161,7 +161,7 @@ func (e *TaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.Ta
 		if node == nil || node.Status != contracts.TaskStatusOpen {
 			continue
 		}
-		if id == graph.RootID && len(node.Children) > 0 {
+		if isContainerNode(id, graph.RootID, node) {
 			continue
 		}
 		if dependenciesSatisfied(graph.Nodes, node) {
@@ -215,7 +215,7 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 			if node == nil {
 				continue
 			}
-			if node.Status == contracts.TaskStatusOpen {
+			if node.Status == contracts.TaskStatusOpen && !isContainerNode(taskID, graph.RootID, node) {
 				openAtLevel++
 			}
 			if node.Status != contracts.TaskStatusOpen && node.Status != contracts.TaskStatusClosed {
@@ -293,7 +293,7 @@ func (e *TaskEngine) IsComplete(graph *contracts.TaskGraph) bool {
 		if isFinishedStatus(node.Status) {
 			continue
 		}
-		if id == graph.RootID && len(node.Children) > 0 {
+		if isContainerNode(id, graph.RootID, node) {
 			// Root nodes that own child tasks act as containers and are intentionally
 			// non-runnable, so they may remain open after all descendants finish.
 			continue
@@ -614,6 +614,16 @@ func dependenciesSatisfied(nodes map[string]*contracts.TaskNode, node *contracts
 func intPointer(value int) *int {
 	v := value
 	return &v
+}
+
+func isContainerNode(id string, rootID string, node *contracts.TaskNode) bool {
+	if node == nil || len(node.Children) == 0 {
+		return false
+	}
+	if strings.TrimSpace(id) == strings.TrimSpace(rootID) {
+		return true
+	}
+	return true
 }
 
 func isFinishedStatus(status contracts.TaskStatus) bool {

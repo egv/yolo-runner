@@ -467,6 +467,60 @@ func TestTaskEngineGetNextAvailableSkipsTasksWithMissingDependencyNodes(t *testi
 	}
 }
 
+func TestTaskEngineGetNextAvailableReturnsOnlyLeafTasks(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Title: "Superepic", Status: contracts.TaskStatusOpen},
+			"e1":   {ID: "e1", Title: "Epic 1", Status: contracts.TaskStatusOpen},
+			"e2":   {ID: "e2", Title: "Epic 2", Status: contracts.TaskStatusOpen},
+			"t1":   {ID: "t1", Title: "Task 1", Status: contracts.TaskStatusOpen},
+			"t2":   {ID: "t2", Title: "Task 2", Status: contracts.TaskStatusOpen},
+		},
+		Relations: []contracts.TaskRelation{
+			{FromID: "root", ToID: "e1", Type: contracts.RelationParent},
+			{FromID: "root", ToID: "e2", Type: contracts.RelationParent},
+			{FromID: "e1", ToID: "t1", Type: contracts.RelationParent},
+			{FromID: "e2", ToID: "t2", Type: contracts.RelationParent},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	if got := summaryIDs(engine.GetNextAvailable(graph)); !reflect.DeepEqual(got, []string{"t1", "t2"}) {
+		t.Fatalf("GetNextAvailable() = %v, want [t1 t2]", got)
+	}
+}
+
+func TestTaskEngineIsCompleteIgnoresOpenContainerNodesAfterLeafCompletion(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Title: "Superepic", Status: contracts.TaskStatusOpen},
+			"e1":   {ID: "e1", Title: "Epic 1", Status: contracts.TaskStatusOpen},
+			"t1":   {ID: "t1", Title: "Task 1", Status: contracts.TaskStatusClosed},
+		},
+		Relations: []contracts.TaskRelation{
+			{FromID: "root", ToID: "e1", Type: contracts.RelationParent},
+			{FromID: "e1", ToID: "t1", Type: contracts.RelationParent},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	if !engine.IsComplete(graph) {
+		t.Fatalf("IsComplete() = false, want true when only open container nodes remain")
+	}
+}
+
 func TestTaskEngineUpdateTaskStatusReturnsErrorWhenClosingTaskWithOpenDependencies(t *testing.T) {
 	engine := NewTaskEngine()
 	tree := &contracts.TaskTree{
@@ -685,9 +739,9 @@ func TestTaskEngineCalculateConcurrencyAcrossTopologies(t *testing.T) {
 			tree: &contracts.TaskTree{
 				Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
 				Tasks: map[string]contracts.Task{
-					"root":     {ID: "root", Status: contracts.TaskStatusClosed},
+					"root":        {ID: "root", Status: contracts.TaskStatusClosed},
 					"independent": {ID: "independent", Status: contracts.TaskStatusOpen},
-					"blocked":  {ID: "blocked", Status: contracts.TaskStatusBlocked},
+					"blocked":     {ID: "blocked", Status: contracts.TaskStatusBlocked},
 					"dependent-1": {
 						ID:       "dependent-1",
 						Status:   contracts.TaskStatusOpen,
@@ -761,9 +815,9 @@ func TestTaskEngineCalculateConcurrencyAcrossTopologies(t *testing.T) {
 				Root: contracts.Task{ID: "root", Status: contracts.TaskStatusClosed},
 				Tasks: map[string]contracts.Task{
 					"root": {ID: "root", Status: contracts.TaskStatusClosed},
-					"a": {ID: "a", Status: contracts.TaskStatusClosed},
-					"b": {ID: "b", Status: contracts.TaskStatusOpen},
-					"c": {ID: "c", Status: contracts.TaskStatusOpen},
+					"a":    {ID: "a", Status: contracts.TaskStatusClosed},
+					"b":    {ID: "b", Status: contracts.TaskStatusOpen},
+					"c":    {ID: "c", Status: contracts.TaskStatusOpen},
 				},
 				Relations: []contracts.TaskRelation{
 					{FromID: "c", ToID: "a", Type: contracts.RelationDependsOn},

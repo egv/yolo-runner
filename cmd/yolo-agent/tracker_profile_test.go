@@ -480,7 +480,8 @@ func TestBuildStorageBackendForTrackerSupportsGitHub(t *testing.T) {
 		return staticStorageBackend{}, nil
 	}
 
-	backend, err := buildStorageBackendForTracker(t.TempDir(), resolvedTrackerProfile{
+	repoRoot := t.TempDir()
+	backend, err := buildStorageBackendForTracker(repoRoot, resolvedTrackerProfile{
 		Name: "github",
 		Tracker: trackerModel{
 			Type: trackerTypeGitHub,
@@ -509,6 +510,10 @@ func TestBuildStorageBackendForTrackerSupportsGitHub(t *testing.T) {
 	}
 	if got.Token != "ghp_test" {
 		t.Fatalf("expected token to be loaded from env, got %q", got.Token)
+	}
+	wantStatePath := filepath.Join(repoRoot, ".yolo-runner", "github-state-egv-yolo-runner.json")
+	if got.StatePath != wantStatePath {
+		t.Fatalf("expected state path %q, got %q", wantStatePath, got.StatePath)
 	}
 }
 
