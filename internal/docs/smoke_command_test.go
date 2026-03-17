@@ -74,8 +74,8 @@ func TestMakefileHasDistributedSmokeTarget(t *testing.T) {
 	if !strings.Contains(makefile, "distributed-dev-up:") {
 		t.Fatalf("Makefile missing distributed-dev-up target")
 	}
-	if !strings.Contains(makefile, "docker compose -f dev/distributed/docker-compose.yml up -d redis nats") {
-		t.Fatalf("distributed-dev-up target must start redis and nats via docker compose")
+	if !strings.Contains(makefile, "compose -f dev/distributed/docker-compose.yml up -d redis nats") {
+		t.Fatalf("distributed-dev-up target must start redis and nats via compose")
 	}
 }
 

@@ -19,8 +19,8 @@ func TestReadmeMentionsCloseEligible(t *testing.T) {
 		t.Fatalf("read README: %v", err)
 	}
 
-	if !strings.Contains(string(contents), "bd epic close-eligible") {
-		t.Fatalf("README missing bd epic close-eligible step")
+	if !strings.Contains(string(contents), "tk epic close-eligible") {
+		t.Fatalf("README missing tk epic close-eligible step")
 	}
 }
 

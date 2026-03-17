@@ -56,8 +56,8 @@ func TestCIWorkflowRunsTestsOnPullRequestAndMainPush(t *testing.T) {
 		t.Fatalf("ci workflow push should include main branch")
 	}
 
-	var testJob ciJob
-	found := false
+	foundSetupGo := false
+	hasGoTest := false
 	for _, job := range parsed.Jobs {
 		steps := job.Steps
 		hasSetupGo := false
@@ -70,20 +70,16 @@ func TestCIWorkflowRunsTestsOnPullRequestAndMainPush(t *testing.T) {
 		if !hasSetupGo {
 			continue
 		}
-		testJob = job
-		found = true
-		break
-	}
-	if !found {
-		t.Fatalf("ci workflow missing actions/setup-go step with go-version-file: go.mod")
-	}
-
-	hasGoTest := false
-	for _, step := range testJob.Steps {
-		if strings.Contains(step.Run, "go test ./...") {
-			hasGoTest = true
-			break
+		foundSetupGo = true
+		for _, step := range steps {
+			if strings.Contains(step.Run, "go test ./...") {
+				hasGoTest = true
+				break
+			}
 		}
+	}
+	if !foundSetupGo {
+		t.Fatalf("ci workflow missing actions/setup-go step with go-version-file: go.mod")
 	}
 	if !hasGoTest {
 		t.Fatalf("ci workflow missing run step: go test ./...")

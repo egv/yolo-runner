@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	defaultGraphQLEndpoint = "https://api.linear.app/graphql"
-	maxProbeResponseBytes  = 1 << 20
-	maxReadResponseBytes   = 8 << 20
+	defaultGraphQLEndpoint   = "https://api.linear.app/graphql"
+	maxProbeResponseBytes    = 1 << 20
+	maxReadResponseBytes     = 8 << 20
+	projectIssuesPageSize    = 250
+	projectRelationsPageSize = 25
 )
 
 type HTTPClient interface {
@@ -571,11 +573,17 @@ func workflowStateMatchScore(status contracts.TaskStatus, stateType string, stat
 func (m *TaskManager) loadTaskGraphForParent(ctx context.Context, parentID string) (TaskGraph, map[string]contracts.TaskStatus, error) {
 	project, err := m.fetchProject(ctx, parentID)
 	if err != nil {
-		return TaskGraph{}, nil, err
+		if !isLinearEntityNotFound(err, "Project") {
+			return TaskGraph{}, nil, err
+		}
+		project = nil
 	}
 	if project == nil {
 		issue, issueErr := m.fetchIssue(ctx, parentID)
 		if issueErr != nil {
+			if isLinearEntityNotFound(issueErr, "Issue") {
+				return TaskGraph{}, nil, nil
+			}
 			return TaskGraph{}, nil, issueErr
 		}
 		if issue == nil || issue.Project == nil || strings.TrimSpace(issue.Project.ID) == "" {
@@ -590,6 +598,17 @@ func (m *TaskManager) loadTaskGraphForParent(ctx context.Context, parentID strin
 		}
 	}
 	return buildTaskGraph(project)
+}
+
+func isLinearEntityNotFound(err error, entity string) bool {
+	if err == nil {
+		return false
+	}
+	entity = strings.TrimSpace(entity)
+	if entity == "" {
+		return false
+	}
+	return strings.Contains(err.Error(), "Entity not found: "+entity)
 }
 
 func buildTaskGraph(project *linearProjectPayload) (TaskGraph, map[string]contracts.TaskStatus, error) {
@@ -642,7 +661,7 @@ func (m *TaskManager) fetchProject(ctx context.Context, projectID string) (*line
   project(id: %s) {
     id
     name
-    issues(first: 250) {
+    issues(first: %d) {
       nodes {
         id
         title
@@ -651,7 +670,7 @@ func (m *TaskManager) fetchProject(ctx context.Context, projectID string) (*line
         project { id }
         parent { id }
         state { type name }
-        relations(first: 100) {
+        relations(first: %d) {
           nodes {
             type
             relatedIssue { id }
@@ -660,7 +679,11 @@ func (m *TaskManager) fetchProject(ctx context.Context, projectID string) (*line
       }
     }
   }
-}`, graphQLQuote(projectID))
+}`,
+		graphQLQuote(projectID),
+		projectIssuesPageSize,
+		projectRelationsPageSize,
+	)
 
 	var payload struct {
 		Project *linearProjectPayload `json:"project"`

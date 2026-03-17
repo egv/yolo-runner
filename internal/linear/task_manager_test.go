@@ -167,6 +167,50 @@ func TestTaskManagerNextTasksFiltersUnsatisfiedDependenciesAndSortsByPriority(t 
 	}
 }
 
+func TestTaskManagerFetchProjectCapsRelationPageSizeBelowLinearComplexityLimit(t *testing.T) {
+	t.Parallel()
+
+	queries := []string{}
+	manager := newLinearTestManager(t, func(t *testing.T, query string, w http.ResponseWriter) {
+		t.Helper()
+		queries = append(queries, query)
+		if !strings.Contains(query, "ReadProjectBacklog") {
+			t.Fatalf("expected ReadProjectBacklog query, got %q", query)
+		}
+		_, _ = w.Write([]byte(`{
+  "data": {
+    "project": {
+      "id": "proj-1",
+      "name": "Roadmap",
+      "issues": {
+        "nodes": []
+      }
+    }
+  }
+}`))
+	})
+
+	project, err := manager.fetchProject(context.Background(), "proj-1")
+	if err != nil {
+		t.Fatalf("fetchProject returned error: %v", err)
+	}
+	if project == nil || project.ID != "proj-1" {
+		t.Fatalf("expected project payload for proj-1, got %#v", project)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("expected one GraphQL query, got %d", len(queries))
+	}
+	if !strings.Contains(queries[0], `issues(first: 250)`) {
+		t.Fatalf("expected project issue page size 250, got %q", queries[0])
+	}
+	if !strings.Contains(queries[0], `relations(first: 25)`) {
+		t.Fatalf("expected relation page size 25, got %q", queries[0])
+	}
+	if strings.Contains(queries[0], `relations(first: 100)`) {
+		t.Fatalf("did not expect relation page size 100, got %q", queries[0])
+	}
+}
+
 func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +274,77 @@ func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing
 	}
 	if tasks[0].Priority == nil || *tasks[0].Priority != 1 {
 		t.Fatalf("expected normalized priority 1, got %#v", tasks[0].Priority)
+	}
+}
+
+func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	queries := []string{}
+	manager := newLinearTestManager(t, func(t *testing.T, query string, w http.ResponseWriter) {
+		t.Helper()
+		queries = append(queries, query)
+		switch {
+		case strings.Contains(query, `project(id: "iss-parent")`):
+			_, _ = w.Write([]byte(`{"errors":[{"message":"Entity not found: Project"}]}`))
+		case strings.Contains(query, `issue(id: "iss-parent")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "issue": {
+      "id": "iss-parent",
+      "project": {"id": "proj-1"},
+      "parent": null,
+      "title": "Leaf task",
+      "description": "single issue root",
+      "priority": 2,
+      "state": {"type": "backlog", "name": "Backlog"},
+      "relations": {"nodes": []}
+    }
+  }
+}`))
+		case strings.Contains(query, `project(id: "proj-1")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "project": {
+      "id": "proj-1",
+      "name": "Roadmap",
+      "issues": {
+        "nodes": [
+          {
+            "id": "iss-parent",
+            "project": {"id": "proj-1"},
+            "parent": null,
+            "title": "Leaf task",
+            "description": "single issue root",
+            "priority": 2,
+            "state": {"type": "backlog", "name": "Backlog"},
+            "relations": {"nodes": []}
+          }
+        ]
+      }
+    }
+  }
+}`))
+		default:
+			t.Fatalf("unexpected query: %q", query)
+		}
+	})
+
+	tasks, err := manager.NextTasks(context.Background(), "iss-parent")
+	if err != nil {
+		t.Fatalf("NextTasks returned error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "iss-parent" {
+		t.Fatalf("expected one leaf issue task, got %#v", tasks)
+	}
+	if len(queries) < 2 {
+		t.Fatalf("expected project lookup followed by issue fallback, got %#v", queries)
+	}
+	if !strings.Contains(queries[0], `project(id: "iss-parent")`) {
+		t.Fatalf("expected first query to probe project root, got %#v", queries)
+	}
+	if !strings.Contains(queries[1], `issue(id: "iss-parent")`) {
+		t.Fatalf("expected second query to fetch issue root, got %#v", queries)
 	}
 }
 
