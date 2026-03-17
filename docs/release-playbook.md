@@ -1,4 +1,4 @@
-# Release Playbook for v2.4.2+
+# Release Playbook for v2.4.3+
 
 ## Preflight
 
@@ -9,11 +9,11 @@
 
 ## Tagging
 
-Use the following commands for the v2.4.2 release tag:
+Use the following commands for the v2.4.3 release tag:
 
 ```bash
-git tag -a v2.4.2 -m "Release v2.4.2"
-git push origin v2.4.2
+git tag -a v2.4.3 -m "Release v2.4.3"
+git push origin v2.4.3
 ```
 
 ## Verify Release Assets and Checksums
@@ -21,8 +21,8 @@ git push origin v2.4.2
 - Confirm the release exists and capture assets:
 
 ```bash
-gh release view v2.4.2 --json name,tagName,assets
-gh release download v2.4.2 --pattern "checksums-*.txt"
+gh release view v2.4.3 --json name,tagName,assets
+gh release download v2.4.3 --pattern "checksums-*.txt"
 ```
 
 - Verify checksums:
@@ -34,7 +34,7 @@ sha256sum -c checksums-yolo-runner_linux_amd64.tar.gz.txt
 ## Smoke Install and Update Check
 
 ```bash
-export TAG=v2.4.2
+export TAG=v2.4.3
 curl -fsSL -o /tmp/yolo-runner-linux-amd64.tar.gz https://github.com/egv/yolo-runner/releases/download/${TAG}/yolo-runner_linux_amd64.tar.gz
 tar -xzf /tmp/yolo-runner-linux-amd64.tar.gz -C /tmp
 /tmp/yolo-runner --version

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestReleasePlaybookExistsForV2_4_2(t *testing.T) {
+func TestReleasePlaybookExistsForV2_4_3(t *testing.T) {
 	_, err := os.ReadFile(filepath.Join("..", "..", "docs", "release-playbook.md"))
 	if err != nil {
 		t.Fatalf("expected docs/release-playbook.md to exist: %v", err)
@@ -24,8 +24,8 @@ func TestReleasePlaybookCoversPreflightAndTagging(t *testing.T) {
 		"go build ./...",
 		"make release-gate-e8",
 		"## Tagging",
-		"git tag -a v2.4.2 -m \"Release v2.4.2\"",
-		"git push origin v2.4.2",
+		"git tag -a v2.4.3 -m \"Release v2.4.3\"",
+		"git push origin v2.4.3",
 	}
 	for _, needle := range required {
 		if !strings.Contains(playbook, needle) {
@@ -52,7 +52,7 @@ func TestReleasePlaybookCoversVerificationAndSmokeInstall(t *testing.T) {
 	}
 }
 
-func TestMakefileDefinesReleaseV242Target(t *testing.T) {
+func TestMakefileDefinesReleaseV243Target(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("resolve repo root: %v", err)
@@ -65,16 +65,16 @@ func TestMakefileDefinesReleaseV242Target(t *testing.T) {
 	}
 
 	makefile := string(contents)
-	if !strings.Contains(makefile, "release-v2.4.2:") {
-		t.Fatalf("Makefile missing release-v2.4.2 target")
+	if !strings.Contains(makefile, "release-v2.4.3:") {
+		t.Fatalf("Makefile missing release-v2.4.3 target")
 	}
 	required := []string{
 		"git status --short",
 		"go test ./...",
 		"go build ./...",
 		"make release-gate-e8",
-		"git tag -a v2.4.2",
-		"git push origin v2.4.2",
+		"git tag -a v2.4.3",
+		"git push origin v2.4.3",
 	}
 	for _, needle := range required {
 		if !strings.Contains(makefile, needle) {

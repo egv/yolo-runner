@@ -52,39 +52,12 @@ func TestStorageBackendGetTaskTreeReturnsHierarchyWithDependencies(t *testing.T)
 		switch {
 		case strings.Contains(query, `project(id: "iss-root")`):
 			_, _ = w.Write([]byte(`{"data":{"project":null}}`))
-		case strings.Contains(query, `issue(id: "iss-root")`):
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-root")`):
 			_, _ = w.Write([]byte(`{
   "data": {
     "issue": {
-      "id": "iss-root",
-      "project": {"id": "proj-1"},
-      "parent": null,
-      "title": "Root issue",
-      "description": "",
-      "priority": 2,
-      "state": {"type": "backlog", "name": "Backlog"},
-      "relations": {"nodes": []}
-    }
-  }
-}`))
-		case strings.Contains(query, `project(id: "proj-1")`):
-			_, _ = w.Write([]byte(`{
-  "data": {
-    "project": {
-      "id": "proj-1",
-      "name": "Roadmap",
-      "issues": {
+      "children": {
         "nodes": [
-          {
-            "id": "iss-root",
-            "project": {"id": "proj-1"},
-            "parent": null,
-            "title": "Root issue",
-            "description": "",
-            "priority": 2,
-            "state": {"type": "backlog", "name": "Backlog"},
-            "relations": {"nodes": []}
-          },
           {
             "id": "iss-child",
             "project": {"id": "proj-1"},
@@ -111,6 +84,25 @@ func TestStorageBackendGetTaskTreeReturnsHierarchyWithDependencies(t *testing.T)
           }
         ]
       }
+    }
+  }
+}`))
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-child")`):
+			_, _ = w.Write([]byte(`{"data":{"issue":{"children":{"nodes":[]}}}}`))
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-dep")`):
+			_, _ = w.Write([]byte(`{"data":{"issue":{"children":{"nodes":[]}}}}`))
+		case strings.Contains(query, "ReadIssue {") && strings.Contains(query, `issue(id: "iss-root")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "issue": {
+      "id": "iss-root",
+      "project": {"id": "proj-1"},
+      "parent": null,
+      "title": "Root issue",
+      "description": "",
+      "priority": 2,
+      "state": {"type": "backlog", "name": "Backlog"},
+      "relations": {"nodes": []}
     }
   }
 }`))

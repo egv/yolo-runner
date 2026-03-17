@@ -71,6 +71,9 @@ type linearIssuePayload struct {
 	Relations *struct {
 		Nodes []linearRelationPayload `json:"nodes"`
 	} `json:"relations"`
+	Children *struct {
+		Nodes []linearIssuePayload `json:"nodes"`
+	} `json:"children"`
 }
 
 type linearRelationPayload struct {
@@ -131,6 +134,7 @@ func (m *TaskManager) NextTasks(ctx context.Context, parentID string) ([]contrac
 	if len(graph.Nodes) == 0 {
 		return nil, nil
 	}
+	parentID = resolvedTaskGraphRootID(graph, parentID)
 
 	children := graph.ChildrenOf(parentID)
 	tasks := make([]contracts.TaskSummary, 0, len(children))
@@ -214,6 +218,7 @@ func (m *TaskManager) GetTaskTree(ctx context.Context, rootID string) (*contract
 	if len(graph.Nodes) == 0 {
 		return m.rootOnlyTaskTree(ctx, rootID)
 	}
+	rootID = resolvedTaskGraphRootID(graph, rootID)
 	if _, ok := graph.Nodes[rootID]; !ok {
 		return m.rootOnlyTaskTree(ctx, rootID)
 	}
@@ -579,23 +584,17 @@ func (m *TaskManager) loadTaskGraphForParent(ctx context.Context, parentID strin
 		project = nil
 	}
 	if project == nil {
-		issue, issueErr := m.fetchIssue(ctx, parentID)
+		issue, issueErr := m.fetchIssueSubtree(ctx, parentID)
 		if issueErr != nil {
 			if isLinearEntityNotFound(issueErr, "Issue") {
 				return TaskGraph{}, nil, nil
 			}
 			return TaskGraph{}, nil, issueErr
 		}
-		if issue == nil || issue.Project == nil || strings.TrimSpace(issue.Project.ID) == "" {
+		if issue == nil {
 			return TaskGraph{}, nil, nil
 		}
-		project, err = m.fetchProject(ctx, issue.Project.ID)
-		if err != nil {
-			return TaskGraph{}, nil, err
-		}
-		if project == nil {
-			return TaskGraph{}, nil, nil
-		}
+		return buildIssueTaskGraph(issue)
 	}
 	return buildTaskGraph(project)
 }
@@ -609,6 +608,22 @@ func isLinearEntityNotFound(err error, entity string) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "Entity not found: "+entity)
+}
+
+func resolvedTaskGraphRootID(graph TaskGraph, requestedID string) string {
+	requestedID = strings.TrimSpace(requestedID)
+	if requestedID != "" {
+		if _, ok := graph.Nodes[requestedID]; ok {
+			return requestedID
+		}
+	}
+	rootID := strings.TrimSpace(graph.RootID)
+	if rootID != "" {
+		if _, ok := graph.Nodes[rootID]; ok {
+			return rootID
+		}
+	}
+	return requestedID
 }
 
 func buildTaskGraph(project *linearProjectPayload) (TaskGraph, map[string]contracts.TaskStatus, error) {
@@ -649,6 +664,55 @@ func buildTaskGraph(project *linearProjectPayload) (TaskGraph, map[string]contra
 	}
 
 	return graph, statusByID, nil
+}
+
+func buildIssueTaskGraph(root *linearIssuePayload) (TaskGraph, map[string]contracts.TaskStatus, error) {
+	if root == nil {
+		return TaskGraph{}, nil, nil
+	}
+	rootID := strings.TrimSpace(root.ID)
+	if rootID == "" {
+		return TaskGraph{}, nil, fmt.Errorf("issue root ID is required")
+	}
+
+	nodes := map[string]Node{}
+	statusByID := map[string]contracts.TaskStatus{}
+
+	var visit func(issue *linearIssuePayload, parentID string) error
+	visit = func(issue *linearIssuePayload, parentID string) error {
+		if issue == nil {
+			return nil
+		}
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			return fmt.Errorf("issue ID is required")
+		}
+		if _, exists := nodes[id]; exists {
+			return fmt.Errorf("duplicate issue ID %q", id)
+		}
+		nodes[id] = Node{
+			ID:           id,
+			Kind:         NodeKindIssue,
+			Title:        fallbackText(issue.Title, id),
+			Description:  issue.Description,
+			ParentID:     parentID,
+			Priority:     NormalizePriority(issue.Priority),
+			Dependencies: blockedByIDs(id, relationNodes(issue)),
+		}
+		statusByID[id] = taskStatusFromIssueState(issue.State)
+		for i := range childNodes(issue) {
+			child := childNodes(issue)[i]
+			if err := visit(&child, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := visit(root, ""); err != nil {
+		return TaskGraph{}, nil, err
+	}
+	return TaskGraph{RootID: rootID, Nodes: nodes}, statusByID, nil
 }
 
 func (m *TaskManager) fetchProject(ctx context.Context, projectID string) (*linearProjectPayload, error) {
@@ -725,6 +789,85 @@ func (m *TaskManager) fetchIssue(ctx context.Context, issueID string) (*linearIs
 		return nil, fmt.Errorf("query Linear issue %q: %w", issueID, err)
 	}
 	return payload.Issue, nil
+}
+
+func (m *TaskManager) fetchIssueSubtree(ctx context.Context, issueID string) (*linearIssuePayload, error) {
+	issue, err := m.fetchIssue(ctx, issueID)
+	if err != nil || issue == nil {
+		return issue, err
+	}
+	if err := m.populateIssueChildren(ctx, issue); err != nil {
+		return nil, err
+	}
+	return issue, nil
+}
+
+func (m *TaskManager) populateIssueChildren(ctx context.Context, issue *linearIssuePayload) error {
+	if issue == nil {
+		return nil
+	}
+	children, err := m.fetchIssueChildren(ctx, issue.ID)
+	if err != nil {
+		return err
+	}
+	issue.Children = &struct {
+		Nodes []linearIssuePayload `json:"nodes"`
+	}{Nodes: children}
+	for i := range issue.Children.Nodes {
+		if err := m.populateIssueChildren(ctx, &issue.Children.Nodes[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *TaskManager) fetchIssueChildren(ctx context.Context, issueID string) ([]linearIssuePayload, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return nil, nil
+	}
+
+	query := fmt.Sprintf(`query ReadIssueChildren {
+  issue(id: %s) {
+    id
+    children(first: %d) {
+      nodes {
+        id
+        title
+        description
+        priority
+        project { id }
+        parent { id }
+        state { type name }
+        relations(first: %d) {
+          nodes {
+            type
+            relatedIssue { id }
+          }
+        }
+      }
+    }
+  }
+}`,
+		graphQLQuote(issueID),
+		projectIssuesPageSize,
+		projectRelationsPageSize,
+	)
+
+	var payload struct {
+		Issue *struct {
+			Children *struct {
+				Nodes []linearIssuePayload `json:"nodes"`
+			} `json:"children"`
+		} `json:"issue"`
+	}
+	if err := m.runGraphQLQuery(ctx, query, &payload); err != nil {
+		return nil, fmt.Errorf("query Linear issue children %q: %w", issueID, err)
+	}
+	if payload.Issue == nil || payload.Issue.Children == nil {
+		return nil, nil
+	}
+	return payload.Issue.Children.Nodes, nil
 }
 
 func (m *TaskManager) runGraphQLQuery(ctx context.Context, query string, out any) error {
@@ -813,6 +956,13 @@ func blockedByIDs(issueID string, relations []linearRelationPayload) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func childNodes(issue *linearIssuePayload) []linearIssuePayload {
+	if issue == nil || issue.Children == nil {
+		return nil
+	}
+	return issue.Children.Nodes
 }
 
 func isBlockedByRelation(raw string) bool {

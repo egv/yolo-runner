@@ -219,7 +219,17 @@ func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing
 		switch {
 		case strings.Contains(query, `project(id: "iss-parent")`):
 			_, _ = w.Write([]byte(`{"data":{"project":null}}`))
-		case strings.Contains(query, `issue(id: "iss-parent")`):
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-parent")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "issue": {
+      "children": {
+        "nodes": []
+      }
+    }
+  }
+}`))
+		case strings.Contains(query, "ReadIssue {") && strings.Contains(query, `issue(id: "iss-parent")`):
 			_, _ = w.Write([]byte(`{
   "data": {
     "issue": {
@@ -231,29 +241,6 @@ func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing
       "priority": 2,
       "state": {"type": "backlog", "name": "Backlog"},
       "relations": {"nodes": []}
-    }
-  }
-}`))
-		case strings.Contains(query, `project(id: "proj-1")`):
-			_, _ = w.Write([]byte(`{
-  "data": {
-    "project": {
-      "id": "proj-1",
-      "name": "Roadmap",
-      "issues": {
-        "nodes": [
-          {
-            "id": "iss-parent",
-            "project": {"id": "proj-1"},
-            "parent": null,
-            "title": "Leaf task",
-            "description": "single issue root",
-            "priority": 2,
-            "state": {"type": "backlog", "name": "Backlog"},
-            "relations": {"nodes": []}
-          }
-        ]
-      }
     }
   }
 }`))
@@ -277,7 +264,7 @@ func TestTaskManagerNextTasksReturnsOpenLeafParentIssueWhenNoChildren(t *testing
 	}
 }
 
-func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *testing.T) {
+func TestTaskManagerNextTasksUsesIssueChildrenWhenProjectRootIsNotFound(t *testing.T) {
 	t.Parallel()
 
 	queries := []string{}
@@ -287,7 +274,7 @@ func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *
 		switch {
 		case strings.Contains(query, `project(id: "iss-parent")`):
 			_, _ = w.Write([]byte(`{"errors":[{"message":"Entity not found: Project"}]}`))
-		case strings.Contains(query, `issue(id: "iss-parent")`):
+		case strings.Contains(query, "ReadIssue {") && strings.Contains(query, `issue(id: "iss-parent")`):
 			_, _ = w.Write([]byte(`{
   "data": {
     "issue": {
@@ -302,21 +289,19 @@ func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *
     }
   }
 }`))
-		case strings.Contains(query, `project(id: "proj-1")`):
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-parent")`):
 			_, _ = w.Write([]byte(`{
   "data": {
-    "project": {
-      "id": "proj-1",
-      "name": "Roadmap",
-      "issues": {
+    "issue": {
+      "children": {
         "nodes": [
           {
-            "id": "iss-parent",
+            "id": "iss-child",
             "project": {"id": "proj-1"},
-            "parent": null,
-            "title": "Leaf task",
-            "description": "single issue root",
-            "priority": 2,
+            "parent": {"id": "iss-parent"},
+            "title": "Child task",
+            "description": "child issue",
+            "priority": 1,
             "state": {"type": "backlog", "name": "Backlog"},
             "relations": {"nodes": []}
           }
@@ -325,6 +310,8 @@ func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *
     }
   }
 }`))
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-child")`):
+			_, _ = w.Write([]byte(`{"data":{"issue":{"children":{"nodes":[]}}}}`))
 		default:
 			t.Fatalf("unexpected query: %q", query)
 		}
@@ -334,8 +321,8 @@ func TestTaskManagerNextTasksFallsBackToIssueLookupWhenProjectRootIsNotFound(t *
 	if err != nil {
 		t.Fatalf("NextTasks returned error: %v", err)
 	}
-	if len(tasks) != 1 || tasks[0].ID != "iss-parent" {
-		t.Fatalf("expected one leaf issue task, got %#v", tasks)
+	if len(tasks) != 1 || tasks[0].ID != "iss-child" {
+		t.Fatalf("expected child issue task, got %#v", tasks)
 	}
 	if len(queries) < 2 {
 		t.Fatalf("expected project lookup followed by issue fallback, got %#v", queries)
@@ -533,39 +520,12 @@ func TestTaskManagerGetTaskTreeTreatsOpenRootWithTerminalChildrenAsComplete(t *t
 		switch {
 		case strings.Contains(query, `project(id: "iss-root")`):
 			_, _ = w.Write([]byte(`{"data":{"project":null}}`))
-		case strings.Contains(query, `issue(id: "iss-root")`):
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-root")`):
 			_, _ = w.Write([]byte(`{
   "data": {
     "issue": {
-      "id": "iss-root",
-      "project": {"id": "proj-1"},
-      "parent": null,
-      "title": "Root issue",
-      "description": "",
-      "priority": 2,
-      "state": {"type": "backlog", "name": "Backlog"},
-      "relations": {"nodes": []}
-    }
-  }
-}`))
-		case strings.Contains(query, `project(id: "proj-1")`):
-			_, _ = w.Write([]byte(`{
-  "data": {
-    "project": {
-      "id": "proj-1",
-      "name": "Roadmap",
-      "issues": {
+      "children": {
         "nodes": [
-          {
-            "id": "iss-root",
-            "project": {"id": "proj-1"},
-            "parent": null,
-            "title": "Root issue",
-            "description": "",
-            "priority": 2,
-            "state": {"type": "backlog", "name": "Backlog"},
-            "relations": {"nodes": []}
-          },
           {
             "id": "iss-closed",
             "project": {"id": "proj-1"},
@@ -591,6 +551,25 @@ func TestTaskManagerGetTaskTreeTreatsOpenRootWithTerminalChildrenAsComplete(t *t
     }
   }
 }`))
+		case strings.Contains(query, "ReadIssue {") && strings.Contains(query, `issue(id: "iss-root")`):
+			_, _ = w.Write([]byte(`{
+  "data": {
+    "issue": {
+      "id": "iss-root",
+      "project": {"id": "proj-1"},
+      "parent": null,
+      "title": "Root issue",
+      "description": "",
+      "priority": 2,
+      "state": {"type": "backlog", "name": "Backlog"},
+      "relations": {"nodes": []}
+    }
+  }
+}`))
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-closed")`):
+			_, _ = w.Write([]byte(`{"data":{"issue":{"children":{"nodes":[]}}}}`))
+		case strings.Contains(query, "ReadIssueChildren") && strings.Contains(query, `issue(id: "iss-failed")`):
+			_, _ = w.Write([]byte(`{"data":{"issue":{"children":{"nodes":[]}}}}`))
 		default:
 			t.Fatalf("unexpected query: %q", query)
 		}
