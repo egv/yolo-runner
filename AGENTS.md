@@ -1,6 +1,89 @@
 This project uses a CLI ticket system for task management. Run `tk help` when you need to use it.
 
 
+## Task Management Backends
+
+This project supports multiple task tracking backends:
+
+### Classic Beads (bd) - Legacy
+
+The original Python-based beads CLI. Still available but legacy.
+
+```bash
+# Check if bd is available
+which bd
+
+# Typical bd commands
+bd ready --parent <epic-id> --json
+bd show <task-id> --json
+bd update <task-id> --status in_progress
+bd close <task-id>
+bd sync
+```
+
+### Beads Rust (br) - Recommended
+
+Fast Rust port of beads with SQLite + JSONL storage. This is the preferred backend.
+
+**Installation:**
+```bash
+# Quick install
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh?$(date +%s)" | bash
+
+# Or from source
+cargo install --git https://github.com/Dicklesworthstone/beads_rust.git
+```
+
+**Initialize in this repo:**
+```bash
+br init
+# Creates .beads/ directory with beads.db, issues.jsonl, config.yaml
+```
+
+**Common br commands:**
+```bash
+# List ready tasks (open, unblocked, not deferred)
+br ready --parent <epic-id> --json
+
+# Show task details
+br show <task-id> --json
+
+# Update task status
+br update <task-id> --status in_progress
+
+# Close a task with reason
+br close <task-id> --reason "Implementation complete"
+
+# Sync database to JSONL for git
+br sync --flush-only
+
+# List all open tasks in an epic
+br ready --parent <epic-id> --json
+
+# Create new task
+br create "Task title" --type task --priority 1 --parent <epic-id>
+
+# Mark epic as closed when all children done
+br epic close-eligible
+```
+
+**Key differences from bd:**
+- `br` uses `--flush-only` for sync (bd doesn't require flag)
+- `br` output format is compatible with bd (JSON array of issues)
+- `br` stores data in SQLite with JSONL export for git
+- `br` is faster and has no daemon
+
+**Project configuration:**
+The `.beads/config.yaml` controls the ID prefix and defaults:
+```yaml
+id:
+  prefix: "yolo-runner"
+defaults:
+  priority: 2
+  type: "task"
+```
+
+
 ## Worktree Policy
 
 Do not use git worktrees for this repo. Work directly on `main` or a single feature branch in the main working directory.

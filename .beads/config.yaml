@@ -1,0 +1,7 @@
+# Beads Project Configuration
+id:
+  prefix: "yolo-runner"
+
+defaults:
+  priority: 2
+  type: "task"
