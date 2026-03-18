@@ -14,6 +14,11 @@ type RustAdapter struct {
 	runner Runner
 }
 
+func (a *RustAdapter) run(args ...string) (string, error) {
+	command := append([]string{"br", "--no-daemon"}, args...)
+	return a.runner.Run(command...)
+}
+
 // NewRustAdapter creates a new beads_rust adapter
 func NewRustAdapter(runner Runner) *RustAdapter {
 	return &RustAdapter{runner: runner}
@@ -21,7 +26,7 @@ func NewRustAdapter(runner Runner) *RustAdapter {
 
 // Ready returns the next ready issue under the given root
 func (a *RustAdapter) Ready(rootID string) (runner.Issue, error) {
-	output, err := a.runner.Run("br", "ready", "--parent", rootID, "--json")
+	output, err := a.run("ready", "--parent", rootID, "--json")
 	if err != nil {
 		return runner.Issue{}, err
 	}
@@ -67,7 +72,7 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 	}
 
 	// Fallback: try to show the root directly
-	output, err := a.runner.Run("br", "show", rootID, "--json")
+	output, err := a.run("show", rootID, "--json")
 	if err != nil {
 		return runner.Issue{}, err
 	}
@@ -83,7 +88,7 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 
 // listTree fetches child issues using br ready with parent filter
 func (a *RustAdapter) listTree(rootID string) ([]runner.Issue, error) {
-	output, err := a.runner.Run("br", "ready", "--parent", rootID, "--recursive", "--json")
+	output, err := a.run("ready", "--parent", rootID, "--recursive", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +101,7 @@ func (a *RustAdapter) listTree(rootID string) ([]runner.Issue, error) {
 
 // readyFallback handles case when no children are ready
 func (a *RustAdapter) readyFallback(rootID string) (runner.Issue, error) {
-	output, err := a.runner.Run("br", "show", rootID, "--json")
+	output, err := a.run("show", rootID, "--json")
 	if err != nil {
 		return runner.Issue{}, err
 	}
@@ -128,7 +133,7 @@ type brShowIssue struct {
 
 // Show returns a single issue by ID
 func (a *RustAdapter) Show(id string) (runner.Bead, error) {
-	output, err := a.runner.Run("br", "show", id, "--json")
+	output, err := a.run("show", id, "--json")
 	if err != nil {
 		return runner.Bead{}, err
 	}
@@ -151,7 +156,7 @@ func (a *RustAdapter) Show(id string) (runner.Bead, error) {
 
 // UpdateStatus updates the status of an issue
 func (a *RustAdapter) UpdateStatus(id string, status string) error {
-	_, err := a.runner.Run("br", "update", id, "--status", status)
+	_, err := a.run("update", id, "--status", status)
 	return err
 }
 
@@ -164,26 +169,26 @@ func (a *RustAdapter) UpdateStatusWithReason(id string, status string, reason st
 	if sanitized == "" {
 		return nil
 	}
-	_, err := a.runner.Run("br", "update", id, "--notes", sanitized)
+	_, err := a.run("update", id, "--notes", sanitized)
 	return err
 }
 
 // Close closes an issue
 func (a *RustAdapter) Close(id string) error {
-	_, err := a.runner.Run("br", "close", id)
+	_, err := a.run("close", id)
 	return err
 }
 
 // CloseEligible closes epics that have all children closed
 func (a *RustAdapter) CloseEligible() error {
-	_, err := a.runner.Run("br", "epic", "close-eligible")
+	_, err := a.run("epic", "close-eligible")
 	return err
 }
 
 // Sync exports database to JSONL for git
 // Note: br requires --flush-only flag unlike bd
 func (a *RustAdapter) Sync() error {
-	_, err := a.runner.Run("br", "sync", "--flush-only")
+	_, err := a.run("sync", "--flush-only")
 	return err
 }
 

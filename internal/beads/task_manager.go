@@ -216,7 +216,7 @@ func (m *TaskManager) SetTaskData(ctx context.Context, taskID string, data map[s
 
 	for _, key := range keys {
 		value := data[key]
-		if _, err := m.runner.Run("br", "update", taskID, "--notes", key+"="+value); err != nil {
+		if _, err := m.adapter.run("update", taskID, "--notes", key+"="+value); err != nil {
 			return err
 		}
 	}
