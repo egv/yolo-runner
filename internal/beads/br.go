@@ -55,9 +55,6 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 		return runner.Issue{}, err
 	}
 	if len(issues) > 0 {
-		if len(issues) == 1 {
-			return issues[0], nil
-		}
 		for _, issue := range issues {
 			if issue.ID == rootID {
 				return issue, nil

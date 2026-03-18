@@ -42,3 +42,23 @@ func TestTaskManagerSetTaskDataUsesNoDaemon(t *testing.T) {
 
 	var _ contracts.TaskManager = manager
 }
+
+func TestRustAdapterTreeWrapsSingleReadyChildUnderRoot(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{
+		`[{"id":"root.1","issue_type":"task","status":"open"}]`,
+	}}
+	adapter := NewRustAdapter(runner)
+
+	issue, err := adapter.Tree("root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if issue.ID != "root" || issue.IssueType != "epic" {
+		t.Fatalf("expected synthetic root epic, got %#v", issue)
+	}
+	if len(issue.Children) != 1 || issue.Children[0].ID != "root.1" {
+		t.Fatalf("unexpected children: %#v", issue.Children)
+	}
+
+	assertCall(t, runner.calls, []string{"br", "--no-daemon", "ready", "--parent", "root", "--recursive", "--json"})
+}
