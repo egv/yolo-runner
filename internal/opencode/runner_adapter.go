@@ -82,12 +82,8 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		command = append([]string{}, command...)
 	}
 	progress := request.OnProgress
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if request.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, request.Timeout)
-		defer cancel()
-	}
+	runCtx, cancel := contracts.WithOptionalTimeout(ctx, request.Timeout)
+	defer cancel()
 	runCtx = withWatchdogRuntimeConfig(runCtx, watchdogRuntimeConfigFromMetadata(request.Metadata))
 	builtCommand := a.buildCommand(request, command)
 	err := run(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, func(line string) {
@@ -100,9 +96,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		}
 		progress(contracts.RunnerProgress{Type: progressType, Message: normalized, Timestamp: time.Now().UTC()})
 	}, builtCommand...)
-	if err == nil && runCtx.Err() != nil {
-		err = runCtx.Err()
-	}
+	err = contracts.FinalizeRunError(runCtx, err)
 
 	result := contracts.NormalizeBackendRunnerResult(start, time.Now().UTC(), request, err, func(classifyErr error) bool {
 		var stallErr *StallError
@@ -172,69 +166,38 @@ func resolveBackendArgs(raw []string, backend string, request contracts.RunnerRe
 }
 
 func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.RunnerResult, runErr error, logPath string) map[string]string {
-	artifacts := map[string]string{}
-	if strings.TrimSpace(logPath) != "" {
-		artifacts["log_path"] = logPath
-	}
-	if strings.TrimSpace(request.Model) != "" {
-		artifacts["model"] = request.Model
-	}
-	if strings.TrimSpace(string(request.Mode)) != "" {
-		artifacts["mode"] = string(request.Mode)
-	}
+	extras := map[string]string{}
 	if request.Mode == contracts.RunnerModeReview {
 		if verdict, ok := structuredReviewVerdict(logPath); ok {
-			artifacts["review_verdict"] = verdict
+			extras["review_verdict"] = verdict
 			if verdict == "fail" {
 				if feedback, ok := structuredReviewFailFeedback(logPath); ok {
-					artifacts["review_fail_feedback"] = feedback
+					extras["review_fail_feedback"] = feedback
 				}
 			}
 		}
 	}
-	artifacts["backend"] = "opencode"
-	if !result.StartedAt.IsZero() {
-		artifacts["started_at"] = result.StartedAt.UTC().Format(time.RFC3339)
-	}
-	if !result.FinishedAt.IsZero() {
-		artifacts["finished_at"] = result.FinishedAt.UTC().Format(time.RFC3339)
-	}
-	if strings.TrimSpace(result.Reason) != "" {
-		artifacts["reason"] = result.Reason
-	}
-	artifacts["status"] = string(result.Status)
+	result.LogPath = logPath
 
 	var stallErr *StallError
 	if errors.As(runErr, &stallErr) {
 		if strings.TrimSpace(stallErr.Category) != "" {
-			artifacts["stall_category"] = stallErr.Category
+			extras["stall_category"] = stallErr.Category
 		}
 		if strings.TrimSpace(stallErr.SessionID) != "" {
-			artifacts["session_id"] = stallErr.SessionID
+			extras["session_id"] = stallErr.SessionID
 		}
 		if stallErr.LastOutputAge > 0 {
-			artifacts["last_output_age"] = stallErr.LastOutputAge.Round(time.Second).String()
+			extras["last_output_age"] = stallErr.LastOutputAge.Round(time.Second).String()
 		}
 		if strings.TrimSpace(stallErr.OpenCodeLog) != "" {
-			artifacts["opencode_log"] = stallErr.OpenCodeLog
+			extras["opencode_log"] = stallErr.OpenCodeLog
 		}
 		if strings.TrimSpace(stallErr.TailPath) != "" {
-			artifacts["opencode_tail_path"] = stallErr.TailPath
+			extras["opencode_tail_path"] = stallErr.TailPath
 		}
 	}
-
-	if request.Metadata != nil {
-		for _, key := range []string{"clone_path"} {
-			if value := strings.TrimSpace(request.Metadata[key]); value != "" {
-				artifacts[key] = value
-			}
-		}
-	}
-
-	if len(artifacts) == 0 {
-		return nil
-	}
-	return artifacts
+	return contracts.BuildRunnerArtifacts("opencode", request, result, extras)
 }
 
 func watchdogRuntimeConfigFromMetadata(metadata map[string]string) watchdogRuntimeConfig {

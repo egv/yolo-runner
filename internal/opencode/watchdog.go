@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 const defaultWatchdogTimeout = 10 * time.Minute
@@ -359,10 +361,7 @@ func stderrLogPath(logPath string) string {
 	if logPath == "" {
 		return ""
 	}
-	if strings.HasSuffix(logPath, ".jsonl") {
-		return strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
-	}
-	return logPath + ".stderr.log"
+	return contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
 }
 
 func tailLines(path string, limit int) []string {

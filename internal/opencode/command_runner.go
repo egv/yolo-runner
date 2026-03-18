@@ -5,7 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 type CommandRunner struct{}
@@ -71,7 +72,7 @@ func (CommandRunner) Start(args []string, env map[string]string, stdoutPath stri
 	}
 	_ = stdoutFile.Close()
 
-	stderrPath := strings.TrimSuffix(stdoutPath, ".jsonl") + ".stderr.log"
+	stderrPath := contracts.BackendLogSidecarPath(stdoutPath, contracts.BackendLogStderr)
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
 		return nil, err
