@@ -49,6 +49,12 @@ type openCodeRunner interface {
 	Start(args []string, env map[string]string, stdoutPath string) (opencode.Process, error)
 }
 
+// isCommandAvailable checks if a command is available in PATH
+func isCommandAvailable(name string) bool {
+	_, err := osexec.LookPath(name)
+	return err == nil
+}
+
 type tuiProgram interface {
 	Start() error
 	Send(event runner.Event)
@@ -518,20 +524,32 @@ func RunOnceMain(args []string, runOnce runOnceFunc, exit exitFunc, stdout io.Wr
 		gitRunner = adapterGitRunner{runner: gitCommandAdapter}
 	}
 
-	// Detect which task tracker to use: tk first, then beads
+	// Detect which task tracker to use: tk first, then beads_rust (br), then classic beads (bd)
 	var taskTrackerAdapter runner.BeadsClient
 	var trackerType string
 
 	// Allow override via environment variable for testing
 	if os.Getenv("YOLO_RUNNER_TASK_TRACKER") == "beads" {
-		taskTrackerAdapter = beads.New(beadsRunner)
-		trackerType = "beads"
+		// Check if br (beads_rust) is available, prefer it over bd (classic beads)
+		if isCommandAvailable("br") {
+			taskTrackerAdapter = beads.NewRustAdapter(beadsRunner)
+			trackerType = "beads_rust"
+		} else {
+			taskTrackerAdapter = beads.New(beadsRunner)
+			trackerType = "beads"
+		}
 	} else if tk.IsAvailable() {
 		taskTrackerAdapter = tk.New(beadsRunner)
 		trackerType = "tk"
 	} else if beads.IsAvailable(*repoRoot) {
-		taskTrackerAdapter = beads.New(beadsRunner)
-		trackerType = "beads"
+		// Check if br (beads_rust) is available, prefer it over bd (classic beads)
+		if isCommandAvailable("br") {
+			taskTrackerAdapter = beads.NewRustAdapter(beadsRunner)
+			trackerType = "beads_rust"
+		} else {
+			taskTrackerAdapter = beads.New(beadsRunner)
+			trackerType = "beads"
+		}
 	} else {
 		fmt.Fprintln(stderr, "Error: no task tracker found. Install tk (preferred) or initialize beads.")
 		if exit != nil {
