@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -60,6 +61,7 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 	case "turn/completed":
 		reason := lookupString(params, "stopReason", "stop_reason", "reason")
 		metadata = setMetadataValue(metadata, "reason", reason)
+		metadata = setMetadataValue(metadata, "completion_json", marshalCompletionJSON(params))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventTypeLifecycle
 		event.Message = "turn completed"
@@ -219,6 +221,17 @@ func cloneStringMap(src map[string]string) map[string]string {
 		dst[key] = value
 	}
 	return dst
+}
+
+func marshalCompletionJSON(params map[string]any) string {
+	if len(params) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func lookupString(data map[string]any, keys ...string) string {

@@ -35,6 +35,7 @@ func NewTaskSessionRuntime(binary string, args ...string) *TaskSessionRuntime {
 
 type AppServerTaskSession struct {
 	id         string
+	repoRoot   string
 	proc       appServerProcess
 	reader     *jsonRPCPayloadReader
 	writer     io.WriteCloser
@@ -68,6 +69,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 
 	session := &AppServerTaskSession{
 		id:         taskSessionID(request),
+		repoRoot:   strings.TrimSpace(request.RepoRoot),
 		proc:       proc,
 		reader:     newJSONRPCPayloadReader(proc.Stdout()),
 		writer:     proc.Stdin(),
@@ -159,11 +161,66 @@ func (s *AppServerTaskSession) WaitReady(context.Context) error {
 	return nil
 }
 
-func (s *AppServerTaskSession) Execute(context.Context, contracts.TaskSessionExecuteRequest) error {
+func (s *AppServerTaskSession) Execute(ctx context.Context, request contracts.TaskSessionExecuteRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s == nil {
 		return errors.New("nil codex app-server task session")
 	}
-	return errors.New("codex app-server execute not implemented")
+
+	threadResp, completed, err := s.callWithExecute(ctx, request, "thread/start", map[string]any{
+		"approvalPolicy": "never",
+		"cwd":            s.repoRoot,
+		"ephemeral":      true,
+		"model":          strings.TrimSpace(request.Model),
+		"sandbox":        "danger-full-access",
+		"personality":    "pragmatic",
+	})
+	if err != nil {
+		return err
+	}
+
+	threadID := lookupString(lookupMap(threadResp.Result, "thread"), "id")
+	if threadID == "" {
+		threadID = lookupString(threadResp.Result, "threadId", "thread_id")
+	}
+	if threadID == "" {
+		return errors.New("codex app-server thread/start response missing thread id")
+	}
+	if completed {
+		return nil
+	}
+
+	_, completed, err = s.callWithExecute(ctx, request, "turn/start", map[string]any{
+		"threadId": threadID,
+		"input": []map[string]any{
+			{
+				"type": "text",
+				"text": strings.TrimSpace(request.Prompt),
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if completed {
+		return nil
+	}
+
+	for {
+		message, err := s.readMessage(ctx)
+		if err != nil {
+			return err
+		}
+		completed, err := s.handleExecuteMessage(ctx, request, message)
+		if err != nil {
+			return err
+		}
+		if completed {
+			return nil
+		}
+	}
 }
 
 func (s *AppServerTaskSession) Cancel(context.Context, contracts.TaskSessionCancellation) error {
@@ -195,8 +252,13 @@ func (s *AppServerTaskSession) close(force bool) error {
 }
 
 func (s *AppServerTaskSession) call(ctx context.Context, method string, params map[string]any) (contracts.JSONRPCMessage, error) {
+	message, _, err := s.callWithExecute(ctx, contracts.TaskSessionExecuteRequest{}, method, params)
+	return message, err
+}
+
+func (s *AppServerTaskSession) callWithExecute(ctx context.Context, request contracts.TaskSessionExecuteRequest, method string, params map[string]any) (contracts.JSONRPCMessage, bool, error) {
 	if s == nil {
-		return contracts.JSONRPCMessage{}, errors.New("nil codex app-server task session")
+		return contracts.JSONRPCMessage{}, false, errors.New("nil codex app-server task session")
 	}
 	if err := sendJSONRPCMessage(s.writer, contracts.JSONRPCMessage{
 		JSONRPC: "2.0",
@@ -204,24 +266,21 @@ func (s *AppServerTaskSession) call(ctx context.Context, method string, params m
 		Method:  method,
 		Params:  params,
 	}); err != nil {
-		return contracts.JSONRPCMessage{}, err
+		return contracts.JSONRPCMessage{}, false, err
 	}
+	completed := false
 	for {
 		message, err := s.readMessage(ctx)
 		if err != nil {
-			return contracts.JSONRPCMessage{}, err
+			return contracts.JSONRPCMessage{}, completed, err
 		}
 		if strings.TrimSpace(message.Method) != "" {
-			response, ok := appServerRequestResponse(message)
-			if !ok {
-				continue
+			nextCompleted, err := s.handleExecuteMessage(ctx, request, message)
+			if nextCompleted {
+				completed = true
 			}
-			if err := sendJSONRPCMessage(s.writer, contracts.JSONRPCMessage{
-				JSONRPC: "2.0",
-				ID:      message.ID,
-				Result:  response,
-			}); err != nil {
-				return contracts.JSONRPCMessage{}, err
+			if err != nil {
+				return contracts.JSONRPCMessage{}, completed, err
 			}
 			continue
 		}
@@ -229,10 +288,120 @@ func (s *AppServerTaskSession) call(ctx context.Context, method string, params m
 			continue
 		}
 		if message.Error != nil {
-			return contracts.JSONRPCMessage{}, fmt.Errorf("codex app-server %s failed: %s", method, message.Error.Message)
+			return contracts.JSONRPCMessage{}, completed, fmt.Errorf("codex app-server %s failed: %s", method, message.Error.Message)
 		}
-		return message, nil
+		return message, completed, nil
 	}
+}
+
+func (s *AppServerTaskSession) handleExecuteMessage(ctx context.Context, request contracts.TaskSessionExecuteRequest, message contracts.JSONRPCMessage) (bool, error) {
+	if event, completion, ok := NormalizeAppServerNotification(message, request.Mode); ok {
+		if request.EventSink != nil {
+			if err := request.EventSink.HandleEvent(ctx, event); err != nil {
+				return false, err
+			}
+		}
+		if completion != nil {
+			return true, nil
+		}
+	}
+
+	if strings.TrimSpace(message.Method) == "" || len(message.ID) == 0 {
+		return false, nil
+	}
+
+	response, err := buildAppServerRequestResponse(ctx, message, request)
+	if err != nil {
+		return false, err
+	}
+	if response == nil {
+		return false, nil
+	}
+	if err := sendJSONRPCMessage(s.writer, contracts.JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      message.ID,
+		Result:  response,
+	}); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func buildAppServerRequestResponse(ctx context.Context, message contracts.JSONRPCMessage, request contracts.TaskSessionExecuteRequest) (map[string]any, error) {
+	switch strings.TrimSpace(message.Method) {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		if request.ApprovalHandler == nil {
+			return defaultAppServerRequestResponse(message)
+		}
+		event, _, ok := NormalizeAppServerNotification(message, request.Mode)
+		if !ok || event.Approval == nil {
+			return defaultAppServerRequestResponse(message)
+		}
+		decision, err := request.ApprovalHandler.HandleApproval(ctx, event.Approval.Request)
+		if err != nil {
+			return nil, err
+		}
+		switch decision.Outcome {
+		case contracts.TaskSessionApprovalRejected:
+			return map[string]any{"decision": "reject"}, nil
+		case contracts.TaskSessionApprovalDeferred:
+			return map[string]any{"decision": "abort"}, nil
+		default:
+			return map[string]any{"decision": "accept"}, nil
+		}
+	case "item/tool/requestUserInput":
+		if request.QuestionHandler == nil {
+			return defaultAppServerRequestResponse(message)
+		}
+		answers := map[string]any{}
+		for _, question := range lookupSlice(message.Params, "questions") {
+			mapped, ok := question.(map[string]any)
+			if !ok {
+				continue
+			}
+			questionID := lookupString(mapped, "id")
+			if questionID == "" {
+				continue
+			}
+			options := make([]string, 0, len(lookupSlice(mapped, "options")))
+			for _, option := range lookupSlice(mapped, "options") {
+				optionMap, ok := option.(map[string]any)
+				if !ok {
+					continue
+				}
+				if label := lookupString(optionMap, "label"); label != "" {
+					options = append(options, label)
+				}
+			}
+			response, err := request.QuestionHandler.HandleQuestion(ctx, contracts.TaskSessionQuestionRequest{
+				ID:       questionID,
+				Prompt:   lookupString(mapped, "question"),
+				Context:  lookupString(message.Params, "title"),
+				Options:  options,
+				Metadata: cloneStringMap(nil),
+				Payload:  mapped,
+			})
+			if err != nil {
+				return nil, err
+			}
+			answer := strings.TrimSpace(response.Answer)
+			if answer == "" {
+				answer = firstQuestionAnswer(mapped)
+			}
+			answers[questionID] = map[string]any{"answers": []string{answer}}
+		}
+		return map[string]any{"answers": answers}, nil
+	default:
+		return defaultAppServerRequestResponse(message)
+	}
+}
+
+func defaultAppServerRequestResponse(message contracts.JSONRPCMessage) (map[string]any, error) {
+	response, ok := appServerRequestResponse(message)
+	if !ok {
+		return nil, nil
+	}
+	return response, nil
 }
 
 func (s *AppServerTaskSession) readMessage(ctx context.Context) (contracts.JSONRPCMessage, error) {
