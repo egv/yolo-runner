@@ -254,7 +254,7 @@ func TestRunMainRejectsUnknownConfigSubcommand(t *testing.T) {
 	}
 }
 
-func TestRunMainDefaultsBackendToOpenCode(t *testing.T) {
+func TestRunMainDefaultsBackendToCodex(t *testing.T) {
 	called := false
 	var got runConfig
 	run := func(_ context.Context, cfg runConfig) error {
@@ -270,8 +270,17 @@ func TestRunMainDefaultsBackendToOpenCode(t *testing.T) {
 	if !called {
 		t.Fatalf("expected run function to be called")
 	}
-	if got.backend != backendOpenCode {
-		t.Fatalf("expected default backend=%q, got %q", backendOpenCode, got.backend)
+	if got.backend != backendCodex {
+		t.Fatalf("expected default backend=%q, got %q", backendCodex, got.backend)
+	}
+}
+
+func TestNormalizeBackendDefaultsToCodex(t *testing.T) {
+	if got := normalizeBackend(""); got != backendCodex {
+		t.Fatalf("expected empty backend to normalize to %q, got %q", backendCodex, got)
+	}
+	if got := normalizeBackend("   "); got != backendCodex {
+		t.Fatalf("expected whitespace backend to normalize to %q, got %q", backendCodex, got)
 	}
 }
 

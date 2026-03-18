@@ -422,11 +422,20 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 			capabilities = []Capability{CapabilityImplement}
 		}
 	}
+	selectedExecutor, err := m.registry.Pick(capabilities...)
+	if err != nil {
+		return contracts.RunnerResult{}, err
+	}
 	correlationID := req.RunnerRequest.TaskID + "-" + strings.ReplaceAll(time.Now().UTC().Format(time.RFC3339Nano), ":", "")
+	resultCh, unsubscribeResult, err := m.bus.Subscribe(ctx, m.subjects.TaskResult)
+	if err != nil {
+		return contracts.RunnerResult{}, err
+	}
+	defer unsubscribeResult()
 	dispatch := TaskDispatchPayload{
 		CorrelationID:        correlationID,
 		TaskID:               req.RunnerRequest.TaskID,
-		TargetExecutorID:     "", // Empty means any executor can pick this up
+		TargetExecutorID:     selectedExecutor.ID,
 		RequiredCapabilities: capabilities,
 		Request:              nil,
 	}
@@ -444,12 +453,42 @@ func (m *Mastermind) DispatchTask(ctx context.Context, req TaskDispatchRequest) 
 		return contracts.RunnerResult{}, err
 	}
 
-	// Fire-and-forget: return immediately after publishing to queue
-	// The mastermind handles results asynchronously via TaskResult subscription
-	return contracts.RunnerResult{
-		Status: contracts.RunnerResultCompleted,
-		Reason: "Task dispatched to queue",
-	}, nil
+	waitCtx := ctx
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
+	if m.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(waitCtx, m.requestTimeout)
+		defer cancel()
+	}
+	for {
+		select {
+		case <-waitCtx.Done():
+			return contracts.RunnerResult{}, waitCtx.Err()
+		case raw, ok := <-resultCh:
+			if !ok {
+				return contracts.RunnerResult{}, fmt.Errorf("task result channel closed")
+			}
+			if raw.Type != EventTypeTaskResult || raw.CorrelationID != correlationID {
+				continue
+			}
+			payload := TaskResultPayload{}
+			if len(raw.Payload) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+				return contracts.RunnerResult{}, err
+			}
+			if strings.TrimSpace(payload.Error) != "" {
+				if payload.Result.Status == "" {
+					payload.Result.Status = contracts.RunnerResultFailed
+				}
+				return payload.Result, fmt.Errorf("%s", strings.TrimSpace(payload.Error))
+			}
+			return payload.Result, nil
+		}
+	}
 }
 
 func (m *Mastermind) handleServiceRequest(ctx context.Context, env EventEnvelope) error {
@@ -647,15 +686,17 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 	filters.Labels = canonicalFilterValues(filters.Labels)
 
 	closeOnce := sync.Once{}
+	done := make(chan struct{})
 	unsubscribe := func() {
 		closeOnce.Do(func() {
+			close(done)
 			unsubscribeSnapshot()
 			unsubscribeDiff()
-			close(output)
 		})
 	}
 
 	go func() {
+		defer close(output)
 		defer unsubscribe()
 		for {
 			select {
@@ -686,6 +727,7 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 				}
 				select {
 				case output <- event:
+				case <-done:
 				default:
 				}
 			case raw, ok := <-diffCh:
@@ -712,8 +754,11 @@ func (m *Mastermind) SubscribeTaskGraph(ctx context.Context, filters TaskGraphSu
 				}
 				select {
 				case output <- event:
+				case <-done:
 				default:
 				}
+			case <-done:
+				return
 			case <-ctx.Done():
 				return
 			}

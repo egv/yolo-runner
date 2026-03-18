@@ -198,6 +198,56 @@ func TestMastermindRoutesTaskBasedOnCapabilities(t *testing.T) {
 	}
 }
 
+func TestMastermindDispatchTaskTargetsSelectedExecutorAndReturnsTaskResult(t *testing.T) {
+	bus := NewMemoryBus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subjects := DefaultEventSubjects("unit")
+
+	mastermind := NewMastermind(MastermindOptions{
+		ID:             "mastermind",
+		Bus:            bus,
+		Subjects:       subjects,
+		RequestTimeout: 2 * time.Second,
+		RegistryTTL:    2 * time.Second,
+	})
+	if err := mastermind.Start(ctx); err != nil {
+		t.Fatalf("start mastermind: %v", err)
+	}
+
+	dispatchCh, unsubscribeDispatch, err := bus.Subscribe(ctx, subjects.TaskDispatch)
+	if err != nil {
+		t.Fatalf("subscribe task dispatch: %v", err)
+	}
+	defer unsubscribeDispatch()
+
+	executor := NewExecutorWorker(ExecutorWorkerOptions{
+		ID:           "executor-review",
+		Bus:          bus,
+		Subjects:     subjects,
+		Runner:       fakeRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"transport": "memory"}}},
+		Capabilities: []Capability{CapabilityReview},
+	})
+	go func() { _ = executor.Start(ctx) }()
+
+	time.Sleep(20 * time.Millisecond)
+
+	result, err := mastermind.DispatchTask(ctx, TaskDispatchRequest{
+		RunnerRequest: contracts.RunnerRequest{TaskID: "dispatch-target", Mode: contracts.RunnerModeReview},
+	})
+	if err != nil {
+		t.Fatalf("dispatch task: %v", err)
+	}
+	if result.Artifacts["transport"] != "memory" {
+		t.Fatalf("expected task result artifacts to round-trip, got %v", result.Artifacts)
+	}
+
+	dispatch := waitForTaskDispatchEnvelope(t, dispatchCh, "dispatch-target")
+	if dispatch.TargetExecutorID != "executor-review" {
+		t.Fatalf("expected targeted executor %q, got %q", "executor-review", dispatch.TargetExecutorID)
+	}
+}
+
 func TestExecutorWorkerRetriesRequestUntilSuccess(t *testing.T) {
 	bus := NewMemoryBus()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -632,6 +682,35 @@ func readTaskResultPayload(t *testing.T, ch <-chan EventEnvelope) TaskResultPayl
 			return payload
 		case <-timeout:
 			t.Fatalf("timed out waiting for task result")
+		}
+	}
+}
+
+func waitForTaskDispatchEnvelope(t *testing.T, ch <-chan EventEnvelope, taskID string) TaskDispatchPayload {
+	t.Helper()
+	timeout := time.After(1 * time.Second)
+	for {
+		select {
+		case raw, ok := <-ch:
+			if !ok {
+				t.Fatalf("task dispatch channel closed")
+			}
+			if raw.Type != EventTypeTaskDispatch {
+				continue
+			}
+			payload := TaskDispatchPayload{}
+			if len(raw.Payload) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(raw.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal task dispatch: %v", err)
+			}
+			if payload.TaskID != taskID {
+				continue
+			}
+			return payload
+		case <-timeout:
+			t.Fatalf("timed out waiting for task dispatch")
 		}
 	}
 }

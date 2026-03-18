@@ -76,7 +76,7 @@ func resolveBackendSelectionPolicy(input backendSelectionPolicyInput) string {
 			return value
 		}
 	}
-	return backendOpenCode
+	return backendCodex
 }
 
 func supportedBackends(matrix map[string]backendCapabilities) []string {
