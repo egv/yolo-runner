@@ -2,7 +2,9 @@ package contracts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -145,5 +147,270 @@ func TestReadinessChecksSupportHTTPAndStdio(t *testing.T) {
 	}
 	if runCalls != 1 {
 		t.Fatalf("expected one stdio invocation, got %d", runCalls)
+	}
+}
+
+func TestFakeStdioJSONRPCHarnessExchangesMessages(t *testing.T) {
+	harness := NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	stdin, stdout := harness.ClientIO()
+
+	type envelope struct {
+		JSONRPC string         `json:"jsonrpc"`
+		ID      int            `json:"id,omitempty"`
+		Method  string         `json:"method,omitempty"`
+		Params  map[string]any `json:"params,omitempty"`
+		Result  map[string]any `json:"result,omitempty"`
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		enc := json.NewEncoder(stdin)
+		errCh <- enc.Encode(envelope{
+			JSONRPC: "2.0",
+			ID:      1,
+			Method:  "initialize",
+			Params:  map[string]any{"client": "test"},
+		})
+	}()
+
+	msg, err := harness.ReadMessage(context.Background())
+	if err != nil {
+		t.Fatalf("read request: %v", err)
+	}
+	if msg.Method != "initialize" {
+		t.Fatalf("expected initialize method, got %#v", msg)
+	}
+	if client := msg.Params["client"]; client != "test" {
+		t.Fatalf("expected client=test, got %#v", msg.Params)
+	}
+
+	if err := harness.SendMessage(JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage("1"),
+		Result:  map[string]any{"protocolVersion": 1},
+	}); err != nil {
+		t.Fatalf("send response: %v", err)
+	}
+	if err := harness.SendMessage(JSONRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "session/updated",
+		Params:  map[string]any{"status": "running"},
+	}); err != nil {
+		t.Fatalf("send notification: %v", err)
+	}
+
+	dec := json.NewDecoder(stdout)
+	var response envelope
+	if err := dec.Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if version := response.Result["protocolVersion"]; version != float64(1) {
+		t.Fatalf("expected protocolVersion=1, got %#v", response.Result)
+	}
+
+	var notification envelope
+	if err := dec.Decode(&notification); err != nil {
+		t.Fatalf("decode notification: %v", err)
+	}
+	if notification.Method != "session/updated" {
+		t.Fatalf("expected session/updated notification, got %#v", notification)
+	}
+	if status := notification.Params["status"]; status != "running" {
+		t.Fatalf("expected status=running, got %#v", notification.Params)
+	}
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+}
+
+func TestFakeStdioJSONRPCHarnessReadMessageHandlesBurstWrites(t *testing.T) {
+	harness := NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	stdin, _ := harness.ClientIO()
+
+	burst := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"client":"test"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping","params":{"sequence":2}}`,
+		"",
+	}, "\n")
+	if _, err := io.WriteString(stdin, burst); err != nil {
+		t.Fatalf("write burst: %v", err)
+	}
+
+	first, err := harness.ReadMessage(context.Background())
+	if err != nil {
+		t.Fatalf("read first message: %v", err)
+	}
+	if first.Method != "initialize" {
+		t.Fatalf("expected initialize method, got %#v", first)
+	}
+	if first.Params["client"] != "test" {
+		t.Fatalf("expected first client=test, got %#v", first.Params)
+	}
+
+	second, err := harness.ReadMessage(context.Background())
+	if err != nil {
+		t.Fatalf("read second message: %v", err)
+	}
+	if second.Method != "ping" {
+		t.Fatalf("expected ping method, got %#v", second)
+	}
+	if second.Params["sequence"] != float64(2) {
+		t.Fatalf("expected second sequence=2, got %#v", second.Params)
+	}
+}
+
+func TestFakeStdioJSONRPCHarnessReadMessageCancellationDoesNotConsumeNextMessage(t *testing.T) {
+	harness := NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	stdin, _ := harness.ClientIO()
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := harness.ReadMessage(canceledCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled read to return context.Canceled, got %v", err)
+	}
+
+	if _, err := io.WriteString(stdin, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"client\":\"test\"}}\n"); err != nil {
+		t.Fatalf("write message: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readCancel()
+
+	msg, err := harness.ReadMessage(readCtx)
+	if err != nil {
+		t.Fatalf("expected next read to receive queued message, got %v", err)
+	}
+	if msg.Method != "initialize" {
+		t.Fatalf("expected initialize method, got %#v", msg)
+	}
+	if msg.Params["client"] != "test" {
+		t.Fatalf("expected client=test, got %#v", msg.Params)
+	}
+}
+
+func TestFakeHTTPSSEHarnessSupportsHealthJSONAndSSE(t *testing.T) {
+	harness := NewFakeHTTPSSEHarness()
+	t.Cleanup(harness.Close)
+
+	harness.SetHealthStatus(http.StatusNoContent)
+	harness.QueueJSONResponse("/session", http.StatusCreated, map[string]any{"id": "session-1"})
+
+	if err := CheckHTTPReadiness(context.Background(), harness.Client(), HTTPReadinessCheck{
+		Endpoint: harness.HealthURL(),
+	}); err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, harness.URL("/session"), strings.NewReader(`{"prompt":"ship it"}`))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := harness.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post session: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["id"] != "session-1" {
+		t.Fatalf("expected session id, got %#v", body)
+	}
+
+	recorded := harness.Requests("/session")
+	if len(recorded) != 1 {
+		t.Fatalf("expected one session request, got %#v", recorded)
+	}
+	if strings.TrimSpace(string(recorded[0].Body)) != `{"prompt":"ship it"}` {
+		t.Fatalf("unexpected request body %q", string(recorded[0].Body))
+	}
+
+	streamReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, harness.SSEURL(), http.NoBody)
+	if err != nil {
+		t.Fatalf("build sse request: %v", err)
+	}
+	streamResp, err := harness.Client().Do(streamReq)
+	if err != nil {
+		t.Fatalf("open sse stream: %v", err)
+	}
+	defer streamResp.Body.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- harness.SendSSE(SSEEvent{
+			Event: "message",
+			Data:  `{"type":"token","text":"hello"}`,
+		})
+	}()
+
+	payload, err := io.ReadAll(io.LimitReader(streamResp.Body, int64(len("event: message\ndata: {\"type\":\"token\",\"text\":\"hello\"}\n\n"))))
+	if err != nil {
+		t.Fatalf("read sse stream: %v", err)
+	}
+	if string(payload) != "event: message\ndata: {\"type\":\"token\",\"text\":\"hello\"}\n\n" {
+		t.Fatalf("unexpected sse payload %q", string(payload))
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("send sse event: %v", err)
+	}
+}
+
+func TestFakeHTTPSSEHarnessSendSSEReturnsWhenClientBacksUp(t *testing.T) {
+	harness := NewFakeHTTPSSEHarness()
+	t.Cleanup(harness.Close)
+
+	blocked := make(chan string, 1)
+	blocked <- "buffered"
+	ready := make(chan string, 1)
+
+	harness.mu.Lock()
+	harness.sseClients[blocked] = struct{}{}
+	harness.sseClients[ready] = struct{}{}
+	harness.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.SendSSE(SSEEvent{
+			Event: "message",
+			Data:  `{"type":"token","text":"hello"}`,
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("send sse event: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("SendSSE blocked on a backed up client")
+	}
+
+	select {
+	case payload := <-ready:
+		if payload != "event: message\ndata: {\"type\":\"token\",\"text\":\"hello\"}\n\n" {
+			t.Fatalf("unexpected payload %q", payload)
+		}
+	default:
+		t.Fatal("ready client did not receive event")
 	}
 }
