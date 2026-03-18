@@ -307,7 +307,26 @@ func TestDefaultRunProcessesQueuedCreatedAndPromptedJobsOutsideWebhookHandler(t 
 func writeFakeCodexBinary(t *testing.T) string {
 	t.Helper()
 	binaryPath := filepath.Join(t.TempDir(), "fake-codex")
-	script := "#!/bin/sh\nprintf 'worker execution complete\\n'\n"
+	script := `#!/bin/sh
+while IFS= read -r line; do
+	case "$line" in
+		*'"method":"initialize"'*)
+			printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2}}'"\n"
+			;;
+		*'"method":"initialized"'*)
+			;;
+		*'"method":"thread/start"'*)
+			printf '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"},"approvalPolicy":"never","cwd":"'"$PWD"'","model":"openai/gpt-5.3-codex","modelProvider":"openai","sandbox":"danger-full-access"}}'"\n"
+			printf '{"jsonrpc":"2.0","method":"thread/started","params":{"threadId":"thread-1"}}'"\n"
+			;;
+		*'"method":"turn/start"'*)
+			printf '{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-1"}}}'"\n"
+			printf '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-1","stopReason":"end_turn"}}'"\n"
+			exit 0
+			;;
+	esac
+done
+`
 	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex binary: %v", err)
 	}
