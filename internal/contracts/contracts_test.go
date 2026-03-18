@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -242,8 +243,219 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 	if artifact.Type != string(EventTypeRunnerProgress) {
 		t.Fatalf("expected artifact to map to runner_progress, got %q", artifact.Type)
 	}
-	if !reflect.DeepEqual(artifact.Metadata, map[string]string{"path": "/tmp/coverage.txt"}) {
+	if !reflect.DeepEqual(artifact.Metadata, map[string]string{"path": "/tmp/coverage.txt", "sequence": "0"}) {
 		t.Fatalf("unexpected artifact metadata %#v", artifact.Metadata)
+	}
+}
+
+func TestNormalizeTaskSessionEventPreservesStructuredRuntimeFields(t *testing.T) {
+	timestamp := time.Date(2026, 3, 18, 12, 5, 0, 0, time.UTC)
+
+	progress, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeProgress,
+		Message:   "indexing files",
+		Timestamp: timestamp,
+		Progress: &TaskSessionProgressEvent{
+			Phase:   "indexing",
+			Current: 2,
+			Total:   5,
+		},
+	})
+	if !ok {
+		t.Fatalf("expected progress event to normalize")
+	}
+	if progress.Metadata["phase"] != "indexing" {
+		t.Fatalf("expected phase metadata, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["current"] != "2" || progress.Metadata["total"] != "5" {
+		t.Fatalf("expected progress counters, got %#v", progress.Metadata)
+	}
+
+	cancellation, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeCancellation,
+		Message:   "cancel requested",
+		Timestamp: timestamp,
+		Cancellation: &TaskSessionCancellationEvent{
+			Reason: "user canceled",
+			Force:  true,
+		},
+	})
+	if !ok {
+		t.Fatalf("expected cancellation event to normalize")
+	}
+	if cancellation.Metadata["reason"] != "user canceled" {
+		t.Fatalf("expected cancellation reason metadata, got %#v", cancellation.Metadata)
+	}
+	if cancellation.Metadata["force"] != "true" {
+		t.Fatalf("expected cancellation force metadata, got %#v", cancellation.Metadata)
+	}
+
+	teardown, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeTeardown,
+		Message:   "session cleanup",
+		Timestamp: timestamp,
+		Teardown: &TaskSessionTeardownEvent{
+			Reason: "runner finished",
+			Force:  true,
+		},
+	})
+	if !ok {
+		t.Fatalf("expected teardown event to normalize")
+	}
+	if teardown.Metadata["reason"] != "runner finished" {
+		t.Fatalf("expected teardown reason metadata, got %#v", teardown.Metadata)
+	}
+	if teardown.Metadata["force"] != "true" {
+		t.Fatalf("expected teardown force metadata, got %#v", teardown.Metadata)
+	}
+}
+
+func TestNormalizeTaskSessionEventPreservesCorrelationMetadata(t *testing.T) {
+	timestamp := time.Date(2026, 3, 18, 12, 15, 0, 0, time.UTC)
+
+	progress, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeApprovalRequired,
+		Message:   "approval needed",
+		Timestamp: timestamp,
+		SessionID: "sess-123",
+		Sequence:  42,
+		Metadata: map[string]string{
+			"thread_id": "thread-9",
+			"turn_id":   "turn-4",
+		},
+		Approval: &TaskSessionApprovalEvent{
+			Request: TaskSessionApprovalRequest{
+				ID:   "approval-7",
+				Kind: TaskSessionApprovalKindToolCall,
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("expected approval event to normalize")
+	}
+
+	if progress.Metadata["session_id"] != "sess-123" {
+		t.Fatalf("expected session_id metadata, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["sequence"] != strconv.FormatInt(42, 10) {
+		t.Fatalf("expected sequence metadata, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["thread_id"] != "thread-9" || progress.Metadata["turn_id"] != "turn-4" {
+		t.Fatalf("expected stable correlation ids, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["approval_id"] != "approval-7" {
+		t.Fatalf("expected approval_id metadata, got %#v", progress.Metadata)
+	}
+}
+
+func TestNormalizeTaskSessionEventPreservesZeroValuedStructuredFields(t *testing.T) {
+	timestamp := time.Date(2026, 3, 18, 12, 20, 0, 0, time.UTC)
+
+	progress, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeProgress,
+		Message:   "waiting for first item",
+		Timestamp: timestamp,
+		SessionID: "sess-zero",
+		Sequence:  0,
+		Progress: &TaskSessionProgressEvent{
+			Phase:   "queued",
+			Current: 0,
+			Total:   0,
+		},
+	})
+	if !ok {
+		t.Fatalf("expected progress event to normalize")
+	}
+	if progress.Metadata["session_id"] != "sess-zero" {
+		t.Fatalf("expected session_id metadata, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["sequence"] != "0" {
+		t.Fatalf("expected zero sequence metadata, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["current"] != "0" || progress.Metadata["total"] != "0" {
+		t.Fatalf("expected zero progress counters, got %#v", progress.Metadata)
+	}
+}
+
+func TestNormalizeTaskSessionEventPreservesZeroSequenceWithoutSessionID(t *testing.T) {
+	timestamp := time.Date(2026, 3, 18, 12, 25, 0, 0, time.UTC)
+
+	progress, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeProgress,
+		Message:   "queued for execution",
+		Timestamp: timestamp,
+		Sequence:  0,
+		Progress: &TaskSessionProgressEvent{
+			Phase: "queued",
+		},
+	})
+	if !ok {
+		t.Fatalf("expected progress event to normalize")
+	}
+	if _, exists := progress.Metadata["session_id"]; exists {
+		t.Fatalf("expected empty session_id to be omitted, got %#v", progress.Metadata)
+	}
+	if progress.Metadata["sequence"] != "0" {
+		t.Fatalf("expected zero sequence metadata without session id, got %#v", progress.Metadata)
+	}
+}
+
+func TestTaskSessionApprovalAndQuestionContractsAllowStructuredPayloads(t *testing.T) {
+	approval := TaskSessionApprovalEvent{
+		Request: TaskSessionApprovalRequest{
+			ID:      "approval-1",
+			Title:   "Apply patch",
+			Message: "Need approval",
+			Payload: map[string]any{
+				"raw_input": map[string]any{
+					"command": []any{"git", "apply"},
+				},
+				"locations": []any{
+					map[string]any{"path": "README.md", "line": float64(12)},
+				},
+				"diff": "@@ -1 +1 @@",
+			},
+		},
+		Decision: &TaskSessionApprovalDecision{
+			Outcome: TaskSessionApprovalApproved,
+			Payload: map[string]any{
+				"raw_output": map[string]any{"approved": true},
+			},
+		},
+	}
+	question := TaskSessionQuestionEvent{
+		Request: TaskSessionQuestionRequest{
+			ID:     "question-1",
+			Prompt: "Continue?",
+			Payload: map[string]any{
+				"resource": map[string]any{
+					"path":    "docs/spec.md",
+					"content": "body",
+				},
+				"options": []any{"yes", "no"},
+			},
+		},
+		Response: &TaskSessionQuestionResponse{
+			Answer: "yes",
+			Payload: map[string]any{
+				"raw_output": map[string]any{"answer": "yes"},
+			},
+		},
+	}
+
+	approvalLocations, ok := approval.Request.Payload.(map[string]any)["locations"].([]any)
+	if !ok || len(approvalLocations) != 1 {
+		t.Fatalf("expected structured approval payload, got %#v", approval.Request.Payload)
+	}
+	questionResource, ok := question.Request.Payload.(map[string]any)["resource"].(map[string]any)
+	if !ok || questionResource["path"] != "docs/spec.md" {
+		t.Fatalf("expected structured question payload, got %#v", question.Request.Payload)
+	}
+	if got := approval.Decision.Payload.(map[string]any)["raw_output"].(map[string]any)["approved"]; got != true {
+		t.Fatalf("expected structured approval decision payload, got %#v", approval.Decision.Payload)
+	}
+	if got := question.Response.Payload.(map[string]any)["raw_output"].(map[string]any)["answer"]; got != "yes" {
+		t.Fatalf("expected structured question response payload, got %#v", question.Response.Payload)
 	}
 }
 

@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -151,12 +152,14 @@ type TaskSessionApprovalRequest struct {
 	Message  string
 	Command  []string
 	Metadata map[string]string
+	Payload  any
 }
 
 type TaskSessionApprovalDecision struct {
 	Outcome  TaskSessionApprovalOutcome
 	Reason   string
 	Metadata map[string]string
+	Payload  any
 }
 
 type TaskSessionApprovalEvent struct {
@@ -170,11 +173,13 @@ type TaskSessionQuestionRequest struct {
 	Context  string
 	Options  []string
 	Metadata map[string]string
+	Payload  any
 }
 
 type TaskSessionQuestionResponse struct {
 	Answer   string
 	Metadata map[string]string
+	Payload  any
 }
 
 type TaskSessionQuestionEvent struct {
@@ -233,38 +238,62 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 	}
 
 	metadata := cloneStringMap(event.Metadata)
+	metadata = setMetadataValue(metadata, "session_id", event.SessionID)
+	metadata = setMetadataValue(metadata, "sequence", strconv.FormatInt(event.Sequence, 10))
 	switch event.Type {
 	case TaskSessionEventTypeLifecycle:
 		if event.Lifecycle != nil && strings.TrimSpace(string(event.Lifecycle.State)) != "" {
-			metadata["state"] = string(event.Lifecycle.State)
+			metadata = setMetadataValue(metadata, "state", string(event.Lifecycle.State))
+		}
+	case TaskSessionEventTypeProgress:
+		if event.Progress != nil {
+			metadata = setMetadataValue(metadata, "phase", event.Progress.Phase)
+			metadata = setMetadataValue(metadata, "current", strconv.Itoa(event.Progress.Current))
+			metadata = setMetadataValue(metadata, "total", strconv.Itoa(event.Progress.Total))
 		}
 	case TaskSessionEventTypeArtifact:
 		if event.Artifact != nil {
 			if strings.TrimSpace(event.Artifact.Path) != "" {
-				metadata["path"] = event.Artifact.Path
+				metadata = setMetadataValue(metadata, "path", event.Artifact.Path)
 			}
 			if strings.TrimSpace(event.Artifact.Name) != "" {
-				metadata["name"] = event.Artifact.Name
+				metadata = setMetadataValue(metadata, "name", event.Artifact.Name)
 			}
 			if strings.TrimSpace(event.Artifact.Kind) != "" {
-				metadata["kind"] = event.Artifact.Kind
+				metadata = setMetadataValue(metadata, "kind", event.Artifact.Kind)
 			}
 		}
 	case TaskSessionEventTypeApprovalRequired:
-		if event.Approval != nil && strings.TrimSpace(string(event.Approval.Request.Kind)) != "" {
-			metadata["kind"] = string(event.Approval.Request.Kind)
+		if event.Approval != nil {
+			if strings.TrimSpace(string(event.Approval.Request.Kind)) != "" {
+				metadata = setMetadataValue(metadata, "kind", string(event.Approval.Request.Kind))
+			}
+			metadata = setMetadataValue(metadata, "approval_id", event.Approval.Request.ID)
 		}
 	case TaskSessionEventTypeQuestionAsked:
-		if event.Question != nil && strings.TrimSpace(event.Question.Request.Context) != "" {
-			metadata["context"] = event.Question.Request.Context
+		if event.Question != nil {
+			if strings.TrimSpace(event.Question.Request.Context) != "" {
+				metadata = setMetadataValue(metadata, "context", event.Question.Request.Context)
+			}
+			metadata = setMetadataValue(metadata, "question_id", event.Question.Request.ID)
+		}
+	case TaskSessionEventTypeCancellation:
+		if event.Cancellation != nil {
+			metadata = setMetadataValue(metadata, "reason", event.Cancellation.Reason)
+			metadata = setMetadataValue(metadata, "force", strconv.FormatBool(event.Cancellation.Force))
+		}
+	case TaskSessionEventTypeTeardown:
+		if event.Teardown != nil {
+			metadata = setMetadataValue(metadata, "reason", event.Teardown.Reason)
+			metadata = setMetadataValue(metadata, "force", strconv.FormatBool(event.Teardown.Force))
 		}
 	case TaskSessionEventTypeLog:
 		if event.Log != nil {
 			if strings.TrimSpace(string(event.Log.Kind)) != "" {
-				metadata["kind"] = string(event.Log.Kind)
+				metadata = setMetadataValue(metadata, "kind", string(event.Log.Kind))
 			}
 			if strings.TrimSpace(event.Log.Path) != "" {
-				metadata["path"] = event.Log.Path
+				metadata = setMetadataValue(metadata, "path", event.Log.Path)
 			}
 		}
 	}
@@ -275,6 +304,19 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 		Metadata:  metadata,
 		Timestamp: timestamp,
 	}, true
+}
+
+func setMetadataValue(dst map[string]string, key string, value string) map[string]string {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return dst
+	}
+	if dst == nil {
+		dst = map[string]string{}
+	}
+	dst[key] = value
+	return dst
 }
 
 func cloneStringMap(src map[string]string) map[string]string {
