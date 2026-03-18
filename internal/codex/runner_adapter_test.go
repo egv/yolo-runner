@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"strings"
 	"testing"
 	"time"
@@ -21,13 +22,19 @@ type fakeAppServerProcess struct {
 	stderr  io.ReadCloser
 	waitCh  chan error
 	killFn  func() error
+	waitFn  func() error
 	waitErr error
 }
 
 func (p *fakeAppServerProcess) Stdin() io.WriteCloser  { return p.stdin }
 func (p *fakeAppServerProcess) Stdout() io.ReadCloser  { return p.stdout }
 func (p *fakeAppServerProcess) Stderr() io.ReadCloser  { return p.stderr }
-func (p *fakeAppServerProcess) Wait() error            { return <-p.waitCh }
+func (p *fakeAppServerProcess) Wait() error {
+	if p.waitFn != nil {
+		return p.waitFn()
+	}
+	return <-p.waitCh
+}
 func (p *fakeAppServerProcess) Kill() error {
 	if p.killFn != nil {
 		return p.killFn()
@@ -368,6 +375,34 @@ func TestCLIRunnerAdapterBuildsCommandFromConfiguredArgsTemplate(t *testing.T) {
 	expected := []string{"--backend=codex", "--model", "openai/gpt-5.3-codex", "--prompt", "implement codex", "--task-id=task-1", "--repo=" + repoRoot, "--mode=review"}
 	if !reflect.DeepEqual(gotSpec.Args, expected) {
 		t.Fatalf("unexpected templated args: %#v", gotSpec.Args)
+	}
+}
+
+func TestCLIRunnerAdapterPrefersLegacyRunnerFallbackOverAppServerStarter(t *testing.T) {
+	repoRoot := t.TempDir()
+	usedRunner := false
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		usedRunner = true
+		_, _ = io.WriteString(spec.Stdout, "working line\n")
+		return nil
+	}))
+	adapter.starter = appServerStarterFunc(func(context.Context, CommandSpec) (appServerProcess, error) {
+		return nil, errors.New("app-server starter should not be used when legacy runner fallback is configured")
+	})
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-fallback-selection",
+		RepoRoot: repoRoot,
+		Prompt:   "implement feature",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !usedRunner {
+		t.Fatal("expected legacy runner fallback to be used")
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed result, got %q (%s)", result.Status, result.Reason)
 	}
 }
 
@@ -821,6 +856,464 @@ func TestCLIRunnerAdapterUsesAppServerJSONRPCProductionPath(t *testing.T) {
 	}
 	if result.Artifacts["review_fail_feedback"] != "app-server production path coverage missing" {
 		t.Fatalf("expected review feedback artifact, got %#v", result.Artifacts)
+	}
+}
+
+func TestCLIRunnerAdapterAppServerHandlesUserInputRequestsAndTeardown(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientWriter, clientReader := harness.ClientIO()
+	stderrReader, stderrWriter := io.Pipe()
+	waitCh := make(chan error, 1)
+	var killCalls int32
+	var waitCalls int32
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: stderrReader,
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		atomic.AddInt32(&killCalls, 1)
+		_ = stderrWriter.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+	proc.waitFn = func() error {
+		atomic.AddInt32(&waitCalls, 1)
+		return <-waitCh
+	}
+
+	adapter := NewCLIRunnerAdapter("codex-bin", nil)
+	adapter.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		if !reflect.DeepEqual(spec.Args, []string{"app-server"}) {
+			t.Fatalf("expected app-server args, got %#v", spec.Args)
+		}
+		return proc, nil
+	})
+
+	updates := []contracts.RunnerProgress{}
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"protocolVersion": 2},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"thread": map[string]any{"id": "thread-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "turn/start" {
+			serverDone <- errors.New("expected turn/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"turn": map[string]any{"id": "turn-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      json.RawMessage("7"),
+			Method:  "item/tool/requestUserInput",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "item-1",
+				"title":    "Choose a path",
+				"questions": []any{
+					map[string]any{
+						"id":       "selection",
+						"question": "Choose a path",
+						"options": []any{
+							map[string]any{"label": "Proceed"},
+							map[string]any{"label": "Abort"},
+						},
+					},
+				},
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if string(msg.ID) != "7" {
+			serverDone <- errors.New("expected user-input response id 7")
+			return
+		}
+		answers, ok := msg.Result["answers"].(map[string]any)
+		if !ok {
+			serverDone <- errors.New("expected answers map in response")
+			return
+		}
+		selection, ok := answers["selection"].(map[string]any)
+		if !ok {
+			serverDone <- errors.New("expected selection answer entry")
+			return
+		}
+		picked, ok := selection["answers"].([]any)
+		if !ok || len(picked) != 1 || picked[0] != "Proceed" {
+			serverDone <- errors.New("expected first option to be selected")
+			return
+		}
+
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/completed",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"stopReason": "end_turn",
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		serverDone <- nil
+	}()
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-user-input",
+		RepoRoot: repoRoot,
+		Prompt:   "implement prompt",
+		Mode:     contracts.RunnerModeImplement,
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("app-server interaction failed: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed result, got %q (%s)", result.Status, result.Reason)
+	}
+	if len(updates) != 2 {
+		t.Fatalf("expected user-input warning plus completion progress, got %d: %#v", len(updates), updates)
+	}
+	if updates[0].Type != string(contracts.EventTypeRunnerWarning) || updates[0].Message != "Choose a path" {
+		t.Fatalf("expected user-input warning progress, got %#v", updates[0])
+	}
+	if updates[1].Metadata["reason"] != "end_turn" {
+		t.Fatalf("expected completion reason metadata, got %#v", updates[1])
+	}
+	if atomic.LoadInt32(&killCalls) != 1 {
+		t.Fatalf("expected one teardown kill, got %d", atomic.LoadInt32(&killCalls))
+	}
+	if atomic.LoadInt32(&waitCalls) != 1 {
+		t.Fatalf("expected one teardown wait, got %d", atomic.LoadInt32(&waitCalls))
+	}
+}
+
+func TestCLIRunnerAdapterAppServerFailsHandshakeWithoutThreadID(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientWriter, clientReader := harness.ClientIO()
+	stderrReader, stderrWriter := io.Pipe()
+	waitCh := make(chan error, 1)
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: stderrReader,
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		_ = stderrWriter.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+
+	adapter := NewCLIRunnerAdapter("codex-bin", nil)
+	adapter.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		return proc, nil
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"protocolVersion": 2},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"thread": map[string]any{}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		serverDone <- nil
+	}()
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-handshake",
+		RepoRoot: repoRoot,
+		Prompt:   "implement prompt",
+		Mode:     contracts.RunnerModeImplement,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("app-server interaction failed: %v", err)
+	}
+	if result.Status != contracts.RunnerResultFailed {
+		t.Fatalf("expected failed result, got %q (%s)", result.Status, result.Reason)
+	}
+	if !strings.Contains(result.Reason, "missing thread id") {
+		t.Fatalf("expected missing thread id failure, got %q", result.Reason)
+	}
+}
+
+func TestCLIRunnerAdapterAppServerCancellationStopsBlockedRead(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientWriter, clientReader := harness.ClientIO()
+	stderrReader, stderrWriter := io.Pipe()
+	waitCh := make(chan error, 1)
+	var killCalls int32
+	var waitCalls int32
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: stderrReader,
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		atomic.AddInt32(&killCalls, 1)
+		_ = stderrWriter.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+	proc.waitFn = func() error {
+		atomic.AddInt32(&waitCalls, 1)
+		return <-waitCh
+	}
+
+	adapter := NewCLIRunnerAdapter("codex-bin", nil)
+	adapter.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		return proc, nil
+	})
+
+	handshakeReady := make(chan struct{})
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"protocolVersion": 2},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"thread": map[string]any{"id": "thread-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "turn/start" {
+			serverDone <- errors.New("expected turn/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"turn": map[string]any{"id": "turn-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		close(handshakeReady)
+		serverDone <- nil
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan contracts.RunnerResult, 1)
+	go func() {
+		result, err := adapter.Run(ctx, contracts.RunnerRequest{
+			TaskID:   "t-cancel",
+			RepoRoot: repoRoot,
+			Prompt:   "implement prompt",
+			Mode:     contracts.RunnerModeImplement,
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+			return
+		}
+		done <- result
+	}()
+
+	select {
+	case <-handshakeReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handshake")
+	}
+
+	cancel()
+
+	select {
+	case result := <-done:
+		if result.Status != contracts.RunnerResultFailed {
+			t.Fatalf("expected canceled run to fail, got %q (%s)", result.Status, result.Reason)
+		}
+		if !strings.Contains(strings.ToLower(result.Reason), "canceled") {
+			t.Fatalf("expected canceled reason, got %q", result.Reason)
+		}
+	case <-time.After(250 * time.Millisecond):
+		_ = harness.Close()
+		t.Fatal("run did not stop after context cancellation")
+	}
+
+	if atomic.LoadInt32(&killCalls) != 1 {
+		t.Fatalf("expected one teardown kill after cancellation, got %d", atomic.LoadInt32(&killCalls))
+	}
+	if atomic.LoadInt32(&waitCalls) != 1 {
+		t.Fatalf("expected one teardown wait after cancellation, got %d", atomic.LoadInt32(&waitCalls))
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("app-server interaction failed: %v", err)
 	}
 }
 

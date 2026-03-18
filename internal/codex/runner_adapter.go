@@ -355,7 +355,7 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 			return contracts.JSONRPCMessage{}, err
 		}
 		for {
-			msg, err := a.readAppServerMessage(reader, stdoutFile, protocolFile)
+			msg, err := a.readAppServerMessage(ctx, reader, stdoutFile, protocolFile)
 			if err != nil {
 				return contracts.JSONRPCMessage{}, err
 			}
@@ -429,7 +429,7 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	}
 
 	for completion == nil {
-		msg, err := a.readAppServerMessage(reader, stdoutFile, protocolFile)
+		msg, err := a.readAppServerMessage(ctx, reader, stdoutFile, protocolFile)
 		if err != nil {
 			return err, completion
 		}
@@ -445,8 +445,26 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	return nil, completion
 }
 
-func (a *CLIRunnerAdapter) readAppServerMessage(reader *jsonRPCPayloadReader, stdoutFile *os.File, protocolFile *os.File) (contracts.JSONRPCMessage, error) {
-	payload, err := reader.Read()
+func (a *CLIRunnerAdapter) readAppServerMessage(ctx context.Context, reader *jsonRPCPayloadReader, stdoutFile *os.File, protocolFile *os.File) (contracts.JSONRPCMessage, error) {
+	type result struct {
+		payload []byte
+		err     error
+	}
+	readDone := make(chan result, 1)
+	go func() {
+		payload, err := reader.Read()
+		readDone <- result{payload: payload, err: err}
+	}()
+
+	var payload []byte
+	var err error
+	select {
+	case <-ctx.Done():
+		return contracts.JSONRPCMessage{}, ctx.Err()
+	case next := <-readDone:
+		payload = next.payload
+		err = next.err
+	}
 	if err != nil {
 		return contracts.JSONRPCMessage{}, err
 	}
