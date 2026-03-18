@@ -8,6 +8,8 @@ args:
   - "--dangerously-bypass-approvals-and-sandbox"
   - "--model"
   - "{{model}}"
+  - "-c"
+  - "model_reasoning_effort=\"medium\""
   - "{{prompt}}"
 capabilities:
   languages:

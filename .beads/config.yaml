@@ -1,7 +1,4 @@
 # Beads Project Configuration
-id:
-  prefix: "yolo-runner"
-
-defaults:
-  priority: 2
-  type: "task"
+# issue_prefix: yolo-runner
+# default_priority: 2
+# default_type: task
