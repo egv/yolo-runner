@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/logging"
 	acp "github.com/ironpark/acp-go"
 	"golang.org/x/term"
@@ -283,7 +284,7 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 	defer initCancel()
 
 	// Check stderr logs for Serena initialization failures
-	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
 	serenaErrCh := make(chan error, 1)
 	if line, ok := findSerenaInitErrorSince(stderrPath, serenaSince); ok {
 		serenaErr := fmt.Errorf("serena initialization failed: %s", line)

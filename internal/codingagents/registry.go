@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/distributed"
 )
 
@@ -290,47 +291,18 @@ func (r *AgentRegistry) checkDefinitionHealth(ctx context.Context, definition Ba
 }
 
 func (r *AgentRegistry) checkAgentHealthEndpoint(ctx context.Context, cfg BackendHealthConfig) error {
-	method := strings.ToUpper(strings.TrimSpace(cfg.Method))
-	if method == "" {
-		method = http.MethodGet
-	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSpace(cfg.Endpoint), http.NoBody)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	for key, value := range cfg.Headers {
-		req.Header.Set(strings.TrimSpace(key), strings.TrimSpace(value))
-	}
-	resp, err := r.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("health endpoint returned %d", resp.StatusCode)
-	}
-	return nil
+	return contracts.CheckHTTPReadiness(ctx, r.httpClient, contracts.HTTPReadinessCheck{
+		Endpoint: cfg.Endpoint,
+		Method:   cfg.Method,
+		Headers:  cfg.Headers,
+	})
 }
 
 func (r *AgentRegistry) checkAgentHealthCommand(ctx context.Context, cfg BackendHealthConfig) error {
-	parts := strings.Fields(strings.TrimSpace(cfg.Command))
-	if len(parts) == 0 {
-		return fmt.Errorf("health command is empty")
-	}
-	output, err := r.runCommand(ctx, parts[0], parts[1:]...)
-	if err != nil {
-		if len(output) > 0 {
-			trimmed := strings.TrimSpace(string(output))
-			if trimmed == "" {
-				return err
-			}
-			return fmt.Errorf("health command failed: %w: %s", err, trimmed)
-		}
-		return fmt.Errorf("health command failed: %w", err)
-	}
-	return nil
+	return contracts.CheckStdioReadiness(ctx, contracts.StdioReadinessCheck{
+		Command: cfg.Command,
+		Run:     r.runCommand,
+	})
 }
 
 func (r *AgentRegistry) store(catalog Catalog) {

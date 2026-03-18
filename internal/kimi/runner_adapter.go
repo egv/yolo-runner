@@ -90,7 +90,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	}
 	defer stdoutFile.Close()
 
-	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
 		return contracts.RunnerResult{}, err
@@ -101,19 +101,11 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		if request.OnProgress == nil {
 			return
 		}
-		normalized := normalizeLine(line)
-		if normalized == "" {
+		progress, ok := contracts.NewRunnerOutputProgress(source, line, a.now().UTC())
+		if !ok {
 			return
 		}
-		if source == "stderr" {
-			normalized = "stderr: " + normalized
-		}
-		request.OnProgress(contracts.RunnerProgress{
-			Type:      "runner_output",
-			Message:   normalized,
-			Metadata:  map[string]string{"source": source},
-			Timestamp: a.now().UTC(),
-		})
+		request.OnProgress(progress)
 	}
 
 	stdoutWriter := newLineWriter(stdoutFile, func(line string) {
@@ -123,11 +115,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		emitProgress("stderr", line)
 	})
 
-	runCtx := ctx
-	cancel := func() {}
-	if request.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, request.Timeout)
-	}
+	runCtx, cancel := contracts.WithOptionalTimeout(ctx, request.Timeout)
 	defer cancel()
 
 	runErr := a.runner.Run(runCtx, CommandSpec{
@@ -140,18 +128,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	stdoutWriter.Flush()
 	stderrWriter.Flush()
 
-	if runErr == nil && runCtx.Err() != nil {
-		runErr = runCtx.Err()
-	}
-
-	if runErr != nil {
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			runErr = context.DeadlineExceeded
-		}
-		if errors.Is(runCtx.Err(), context.Canceled) && errors.Is(runErr, context.Canceled) {
-			runErr = context.Canceled
-		}
-	}
+	runErr = contracts.FinalizeRunError(runCtx, runErr)
 
 	finishedAt := a.now().UTC()
 	result := contracts.NormalizeBackendRunnerResult(startedAt, finishedAt, request, runErr, nil)
@@ -177,7 +154,6 @@ func resolveLogPath(request contracts.RunnerRequest) string {
 	}
 	return filepath.Join("runner-logs", "kimi", "kimi-run.jsonl")
 }
-
 
 func (a *CLIRunnerAdapter) buildArgs(request contracts.RunnerRequest) []string {
 	if len(a.args) > 0 {
@@ -255,44 +231,18 @@ func runCommand(ctx context.Context, spec CommandSpec) error {
 }
 
 func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.RunnerResult) map[string]string {
-	artifacts := map[string]string{
-		"backend": "kimi",
-		"status":  string(result.Status),
-	}
-	if strings.TrimSpace(request.Model) != "" {
-		artifacts["model"] = strings.TrimSpace(request.Model)
-	}
-	if strings.TrimSpace(string(request.Mode)) != "" {
-		artifacts["mode"] = strings.TrimSpace(string(request.Mode))
-	}
-	if strings.TrimSpace(result.LogPath) != "" {
-		artifacts["log_path"] = strings.TrimSpace(result.LogPath)
-	}
+	extras := map[string]string{}
 	if request.Mode == contracts.RunnerModeReview {
 		if verdict, ok := structuredReviewVerdict(result.LogPath); ok {
-			artifacts["review_verdict"] = verdict
+			extras["review_verdict"] = verdict
 			if verdict == "fail" {
 				if feedback, ok := structuredReviewFailFeedback(result.LogPath); ok {
-					artifacts["review_fail_feedback"] = feedback
+					extras["review_fail_feedback"] = feedback
 				}
 			}
 		}
 	}
-	if !result.StartedAt.IsZero() {
-		artifacts["started_at"] = result.StartedAt.UTC().Format(time.RFC3339)
-	}
-	if !result.FinishedAt.IsZero() {
-		artifacts["finished_at"] = result.FinishedAt.UTC().Format(time.RFC3339)
-	}
-	if request.Metadata != nil {
-		if clonePath := strings.TrimSpace(request.Metadata["clone_path"]); clonePath != "" {
-			artifacts["clone_path"] = clonePath
-		}
-	}
-	if len(artifacts) == 0 {
-		return nil
-	}
-	return artifacts
+	return contracts.BuildRunnerArtifacts("kimi", request, result, extras)
 }
 
 func hasStructuredPassVerdict(logPath string) bool {

@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
-	"regexp"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -91,7 +91,7 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 	}
 	defer stdoutFile.Close()
 
-	stderrPath := strings.TrimSuffix(logPath, ".jsonl") + ".stderr.log"
+	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
 		return contracts.RunnerResult{}, err
@@ -102,19 +102,11 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 		if request.OnProgress == nil {
 			return
 		}
-		normalized := normalizeLine(line)
-		if normalized == "" {
+		progress, ok := contracts.NewRunnerOutputProgress(source, line, a.now().UTC())
+		if !ok {
 			return
 		}
-		if source == "stderr" {
-			normalized = "stderr: " + normalized
-		}
-		request.OnProgress(contracts.RunnerProgress{
-			Type:      "runner_output",
-			Message:   normalized,
-			Metadata:  map[string]string{"source": source},
-			Timestamp: a.now().UTC(),
-		})
+		request.OnProgress(progress)
 	}
 
 	stdoutWriter := newLineWriter(stdoutFile, func(line string) {
@@ -126,11 +118,7 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 
 	commandArgs := resolveCommandArgs(a.args, request)
 
-	runCtx := ctx
-	cancel := func() {}
-	if request.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, request.Timeout)
-	}
+	runCtx, cancel := contracts.WithOptionalTimeout(ctx, request.Timeout)
 	defer cancel()
 
 	runErr := a.runner.Run(runCtx, CommandSpec{
@@ -143,54 +131,19 @@ func (a *GenericCLIRunnerAdapter) Run(ctx context.Context, request contracts.Run
 	stdoutWriter.Flush()
 	stderrWriter.Flush()
 
-	if runErr == nil && runCtx.Err() != nil {
-		runErr = runCtx.Err()
-	}
-	if runErr != nil {
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-			runErr = context.DeadlineExceeded
-		}
-		if errors.Is(runCtx.Err(), context.Canceled) && errors.Is(runErr, context.Canceled) {
-			runErr = context.Canceled
-		}
-	}
+	runErr = contracts.FinalizeRunError(runCtx, runErr)
 
 	finishedAt := a.now().UTC()
 	result := contracts.NormalizeBackendRunnerResult(startedAt, finishedAt, request, runErr, nil)
 	result.LogPath = logPath
-	result.Artifacts = map[string]string{
-		"backend": a.backend,
-		"status":  string(result.Status),
-	}
+	extras := map[string]string{}
 	if request.Mode == contracts.RunnerModeReview {
 		if verdict, ok := structuredReviewVerdict(logPath); ok {
-			result.Artifacts["review_verdict"] = verdict
+			extras["review_verdict"] = verdict
 			result.ReviewReady = strings.EqualFold(verdict, "pass")
 		}
 	}
-	if strings.TrimSpace(request.Model) != "" {
-		result.Artifacts["model"] = strings.TrimSpace(request.Model)
-	}
-	if strings.TrimSpace(string(request.Mode)) != "" {
-		result.Artifacts["mode"] = strings.TrimSpace(string(request.Mode))
-	}
-	if strings.TrimSpace(logPath) != "" {
-		result.Artifacts["log_path"] = strings.TrimSpace(logPath)
-	}
-	if !result.StartedAt.IsZero() {
-		result.Artifacts["started_at"] = result.StartedAt.UTC().Format(time.RFC3339)
-	}
-	if !result.FinishedAt.IsZero() {
-		result.Artifacts["finished_at"] = result.FinishedAt.UTC().Format(time.RFC3339)
-	}
-	if request.Metadata != nil {
-		if clonePath := strings.TrimSpace(request.Metadata["clone_path"]); clonePath != "" {
-			result.Artifacts["clone_path"] = clonePath
-		}
-	}
-	if len(result.Artifacts) == 0 {
-		return result, nil
-	}
+	result.Artifacts = contracts.BuildRunnerArtifacts(a.backend, request, result, extras)
 	return result, nil
 }
 
