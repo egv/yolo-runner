@@ -303,6 +303,10 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	if err != nil {
 		return err, nil
 	}
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- proc.Wait()
+	}()
 
 	stderrWriter := newLineWriter(stderrFile, func(line string) {
 		if request.OnProgress == nil {
@@ -324,25 +328,21 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 			runErr = errors.Join(runErr, copyErr)
 		}
 	}()
-	defer func() {
-		killErr := proc.Kill()
-		waitErr := proc.Wait()
-		if runErr == nil {
-			if killErr != nil {
-				runErr = killErr
-			} else if waitErr != nil {
-				runErr = waitErr
-			}
-			return
-		}
-		runErr = errors.Join(runErr, killErr, waitErr)
-	}()
 
 	reader := newJSONRPCPayloadReader(proc.Stdout())
 	writer := proc.Stdin()
-	defer writer.Close()
 
 	nextID := 1
+	threadID := ""
+	turnID := ""
+	defer func() {
+		shutdownErr := shutdownAppServerProcess(proc, writer, waitDone, runErr, threadID, turnID)
+		if runErr == nil {
+			runErr = shutdownErr
+			return
+		}
+		runErr = errors.Join(runErr, shutdownErr)
+	}()
 	call := func(method string, params map[string]any) (contracts.JSONRPCMessage, error) {
 		id := json.RawMessage(strconv.Itoa(nextID))
 		nextID++
@@ -408,7 +408,7 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	if err != nil {
 		return err, completion
 	}
-	threadID := lookupString(lookupMap(threadResp.Result, "thread"), "id")
+	threadID = lookupString(lookupMap(threadResp.Result, "thread"), "id")
 	if threadID == "" {
 		threadID = lookupString(threadResp.Result, "threadId", "thread_id")
 	}
@@ -416,7 +416,7 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 		return errors.New("codex app-server thread/start response missing thread id"), completion
 	}
 
-	if _, err := call("turn/start", map[string]any{
+	turnResp, err := call("turn/start", map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
 			{
@@ -424,15 +424,18 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 				"text": strings.TrimSpace(request.Prompt),
 			},
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		return err, completion
 	}
+	turnID = lookupString(lookupMap(turnResp.Result, "turn"), "id")
 
 	for completion == nil {
 		msg, err := a.readAppServerMessage(ctx, reader, stdoutFile, protocolFile)
 		if err != nil {
 			return err, completion
 		}
+		threadID, turnID = trackAppServerLifecycle(msg, threadID, turnID)
 		nextCompletion, handleErr := a.handleAppServerMessage(ctx, writer, request, msg)
 		if nextCompletion != nil {
 			completion = nextCompletion
@@ -443,6 +446,64 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	}
 
 	return nil, completion
+}
+
+func trackAppServerLifecycle(message contracts.JSONRPCMessage, threadID string, turnID string) (string, string) {
+	nextThreadID := strings.TrimSpace(lookupString(message.Params, "threadId", "thread_id"))
+	if nextThreadID != "" {
+		threadID = nextThreadID
+	}
+	nextTurnID := strings.TrimSpace(lookupString(message.Params, "turnId", "turn_id"))
+	switch strings.TrimSpace(message.Method) {
+	case "turn/started":
+		if nextTurnID != "" {
+			turnID = nextTurnID
+		}
+	case "turn/completed", "turn/failed", "turn/cancelled", "turn/interrupted":
+		turnID = ""
+	}
+	return threadID, turnID
+}
+
+func shutdownAppServerProcess(proc appServerProcess, writer io.WriteCloser, waitDone <-chan error, runErr error, threadID string, turnID string) error {
+	if proc == nil {
+		return nil
+	}
+
+	var shutdownErr error
+	if strings.TrimSpace(turnID) != "" {
+		shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(sendJSONRPCMessage(writer, contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/interrupt",
+			Params: map[string]any{
+				"threadId": threadID,
+				"turnId":   turnID,
+			},
+		})))
+	}
+	shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(sendJSONRPCMessage(writer, contracts.JSONRPCMessage{
+		JSONRPC: "2.0",
+		Method:  "shutdown",
+	})))
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(writer.Close()))
+		killErr := ignoreProcessDoneError(proc.Kill())
+		waitErr := ignoreProcessDoneError(<-waitDone)
+		return errors.Join(shutdownErr, killErr, waitErr)
+	}
+
+	timer := time.NewTimer(defaultAppServerShutdownGracePeriod)
+	defer timer.Stop()
+
+	select {
+	case waitErr := <-waitDone:
+		return errors.Join(shutdownErr, ignoreClosedPipeError(writer.Close()), ignoreProcessDoneError(waitErr))
+	case <-timer.C:
+		shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(writer.Close()))
+		killErr := ignoreProcessDoneError(proc.Kill())
+		waitErr := ignoreProcessDoneError(<-waitDone)
+		return errors.Join(shutdownErr, killErr, waitErr)
+	}
 }
 
 func (a *CLIRunnerAdapter) readAppServerMessage(ctx context.Context, reader *jsonRPCPayloadReader, stdoutFile *os.File, protocolFile *os.File) (contracts.JSONRPCMessage, error) {

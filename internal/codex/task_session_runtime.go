@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/version"
@@ -19,6 +21,8 @@ type TaskSessionRuntime struct {
 	args    []string
 	starter AppServerStarter
 }
+
+const defaultAppServerShutdownGracePeriod = time.Second
 
 func NewTaskSessionRuntime(binary string, args ...string) *TaskSessionRuntime {
 	resolvedBinary := strings.TrimSpace(binary)
@@ -39,10 +43,19 @@ type AppServerTaskSession struct {
 	proc       appServerProcess
 	reader     *jsonRPCPayloadReader
 	writer     io.WriteCloser
-	stderrDone chan error
+	stderrDone chan struct{}
+	waitDone   chan struct{}
 
 	closeOnce sync.Once
 	closeErr  error
+
+	writeMu   sync.Mutex
+	stateMu   sync.Mutex
+	stderrErr error
+	waitErr   error
+	threadID  string
+	turnID    string
+	nextID    int64
 }
 
 func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSessionStartRequest) (_ contracts.TaskSession, err error) {
@@ -73,11 +86,17 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		proc:       proc,
 		reader:     newJSONRPCPayloadReader(proc.Stdout()),
 		writer:     proc.Stdin(),
-		stderrDone: make(chan error, 1),
+		stderrDone: make(chan struct{}),
+		waitDone:   make(chan struct{}),
 	}
 	go func() {
 		_, copyErr := io.Copy(io.Discard, proc.Stderr())
-		session.stderrDone <- copyErr
+		session.stderrErr = copyErr
+		close(session.stderrDone)
+	}()
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
 	}()
 
 	defer func() {
@@ -100,7 +119,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		return nil, err
 	}
 
-	if err = sendJSONRPCMessage(session.writer, contracts.JSONRPCMessage{
+	if err = session.send(contracts.JSONRPCMessage{
 		JSONRPC: "2.0",
 		Method:  "initialized",
 	}); err != nil {
@@ -188,11 +207,12 @@ func (s *AppServerTaskSession) Execute(ctx context.Context, request contracts.Ta
 	if threadID == "" {
 		return errors.New("codex app-server thread/start response missing thread id")
 	}
+	s.setThread(threadID)
 	if completed {
 		return nil
 	}
 
-	_, completed, err = s.callWithExecute(ctx, request, "turn/start", map[string]any{
+	turnResp, completed, err := s.callWithExecute(ctx, request, "turn/start", map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
 			{
@@ -204,6 +224,7 @@ func (s *AppServerTaskSession) Execute(ctx context.Context, request contracts.Ta
 	if err != nil {
 		return err
 	}
+	s.setTurn(lookupString(lookupMap(turnResp.Result, "turn"), "id"), threadID)
 	if completed {
 		return nil
 	}
@@ -223,18 +244,56 @@ func (s *AppServerTaskSession) Execute(ctx context.Context, request contracts.Ta
 	}
 }
 
-func (s *AppServerTaskSession) Cancel(context.Context, contracts.TaskSessionCancellation) error {
+func (s *AppServerTaskSession) Cancel(ctx context.Context, request contracts.TaskSessionCancellation) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s == nil {
 		return errors.New("nil codex app-server task session")
 	}
-	return s.close(true)
+	if request.Force {
+		return s.close(true)
+	}
+	threadID, turnID := s.activeTurn()
+	if threadID == "" || turnID == "" {
+		return nil
+	}
+	return ignoreClosedPipeError(s.send(contracts.JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      s.nextRequestID(),
+		Method:  "turn/interrupt",
+		Params: map[string]any{
+			"threadId": threadID,
+			"turnId":   turnID,
+		},
+	}))
 }
 
-func (s *AppServerTaskSession) Teardown(context.Context, contracts.TaskSessionTeardown) error {
+func (s *AppServerTaskSession) Teardown(ctx context.Context, request contracts.TaskSessionTeardown) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s == nil {
 		return errors.New("nil codex app-server task session")
 	}
-	return s.close(true)
+	if request.Force {
+		return s.close(true)
+	}
+	shutdownErr := ignoreClosedPipeError(s.send(contracts.JSONRPCMessage{
+		JSONRPC: "2.0",
+		ID:      s.nextRequestID(),
+		Method:  "shutdown",
+	}))
+	timer := time.NewTimer(defaultAppServerShutdownGracePeriod)
+	defer timer.Stop()
+	select {
+	case <-s.waitDone:
+		return errors.Join(shutdownErr, s.close(false))
+	case <-timer.C:
+		return errors.Join(shutdownErr, s.close(true))
+	case <-ctx.Done():
+		return errors.Join(shutdownErr, s.close(true))
+	}
 }
 
 func (s *AppServerTaskSession) close(force bool) error {
@@ -245,8 +304,10 @@ func (s *AppServerTaskSession) close(force bool) error {
 		if force {
 			s.closeErr = errors.Join(s.closeErr, ignoreProcessDoneError(s.proc.Kill()))
 		}
-		s.closeErr = errors.Join(s.closeErr, ignoreClosedPipeError(<-s.stderrDone))
-		s.closeErr = errors.Join(s.closeErr, ignoreProcessDoneError(s.proc.Wait()))
+		<-s.stderrDone
+		<-s.waitDone
+		s.closeErr = errors.Join(s.closeErr, ignoreClosedPipeError(s.stderrErr))
+		s.closeErr = errors.Join(s.closeErr, ignoreProcessDoneError(s.waitErr))
 	})
 	return s.closeErr
 }
@@ -260,9 +321,10 @@ func (s *AppServerTaskSession) callWithExecute(ctx context.Context, request cont
 	if s == nil {
 		return contracts.JSONRPCMessage{}, false, errors.New("nil codex app-server task session")
 	}
-	if err := sendJSONRPCMessage(s.writer, contracts.JSONRPCMessage{
+	id := s.nextRequestID()
+	if err := s.send(contracts.JSONRPCMessage{
 		JSONRPC: "2.0",
-		ID:      json.RawMessage("1"),
+		ID:      id,
 		Method:  method,
 		Params:  params,
 	}); err != nil {
@@ -284,7 +346,7 @@ func (s *AppServerTaskSession) callWithExecute(ctx context.Context, request cont
 			}
 			continue
 		}
-		if normalizeJSONID(message.ID) != "1" {
+		if normalizeJSONID(message.ID) != normalizeJSONID(id) {
 			continue
 		}
 		if message.Error != nil {
@@ -295,6 +357,7 @@ func (s *AppServerTaskSession) callWithExecute(ctx context.Context, request cont
 }
 
 func (s *AppServerTaskSession) handleExecuteMessage(ctx context.Context, request contracts.TaskSessionExecuteRequest, message contracts.JSONRPCMessage) (bool, error) {
+	s.trackLifecycle(message)
 	if event, completion, ok := NormalizeAppServerNotification(message, request.Mode); ok {
 		if request.EventSink != nil {
 			if err := request.EventSink.HandleEvent(ctx, event); err != nil {
@@ -317,7 +380,7 @@ func (s *AppServerTaskSession) handleExecuteMessage(ctx context.Context, request
 	if response == nil {
 		return false, nil
 	}
-	if err := sendJSONRPCMessage(s.writer, contracts.JSONRPCMessage{
+	if err := s.send(contracts.JSONRPCMessage{
 		JSONRPC: "2.0",
 		ID:      message.ID,
 		Result:  response,
@@ -325,6 +388,63 @@ func (s *AppServerTaskSession) handleExecuteMessage(ctx context.Context, request
 		return false, err
 	}
 	return false, nil
+}
+
+func (s *AppServerTaskSession) nextRequestID() json.RawMessage {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.nextID++
+	return json.RawMessage(strconv.FormatInt(s.nextID, 10))
+}
+
+func (s *AppServerTaskSession) send(message contracts.JSONRPCMessage) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return sendJSONRPCMessage(s.writer, message)
+}
+
+func (s *AppServerTaskSession) setThread(threadID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if strings.TrimSpace(threadID) != "" {
+		s.threadID = strings.TrimSpace(threadID)
+	}
+}
+
+func (s *AppServerTaskSession) setTurn(turnID string, fallbackThreadID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if strings.TrimSpace(fallbackThreadID) != "" && strings.TrimSpace(s.threadID) == "" {
+		s.threadID = strings.TrimSpace(fallbackThreadID)
+	}
+	if strings.TrimSpace(turnID) != "" {
+		s.turnID = strings.TrimSpace(turnID)
+	}
+}
+
+func (s *AppServerTaskSession) activeTurn() (string, string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.threadID, s.turnID
+}
+
+func (s *AppServerTaskSession) trackLifecycle(message contracts.JSONRPCMessage) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	threadID := lookupString(message.Params, "threadId", "thread_id")
+	turnID := lookupString(message.Params, "turnId", "turn_id")
+	if threadID != "" {
+		s.threadID = threadID
+	}
+	switch strings.TrimSpace(message.Method) {
+	case "turn/started":
+		if turnID != "" {
+			s.turnID = turnID
+		}
+	case "turn/completed", "turn/failed", "turn/cancelled", "turn/interrupted":
+		s.turnID = ""
+	}
 }
 
 func buildAppServerRequestResponse(ctx context.Context, message contracts.JSONRPCMessage, request contracts.TaskSessionExecuteRequest) (map[string]any, error) {
