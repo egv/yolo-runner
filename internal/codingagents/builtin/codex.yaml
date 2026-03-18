@@ -4,13 +4,7 @@ backend: codex
 model: gpt-5.3-codex
 binary: codex
 args:
-  - "exec"
-  - "--dangerously-bypass-approvals-and-sandbox"
-  - "--model"
-  - "{{model}}"
-  - "-c"
-  - "model_reasoning_effort=\"medium\""
-  - "{{prompt}}"
+  - "app-server"
 capabilities:
   languages:
     - go

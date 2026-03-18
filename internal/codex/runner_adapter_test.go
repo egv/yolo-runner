@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +14,263 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
+
+type fakeAppServerProcess struct {
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
+	stderr  io.ReadCloser
+	waitCh  chan error
+	killFn  func() error
+	waitErr error
+}
+
+func (p *fakeAppServerProcess) Stdin() io.WriteCloser  { return p.stdin }
+func (p *fakeAppServerProcess) Stdout() io.ReadCloser  { return p.stdout }
+func (p *fakeAppServerProcess) Stderr() io.ReadCloser  { return p.stderr }
+func (p *fakeAppServerProcess) Wait() error            { return <-p.waitCh }
+func (p *fakeAppServerProcess) Kill() error {
+	if p.killFn != nil {
+		return p.killFn()
+	}
+	return nil
+}
+
+func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *testing.T) {
+	tests := []struct {
+		name         string
+		message      contracts.JSONRPCMessage
+		mode         contracts.RunnerMode
+		wantType     contracts.TaskSessionEventType
+		wantProgress string
+		assert       func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress)
+	}{
+		{
+			name: "thread started",
+			message: contracts.JSONRPCMessage{
+				Method: "thread/started",
+				Params: map[string]any{
+					"threadId": "thread-1",
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeLifecycle,
+			wantProgress: string(contracts.EventTypeRunnerProgress),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if event.SessionID != "thread-1" {
+					t.Fatalf("expected session id thread-1, got %q", event.SessionID)
+				}
+				if event.Lifecycle == nil || event.Lifecycle.State != contracts.TaskSessionLifecycleReady {
+					t.Fatalf("expected ready lifecycle, got %#v", event.Lifecycle)
+				}
+				if progress.Metadata["thread_id"] != "thread-1" {
+					t.Fatalf("expected thread_id metadata, got %#v", progress.Metadata)
+				}
+			},
+		},
+		{
+			name: "turn started",
+			message: contracts.JSONRPCMessage{
+				Method: "turn/started",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeLifecycle,
+			wantProgress: string(contracts.EventTypeRunnerProgress),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if event.Lifecycle == nil || event.Lifecycle.State != contracts.TaskSessionLifecycleRunning {
+					t.Fatalf("expected running lifecycle, got %#v", event.Lifecycle)
+				}
+				if progress.Metadata["turn_id"] != "turn-2" {
+					t.Fatalf("expected turn_id metadata, got %#v", progress.Metadata)
+				}
+			},
+		},
+		{
+			name: "item started",
+			message: contracts.JSONRPCMessage{
+				Method: "item/started",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+					"item": map[string]any{
+						"id":    "item-3",
+						"type":  "command_execution",
+						"title": "Run tests",
+					},
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeProgress,
+			wantProgress: string(contracts.EventTypeRunnerProgress),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if event.Progress == nil || event.Progress.Phase != "command_execution" {
+					t.Fatalf("expected command_execution phase, got %#v", event.Progress)
+				}
+				if progress.Metadata["item_id"] != "item-3" || progress.Metadata["item_type"] != "command_execution" {
+					t.Fatalf("expected item metadata, got %#v", progress.Metadata)
+				}
+				if progress.Message != "Run tests" {
+					t.Fatalf("expected item title message, got %q", progress.Message)
+				}
+			},
+		},
+		{
+			name: "approval request",
+			message: contracts.JSONRPCMessage{
+				Method: "item/commandExecution/requestApproval",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+					"itemId":   "item-4",
+					"id":       "approval-5",
+					"title":    "Run pnpm test",
+					"reason":   "run tests",
+					"command":  []any{"pnpm", "test"},
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeApprovalRequired,
+			wantProgress: string(contracts.EventTypeRunnerWarning),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if event.Approval == nil {
+					t.Fatalf("expected approval event")
+				}
+				if event.Approval.Request.Kind != contracts.TaskSessionApprovalKindCommand {
+					t.Fatalf("expected command approval kind, got %q", event.Approval.Request.Kind)
+				}
+				if !reflect.DeepEqual(event.Approval.Request.Command, []string{"pnpm", "test"}) {
+					t.Fatalf("unexpected approval command %#v", event.Approval.Request.Command)
+				}
+				if progress.Metadata["approval_id"] != "approval-5" {
+					t.Fatalf("expected approval_id metadata, got %#v", progress.Metadata)
+				}
+			},
+		},
+		{
+			name: "item delta",
+			message: contracts.JSONRPCMessage{
+				Method: "item/agentMessage/delta",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+					"itemId":   "item-6",
+					"delta":    "all tests passed",
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeOutput,
+			wantProgress: string(contracts.EventTypeRunnerOutput),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if progress.Message != "all tests passed" {
+					t.Fatalf("expected delta message, got %q", progress.Message)
+				}
+				if progress.Metadata["item_id"] != "item-6" {
+					t.Fatalf("expected item_id metadata, got %#v", progress.Metadata)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event, completion, ok := NormalizeAppServerNotification(tt.message, tt.mode)
+			if !ok {
+				t.Fatalf("expected notification to normalize")
+			}
+			if completion != nil {
+				t.Fatalf("did not expect completion for %s, got %#v", tt.message.Method, completion)
+			}
+			if event.Type != tt.wantType {
+				t.Fatalf("expected event type %q, got %q", tt.wantType, event.Type)
+			}
+			progress, completion, ok := RunnerProgressFromAppServerNotification(tt.message, tt.mode)
+			if !ok {
+				t.Fatalf("expected progress to normalize")
+			}
+			if completion != nil {
+				t.Fatalf("did not expect completion in progress path for %s, got %#v", tt.message.Method, completion)
+			}
+			if progress.Type != tt.wantProgress {
+				t.Fatalf("expected progress type %q, got %q", tt.wantProgress, progress.Type)
+			}
+			tt.assert(t, event, progress)
+		})
+	}
+}
+
+func TestNormalizeAppServerNotificationMapsCompletionIntoReviewArtifacts(t *testing.T) {
+	message := contracts.JSONRPCMessage{
+		Method: "turn/completed",
+		Params: map[string]any{
+			"threadId":   "thread-review",
+			"turnId":     "turn-review",
+			"stopReason": "end_turn",
+			"output": map[string]any{
+				"text": "REVIEW_VERDICT: fail\nREVIEW_FAIL_FEEDBACK: missing retry regression test\n",
+			},
+		},
+	}
+
+	event, completion, ok := NormalizeAppServerNotification(message, contracts.RunnerModeReview)
+	if !ok {
+		t.Fatalf("expected completion notification to normalize")
+	}
+	if event.Type != contracts.TaskSessionEventTypeLifecycle {
+		t.Fatalf("expected lifecycle completion event, got %q", event.Type)
+	}
+	if event.Lifecycle == nil || event.Lifecycle.State != contracts.TaskSessionLifecycleStopped {
+		t.Fatalf("expected stopped lifecycle, got %#v", event.Lifecycle)
+	}
+	if completion == nil {
+		t.Fatalf("expected completion metadata")
+	}
+	if completion.Reason != "end_turn" {
+		t.Fatalf("expected completion reason end_turn, got %q", completion.Reason)
+	}
+	if completion.ReviewReady {
+		t.Fatalf("expected failing review completion to keep ReviewReady=false")
+	}
+	if completion.Artifacts["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict artifact, got %#v", completion.Artifacts)
+	}
+	if completion.Artifacts["review_fail_feedback"] != "missing retry regression test" {
+		t.Fatalf("expected review_fail_feedback artifact, got %#v", completion.Artifacts)
+	}
+
+	progress, progressCompletion, ok := RunnerProgressFromAppServerNotification(message, contracts.RunnerModeReview)
+	if !ok {
+		t.Fatalf("expected completion progress")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerProgress) {
+		t.Fatalf("expected runner_progress type, got %q", progress.Type)
+	}
+	if progress.Metadata["reason"] != "end_turn" {
+		t.Fatalf("expected completion reason metadata, got %#v", progress.Metadata)
+	}
+	if !reflect.DeepEqual(progressCompletion, completion) {
+		t.Fatalf("expected progress completion %#v, got %#v", completion, progressCompletion)
+	}
+
+	result := contracts.RunnerResult{Status: contracts.RunnerResultCompleted}
+	ApplyAppServerCompletion(&result, progressCompletion)
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false after failing review completion")
+	}
+	if result.Artifacts["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict artifact after apply, got %#v", result.Artifacts)
+	}
+	if result.Artifacts["review_fail_feedback"] != "missing retry regression test" {
+		t.Fatalf("expected review_fail_feedback after apply, got %#v", result.Artifacts)
+	}
+}
 
 func TestCLIRunnerAdapterImplementsContract(t *testing.T) {
 	var _ contracts.AgentRunner = (*CLIRunnerAdapter)(nil)
@@ -47,7 +305,7 @@ func TestCLIRunnerAdapterRunsCodexAndStreamsProgress(t *testing.T) {
 	if gotSpec.Binary != "codex-bin" {
 		t.Fatalf("expected binary codex-bin, got %q", gotSpec.Binary)
 	}
-	expectedArgs := []string{"exec", "--dangerously-bypass-approvals-and-sandbox", "--model", "openai/gpt-5.3-codex", "implement feature"}
+	expectedArgs := []string{"app-server"}
 	if !reflect.DeepEqual(gotSpec.Args, expectedArgs) {
 		t.Fatalf("unexpected args: %#v", gotSpec.Args)
 	}
@@ -183,6 +441,423 @@ func TestCLIRunnerAdapterExtractsStructuredReviewFailFeedback(t *testing.T) {
 	}
 	if result.Artifacts["review_fail_feedback"] != "missing e2e assertion for retry path" {
 		t.Fatalf("expected review_fail_feedback artifact, got %#v", result.Artifacts)
+	}
+}
+
+func TestCLIRunnerAdapterMapsAppServerNotificationsIntoProgressAndReviewCompletion(t *testing.T) {
+	repoRoot := t.TempDir()
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		messages := []contracts.JSONRPCMessage{
+			{
+				Method: "thread/started",
+				Params: map[string]any{"threadId": "thread-1"},
+			},
+			{
+				Method: "turn/started",
+				Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1"},
+			},
+			{
+				Method: "item/started",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-1",
+					"item": map[string]any{
+						"id":    "item-1",
+						"type":  "command_execution",
+						"title": "Run tests",
+					},
+				},
+			},
+			{
+				Method: "item/agentMessage/delta",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-1",
+					"itemId":   "item-2",
+					"delta":    "running tests",
+				},
+			},
+			{
+				Method: "item/commandExecution/requestApproval",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-1",
+					"itemId":   "item-3",
+					"id":       "approval-1",
+					"title":    "Run go test",
+					"reason":   "execute integration test",
+					"command":  []any{"go", "test", "./internal/codex"},
+				},
+			},
+			{
+				Method: "turn/completed",
+				Params: map[string]any{
+					"threadId":   "thread-1",
+					"turnId":     "turn-1",
+					"stopReason": "end_turn",
+					"output": map[string]any{
+						"text": "REVIEW_VERDICT: fail\nREVIEW_FAIL_FEEDBACK: add app-server progress coverage\n",
+					},
+				},
+			},
+		}
+		encoder := json.NewEncoder(spec.Stdout)
+		for _, message := range messages {
+			if err := encoder.Encode(message); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-review-app-server",
+		RepoRoot: repoRoot,
+		Prompt:   "review",
+		Mode:     contracts.RunnerModeReview,
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(updates) != 6 {
+		t.Fatalf("expected 6 mapped progress updates, got %d: %#v", len(updates), updates)
+	}
+	if updates[0].Type != string(contracts.EventTypeRunnerProgress) || updates[0].Metadata["state"] != string(contracts.TaskSessionLifecycleReady) {
+		t.Fatalf("expected thread started lifecycle progress, got %#v", updates[0])
+	}
+	if updates[1].Type != string(contracts.EventTypeRunnerProgress) || updates[1].Metadata["turn_id"] != "turn-1" {
+		t.Fatalf("expected turn started progress, got %#v", updates[1])
+	}
+	if updates[2].Type != string(contracts.EventTypeRunnerProgress) || updates[2].Message != "Run tests" {
+		t.Fatalf("expected item progress, got %#v", updates[2])
+	}
+	if updates[3].Type != string(contracts.EventTypeRunnerOutput) || updates[3].Message != "running tests" {
+		t.Fatalf("expected delta output progress, got %#v", updates[3])
+	}
+	if updates[4].Type != string(contracts.EventTypeRunnerWarning) || updates[4].Metadata["approval_id"] != "approval-1" {
+		t.Fatalf("expected approval warning progress, got %#v", updates[4])
+	}
+	if updates[5].Type != string(contracts.EventTypeRunnerProgress) || updates[5].Metadata["reason"] != "end_turn" {
+		t.Fatalf("expected completion progress with reason metadata, got %#v", updates[5])
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected ReviewReady=false for failing review verdict")
+	}
+	if result.Reason != "end_turn" {
+		t.Fatalf("expected result reason end_turn, got %q", result.Reason)
+	}
+	if result.Artifacts["review_verdict"] != "fail" {
+		t.Fatalf("expected review_verdict artifact, got %#v", result.Artifacts)
+	}
+	if result.Artifacts["review_fail_feedback"] != "add app-server progress coverage" {
+		t.Fatalf("expected review_fail_feedback artifact, got %#v", result.Artifacts)
+	}
+	protocolPath := strings.TrimSuffix(result.LogPath, ".jsonl") + ".protocol.log"
+	protocolContent, err := os.ReadFile(protocolPath)
+	if err != nil {
+		t.Fatalf("read protocol log: %v", err)
+	}
+	if !strings.Contains(string(protocolContent), "\"method\":\"turn/completed\"") {
+		t.Fatalf("expected protocol log to capture app-server notifications, got %q", string(protocolContent))
+	}
+}
+
+func TestCLIRunnerAdapterUsesAppServerJSONRPCProductionPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientWriter, clientReader := harness.ClientIO()
+	stderrReader, stderrWriter := io.Pipe()
+	waitCh := make(chan error, 1)
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: stderrReader,
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		_ = stderrWriter.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+
+	var gotSpec CommandSpec
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("codex-bin", nil)
+	adapter.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		gotSpec = spec
+		return proc, nil
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"protocolVersion": 2},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if msg.Params["cwd"] != repoRoot {
+			serverDone <- errors.New("expected thread/start cwd to match repo root")
+			return
+		}
+		if msg.Params["approvalPolicy"] != "never" {
+			serverDone <- errors.New("expected thread/start approval policy never")
+			return
+		}
+		if msg.Params["sandbox"] != "danger-full-access" {
+			serverDone <- errors.New("expected thread/start sandbox danger-full-access")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result: map[string]any{
+				"thread":         map[string]any{"id": "thread-1"},
+				"approvalPolicy": "never",
+				"cwd":            repoRoot,
+				"model":          "openai/gpt-5.3-codex",
+				"modelProvider":  "openai",
+				"sandbox":        "danger-full-access",
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "thread/started",
+			Params:  map[string]any{"threadId": "thread-1"},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "turn/start" {
+			serverDone <- errors.New("expected turn/start request")
+			return
+		}
+		if msg.Params["threadId"] != "thread-1" {
+			serverDone <- errors.New("expected turn/start thread id")
+			return
+		}
+		input, ok := msg.Params["input"].([]any)
+		if !ok || len(input) != 1 {
+			serverDone <- errors.New("expected one turn/start input item")
+			return
+		}
+		firstInput, ok := input[0].(map[string]any)
+		if !ok || firstInput["text"] != "review prompt" {
+			serverDone <- errors.New("expected prompt text in turn/start input")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"turn": map[string]any{"id": "turn-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		for _, message := range []contracts.JSONRPCMessage{
+			{JSONRPC: "2.0", Method: "turn/started", Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1"}},
+			{JSONRPC: "2.0", Method: "item/started", Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "item": map[string]any{"id": "item-1", "type": "command_execution", "title": "Run tests"}}},
+			{JSONRPC: "2.0", Method: "item/mcpToolCall/progress", Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "item": map[string]any{"id": "item-tool", "type": "mcpToolCall", "title": "Search code"}}},
+			{JSONRPC: "2.0", Method: "item/agentMessage/delta", Params: map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-2", "delta": "running tests"}},
+		} {
+			if err := harness.SendMessage(message); err != nil {
+				serverDone <- err
+				return
+			}
+		}
+
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      json.RawMessage("99"),
+			Method:  "item/commandExecution/requestApproval",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "item-3",
+				"id":       "approval-1",
+				"title":    "Run go test",
+				"reason":   "execute integration test",
+				"command":  []any{"go", "test", "./internal/codex"},
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if string(msg.ID) != "99" || msg.Result["decision"] != "accept" {
+			serverDone <- errors.New("expected approval response with accept decision")
+			return
+		}
+
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/completed",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"stopReason": "end_turn",
+				"output": map[string]any{
+					"text": "REVIEW_VERDICT: fail\nREVIEW_FAIL_FEEDBACK: app-server production path coverage missing\n",
+				},
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		serverDone <- nil
+	}()
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-app-server",
+		RepoRoot: repoRoot,
+		Prompt:   "review prompt",
+		Model:    "openai/gpt-5.3-codex",
+		Mode:     contracts.RunnerModeReview,
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("app-server interaction failed: %v", err)
+	}
+	if gotSpec.Binary != "codex-bin" {
+		t.Fatalf("expected codex-bin binary, got %q", gotSpec.Binary)
+	}
+	if !reflect.DeepEqual(gotSpec.Args, []string{"app-server"}) {
+		t.Fatalf("expected app-server args, got %#v", gotSpec.Args)
+	}
+	if len(updates) != 7 {
+		t.Fatalf("expected 7 progress updates, got %d: %#v", len(updates), updates)
+	}
+	if updates[2].Message != "Run tests" {
+		t.Fatalf("expected item progress message Run tests, got %#v", updates[2])
+	}
+	if updates[3].Metadata["item_type"] != "mcpToolCall" {
+		t.Fatalf("expected tool progress metadata, got %#v", updates[3])
+	}
+	if updates[4].Type != string(contracts.EventTypeRunnerOutput) || updates[4].Message != "running tests" {
+		t.Fatalf("expected delta runner output, got %#v", updates[4])
+	}
+	if updates[5].Metadata["approval_id"] != "approval-1" {
+		t.Fatalf("expected approval progress metadata, got %#v", updates[5])
+	}
+	if updates[6].Metadata["reason"] != "end_turn" {
+		t.Fatalf("expected completion progress metadata, got %#v", updates[6])
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed result, got %q (%s)", result.Status, result.Reason)
+	}
+	if result.Reason != "end_turn" {
+		t.Fatalf("expected completion reason end_turn, got %q", result.Reason)
+	}
+	if result.ReviewReady {
+		t.Fatalf("expected failing review verdict to keep ReviewReady=false")
+	}
+	if result.Artifacts["review_verdict"] != "fail" {
+		t.Fatalf("expected review verdict artifact, got %#v", result.Artifacts)
+	}
+	if result.Artifacts["review_fail_feedback"] != "app-server production path coverage missing" {
+		t.Fatalf("expected review feedback artifact, got %#v", result.Artifacts)
+	}
+}
+
+func TestCLIRunnerAdapterPreservesLogDerivedReviewReadyWhenCompletionHasNoVerdict(t *testing.T) {
+	repoRoot := t.TempDir()
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, "REVIEW_VERDICT: pass\n")
+		return json.NewEncoder(spec.Stdout).Encode(contracts.JSONRPCMessage{
+			Method: "turn/completed",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"stopReason": "end_turn",
+				"output": map[string]any{
+					"text": "review finished without explicit completion verdict",
+				},
+			},
+		})
+	}))
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-review-mixed",
+		RepoRoot: repoRoot,
+		Prompt:   "review",
+		Mode:     contracts.RunnerModeReview,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if !result.ReviewReady {
+		t.Fatalf("expected ReviewReady=true from stdout verdict when completion contains no verdict")
+	}
+	if verdict := result.Artifacts["review_verdict"]; verdict != "pass" {
+		t.Fatalf("expected review_verdict=pass artifact, got %#v", result.Artifacts)
 	}
 }
 
