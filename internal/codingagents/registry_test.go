@@ -100,6 +100,37 @@ func TestAgentRegistryDiscoverByCapability(t *testing.T) {
 	}
 }
 
+func TestAgentRegistryBuiltinCodexCLIDoesNotExposeServerOnlyDistributedCapabilities(t *testing.T) {
+	registry := NewAgentRegistry("")
+	if err := registry.Load(); err != nil {
+		t.Fatalf("load registry: %v", err)
+	}
+
+	serviceProxy := registry.Discover(distributed.CapabilityServiceProxy)
+	if !registryMatchesBackend(serviceProxy, "codex") {
+		t.Fatalf("expected codex to match service_proxy, got %#v", serviceProxy)
+	}
+	largerModel := registry.Discover(distributed.CapabilityLargerModel)
+	if !registryMatchesBackend(largerModel, "codex") {
+		t.Fatalf("expected codex to match larger_model, got %#v", largerModel)
+	}
+	if registryMatchesBackend(serviceProxy, "codex-cli") {
+		t.Fatalf("did not expect codex-cli to match service_proxy, got %#v", serviceProxy)
+	}
+	if registryMatchesBackend(largerModel, "codex-cli") {
+		t.Fatalf("did not expect codex-cli to match larger_model, got %#v", largerModel)
+	}
+}
+
+func registryMatchesBackend(definitions []BackendDefinition, name string) bool {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAgentRegistryHealthCheckAll(t *testing.T) {
 	registry := NewAgentRegistry("")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

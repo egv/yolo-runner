@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/codex"
+	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/github"
@@ -291,6 +293,88 @@ func TestRunMainAcceptsAgentBackendFlag(t *testing.T) {
 	}
 	if got.backend != backendCodex {
 		t.Fatalf("expected backend=%q, got %q", backendCodex, got.backend)
+	}
+}
+
+func TestRunMainAcceptsCodexCLILegacyFallbackBackend(t *testing.T) {
+	called := false
+	var got runConfig
+	run := func(_ context.Context, cfg runConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	code := RunMain([]string{"--repo", "/repo", "--root", "root-1", "--agent-backend", "codex-cli"}, run)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected run function to be called")
+	}
+	if got.backend != "codex-cli" {
+		t.Fatalf("expected backend=%q, got %q", "codex-cli", got.backend)
+	}
+}
+
+func TestBuildRunnerAdapterUsesCodexAppServerAndCodexCLIFallback(t *testing.T) {
+	repoRoot := t.TempDir()
+	binDir := t.TempDir()
+	binaryPath := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nprintf 'REVIEW_VERDICT: pass\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	catalog, err := codingagents.LoadCatalog(repoRoot)
+	if err != nil {
+		t.Fatalf("load coding agent catalog: %v", err)
+	}
+
+	appServerRunner, err := buildRunnerAdapter(runConfig{
+		backend:      backendCodex,
+		codingAgents: catalog,
+	})
+	if err != nil {
+		t.Fatalf("build codex app-server adapter: %v", err)
+	}
+	if _, ok := appServerRunner.(*codex.CLIRunnerAdapter); !ok {
+		t.Fatalf("expected %q backend to use codex app-server adapter, got %T", backendCodex, appServerRunner)
+	}
+
+	fallbackRunner, err := buildRunnerAdapter(runConfig{
+		backend:      backendCodexCLI,
+		codingAgents: catalog,
+	})
+	if err != nil {
+		t.Fatalf("build codex-cli fallback adapter: %v", err)
+	}
+	fallback, ok := fallbackRunner.(*codingagents.GenericCLIRunnerAdapter)
+	if !ok {
+		t.Fatalf("expected %q backend to use generic CLI adapter, got %T", backendCodexCLI, fallbackRunner)
+	}
+
+	result, err := fallback.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-1",
+		Prompt:   "legacy fallback",
+		Mode:     contracts.RunnerModeReview,
+		Model:    "openai/gpt-5.3-codex",
+		RepoRoot: repoRoot,
+	})
+	if err != nil {
+		t.Fatalf("run codex-cli fallback adapter: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected codex-cli fallback to complete, got %s", result.Status)
+	}
+	if result.Artifacts["backend"] != backendCodexCLI {
+		t.Fatalf("expected fallback backend artifact %q, got %q", backendCodexCLI, result.Artifacts["backend"])
+	}
+	if result.Artifacts["review_verdict"] != "pass" {
+		t.Fatalf("expected fallback review verdict pass, got %#v", result.Artifacts)
+	}
+	if !result.ReviewReady {
+		t.Fatalf("expected fallback review run to be marked ready")
 	}
 }
 

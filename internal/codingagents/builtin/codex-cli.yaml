@@ -1,0 +1,29 @@
+name: codex-cli
+type: command
+backend: codex-cli
+model: gpt-5.3-codex
+binary: codex
+args:
+  - exec
+  - --json
+  - --skip-git-repo-check
+  - --model
+  - "{{model}}"
+  - "{{prompt}}"
+capabilities:
+  languages:
+    - go
+    - python
+    - typescript
+  features:
+    - implement
+    - review
+    - stream
+config:
+  timeout: 45s
+adapter: command
+supports_review: true
+supports_stream: true
+distributed_capabilities:
+  - implement
+  - review

@@ -40,6 +40,9 @@ supports_stream: true
 	if _, ok := catalog.Backend("opencode"); !ok {
 		t.Fatalf("expected builtin opencode backend to be discovered")
 	}
+	if _, ok := catalog.Backend("codex-cli"); !ok {
+		t.Fatalf("expected builtin codex-cli backend to be discovered")
+	}
 }
 
 func TestCatalogValidateBackendUsageChecksModelAndCredentials(t *testing.T) {
@@ -177,5 +180,34 @@ config:
 	}
 	if !strings.Contains(definition.Model, "unified-v1") {
 		t.Fatalf("expected configured model to be retained, got %q", definition.Model)
+	}
+}
+
+func TestCatalogBuiltinCodexCLIPreservesLegacyFallbackCapabilitiesOnly(t *testing.T) {
+	catalog, err := LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	codexCLI, ok := catalog.Backend("codex-cli")
+	if !ok {
+		t.Fatal("expected builtin codex-cli backend")
+	}
+	if hasDistributedCapability(codexCLI.DistributedCaps, distributed.CapabilityServiceProxy) {
+		t.Fatalf("did not expect codex-cli to advertise service_proxy, got %#v", codexCLI.DistributedCaps)
+	}
+	if hasDistributedCapability(codexCLI.DistributedCaps, distributed.CapabilityLargerModel) {
+		t.Fatalf("did not expect codex-cli to advertise larger_model, got %#v", codexCLI.DistributedCaps)
+	}
+
+	codex, ok := catalog.Backend("codex")
+	if !ok {
+		t.Fatal("expected builtin codex backend")
+	}
+	if !hasDistributedCapability(codex.DistributedCaps, distributed.CapabilityServiceProxy) {
+		t.Fatalf("expected codex to advertise service_proxy, got %#v", codex.DistributedCaps)
+	}
+	if !hasDistributedCapability(codex.DistributedCaps, distributed.CapabilityLargerModel) {
+		t.Fatalf("expected codex to advertise larger_model, got %#v", codex.DistributedCaps)
 	}
 }
