@@ -3,6 +3,8 @@
 
 # Build artifacts
 bin/
+yolo-agent
+yolo-runner
 
 # Runtime logs and OpenCode outputs
 runner-logs/
