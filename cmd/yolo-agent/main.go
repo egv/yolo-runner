@@ -30,6 +30,7 @@ import (
 const (
 	backendOpenCode     = "opencode"
 	backendCodex        = "codex"
+	backendCodexCLI     = "codex-cli"
 	backendClaude       = "claude"
 	backendKimi         = "kimi"
 	backendGemini       = "gemini"
@@ -136,8 +137,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "Repository root")
 	root := fs.String("root", "", "Root task ID")
-	backend := fs.String("backend", "", "DEPRECATED: use --agent-backend (opencode, codex, claude, kimi, gemini)")
-	agentBackend := fs.String("agent-backend", "", "Runner backend (opencode, codex, claude, kimi, gemini)")
+	backend := fs.String("backend", "", "DEPRECATED: use --agent-backend (opencode, codex, codex-cli, claude, kimi, gemini)")
+	agentBackend := fs.String("agent-backend", "", "Runner backend (opencode, codex, codex-cli, claude, kimi, gemini)")
 	model := fs.String("model", "", "Model for CLI agent")
 	profile := fs.String("profile", "", "Tracker profile name from .yolo-runner/config.yaml")
 	qualityThreshold := fs.Int("quality-threshold", 0, "Minimum quality score required to run a task")

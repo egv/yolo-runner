@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/claude"
-	"github.com/egv/yolo-runner/v2/internal/codex"
 	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	githubtracker "github.com/egv/yolo-runner/v2/internal/github"
@@ -298,7 +297,7 @@ func TestE2E_CodexTKConcurrency2LandsViaMergeQueue(t *testing.T) {
 	taskTwoID := mustCreateTicket(t, runner, "Task 2", "task", "1", rootID)
 
 	taskManager := tk.NewTaskManager(runner)
-	fakeCodex := codex.NewCLIRunnerAdapter(writeFakeCodexBinary(t), nil)
+	fakeCodex := codingagents.NewGenericCLIRunnerAdapter(backendCodexCLI, writeFakeCodexBinary(t), []string{"exec"}, nil)
 	fakeVCS := &fakeVCS{}
 
 	originalStdout := os.Stdout
@@ -314,7 +313,7 @@ func TestE2E_CodexTKConcurrency2LandsViaMergeQueue(t *testing.T) {
 	runErr := runWithComponents(context.Background(), runConfig{
 		repoRoot:    repo,
 		rootID:      rootID,
-		backend:     backendCodex,
+		backend:     backendCodexCLI,
 		model:       "openai/gpt-5.3-codex",
 		maxTasks:    2,
 		concurrency: 2,
@@ -349,7 +348,7 @@ func TestE2E_CodexTKConcurrency2LandsViaMergeQueue(t *testing.T) {
 		}
 		if event.Type == contracts.EventTypeRunStarted {
 			sawRunStarted = true
-			if event.Metadata["backend"] == backendCodex {
+			if event.Metadata["backend"] == backendCodexCLI {
 				sawCodexBackend = true
 			}
 			if event.Metadata["concurrency"] == "2" {
@@ -364,7 +363,7 @@ func TestE2E_CodexTKConcurrency2LandsViaMergeQueue(t *testing.T) {
 		t.Fatalf("expected run_started event in stream, got %q", string(raw))
 	}
 	if !sawCodexBackend {
-		t.Fatalf("expected run_started metadata backend=%q, got %q", backendCodex, string(raw))
+		t.Fatalf("expected run_started metadata backend=%q, got %q", backendCodexCLI, string(raw))
 	}
 	if !sawConcurrencyTwo {
 		t.Fatalf("expected run_started metadata concurrency=2, got %q", string(raw))
@@ -818,7 +817,7 @@ profiles:
 	if err != nil {
 		t.Fatalf("build github task manager from profile: %v", err)
 	}
-	codexRunner := codex.NewCLIRunnerAdapter(writeFakeCodexBinary(t), nil)
+	codexRunner := codingagents.NewGenericCLIRunnerAdapter(backendCodexCLI, writeFakeCodexBinary(t), []string{"exec"}, nil)
 	fakeVCS := &fakeVCS{}
 
 	originalStdout := os.Stdout
@@ -834,7 +833,7 @@ profiles:
 	runErr := runWithComponents(context.Background(), runConfig{
 		repoRoot:    repo,
 		rootID:      rootID,
-		backend:     backendCodex,
+		backend:     backendCodexCLI,
 		profile:     profile.Name,
 		trackerType: profile.Tracker.Type,
 		model:       "openai/gpt-5.3-codex",
@@ -866,7 +865,7 @@ profiles:
 	for _, event := range events {
 		if event.Type == contracts.EventTypeRunStarted {
 			sawRunStarted = true
-			if event.Metadata["backend"] == backendCodex {
+			if event.Metadata["backend"] == backendCodexCLI {
 				sawCodexBackend = true
 			}
 			if event.Metadata["tracker"] == trackerTypeGitHub {
@@ -883,10 +882,10 @@ profiles:
 		if event.Type != contracts.EventTypeRunnerFinished {
 			continue
 		}
-		if event.Metadata["backend"] == backendCodex {
+		if event.Metadata["backend"] == backendCodexCLI {
 			sawCodexRunnerFinished = true
 		}
-		if event.Metadata["backend"] == backendCodex && event.Metadata["review_verdict"] == "pass" {
+		if event.Metadata["backend"] == backendCodexCLI && event.Metadata["review_verdict"] == "pass" {
 			sawReviewPassVerdict = true
 		}
 	}
@@ -894,7 +893,7 @@ profiles:
 		t.Fatalf("expected run_started event in stream, got %q", string(raw))
 	}
 	if !sawCodexBackend {
-		t.Fatalf("expected run_started metadata backend=%q, got %q", backendCodex, string(raw))
+		t.Fatalf("expected run_started metadata backend=%q, got %q", backendCodexCLI, string(raw))
 	}
 	if !sawGitHubTracker {
 		t.Fatalf("expected run_started metadata tracker=%q, got %q", trackerTypeGitHub, string(raw))
@@ -903,7 +902,7 @@ profiles:
 		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
 	}
 	if !sawCodexRunnerFinished {
-		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendCodex, string(raw))
+		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendCodexCLI, string(raw))
 	}
 	if !sawReviewPassVerdict {
 		t.Fatalf("expected codex review verdict metadata to include pass, got %q", string(raw))

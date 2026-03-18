@@ -32,6 +32,10 @@ func defaultBackendCapabilityMatrix() map[string]backendCapabilities {
 			SupportsReview: true,
 			SupportsStream: true,
 		},
+		backendCodexCLI: {
+			SupportsReview: true,
+			SupportsStream: true,
+		},
 		backendClaude: {
 			SupportsReview: true,
 			SupportsStream: true,
