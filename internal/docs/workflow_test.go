@@ -78,7 +78,7 @@ func TestReadmeDocumentsYoloAgentConfigPrecedenceAndValidation(t *testing.T) {
 	readme := string(contents)
 	required := []string{
 		".yolo-runner/config.yaml",
-		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode",
+		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > codex",
 		"--profile > YOLO_PROFILE > default_profile > default",
 		"agent.concurrency",
 		"agent.runner_timeout",
@@ -136,7 +136,7 @@ func TestConfigWorkflowDocsCoverValidateInitAndTroubleshooting(t *testing.T) {
 	readmeRequired := []string{
 		"yolo-agent config init --repo .",
 		"yolo-agent config validate --repo .",
-		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode",
+		"--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > codex",
 		"config is invalid",
 		"remediation:",
 	}

@@ -35,7 +35,7 @@ const (
 	envLinearAPIToken            = "LINEAR_API_TOKEN"
 
 	defaultLinearGraphQLEndpoint = "https://api.linear.app/graphql"
-	defaultLinearWorkerBackend   = "opencode"
+	defaultLinearWorkerBackend   = "codex"
 )
 
 type linearSessionActivityEmitter interface {

@@ -558,7 +558,7 @@ agent:
 
 Precedence rules:
 
-- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode`
+- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > codex`
 - Profile: `--profile > YOLO_PROFILE > default_profile > default`
 - Model and numeric/duration defaults: CLI flag value wins; if unset, `agent.*` value is used.
 - Retry budget defaults to `5` per task when neither `--retry-budget` nor `agent.retry_budget` is set.

@@ -26,7 +26,7 @@ The stdin monitor now tolerates malformed NDJSON lines by emitting `decode_error
 
 `yolo-agent` can read defaults from `.yolo-runner/config.yaml` under `agent:`. Runtime selection uses deterministic precedence:
 
-- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > opencode`
+- Backend: `--agent-backend > --backend > YOLO_AGENT_BACKEND > agent.backend > codex`
 - Profile: `--profile > YOLO_PROFILE > default_profile > default`
 - Other agent defaults (`agent.model`, `agent.concurrency`, `agent.runner_timeout`, `agent.watchdog_timeout`, `agent.watchdog_interval`, `agent.retry_budget`): CLI flag wins, otherwise config value is used.
 
