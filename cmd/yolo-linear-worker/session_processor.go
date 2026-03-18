@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/claude"
 	"github.com/egv/yolo-runner/v2/internal/codex"
+	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/kimi"
 	"github.com/egv/yolo-runner/v2/internal/linear"
@@ -125,8 +125,8 @@ func newLinearSessionJobProcessorFromEnv() (*linearSessionJobProcessor, error) {
 	}
 
 	return &linearSessionJobProcessor{
-	repoRoot:      repoRoot,
-	model:         model,
+		repoRoot:      repoRoot,
+		model:         model,
 		runnerTimeout: runnerTimeout,
 		runner:        runner,
 		activities:    activityClient,
@@ -180,7 +180,7 @@ func newLinearWorkerRunner(catalog codingagents.Catalog, backend string, binary 
 	case "kimi":
 		return kimi.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "command":
-		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil), nil
+		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, adapterBinary, definition.Args, nil).WithHealthConfig(definition.Health), nil
 	default:
 		return nil, fmt.Errorf("unsupported linear worker backend %q", backend)
 	}

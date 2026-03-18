@@ -3,7 +3,9 @@ package tk
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,13 +27,13 @@ func New(runner Runner) *Adapter {
 }
 
 type ticket struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Status      string   `json:"status"`
-	Type        string   `json:"type"`
-	Priority    any      `json:"priority"`
-	Parent      string   `json:"parent"`
+	ID          string         `json:"id"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Status      string         `json:"status"`
+	Type        string         `json:"type"`
+	Priority    any            `json:"priority"`
+	Parent      string         `json:"parent"`
 	Deps        dependencyList `json:"deps"`
 }
 
@@ -178,9 +180,23 @@ func (a *Adapter) Show(id string) (runner.Bead, error) {
 		return runner.Bead{}, err
 	}
 	titleFromShow := parseTitleFromShowOutput(showOutput)
+	shownTicket, shownErr := parseTicketFromShowOutput(id, showOutput)
 
 	tickets, err := a.queryTickets()
 	if err != nil {
+		if shownErr == nil {
+			title := shownTicket.Title
+			if strings.TrimSpace(title) == "" {
+				title = titleFromShow
+			}
+			return runner.Bead{
+				ID:                 shownTicket.ID,
+				Title:              title,
+				Description:        shownTicket.Description,
+				AcceptanceCriteria: "",
+				Status:             shownTicket.Status,
+			}, nil
+		}
 		return runner.Bead{}, err
 	}
 	for _, t := range tickets {
@@ -197,6 +213,20 @@ func (a *Adapter) Show(id string) (runner.Bead, error) {
 				Status:             t.Status,
 			}, nil
 		}
+	}
+
+	if shownErr == nil {
+		title := shownTicket.Title
+		if strings.TrimSpace(title) == "" {
+			title = titleFromShow
+		}
+		return runner.Bead{
+			ID:                 shownTicket.ID,
+			Title:              title,
+			Description:        shownTicket.Description,
+			AcceptanceCriteria: "",
+			Status:             shownTicket.Status,
+		}, nil
 	}
 
 	return runner.Bead{}, nil
@@ -259,9 +289,20 @@ func (a *Adapter) Sync() error {
 }
 
 func (a *Adapter) queryTickets() ([]ticket, error) {
+	queryOutput, queryErr := a.runner.Run("tk", "query")
+	if queryErr == nil {
+		tickets, err := parseTicketQuery(queryOutput)
+		if err == nil {
+			return tickets, nil
+		}
+	}
+
 	// List all ticket IDs from tk ready (includes open/in_progress)
 	readyOutput, err := a.runner.Run("tk", "ready")
 	if err != nil {
+		if queryErr != nil {
+			return nil, fmt.Errorf("tk query failed: %w", queryErr)
+		}
 		return nil, fmt.Errorf("tk ready failed: %w", err)
 	}
 
@@ -296,6 +337,21 @@ func (a *Adapter) fetchTicket(id string) (ticket, error) {
 		return ticket{}, err
 	}
 	return parseTicketFromShowOutput(id, output)
+}
+
+func parseTicketQuery(output string) ([]ticket, error) {
+	decoder := json.NewDecoder(strings.NewReader(output))
+	tickets := []ticket{}
+	for {
+		var t ticket
+		if err := decoder.Decode(&t); err != nil {
+			if errors.Is(err, io.EOF) {
+				return tickets, nil
+			}
+			return nil, err
+		}
+		tickets = append(tickets, t)
+	}
 }
 
 func parseTicketFromShowOutput(id string, output string) (ticket, error) {

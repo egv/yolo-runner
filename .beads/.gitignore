@@ -13,6 +13,12 @@ last-touched
 
 # Local history backups
 .br_history/
+.br_recovery/
+
+# Local metadata
+.local_version
+metadata.json
+daemon-error
 
 # Sync state (local-only, per-machine)
 .sync.lock

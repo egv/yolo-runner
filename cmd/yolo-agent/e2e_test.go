@@ -21,9 +21,9 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	githubtracker "github.com/egv/yolo-runner/v2/internal/github"
-	"github.com/egv/yolo-runner/v2/internal/opencode"
 	"github.com/egv/yolo-runner/v2/internal/kimi"
 	"github.com/egv/yolo-runner/v2/internal/linear"
+	"github.com/egv/yolo-runner/v2/internal/opencode"
 	"github.com/egv/yolo-runner/v2/internal/tk"
 	"github.com/egv/yolo-runner/v2/internal/ui/monitor"
 )
@@ -169,6 +169,30 @@ func TestE2E_QualityGateAllowsHighQualityTask(t *testing.T) {
 	}
 	if gotData := taskManager.data(taskID); gotData["triage_status"] == "blocked" {
 		t.Fatalf("did not expect quality gate blocked data on high quality task")
+	}
+}
+
+func TestE2E_TKTaskManagerGetTaskPreservesClosedStatus(t *testing.T) {
+	if _, err := exec.LookPath("tk"); err != nil {
+		t.Skip("tk CLI is required for e2e test")
+	}
+
+	repo := initSeededRepo(t)
+	runner := localRunner{dir: repo}
+	rootID := mustCreateTicket(t, runner, "Roadmap", "epic", "0", "")
+	taskID := mustCreateTicket(t, runner, "Closable task", "task", "0", rootID)
+
+	taskManager := tk.NewTaskManager(runner)
+	if err := taskManager.SetTaskStatus(context.Background(), taskID, contracts.TaskStatusClosed); err != nil {
+		t.Fatalf("close task failed: %v", err)
+	}
+
+	task, err := taskManager.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected closed status, got %q", task.Status)
 	}
 }
 
@@ -1838,7 +1862,7 @@ func writeFakeGeminiBinary(t *testing.T, capturePath string) string {
 }
 
 type opencodeCommandCapturingRunner struct {
-	mu    sync.Mutex
+	mu          sync.Mutex
 	invocations [][]string
 }
 

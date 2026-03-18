@@ -8,6 +8,7 @@ bin/
 runner-logs/
 .serena/
 .yolo-runner/
+internal/beads/.beads/
 
 # Python cache (bootstrap runner only; never commit)
 __pycache__/

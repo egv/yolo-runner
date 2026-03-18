@@ -510,7 +510,7 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 	case "kimi":
 		return kimi.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "command":
-		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil), nil
+		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil).WithHealthConfig(definition.Health), nil
 	default:
 		return nil, fmt.Errorf("unsupported runner backend adapter %q", definition.Adapter)
 	}
