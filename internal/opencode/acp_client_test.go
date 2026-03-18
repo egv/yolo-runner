@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	acp "github.com/ironpark/acp-go"
 )
 
@@ -521,6 +522,51 @@ func TestRunACPClientRetriesAfterNotDone(t *testing.T) {
 	}
 	if records[0].Text == verificationPrompt || records[2].Text == verificationPrompt {
 		t.Fatalf("expected task prompts before verification")
+	}
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("unexpected server error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected server connection to close")
+	}
+}
+
+func TestRunACPClientOverFakeStdioJSONRPCHarness(t *testing.T) {
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientStdin, clientStdout := harness.ClientIO()
+	serverStdin, serverStdout := harness.ServerIO()
+
+	serverErr := make(chan error, 1)
+	agent := &testACPAgent{verifyResult: "DONE"}
+	go func() {
+		agentConn := acp.NewAgentSideConnection(agent, serverStdout, serverStdin)
+		agent.client = agentConn.Client()
+		serverErr <- agentConn.Start(context.Background())
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	if err := RunACPClient(ctx, clientStdin, clientStdout, t.TempDir(), "do work", nil, nil); err != nil {
+		t.Fatalf("RunACPClient error: %v", err)
+	}
+
+	records := agent.getPromptRecords()
+	if len(records) < 2 {
+		t.Fatalf("expected at least 2 prompts, got %d", len(records))
+	}
+	if records[0].Text != "do work" {
+		t.Fatalf("expected task prompt, got %q", records[0].Text)
+	}
+	if records[1].Text != verificationPrompt {
+		t.Fatalf("expected verification prompt, got %q", records[1].Text)
 	}
 
 	select {
