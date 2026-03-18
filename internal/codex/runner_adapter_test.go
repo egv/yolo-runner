@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,9 +26,9 @@ type fakeAppServerProcess struct {
 	waitErr error
 }
 
-func (p *fakeAppServerProcess) Stdin() io.WriteCloser  { return p.stdin }
-func (p *fakeAppServerProcess) Stdout() io.ReadCloser  { return p.stdout }
-func (p *fakeAppServerProcess) Stderr() io.ReadCloser  { return p.stderr }
+func (p *fakeAppServerProcess) Stdin() io.WriteCloser { return p.stdin }
+func (p *fakeAppServerProcess) Stdout() io.ReadCloser { return p.stdout }
+func (p *fakeAppServerProcess) Stderr() io.ReadCloser { return p.stderr }
 func (p *fakeAppServerProcess) Wait() error {
 	if p.waitFn != nil {
 		return p.waitFn()
@@ -210,6 +210,118 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			}
 			tt.assert(t, event, progress)
 		})
+	}
+}
+
+func TestAppServerTaskSessionRuntimeStartInitializesSessionWithoutStartingTurn(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	clientWriter, clientReader := harness.ClientIO()
+	serverWriter, serverReader := harness.ServerIO()
+
+	waitCh := make(chan error, 1)
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: io.NopCloser(strings.NewReader("")),
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		_ = serverWriter.Close()
+		_ = serverReader.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+
+	var gotSpec CommandSpec
+	runtime := NewTaskSessionRuntime("codex-bin")
+	runtime.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		gotSpec = spec
+		return proc, nil
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result: map[string]any{
+				"protocolVersion": 2,
+				"capabilities":    map[string]any{"experimentalApi": true},
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		msg, err = harness.ReadMessage(ctx)
+		if err == nil {
+			serverDone <- errors.New("expected no follow-up request before execute")
+			return
+		}
+		if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, io.EOF) {
+			serverDone <- err
+		}
+	}()
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-1",
+		Backend:  "codex",
+		RepoRoot: repoRoot,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	appSession, ok := session.(*AppServerTaskSession)
+	if !ok {
+		t.Fatalf("expected AppServerTaskSession, got %T", session)
+	}
+	if appSession.ID() != "task-1" {
+		t.Fatalf("expected task session id task-1, got %q", appSession.ID())
+	}
+	if err := appSession.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+
+	if gotSpec.Binary != "codex-bin" {
+		t.Fatalf("expected codex-bin binary, got %q", gotSpec.Binary)
+	}
+	if !reflect.DeepEqual(gotSpec.Args, []string{"app-server"}) {
+		t.Fatalf("expected app-server args, got %#v", gotSpec.Args)
+	}
+	if gotSpec.Dir != repoRoot {
+		t.Fatalf("expected repo root dir %q, got %q", repoRoot, gotSpec.Dir)
+	}
+
+	if err := appSession.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "done"}); err != nil {
+		t.Fatalf("teardown session: %v", err)
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server interaction failed: %v", err)
 	}
 }
 
