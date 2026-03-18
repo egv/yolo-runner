@@ -1,7 +1,6 @@
 package beads
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -73,7 +72,7 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 		return runner.Issue{}, err
 	}
 	var fallback []runner.Issue
-	if err := json.Unmarshal([]byte(output), &fallback); err != nil {
+	if err := traceJSONParse("TreeFallback", []byte(output), &fallback); err != nil {
 		return runner.Issue{}, err
 	}
 	if len(fallback) == 0 {

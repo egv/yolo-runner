@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,10 +12,38 @@ import (
 )
 
 func traceJSONParse(operation string, data []byte, target interface{}) error {
-	if err := json.Unmarshal(data, target); err != nil {
-		fmt.Fprintf(os.Stderr, "JSON parse error in %s: %v\n", operation, err)
-		fmt.Fprintf(os.Stderr, "First 200 bytes: %q\n", string(data[:min(200, len(data))]))
-		return err
+	err := json.Unmarshal(data, target)
+	if err == nil {
+		return nil
+	}
+
+	if payload := extractJSONPayload(data); len(payload) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		if err := decoder.Decode(target); err == nil {
+			return nil
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "JSON parse error in %s: %v\n", operation, err)
+	fmt.Fprintf(os.Stderr, "First 200 bytes: %q\n", string(data[:min(200, len(data))]))
+	return err
+}
+
+func extractJSONPayload(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if trimmed[0] == '[' || trimmed[0] == '{' {
+		return trimmed
+	}
+	for _, marker := range [][]byte{[]byte("\n["), []byte("\n{"), []byte("\r\n["), []byte("\r\n{")} {
+		if idx := bytes.Index(data, marker); idx >= 0 {
+			return bytes.TrimSpace(data[idx+len(marker)-1:])
+		}
+	}
+	if idx := bytes.IndexAny(data, "[{"); idx >= 0 {
+		return bytes.TrimSpace(data[idx:])
 	}
 	return nil
 }
