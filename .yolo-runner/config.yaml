@@ -18,7 +18,7 @@ profiles:
 agent:
   backend: codex
   model: gpt-5.4
-  concurrency: 3
+  concurrency: 1
   runner_timeout: 20m
   watchdog_timeout: 10m
   watchdog_interval: 5s
