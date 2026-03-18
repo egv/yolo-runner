@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/egv/yolo-runner/v2/internal/beads"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	githubtracker "github.com/egv/yolo-runner/v2/internal/github"
 	"github.com/egv/yolo-runner/v2/internal/linear"
@@ -18,6 +19,7 @@ const (
 	trackerTypeTK     = "tk"
 	trackerTypeLinear = "linear"
 	trackerTypeGitHub = "github"
+	trackerTypeBeads  = "beads"
 
 	defaultProfileName     = "default"
 	trackerConfigRelPath   = ".yolo-runner/config.yaml"
@@ -46,6 +48,7 @@ type trackerModel struct {
 	TK     *tkTrackerModel     `yaml:"tk,omitempty"`
 	Linear *linearTrackerModel `yaml:"linear,omitempty"`
 	GitHub *githubTrackerModel `yaml:"github,omitempty"`
+	Beads  *beadsTrackerModel  `yaml:"beads,omitempty"`
 }
 
 type tkTrackerModel struct {
@@ -81,6 +84,11 @@ type githubScopeModel struct {
 
 type githubAuthModel struct {
 	TokenEnv string `yaml:"token_env"`
+}
+
+type beadsTrackerModel struct {
+	// beads_rust doesn't require additional configuration
+	// It auto-discovers the .beads directory
 }
 
 type yoloAgentConfigModel struct {
@@ -121,6 +129,14 @@ var newGitHubTaskManager = func(cfg githubtracker.Config) (contracts.TaskManager
 
 var newGitHubStorageBackend = func(cfg githubtracker.Config) (contracts.StorageBackend, error) {
 	return githubtracker.NewStorageBackend(cfg)
+}
+
+var newBeadsTaskManager = func(repoRoot string) (contracts.TaskManager, error) {
+	return beads.NewTaskManager(localRunner{dir: repoRoot}, repoRoot), nil
+}
+
+var newBeadsStorageBackend = func(repoRoot string) (contracts.StorageBackend, error) {
+	return beads.NewStorageBackend(localRunner{dir: repoRoot}, repoRoot), nil
 }
 
 func resolveProfileSelectionPolicy(input profileSelectionInput) string {
@@ -196,6 +212,8 @@ func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile)
 			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
 		return manager, nil
+	case trackerTypeBeads:
+		return newBeadsTaskManager(repoRoot)
 	default:
 		return nil, fmt.Errorf("tracker type %q is not supported yet", profile.Tracker.Type)
 	}
@@ -263,6 +281,8 @@ func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfi
 			return nil, fmt.Errorf("linear auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
 		return backend, nil
+	case trackerTypeBeads:
+		return newBeadsStorageBackend(repoRoot)
 	default:
 		return nil, fmt.Errorf("tracker type %q is not supported yet", profile.Tracker.Type)
 	}
@@ -500,6 +520,9 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 		model.GitHub.Scope.Owner = owner
 		model.GitHub.Scope.Repo = repo
 		model.GitHub.Auth.TokenEnv = tokenEnv
+		return model, nil
+	case trackerTypeBeads:
+		// beads_rust auto-discovers the .beads directory, no additional validation needed
 		return model, nil
 	default:
 		return trackerModel{}, fmt.Errorf("unsupported tracker type %q for profile %q", model.Type, profileName)

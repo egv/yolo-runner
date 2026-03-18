@@ -1,8 +1,11 @@
-default_profile: github
+default_profile: beads
 profiles:
   tk:
     tracker:
       type: tk
+  beads:
+    tracker:
+      type: beads
   github:
     tracker:
       type: github
@@ -14,7 +17,7 @@ profiles:
           token_env: GITHUB_TOKEN
 agent:
   backend: codex
-  model: gpt-5.3-codex-spark
+  model: gpt-5.4
   concurrency: 3
   runner_timeout: 20m
   watchdog_timeout: 10m
