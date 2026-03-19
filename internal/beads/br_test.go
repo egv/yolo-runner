@@ -2,9 +2,13 @@ package beads
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/engine"
 )
 
 func TestRustAdapterUsesNoDaemonForUpdateStatus(t *testing.T) {
@@ -61,4 +65,70 @@ func TestRustAdapterTreeWrapsSingleReadyChildUnderRoot(t *testing.T) {
 	}
 
 	assertCall(t, runner.calls, []string{"br", "--no-daemon", "ready", "--parent", "root", "--recursive", "--json"})
+}
+
+func TestTaskTreeIncludesSiblingDependencyRelations(t *testing.T) {
+	runner := &fakeRunner{outputs: []string{
+		`[{"id":"root.1","issue_type":"task","status":"open"},{"id":"root.2","issue_type":"task","status":"open"}]`,
+		`[{"id":"root","title":"Root Epic","status":"open"}]`,
+		`[{"id":"root.1","title":"First Task","status":"open"}]`,
+		`[{"id":"root.2","title":"Second Task","status":"open"}]`,
+		`[{"issue_id":"root","depends_on_id":"root-parent","type":"parent-child"}]`,
+		`[{"issue_id":"root.1","depends_on_id":"root","type":"parent-child"}]`,
+		`[{"issue_id":"root.2","depends_on_id":"root","type":"parent-child"},{"issue_id":"root.2","depends_on_id":"root.1","type":"blocks"}]`,
+	}}
+	manager := NewTaskManager(runner, "/repo")
+
+	tree, err := manager.GetTaskTree(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	graph, err := engine.NewTaskEngine().BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+	ready := engine.NewTaskEngine().GetNextAvailable(graph)
+	if len(ready) != 1 || ready[0].ID != "root.1" {
+		t.Fatalf("expected only first task to be ready, got %#v", ready)
+	}
+
+	expected := "br --no-daemon dep list root.2 --json"
+	for _, call := range runner.calls {
+		if strings.Join(call, " ") == expected {
+			return
+		}
+	}
+	t.Fatalf("expected dependency call %q, got %#v", expected, runner.calls)
+}
+
+func TestGetTaskTreeFromJSONLRespectsSiblingOrdering(t *testing.T) {
+	repoRoot := t.TempDir()
+	beadsDir := filepath.Join(repoRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	issues := strings.Join([]string{
+		`{"id":"root","title":"OpenCode Epic","status":"open","issue_type":"epic"}`,
+		`{"id":"root.1","title":"First Task","status":"open","issue_type":"task","dependencies":[{"issue_id":"root.1","depends_on_id":"root","type":"parent-child"}]}`,
+		`{"id":"root.2","title":"Second Task","status":"open","issue_type":"task","dependencies":[{"issue_id":"root.2","depends_on_id":"root","type":"parent-child"},{"issue_id":"root.2","depends_on_id":"root.1","type":"blocks"}]}`,
+		`{"id":"root.3","title":"Third Task","status":"open","issue_type":"task","dependencies":[{"issue_id":"root.3","depends_on_id":"root","type":"parent-child"},{"issue_id":"root.3","depends_on_id":"root.2","type":"waits-for"}]}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(issues+"\n"), 0o644); err != nil {
+		t.Fatalf("write issues.jsonl: %v", err)
+	}
+
+	manager := NewTaskManager(&fakeRunner{}, repoRoot)
+	tree, err := manager.GetTaskTree(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	graph, err := engine.NewTaskEngine().BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+	ready := engine.NewTaskEngine().GetNextAvailable(graph)
+	if len(ready) != 1 || ready[0].ID != "root.1" {
+		t.Fatalf("expected only first task to be ready, got %#v", ready)
+	}
 }

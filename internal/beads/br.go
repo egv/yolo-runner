@@ -14,9 +14,27 @@ type RustAdapter struct {
 	runner Runner
 }
 
+type brDependency struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
 func (a *RustAdapter) run(args ...string) (string, error) {
 	command := append([]string{"br", "--no-daemon"}, args...)
 	return a.runner.Run(command...)
+}
+
+func (a *RustAdapter) Dependencies(id string) ([]brDependency, error) {
+	output, err := a.run("dep", "list", id, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var deps []brDependency
+	if err := traceJSONParse("Dependencies", []byte(output), &deps); err != nil {
+		return nil, err
+	}
+	return deps, nil
 }
 
 // NewRustAdapter creates a new beads_rust adapter

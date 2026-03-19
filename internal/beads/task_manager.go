@@ -1,8 +1,12 @@
 package beads
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +22,21 @@ type TaskManager struct {
 	terminalMu    sync.RWMutex
 	terminalState map[string]contracts.TaskStatus
 	repoRoot      string
+}
+
+type issueDependencyRecord struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
+type issueRecord struct {
+	ID           string                  `json:"id"`
+	Title        string                  `json:"title"`
+	Description  string                  `json:"description"`
+	Status       string                  `json:"status"`
+	IssueType    string                  `json:"issue_type"`
+	Dependencies []issueDependencyRecord `json:"dependencies"`
 }
 
 // NewTaskManager creates a new beads_rust TaskManager
@@ -117,6 +136,9 @@ func (m *TaskManager) GetTaskTree(ctx context.Context, rootID string) (*contract
 	if rootID == "" {
 		return nil, fmt.Errorf("parent task ID is required")
 	}
+	if tree, err := m.getTaskTreeFromJSONL(rootID); err == nil {
+		return tree, nil
+	}
 
 	// Use the adapter's Tree method to get the full tree
 	rootIssue, err := m.adapter.Tree(rootID)
@@ -146,11 +168,145 @@ func (m *TaskManager) GetTaskTree(ctx context.Context, rootID string) (*contract
 	if len(rootIssue.Children) > 0 {
 		m.processChildren(rootIssue.Children, rootID, tasks, &relations)
 	}
+	relations = append(relations, m.buildDependencyRelations(tasks)...)
 
 	return &contracts.TaskTree{
 		Root:      tasks[rootID],
 		Tasks:     tasks,
 		Relations: relations,
+	}, nil
+}
+
+func (m *TaskManager) getTaskTreeFromJSONL(rootID string) (*contracts.TaskTree, error) {
+	issuesPath := filepath.Join(m.repoRoot, ".beads", "issues.jsonl")
+	file, err := os.Open(issuesPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	issues := make(map[string]issueRecord)
+	childrenByParent := make(map[string][]string)
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 2*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var issue issueRecord
+		if err := json.Unmarshal([]byte(line), &issue); err != nil {
+			return nil, err
+		}
+		issues[issue.ID] = issue
+		for _, dep := range issue.Dependencies {
+			if dep.Type == "parent-child" {
+				childrenByParent[dep.DependsOnID] = append(childrenByParent[dep.DependsOnID], issue.ID)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	rootIssue, ok := issues[rootID]
+	if !ok {
+		return nil, fmt.Errorf("root task %q not found in issues.jsonl", rootID)
+	}
+
+	inScope := map[string]struct{}{rootID: {}}
+	queue := []string{rootID}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		children := append([]string(nil), childrenByParent[current]...)
+		sort.Strings(children)
+		for _, childID := range children {
+			if _, ok := inScope[childID]; ok {
+				continue
+			}
+			inScope[childID] = struct{}{}
+			queue = append(queue, childID)
+		}
+	}
+
+	tasks := make(map[string]contracts.Task, len(inScope))
+	relations := make([]contracts.TaskRelation, 0)
+	missingSet := make(map[string]struct{})
+	missingByTask := make(map[string][]string)
+	ids := make([]string, 0, len(inScope))
+	for id := range inScope {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	for _, id := range ids {
+		issue := issues[id]
+		parentID := ""
+		for _, dep := range issue.Dependencies {
+			if dep.Type != "parent-child" {
+				continue
+			}
+			if _, ok := inScope[dep.DependsOnID]; ok {
+				parentID = dep.DependsOnID
+				break
+			}
+		}
+		tasks[id] = contracts.Task{
+			ID:          issue.ID,
+			Title:       issue.Title,
+			Description: issue.Description,
+			Status:      contracts.TaskStatus(issue.Status),
+			ParentID:    parentID,
+		}
+		if parentID != "" {
+			relations = append(relations, contracts.TaskRelation{FromID: parentID, ToID: id, Type: contracts.RelationParent})
+		}
+		for _, dep := range issue.Dependencies {
+			if dep.Type == "parent-child" {
+				continue
+			}
+			dependsOnID := strings.TrimSpace(dep.DependsOnID)
+			if dependsOnID == "" {
+				continue
+			}
+			if _, ok := inScope[dependsOnID]; ok {
+				relations = append(relations, contracts.TaskRelation{FromID: id, ToID: dependsOnID, Type: contracts.RelationDependsOn})
+				continue
+			}
+			if _, ok := issues[dependsOnID]; ok {
+				missingSet[dependsOnID] = struct{}{}
+				missingByTask[id] = append(missingByTask[id], dependsOnID)
+			}
+		}
+	}
+
+	sort.SliceStable(relations, func(i, j int) bool {
+		if relations[i].Type != relations[j].Type {
+			return relations[i].Type < relations[j].Type
+		}
+		if relations[i].FromID != relations[j].FromID {
+			return relations[i].FromID < relations[j].FromID
+		}
+		return relations[i].ToID < relations[j].ToID
+	})
+
+	missingIDs := make([]string, 0, len(missingSet))
+	for id := range missingSet {
+		missingIDs = append(missingIDs, id)
+	}
+	sort.Strings(missingIDs)
+	for taskID := range missingByTask {
+		sort.Strings(missingByTask[taskID])
+	}
+
+	return &contracts.TaskTree{
+		Root:                      contracts.Task{ID: rootIssue.ID, Title: rootIssue.Title, Description: rootIssue.Description, Status: contracts.TaskStatus(rootIssue.Status)},
+		Tasks:                     tasks,
+		Relations:                 relations,
+		MissingDependencyIDs:      missingIDs,
+		MissingDependenciesByTask: missingByTask,
 	}, nil
 }
 
@@ -188,6 +344,57 @@ func (m *TaskManager) processChildren(children []runner.Issue, parentID string, 
 			m.processChildren(child.Children, child.ID, tasks, relations)
 		}
 	}
+}
+
+func (m *TaskManager) buildDependencyRelations(tasks map[string]contracts.Task) []contracts.TaskRelation {
+	if len(tasks) == 0 {
+		return nil
+	}
+	relations := make([]contracts.TaskRelation, 0)
+	seen := make(map[string]struct{})
+	taskIDs := make([]string, 0, len(tasks))
+	for taskID := range tasks {
+		taskIDs = append(taskIDs, taskID)
+	}
+	sort.Strings(taskIDs)
+	for _, taskID := range taskIDs {
+		deps, err := m.adapter.Dependencies(taskID)
+		if err != nil {
+			continue
+		}
+		for _, dep := range deps {
+			dependsOnID := strings.TrimSpace(dep.DependsOnID)
+			if dependsOnID == "" {
+				continue
+			}
+			if strings.EqualFold(dep.Type, "parent-child") {
+				continue
+			}
+			if _, ok := tasks[dependsOnID]; !ok {
+				continue
+			}
+			key := taskID + "->" + dependsOnID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			relations = append(relations, contracts.TaskRelation{
+				FromID: taskID,
+				ToID:   dependsOnID,
+				Type:   contracts.RelationDependsOn,
+			})
+		}
+	}
+	sort.SliceStable(relations, func(i, j int) bool {
+		if relations[i].FromID != relations[j].FromID {
+			return relations[i].FromID < relations[j].FromID
+		}
+		if relations[i].ToID != relations[j].ToID {
+			return relations[i].ToID < relations[j].ToID
+		}
+		return relations[i].Type < relations[j].Type
+	})
+	return relations
 }
 
 // SetTaskStatus updates the status of a task
