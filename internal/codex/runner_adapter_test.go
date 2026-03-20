@@ -1014,7 +1014,7 @@ func TestAppServerTaskSessionTeardownForcesKillWhenShutdownStalls(t *testing.T) 
 		atomic.AddInt32(&killCalls, 1)
 		_ = serverWriter.Close()
 		_ = serverReader.Close()
-		waitCh <- nil
+		waitCh <- errors.New("signal: killed")
 		return harness.Close()
 	}
 
@@ -1088,6 +1088,141 @@ func TestAppServerTaskSessionTeardownForcesKillWhenShutdownStalls(t *testing.T) 
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatalf("server interaction failed: %v", err)
+	}
+	if atomic.LoadInt32(&killCalls) != 1 {
+		t.Fatalf("expected forced kill after shutdown stall, got %d", atomic.LoadInt32(&killCalls))
+	}
+}
+
+func TestCLIRunnerAdapterAppServerTreatsForcedKillAfterCompletionAsSuccess(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+
+	clientWriter, clientReader := harness.ClientIO()
+	stderrReader, stderrWriter := io.Pipe()
+	waitCh := make(chan error, 1)
+	var killCalls int32
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: stderrReader,
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		atomic.AddInt32(&killCalls, 1)
+		_ = stderrWriter.Close()
+		_ = harness.Close()
+		waitCh <- errors.New("signal: killed")
+		return nil
+	}
+
+	adapter := NewCLIRunnerAdapter("codex-bin", nil)
+	adapter.starter = appServerStarterFunc(func(_ context.Context, spec CommandSpec) (appServerProcess, error) {
+		if !reflect.DeepEqual(spec.Args, []string{"app-server"}) {
+			t.Fatalf("expected app-server args, got %#v", spec.Args)
+		}
+		return proc, nil
+	})
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{JSONRPC: "2.0", ID: msg.ID, Result: map[string]any{"protocolVersion": 2}}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{JSONRPC: "2.0", ID: msg.ID, Result: map[string]any{"thread": map[string]any{"id": "thread-1"}}}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "turn/start" {
+			serverDone <- errors.New("expected turn/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{JSONRPC: "2.0", ID: msg.ID, Result: map[string]any{"turn": map[string]any{"id": "turn-1"}}}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/completed",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"stopReason": "end_turn",
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "shutdown" {
+			serverDone <- errors.New("expected shutdown request")
+			return
+		}
+
+		serverDone <- nil
+	}()
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-app-server-kill-after-complete",
+		RepoRoot: repoRoot,
+		Prompt:   "implement",
+		Mode:     contracts.RunnerModeImplement,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("app-server interaction failed: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed result, got %q (%s)", result.Status, result.Reason)
 	}
 	if atomic.LoadInt32(&killCalls) != 1 {
 		t.Fatalf("expected forced kill after shutdown stall, got %d", atomic.LoadInt32(&killCalls))

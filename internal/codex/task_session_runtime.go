@@ -307,7 +307,11 @@ func (s *AppServerTaskSession) close(force bool) error {
 		<-s.stderrDone
 		<-s.waitDone
 		s.closeErr = errors.Join(s.closeErr, ignoreClosedPipeError(s.stderrErr))
-		s.closeErr = errors.Join(s.closeErr, ignoreProcessDoneError(s.waitErr))
+		if force {
+			s.closeErr = errors.Join(s.closeErr, ignoreForcedAppServerWaitError(s.waitErr))
+		} else {
+			s.closeErr = errors.Join(s.closeErr, ignoreProcessDoneError(s.waitErr))
+		}
 	})
 	return s.closeErr
 }
@@ -563,6 +567,20 @@ func ignoreProcessDoneError(err error) error {
 		return nil
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "process already finished") {
+		return nil
+	}
+	return err
+}
+
+func ignoreForcedAppServerWaitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if err = ignoreProcessDoneError(err); err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "signal: killed") || strings.Contains(lower, "signal: terminated") || strings.Contains(lower, "terminated by signal") {
 		return nil
 	}
 	return err

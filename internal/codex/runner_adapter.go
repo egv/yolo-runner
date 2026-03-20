@@ -65,11 +65,11 @@ func (f appServerStarterFunc) Start(ctx context.Context, spec CommandSpec) (appS
 }
 
 type CLIRunnerAdapter struct {
-	binary string
-	args   []string
-	runner CommandRunner
+	binary  string
+	args    []string
+	runner  CommandRunner
 	starter AppServerStarter
-	now    func() time.Time
+	now     func() time.Time
 }
 
 func NewCLIRunnerAdapter(binary string, runner CommandRunner, args ...string) *CLIRunnerAdapter {
@@ -79,11 +79,11 @@ func NewCLIRunnerAdapter(binary string, runner CommandRunner, args ...string) *C
 	}
 	normalizedArgs := append([]string(nil), args...)
 	return &CLIRunnerAdapter{
-		binary: resolvedBinary,
-		args:   normalizedArgs,
-		runner: runner,
+		binary:  resolvedBinary,
+		args:    normalizedArgs,
+		runner:  runner,
 		starter: appServerStarterFunc(startAppServerProcess),
-		now:    time.Now,
+		now:     time.Now,
 	}
 }
 
@@ -488,7 +488,7 @@ func shutdownAppServerProcess(proc appServerProcess, writer io.WriteCloser, wait
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(writer.Close()))
 		killErr := ignoreProcessDoneError(proc.Kill())
-		waitErr := ignoreProcessDoneError(<-waitDone)
+		waitErr := ignoreForcedAppServerWaitError(<-waitDone)
 		return errors.Join(shutdownErr, killErr, waitErr)
 	}
 
@@ -501,7 +501,7 @@ func shutdownAppServerProcess(proc appServerProcess, writer io.WriteCloser, wait
 	case <-timer.C:
 		shutdownErr = errors.Join(shutdownErr, ignoreClosedPipeError(writer.Close()))
 		killErr := ignoreProcessDoneError(proc.Kill())
-		waitErr := ignoreProcessDoneError(<-waitDone)
+		waitErr := ignoreForcedAppServerWaitError(<-waitDone)
 		return errors.Join(shutdownErr, killErr, waitErr)
 	}
 }
@@ -737,7 +737,7 @@ func startAppServerProcess(ctx context.Context, spec CommandSpec) (appServerProc
 func (p *osAppServerProcess) Stdin() io.WriteCloser { return p.stdin }
 func (p *osAppServerProcess) Stdout() io.ReadCloser { return p.stdout }
 func (p *osAppServerProcess) Stderr() io.ReadCloser { return p.stderr }
-func (p *osAppServerProcess) Wait() error          { return p.cmd.Wait() }
+func (p *osAppServerProcess) Wait() error           { return p.cmd.Wait() }
 func (p *osAppServerProcess) Kill() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
