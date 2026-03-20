@@ -47,10 +47,10 @@ func normalizeServeCommand(binary string, command []string) []string {
 	} else if len(normalized) > 1 && strings.TrimSpace(binary) != "" && strings.TrimSpace(normalized[0]) == defaultBinary && strings.TrimSpace(normalized[1]) == "serve" {
 		normalized[0] = binary
 	}
-	if !isServeCommand(normalized) || hasServeHostname(normalized) {
+	if !isServeCommand(normalized) {
 		return normalized
 	}
-	return append(normalized, "--hostname", serveLoopbackHostname)
+	return forceServeLoopbackHostname(normalized)
 }
 
 func isServeCommand(command []string) bool {
@@ -63,12 +63,28 @@ func isServeCommand(command []string) bool {
 	return len(command) > 1 && strings.TrimSpace(command[1]) == "serve"
 }
 
-func hasServeHostname(command []string) bool {
-	for _, arg := range command {
+func forceServeLoopbackHostname(command []string) []string {
+	normalized := make([]string, 0, len(command)+2)
+	found := false
+	for i := 0; i < len(command); i++ {
+		arg := command[i]
 		trimmed := strings.TrimSpace(arg)
-		if trimmed == "--hostname" || strings.HasPrefix(trimmed, "--hostname=") {
-			return true
+		switch {
+		case trimmed == "--hostname":
+			found = true
+			normalized = append(normalized, arg, serveLoopbackHostname)
+			if i+1 < len(command) && !strings.HasPrefix(strings.TrimSpace(command[i+1]), "-") {
+				i++
+			}
+		case strings.HasPrefix(trimmed, "--hostname="):
+			found = true
+			normalized = append(normalized, "--hostname="+serveLoopbackHostname)
+		default:
+			normalized = append(normalized, arg)
 		}
 	}
-	return false
+	if found {
+		return normalized
+	}
+	return append(normalized, "--hostname", serveLoopbackHostname)
 }

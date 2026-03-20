@@ -52,3 +52,20 @@ func TestTaskSessionRuntimeBuildCommandNormalizesRequestServeCommandToConfigured
 		}
 	}
 }
+
+func TestTaskSessionRuntimeBuildCommandForcesLoopbackHostnameOnRequestServeCommand(t *testing.T) {
+	runtime := NewTaskSessionRuntime("/tmp/custom-opencode")
+
+	command := runtime.buildCommand(contracts.TaskSessionStartRequest{
+		Command: []string{"opencode", "serve", "--print-logs", "--hostname", "0.0.0.0"},
+	})
+	expected := []string{"/tmp/custom-opencode", "serve", "--print-logs", "--hostname", "127.0.0.1"}
+	if len(command) != len(expected) {
+		t.Fatalf("expected %d command args, got %d: %#v", len(expected), len(command), command)
+	}
+	for i, want := range expected {
+		if command[i] != want {
+			t.Fatalf("expected %q at %d, got %q", want, i, command[i])
+		}
+	}
+}
