@@ -102,7 +102,6 @@ func NewTaskSessionRuntime(binary string, args ...string) *TaskSessionRuntime {
 		starter:             serveProcessStarterFunc(startServeProcess),
 		httpClient:          &http.Client{},
 		hostname:            defaultServeHostname,
-		allocatePort:        allocateLoopbackPort,
 		healthCheckInterval: defaultServeHealthCheckInterval,
 	}
 }
@@ -128,14 +127,14 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 	if strings.TrimSpace(runtime.hostname) == "" {
 		runtime.hostname = defaultServeHostname
 	}
-	if runtime.allocatePort == nil {
-		runtime.allocatePort = allocateLoopbackPort
-	}
 	if runtime.healthCheckInterval <= 0 {
 		runtime.healthCheckInterval = defaultServeHealthCheckInterval
 	}
 
-	port, err := runtime.allocatePort(runtime.hostname)
+	port, err := AllocateServePort(runtime.hostname, request)
+	if runtime.allocatePort != nil {
+		port, err = runtime.allocatePort(runtime.hostname)
+	}
 	if err != nil {
 		return nil, err
 	}
