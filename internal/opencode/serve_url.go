@@ -18,3 +18,7 @@ func resolveServeBaseURL(hostname string, port int) string {
 	}
 	return "http://" + net.JoinHostPort(resolvedHostname, strconv.Itoa(port))
 }
+
+func resolveServeHealthURL(baseURL string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/global/health"
+}

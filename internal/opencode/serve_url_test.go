@@ -55,3 +55,30 @@ func TestResolveServeBaseURL(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveServeHealthURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "derives global health path from resolved base url",
+			baseURL: "http://127.0.0.1:4096",
+			want:    "http://127.0.0.1:4096/global/health",
+		},
+		{
+			name:    "trims trailing slash from base url",
+			baseURL: "http://localhost:4096/",
+			want:    "http://localhost:4096/global/health",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveServeHealthURL(tt.baseURL); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
