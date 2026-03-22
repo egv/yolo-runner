@@ -35,12 +35,22 @@ func FinalizeRunError(ctx context.Context, runErr error) error {
 		return runErr
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if hasDetailedDeadlineExceeded(runErr) {
+			return runErr
+		}
 		return context.DeadlineExceeded
 	}
 	if errors.Is(ctx.Err(), context.Canceled) && errors.Is(runErr, context.Canceled) {
 		return context.Canceled
 	}
 	return runErr
+}
+
+func hasDetailedDeadlineExceeded(err error) bool {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return strings.TrimSpace(err.Error()) != context.DeadlineExceeded.Error()
 }
 
 func BuildRunnerArtifacts(backend string, request RunnerRequest, result RunnerResult, extras map[string]string) map[string]string {

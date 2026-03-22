@@ -156,36 +156,60 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		}
 	}()
 
-	binary, args := runtime.buildCommand(request, runtime.hostname, port)
+	proc, err := runtime.startPreparedServeProcess(ctx, request, stdoutFile, stderrFile, runtime.hostname, port)
+	if err != nil {
+		return nil, err
+	}
+
+	return runtime.newInitialServeTaskSession(request, proc, stdoutFile, stderrFile, runtime.hostname, port), nil
+}
+
+func (r *TaskSessionRuntime) startPreparedServeProcess(ctx context.Context, request contracts.TaskSessionStartRequest, stdout io.Writer, stderr io.Writer, hostname string, port int) (serveProcess, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil {
+		return nil, errors.New("nil opencode task session runtime")
+	}
+
+	starter := r.starter
+	if starter == nil {
+		starter = serveProcessStarterFunc(startServeProcess)
+	}
+
+	binary, args := r.buildCommand(request, hostname, port)
 	spec := ServeCommandSpec{
 		Binary: binary,
 		Args:   args,
 		Env:    flattenServeEnv(request.Env),
 		Dir:    strings.TrimSpace(request.RepoRoot),
-		Stdout: stdoutFile,
-		Stderr: stderrFile,
+		Stdout: stdout,
+		Stderr: stderr,
 	}
-	proc, err := runtime.starter.Start(ctx, spec)
+	proc, err := starter.Start(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
 	if proc == nil {
 		return nil, errors.New("opencode serve starter returned nil process")
 	}
+	return proc, nil
+}
 
-	baseURL := fmt.Sprintf("http://%s:%d", runtime.hostname, port)
+func (r *TaskSessionRuntime) newInitialServeTaskSession(request contracts.TaskSessionStartRequest, proc serveProcess, stdoutFile *os.File, stderrFile *os.File, hostname string, port int) *ServeTaskSession {
+	baseURL := resolveServeBaseURL(hostname, port)
 	session := &ServeTaskSession{
 		id:                  resolveServeTaskSessionID(request),
 		taskTitle:           resolveServeTaskSessionTitle(request),
 		proc:                proc,
-		client:              runtime.httpClient,
+		client:              r.httpClient,
 		baseURL:             baseURL,
-		healthURL:           baseURL + "/global/health",
+		healthURL:           resolveServeHealthURL(baseURL),
 		sessionURL:          baseURL + "/session",
 		disposeURL:          baseURL + "/instance/dispose",
 		readyTimeout:        request.ReadyTimeout,
 		stopTimeout:         request.StopTimeout,
-		healthCheckInterval: runtime.healthCheckInterval,
+		healthCheckInterval: r.healthCheckInterval,
 		waitDone:            make(chan struct{}),
 		stdoutFile:          stdoutFile,
 		stderrFile:          stderrFile,
@@ -194,26 +218,38 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		session.waitErr = proc.Wait()
 		close(session.waitDone)
 	}()
-	return session, nil
+	return session
 }
 
 func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequest, hostname string, port int) (string, []string) {
+	var raw []string
 	if len(request.Command) > 0 {
-		return strings.TrimSpace(r.binary), resolveServeArgs(request.Command, request, hostname, port)
+		raw = resolveServeArgs(request.Command, request, hostname, port)
+	} else if len(r.args) > 0 {
+		raw = resolveServeArgs(r.args, request, hostname, port)
 	}
-	if len(r.args) > 0 {
-		return strings.TrimSpace(r.binary), resolveServeArgs(r.args, request, hostname, port)
-	}
-	binary, args := resolveServeBaseCommand(r.binary)
+	binary, args := resolveServeCommand(r.binary, raw)
 	if !containsServeHostnameFlag(args) {
 		args = append(args, "--hostname", hostname)
 	}
-	return binary, append(args, "--port", strconv.Itoa(port))
+	if !containsServePortFlag(args) {
+		args = append(args, "--port", strconv.Itoa(port))
+	}
+	return binary, args
 }
 
 func containsServeHostnameFlag(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		if strings.TrimSpace(args[i]) == "--hostname" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsServePortFlag(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if strings.TrimSpace(args[i]) == "--port" {
 			return true
 		}
 	}
@@ -329,17 +365,7 @@ func (s *ServeTaskSession) WaitReady(ctx context.Context) error {
 
 		if err := s.waitForHealth(readyCtx); err != nil {
 			s.readyErr = err
-			return
 		}
-
-		sessionID, err := s.createSession(readyCtx)
-		if err != nil {
-			s.readyErr = err
-			return
-		}
-		s.stateMu.Lock()
-		s.sessionID = sessionID
-		s.stateMu.Unlock()
 	})
 	return s.readyErr
 }
@@ -351,20 +377,26 @@ func (s *ServeTaskSession) waitForHealth(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var lastHealthErr error
 
 	for {
 		if err := s.checkHealth(ctx); err == nil {
 			return nil
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			lastHealthErr = err
 		}
 
 		select {
 		case <-ctx.Done():
 			if procErr, ok := s.processWaitErr(); ok {
-				return fmt.Errorf("opencode serve exited before readiness: %w", procErr)
+				return s.serveExitedBeforeReadinessError(procErr)
+			}
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return s.serveReadinessTimeoutError(ctx.Err(), lastHealthErr)
 			}
 			return ctx.Err()
 		case <-s.waitDone:
-			return fmt.Errorf("opencode serve exited before readiness: %w", s.waitErr)
+			return s.serveExitedBeforeReadinessError(s.waitErr)
 		case <-ticker.C:
 		}
 	}
@@ -592,6 +624,68 @@ func (s *ServeTaskSession) closeLogs() {
 		_ = s.stderrFile.Close()
 		s.stderrFile = nil
 	}
+}
+
+func (s *ServeTaskSession) serveReadinessTimeoutError(timeoutErr error, lastHealthErr error) error {
+	parts := []string{
+		fmt.Sprintf("timed out waiting for opencode serve readiness at %s", s.healthURL),
+	}
+	if lastHealthErr != nil {
+		parts = append(parts, "last health error: "+strings.TrimSpace(lastHealthErr.Error()))
+	}
+	if stderrPath := s.stderrLogPath(); stderrPath != "" {
+		parts = append(parts, "stderr log: "+stderrPath)
+	}
+	if stderrSummary := s.stderrLogSummary(); stderrSummary != "" {
+		parts = append(parts, "stderr: "+stderrSummary)
+	}
+	return fmt.Errorf("%s: %w", strings.Join(parts, "; "), timeoutErr)
+}
+
+func (s *ServeTaskSession) serveExitedBeforeReadinessError(waitErr error) error {
+	parts := []string{"opencode serve exited before readiness"}
+	if stderrPath := s.stderrLogPath(); stderrPath != "" {
+		parts = append(parts, "stderr log: "+stderrPath)
+	}
+	if stderrSummary := s.stderrLogSummary(); stderrSummary != "" {
+		parts = append(parts, "stderr: "+stderrSummary)
+	}
+	message := strings.Join(parts, "; ")
+	if waitErr == nil {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %w", message, waitErr)
+}
+
+func (s *ServeTaskSession) stderrLogPath() string {
+	if s == nil || s.stderrFile == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.stderrFile.Name())
+}
+
+func (s *ServeTaskSession) stderrLogSummary() string {
+	path := s.stderrLogPath()
+	if path == "" {
+		return ""
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	summary := make([]string, 0, 3)
+	for i := len(lines) - 1; i >= 0 && len(summary) < 3; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		summary = append(summary, line)
+	}
+	for left, right := 0, len(summary)-1; left < right; left, right = left+1, right-1 {
+		summary[left], summary[right] = summary[right], summary[left]
+	}
+	return strings.Join(summary, " | ")
 }
 
 func withOptionalTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

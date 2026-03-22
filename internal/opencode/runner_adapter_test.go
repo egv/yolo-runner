@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,6 +270,66 @@ func TestCLIRunnerAdapterMapsDeadlineExceededToBlockedTimeout(t *testing.T) {
 	}
 	if !strings.Contains(result.Reason, "timeout") {
 		t.Fatalf("expected timeout reason, got %q", result.Reason)
+	}
+}
+
+func TestCLIRunnerAdapterPreservesServeReadinessTimeoutDetailsInResultReason(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-timeout.jsonl")
+	healthURL := "http://127.0.0.1:43123/global/health"
+	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
+
+	adapter := &CLIRunnerAdapter{runWithACP: func(ctx context.Context, _ string, _ string, _ string, _ string, _ string, _ string, _ string, _ Runner, _ ACPClient, _ func(string), _ ...string) error {
+		<-ctx.Done()
+		return fmt.Errorf("timed out waiting for opencode serve readiness at %s; stderr log: %s: %w", healthURL, stderrPath, ctx.Err())
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-timeout",
+		RepoRoot: t.TempDir(),
+		Prompt:   "do x",
+		Timeout:  5 * time.Millisecond,
+		Metadata: map[string]string{"log_path": logPath},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultBlocked {
+		t.Fatalf("expected blocked status, got %s", result.Status)
+	}
+	if !strings.Contains(result.Reason, healthURL) {
+		t.Fatalf("expected readiness timeout to preserve health URL, got %q", result.Reason)
+	}
+	if !strings.Contains(result.Reason, stderrPath) {
+		t.Fatalf("expected readiness timeout to preserve stderr log path, got %q", result.Reason)
+	}
+}
+
+func TestCLIRunnerAdapterPreservesServeBindFailureDetailsInResultReason(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-bind.jsonl")
+	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
+	bindMessage := "listen tcp 127.0.0.1:43123: bind: address already in use"
+
+	adapter := &CLIRunnerAdapter{runWithACP: func(context.Context, string, string, string, string, string, string, string, Runner, ACPClient, func(string), ...string) error {
+		return fmt.Errorf("opencode serve exited before readiness; stderr log: %s; stderr: %s", stderrPath, bindMessage)
+	}}
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-bind",
+		RepoRoot: t.TempDir(),
+		Prompt:   "do x",
+		Metadata: map[string]string{"log_path": logPath},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultFailed {
+		t.Fatalf("expected failed status, got %s", result.Status)
+	}
+	if !strings.Contains(result.Reason, bindMessage) {
+		t.Fatalf("expected bind failure details, got %q", result.Reason)
+	}
+	if !strings.Contains(result.Reason, stderrPath) {
+		t.Fatalf("expected bind failure to preserve stderr log path, got %q", result.Reason)
 	}
 }
 
