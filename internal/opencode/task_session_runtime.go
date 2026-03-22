@@ -476,11 +476,63 @@ func (s *ServeTaskSession) createSession(ctx context.Context) (string, error) {
 	return strings.TrimSpace(payload.ID), nil
 }
 
-func (s *ServeTaskSession) Execute(context.Context, contracts.TaskSessionExecuteRequest) error {
+func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSessionExecuteRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s == nil {
 		return errors.New("nil opencode serve task session")
 	}
-	return errors.New("opencode serve task execution not implemented")
+	sessionID := s.currentSessionID()
+	if sessionID == "" {
+		return errors.New("opencode serve task session not ready")
+	}
+
+	body, err := json.Marshal(struct {
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}{
+		Parts: []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{
+			{
+				Type: "text",
+				Text: request.Prompt,
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sessionURL+"/"+sessionID+"/message", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if readErr != nil {
+			return fmt.Errorf("submit session message returned %d", resp.StatusCode)
+		}
+		detail := strings.TrimSpace(string(payload))
+		if detail == "" {
+			return fmt.Errorf("submit session message returned %d", resp.StatusCode)
+		}
+		return fmt.Errorf("submit session message returned %d: %s", resp.StatusCode, detail)
+	}
+	return nil
 }
 
 func (s *ServeTaskSession) Cancel(ctx context.Context, request contracts.TaskSessionCancellation) error {
