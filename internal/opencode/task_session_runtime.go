@@ -180,7 +180,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		proc:                proc,
 		client:              runtime.httpClient,
 		baseURL:             baseURL,
-		healthURL:           baseURL + "/global/health",
+		healthURL:           resolveServeHealthURL(baseURL),
 		sessionURL:          baseURL + "/session",
 		disposeURL:          baseURL + "/instance/dispose",
 		readyTimeout:        request.ReadyTimeout,
