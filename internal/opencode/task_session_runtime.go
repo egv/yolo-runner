@@ -161,28 +161,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		return nil, err
 	}
 
-	baseURL := resolveServeBaseURL(runtime.hostname, port)
-	session := &ServeTaskSession{
-		id:                  resolveServeTaskSessionID(request),
-		taskTitle:           resolveServeTaskSessionTitle(request),
-		proc:                proc,
-		client:              runtime.httpClient,
-		baseURL:             baseURL,
-		healthURL:           resolveServeHealthURL(baseURL),
-		sessionURL:          baseURL + "/session",
-		disposeURL:          baseURL + "/instance/dispose",
-		readyTimeout:        request.ReadyTimeout,
-		stopTimeout:         request.StopTimeout,
-		healthCheckInterval: runtime.healthCheckInterval,
-		waitDone:            make(chan struct{}),
-		stdoutFile:          stdoutFile,
-		stderrFile:          stderrFile,
-	}
-	go func() {
-		session.waitErr = proc.Wait()
-		close(session.waitDone)
-	}()
-	return session, nil
+	return runtime.newInitialServeTaskSession(request, proc, stdoutFile, stderrFile, runtime.hostname, port), nil
 }
 
 func (r *TaskSessionRuntime) startPreparedServeProcess(ctx context.Context, request contracts.TaskSessionStartRequest, stdout io.Writer, stderr io.Writer, hostname string, port int) (serveProcess, error) {
@@ -215,6 +194,31 @@ func (r *TaskSessionRuntime) startPreparedServeProcess(ctx context.Context, requ
 		return nil, errors.New("opencode serve starter returned nil process")
 	}
 	return proc, nil
+}
+
+func (r *TaskSessionRuntime) newInitialServeTaskSession(request contracts.TaskSessionStartRequest, proc serveProcess, stdoutFile *os.File, stderrFile *os.File, hostname string, port int) *ServeTaskSession {
+	baseURL := resolveServeBaseURL(hostname, port)
+	session := &ServeTaskSession{
+		id:                  resolveServeTaskSessionID(request),
+		taskTitle:           resolveServeTaskSessionTitle(request),
+		proc:                proc,
+		client:              r.httpClient,
+		baseURL:             baseURL,
+		healthURL:           resolveServeHealthURL(baseURL),
+		sessionURL:          baseURL + "/session",
+		disposeURL:          baseURL + "/instance/dispose",
+		readyTimeout:        request.ReadyTimeout,
+		stopTimeout:         request.StopTimeout,
+		healthCheckInterval: r.healthCheckInterval,
+		waitDone:            make(chan struct{}),
+		stdoutFile:          stdoutFile,
+		stderrFile:          stderrFile,
+	}
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
+	}()
+	return session
 }
 
 func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequest, hostname string, port int) (string, []string) {

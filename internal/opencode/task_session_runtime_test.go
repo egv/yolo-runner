@@ -460,6 +460,67 @@ func TestTaskSessionRuntimeStartPreparedServeProcessRejectsNilProcess(t *testing
 	}
 }
 
+func TestTaskSessionRuntimeNewInitialServeTaskSessionUsesResolvedURLsAndStartedProcess(t *testing.T) {
+	proc := newFakeServeProcess()
+	waitErr := errors.New("serve exited")
+
+	client := &http.Client{}
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.httpClient = client
+	runtime.healthCheckInterval = 250 * time.Millisecond
+
+	session := runtime.newInitialServeTaskSession(contracts.TaskSessionStartRequest{
+		TaskID:       "task-initial-shell",
+		ReadyTimeout: time.Second,
+		StopTimeout:  1500 * time.Millisecond,
+	}, proc, nil, nil, "0.0.0.0", 43123)
+
+	if session == nil {
+		t.Fatal("expected initial serve task session")
+	}
+	if session.proc != proc {
+		t.Fatalf("expected session to retain started process handle")
+	}
+	if session.client != client {
+		t.Fatalf("expected session to retain runtime http client")
+	}
+	if session.ID() != "task-initial-shell" {
+		t.Fatalf("expected task session id, got %q", session.ID())
+	}
+	if session.baseURL != "http://localhost:43123" {
+		t.Fatalf("expected resolved base url, got %q", session.baseURL)
+	}
+	if session.healthURL != "http://localhost:43123/global/health" {
+		t.Fatalf("expected resolved health url, got %q", session.healthURL)
+	}
+	if session.sessionURL != "http://localhost:43123/session" {
+		t.Fatalf("expected resolved session url, got %q", session.sessionURL)
+	}
+	if session.disposeURL != "http://localhost:43123/instance/dispose" {
+		t.Fatalf("expected resolved dispose url, got %q", session.disposeURL)
+	}
+	if session.healthCheckInterval != 250*time.Millisecond {
+		t.Fatalf("expected runtime health check interval, got %s", session.healthCheckInterval)
+	}
+	if session.readyTimeout != time.Second {
+		t.Fatalf("expected ready timeout, got %s", session.readyTimeout)
+	}
+	if session.stopTimeout != 1500*time.Millisecond {
+		t.Fatalf("expected stop timeout, got %s", session.stopTimeout)
+	}
+	if session.currentSessionID() != "" {
+		t.Fatalf("expected initial serve task session shell without created session id, got %q", session.currentSessionID())
+	}
+
+	proc.waitCh <- waitErr
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.waitWithContext(ctx); !errors.Is(err, waitErr) {
+		t.Fatalf("expected process wait error %v, got %v", waitErr, err)
+	}
+}
+
 func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testing.T) {
 	api := newServeTestAPI(t)
 	proc := newFakeServeProcess()
