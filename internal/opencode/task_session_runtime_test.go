@@ -57,14 +57,20 @@ type recordedServeRequest struct {
 	Body   string
 }
 
+type serveHealthResponse struct {
+	status int
+	body   string
+}
+
 type serveTestAPI struct {
 	server   *http.Server
 	listener net.Listener
 
-	mu         sync.Mutex
-	requests   []recordedServeRequest
-	sessionID  string
-	healthBody string
+	mu              sync.Mutex
+	requests        []recordedServeRequest
+	sessionID       string
+	healthBody      string
+	healthResponses []serveHealthResponse
 }
 
 func newServeTestAPI(t *testing.T) *serveTestAPI {
@@ -132,8 +138,25 @@ func (api *serveTestAPI) record(r *http.Request, body []byte) {
 
 func (api *serveTestAPI) handleHealth(w http.ResponseWriter, r *http.Request) {
 	api.record(r, nil)
+	api.mu.Lock()
+	response := serveHealthResponse{
+		status: http.StatusOK,
+		body:   api.healthBody,
+	}
+	if len(api.healthResponses) > 0 {
+		response = api.healthResponses[0]
+		api.healthResponses = api.healthResponses[1:]
+		if response.status == 0 {
+			response.status = http.StatusOK
+		}
+		if strings.TrimSpace(response.body) == "" {
+			response.body = api.healthBody
+		}
+	}
+	api.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = io.WriteString(w, api.healthBody)
+	w.WriteHeader(response.status)
+	_, _ = io.WriteString(w, response.body)
 }
 
 func (api *serveTestAPI) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -171,12 +194,17 @@ func (api *serveTestAPI) handleDispose(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, `true`)
 }
 
-func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndCreatesSession(t *testing.T) {
+func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndPollsHealthUntilReady(t *testing.T) {
 	api := newServeTestAPI(t)
+	api.healthResponses = []serveHealthResponse{
+		{status: http.StatusServiceUnavailable, body: `{"healthy":false}`},
+		{status: http.StatusOK, body: `{"healthy":true,"version":"test"}`},
+	}
 	proc := newFakeServeProcess()
 
 	var startedSpec ServeCommandSpec
 	runtime := NewTaskSessionRuntime("opencode")
+	runtime.healthCheckInterval = 5 * time.Millisecond
 	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
 		startedSpec = spec
 		return proc, nil
@@ -209,8 +237,8 @@ func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndCreatesSession(t *te
 	if appSession.ID() != "task-1" {
 		t.Fatalf("expected task session id task-1, got %q", appSession.ID())
 	}
-	if appSession.sessionID != "session-1" {
-		t.Fatalf("expected created opencode session id, got %q", appSession.sessionID)
+	if appSession.currentSessionID() != "" {
+		t.Fatalf("expected readiness to stop before creating an opencode session, got %q", appSession.currentSessionID())
 	}
 	if startedSpec.Binary != "opencode" {
 		t.Fatalf("expected opencode binary, got %q", startedSpec.Binary)
@@ -230,17 +258,13 @@ func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndCreatesSession(t *te
 	}
 
 	requests := api.Requests()
-	if len(requests) < 2 {
-		t.Fatalf("expected health and session creation requests, got %#v", requests)
+	if len(requests) != 2 {
+		t.Fatalf("expected exactly two health polling requests before readiness succeeded, got %#v", requests)
 	}
-	if requests[0].Method != http.MethodGet || requests[0].Path != "/global/health" {
-		t.Fatalf("expected first request to be health check, got %#v", requests[0])
-	}
-	if requests[1].Method != http.MethodPost || requests[1].Path != "/session" {
-		t.Fatalf("expected second request to create session, got %#v", requests[1])
-	}
-	if !strings.Contains(requests[1].Body, `"title":"task-1"`) {
-		t.Fatalf("expected session create body to include task title, got %q", requests[1].Body)
+	for i, request := range requests {
+		if request.Method != http.MethodGet || request.Path != "/global/health" {
+			t.Fatalf("expected health polling request at %d, got %#v", i, request)
+		}
 	}
 }
 
@@ -545,14 +569,21 @@ func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testi
 	if err := session.WaitReady(context.Background()); err != nil {
 		t.Fatalf("wait ready: %v", err)
 	}
+	appSession, ok := session.(*ServeTaskSession)
+	if !ok {
+		t.Fatalf("expected ServeTaskSession, got %T", session)
+	}
+	appSession.stateMu.Lock()
+	appSession.sessionID = "session-1"
+	appSession.stateMu.Unlock()
 
 	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "finished"}); err != nil {
 		t.Fatalf("teardown session: %v", err)
 	}
 
 	requests := api.Requests()
-	if len(requests) < 4 {
-		t.Fatalf("expected health, create, delete and dispose requests, got %#v", requests)
+	if len(requests) < 3 {
+		t.Fatalf("expected health, delete and dispose requests, got %#v", requests)
 	}
 	foundDelete := false
 	foundDispose := false
