@@ -335,6 +335,7 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 	nextID := 1
 	threadID := ""
 	turnID := ""
+	streamCompletion := &AppServerCompletion{}
 	defer func() {
 		shutdownErr := shutdownAppServerProcess(proc, writer, waitDone, runErr, threadID, turnID)
 		if runErr == nil {
@@ -359,9 +360,11 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 			if err != nil {
 				return contracts.JSONRPCMessage{}, err
 			}
+			mergeAppServerStreamCompletion(streamCompletion, msg, request.Mode)
 			if strings.TrimSpace(msg.Method) != "" {
 				nextCompletion, handleErr := a.handleAppServerMessage(ctx, writer, request, msg)
 				if nextCompletion != nil {
+					mergeAppServerCompletion(nextCompletion, streamCompletion)
 					completion = nextCompletion
 				}
 				if handleErr != nil {
@@ -436,8 +439,10 @@ func (a *CLIRunnerAdapter) runAppServerMode(ctx context.Context, request contrac
 			return err, completion
 		}
 		threadID, turnID = trackAppServerLifecycle(msg, threadID, turnID)
+		mergeAppServerStreamCompletion(streamCompletion, msg, request.Mode)
 		nextCompletion, handleErr := a.handleAppServerMessage(ctx, writer, request, msg)
 		if nextCompletion != nil {
+			mergeAppServerCompletion(nextCompletion, streamCompletion)
 			completion = nextCompletion
 		}
 		if handleErr != nil {

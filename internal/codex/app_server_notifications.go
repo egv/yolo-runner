@@ -212,6 +212,46 @@ func ApplyAppServerCompletion(result *contracts.RunnerResult, completion *AppSer
 	}
 }
 
+func mergeAppServerStreamCompletion(target *AppServerCompletion, message contracts.JSONRPCMessage, mode contracts.RunnerMode) {
+	if target == nil || mode != contracts.RunnerModeReview {
+		return
+	}
+	if verdict, ok := extractReviewVerdict(message.Params); ok {
+		if target.Artifacts == nil {
+			target.Artifacts = map[string]string{}
+		}
+		target.HasReviewVerdict = true
+		target.ReviewReady = strings.EqualFold(verdict, "pass")
+		target.Artifacts["review_verdict"] = verdict
+	}
+	if feedback, ok := extractReviewFailFeedback(message.Params); ok {
+		if target.Artifacts == nil {
+			target.Artifacts = map[string]string{}
+		}
+		target.Artifacts["review_fail_feedback"] = feedback
+	}
+}
+
+func mergeAppServerCompletion(target *AppServerCompletion, fallback *AppServerCompletion) {
+	if target == nil || fallback == nil {
+		return
+	}
+	if fallback.HasReviewVerdict && !target.HasReviewVerdict {
+		target.HasReviewVerdict = true
+		target.ReviewReady = fallback.ReviewReady
+	}
+	if len(fallback.Artifacts) > 0 {
+		if target.Artifacts == nil {
+			target.Artifacts = map[string]string{}
+		}
+		for key, value := range fallback.Artifacts {
+			if strings.TrimSpace(target.Artifacts[key]) == "" && strings.TrimSpace(value) != "" {
+				target.Artifacts[key] = value
+			}
+		}
+	}
+}
+
 func cloneStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
@@ -386,7 +426,7 @@ func extractText(value any) string {
 		return strings.TrimSpace(typed)
 	case map[string]any:
 		texts := []string{
-			lookupString(typed, "text", "message", "title", "reason"),
+			lookupString(typed, "delta", "text", "message", "title", "reason"),
 		}
 		if nested := lookupMap(typed, "output", "item", "delta"); nested != nil {
 			texts = append(texts, extractText(nested))
