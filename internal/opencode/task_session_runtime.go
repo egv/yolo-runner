@@ -157,9 +157,10 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		}
 	}()
 
+	binary, args := runtime.buildCommand(request, runtime.hostname, port)
 	spec := ServeCommandSpec{
-		Binary: runtime.binary,
-		Args:   runtime.buildArgs(request, runtime.hostname, port),
+		Binary: binary,
+		Args:   args,
 		Env:    flattenServeEnv(request.Env),
 		Dir:    strings.TrimSpace(request.RepoRoot),
 		Stdout: stdoutFile,
@@ -197,14 +198,15 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 	return session, nil
 }
 
-func (r *TaskSessionRuntime) buildArgs(request contracts.TaskSessionStartRequest, hostname string, port int) []string {
+func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequest, hostname string, port int) (string, []string) {
 	if len(request.Command) > 0 {
-		return resolveServeArgs(request.Command, request, hostname, port)
+		return strings.TrimSpace(r.binary), resolveServeArgs(request.Command, request, hostname, port)
 	}
 	if len(r.args) > 0 {
-		return resolveServeArgs(r.args, request, hostname, port)
+		return strings.TrimSpace(r.binary), resolveServeArgs(r.args, request, hostname, port)
 	}
-	return append(buildServeBaseArgs(), "--hostname", hostname, "--port", strconv.Itoa(port))
+	binary, args := resolveServeBaseCommand(r.binary)
+	return binary, append(args, "--hostname", hostname, "--port", strconv.Itoa(port))
 }
 
 func resolveServeArgs(raw []string, request contracts.TaskSessionStartRequest, hostname string, port int) []string {
