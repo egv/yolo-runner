@@ -21,7 +21,7 @@ func buildServeBaseArgs() []string {
 }
 
 func resolveServeBaseCommand(binary string) (string, []string) {
-	command := buildServeCommand(binary)
+	command := compactServeCommand(buildServeCommand(binary))
 	if len(command) == 0 {
 		command = BuildServeCommand(binary)
 	}
@@ -61,6 +61,18 @@ func resolveServeBaseCommand(binary string) (string, []string) {
 		args = append(args, buildServeBaseArgs()...)
 		return resolvedBinary, args
 	}
+}
+
+func compactServeCommand(command []string) []string {
+	normalized := make([]string, 0, len(command))
+	for _, value := range command {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
 }
 
 func resolveServeBinary(binary string) string {
