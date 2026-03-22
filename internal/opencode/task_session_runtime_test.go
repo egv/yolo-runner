@@ -310,6 +310,64 @@ func TestTaskSessionRuntimeDefaultCommandUsesBaseServeBuilder(t *testing.T) {
 	}
 }
 
+func TestTaskSessionRuntimeDefaultCommandTrimsBuilderPrefixArgs(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	originalBuildServeCommand := buildServeCommand
+	t.Cleanup(func() {
+		buildServeCommand = originalBuildServeCommand
+	})
+
+	buildServeCommand = func(string) []string {
+		return []string{" env ", " OPENCODE_TRACE=1 ", " "}
+	}
+
+	var startedSpec ServeCommandSpec
+	runtime := NewTaskSessionRuntime("/tmp/custom-opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		startedSpec = spec
+		return proc, nil
+	})
+	runtime.allocatePort = func(hostname string) (int, error) {
+		if hostname != defaultServeHostname {
+			t.Fatalf("expected loopback host allocation outside builder, got %q", hostname)
+		}
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:       "task-builder-trim",
+		RepoRoot:     t.TempDir(),
+		LogPath:      filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-builder-trim.jsonl"),
+		ReadyTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	if startedSpec.Binary != "env" {
+		t.Fatalf("expected trimmed prefix binary, got %q", startedSpec.Binary)
+	}
+
+	expectedArgs := []string{"OPENCODE_TRACE=1", "/tmp/custom-opencode", "serve", "--hostname", "127.0.0.1", "--port", strconv.Itoa(api.port(t))}
+	if len(startedSpec.Args) != len(expectedArgs) {
+		t.Fatalf("expected args %#v, got %#v", expectedArgs, startedSpec.Args)
+	}
+	for i, want := range expectedArgs {
+		if startedSpec.Args[i] != want {
+			t.Fatalf("expected arg %q at %d, got %q", want, i, startedSpec.Args[i])
+		}
+	}
+}
+
 func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testing.T) {
 	api := newServeTestAPI(t)
 	proc := newFakeServeProcess()
