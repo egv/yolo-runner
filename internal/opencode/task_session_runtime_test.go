@@ -639,3 +639,104 @@ func TestServeTaskSessionWaitReadyFailsWhenProcessExitsBeforeHealth(t *testing.T
 		t.Fatalf("expected early exit readiness error, got %v", err)
 	}
 }
+
+func TestServeTaskSessionWaitReadyTimeoutIncludesHealthContext(t *testing.T) {
+	api := newServeTestAPI(t)
+	api.healthResponses = make([]serveHealthResponse, 32)
+	for i := range api.healthResponses {
+		api.healthResponses[i] = serveHealthResponse{status: http.StatusServiceUnavailable, body: `{"healthy":false}`}
+	}
+	proc := newFakeServeProcess()
+
+	repoRoot := t.TempDir()
+	logPath := filepath.Join(repoRoot, "runner-logs", "opencode", "task-timeout.jsonl")
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.healthCheckInterval = 5 * time.Millisecond
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:       "task-timeout",
+		RepoRoot:     repoRoot,
+		LogPath:      logPath,
+		ReadyTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	err = session.WaitReady(context.Background())
+	if err == nil {
+		t.Fatal("expected readiness timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for opencode serve readiness") {
+		t.Fatalf("expected readiness timeout message, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "/global/health") {
+		t.Fatalf("expected health endpoint in readiness timeout, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "health endpoint returned 503") {
+		t.Fatalf("expected last health failure in readiness timeout, got %v", err)
+	}
+	if !strings.Contains(err.Error(), contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)) {
+		t.Fatalf("expected stderr log path in readiness timeout, got %v", err)
+	}
+}
+
+func TestServeTaskSessionWaitReadyIncludesStderrDetailsWhenServeExitsBeforeReadiness(t *testing.T) {
+	proc := newFakeServeProcess()
+	proc.waitCh <- errors.New("exit status 1")
+
+	repoRoot := t.TempDir()
+	logPath := filepath.Join(repoRoot, "runner-logs", "opencode", "task-bind.jsonl")
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.healthCheckInterval = 5 * time.Millisecond
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return 43123, nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:       "task-bind",
+		RepoRoot:     repoRoot,
+		LogPath:      logPath,
+		ReadyTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+
+	appSession, ok := session.(*ServeTaskSession)
+	if !ok {
+		t.Fatalf("expected ServeTaskSession, got %T", session)
+	}
+	if _, err := io.WriteString(appSession.stderrFile, "listen tcp 127.0.0.1:43123: bind: address already in use\n"); err != nil {
+		t.Fatalf("seed stderr log: %v", err)
+	}
+	if err := appSession.stderrFile.Sync(); err != nil {
+		t.Fatalf("sync stderr log: %v", err)
+	}
+
+	err = session.WaitReady(context.Background())
+	if err == nil {
+		t.Fatal("expected readiness failure")
+	}
+	if !strings.Contains(err.Error(), "before readiness") {
+		t.Fatalf("expected early exit readiness error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "bind: address already in use") {
+		t.Fatalf("expected stderr bind details in readiness error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)) {
+		t.Fatalf("expected stderr log path in readiness error, got %v", err)
+	}
+}

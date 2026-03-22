@@ -377,20 +377,26 @@ func (s *ServeTaskSession) waitForHealth(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var lastHealthErr error
 
 	for {
 		if err := s.checkHealth(ctx); err == nil {
 			return nil
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			lastHealthErr = err
 		}
 
 		select {
 		case <-ctx.Done():
 			if procErr, ok := s.processWaitErr(); ok {
-				return fmt.Errorf("opencode serve exited before readiness: %w", procErr)
+				return s.serveExitedBeforeReadinessError(procErr)
+			}
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return s.serveReadinessTimeoutError(ctx.Err(), lastHealthErr)
 			}
 			return ctx.Err()
 		case <-s.waitDone:
-			return fmt.Errorf("opencode serve exited before readiness: %w", s.waitErr)
+			return s.serveExitedBeforeReadinessError(s.waitErr)
 		case <-ticker.C:
 		}
 	}
@@ -618,6 +624,68 @@ func (s *ServeTaskSession) closeLogs() {
 		_ = s.stderrFile.Close()
 		s.stderrFile = nil
 	}
+}
+
+func (s *ServeTaskSession) serveReadinessTimeoutError(timeoutErr error, lastHealthErr error) error {
+	parts := []string{
+		fmt.Sprintf("timed out waiting for opencode serve readiness at %s", s.healthURL),
+	}
+	if lastHealthErr != nil {
+		parts = append(parts, "last health error: "+strings.TrimSpace(lastHealthErr.Error()))
+	}
+	if stderrPath := s.stderrLogPath(); stderrPath != "" {
+		parts = append(parts, "stderr log: "+stderrPath)
+	}
+	if stderrSummary := s.stderrLogSummary(); stderrSummary != "" {
+		parts = append(parts, "stderr: "+stderrSummary)
+	}
+	return fmt.Errorf("%s: %w", strings.Join(parts, "; "), timeoutErr)
+}
+
+func (s *ServeTaskSession) serveExitedBeforeReadinessError(waitErr error) error {
+	parts := []string{"opencode serve exited before readiness"}
+	if stderrPath := s.stderrLogPath(); stderrPath != "" {
+		parts = append(parts, "stderr log: "+stderrPath)
+	}
+	if stderrSummary := s.stderrLogSummary(); stderrSummary != "" {
+		parts = append(parts, "stderr: "+stderrSummary)
+	}
+	message := strings.Join(parts, "; ")
+	if waitErr == nil {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %w", message, waitErr)
+}
+
+func (s *ServeTaskSession) stderrLogPath() string {
+	if s == nil || s.stderrFile == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.stderrFile.Name())
+}
+
+func (s *ServeTaskSession) stderrLogSummary() string {
+	path := s.stderrLogPath()
+	if path == "" {
+		return ""
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(content), "\n")
+	summary := make([]string, 0, 3)
+	for i := len(lines) - 1; i >= 0 && len(summary) < 3; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		summary = append(summary, line)
+	}
+	for left, right := 0, len(summary)-1; left < right; left, right = left+1, right-1 {
+		summary[left], summary[right] = summary[right], summary[left]
+	}
+	return strings.Join(summary, " | ")
 }
 
 func withOptionalTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
