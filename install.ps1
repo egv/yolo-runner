@@ -66,3 +66,5 @@ Get-ChildItem -Path $extractDir -File | ForEach-Object {
 if (-not $installed) {
     throw "expected binaries not found in artifact: $artifact"
 }
+
+Write-Output "next: run 'yolo-runner init --repo <repo>' inside a repository to install .opencode/agent/yolo.md, the task-splitting skill, and split-tasks commands"

@@ -229,7 +229,7 @@ It also validates docs contracts for this checklist and the migration guidance.
 
 ## Init
 
-The runner includes a helper to install the YOLO agent file into the OpenCode agent directory.
+The runner includes a helper to install the YOLO agent, the task-splitting skill, and task-splitting commands into the OpenCode project directory.
 
 Init usage:
 
@@ -237,7 +237,34 @@ Init usage:
 ./bin/yolo-runner init --repo .
 ```
 
-This performs the agent installation step by copying `yolo.md` into `.opencode/agent/yolo.md`.
+This installs the following repo-local OpenCode assets:
+
+- `yolo.md` -> `.opencode/agent/yolo.md`
+- `agent/release.md` -> `.opencode/agent/release.md` (when present)
+- `skills/task-splitting/SKILL.md` -> `.opencode/skills/task-splitting/SKILL.md`
+- `commands/split-tasks.md` -> `.opencode/commands/split-tasks.md`
+- `commands/split-tasks-strict.md` -> `.opencode/commands/split-tasks-strict.md`
+
+After installing the binary with `install.sh` or `install.ps1`, run `yolo-runner init --repo <repo>` inside each target repository so those OpenCode assets are installed locally.
+
+### Task Splitting Skill
+
+The repo ships a reusable OpenCode task-splitting skill plus two command wrappers:
+
+- `/split-tasks`
+- `/split-tasks-strict`
+
+Use them to turn ADRs, PRDs, or broad implementation requests into strict-TDD epics and micro-tasks with explicit dependency order.
+
+Examples:
+
+```text
+/split-tasks @docs/adr/ADR-002-server-backed-agent-runtimes.md
+```
+
+```text
+/split-tasks-strict Break this feature request into the smallest useful tasks for an autonomous coding agent.
+```
 
 ## Update
 
@@ -783,7 +810,7 @@ This keeps `tk ready` output clean and removes old working directories.
 
 ## Troubleshooting
 
-### Agent Not Found
+### Agent Or Skill Not Found
 
 ```bash
 ./bin/yolo-runner init --repo .
@@ -839,9 +866,11 @@ Enable verbose output:
 
 If the runner refuses to start with agent errors:
 
-1. Run `./bin/yolo-runner init --repo .` to reinstall the agent file.
+1. Run `./bin/yolo-runner init --repo .` to reinstall the agent, skill, and commands.
 2. Confirm `.opencode/agent/yolo.md` exists and includes `permission: allow`.
-3. Re-run the runner after the agent installation is complete.
+3. Confirm `.opencode/skills/task-splitting/SKILL.md` exists.
+4. Confirm `.opencode/commands/split-tasks.md` and `.opencode/commands/split-tasks-strict.md` exist.
+5. Re-run the runner after the OpenCode asset installation is complete.
 
 ## Notes
 

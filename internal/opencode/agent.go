@@ -13,6 +13,12 @@ const (
 	agentSourceRelativePath        = "yolo.md"
 	releaseAgentRelativePath       = ".opencode/agent/release.md"
 	releaseAgentSourceRelativePath = "agent/release.md"
+	taskSplittingSkillRelativePath = ".opencode/skills/task-splitting/SKILL.md"
+	taskSplittingSkillSourcePath   = "skills/task-splitting/SKILL.md"
+	splitTasksCommandRelativePath  = ".opencode/commands/split-tasks.md"
+	splitTasksCommandSourcePath    = "commands/split-tasks.md"
+	splitTasksStrictCommandPath    = ".opencode/commands/split-tasks-strict.md"
+	splitTasksStrictSourcePath     = "commands/split-tasks-strict.md"
 )
 
 var (
@@ -43,6 +49,9 @@ func InitAgent(repoRoot string) error {
 	}{
 		{agentSourceRelativePath, agentRelativePath, true},
 		{releaseAgentSourceRelativePath, releaseAgentRelativePath, false},
+		{taskSplittingSkillSourcePath, taskSplittingSkillRelativePath, true},
+		{splitTasksCommandSourcePath, splitTasksCommandRelativePath, true},
+		{splitTasksStrictSourcePath, splitTasksStrictCommandPath, true},
 	} {
 		sourcePath := filepath.Join(repoRoot, item.src)
 		sourceContent, err := os.ReadFile(sourcePath)

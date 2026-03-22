@@ -293,6 +293,7 @@ install_release() {
 		echo "expected binaries not found in artifact: $artifact" >&2
 		exit 1
 	fi
+	echo "next: run 'yolo-runner init --repo <repo>' inside a repository to install .opencode/agent/yolo.md, the task-splitting skill, and split-tasks commands"
 }
 
 main() {

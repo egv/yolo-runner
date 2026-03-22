@@ -26,6 +26,7 @@ Your purpose is to implement the single task described in the prompt using stric
 - Do NOT request or select additional tasks.
 - Do NOT use beads commands (`bd`); the runner manages task selection and closing.
 - Do NOT ask the user for clarification; proceed with best-effort assumptions.
+- If the user asks you to split an ADR, PRD, or existing task tree into epics/tasks, load the `task-splitting` skill and follow it.
 
 **TDD requirements:**
 - RED-GREEN-REFACTOR is required:
