@@ -173,7 +173,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		return nil, errors.New("opencode serve starter returned nil process")
 	}
 
-	baseURL := fmt.Sprintf("http://%s:%d", runtime.hostname, port)
+	baseURL := resolveServeBaseURL(runtime.hostname, port)
 	session := &ServeTaskSession{
 		id:                  resolveServeTaskSessionID(request),
 		taskTitle:           resolveServeTaskSessionTitle(request),
