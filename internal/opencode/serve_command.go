@@ -13,7 +13,7 @@ func BuildServeCommand(binary string) []string {
 }
 
 func BuildServeCommandArgs() []string {
-	return []string{"serve"}
+	return []string{"serve", "--hostname", defaultServeHostname}
 }
 
 func buildServeBaseArgs() []string {

@@ -259,7 +259,7 @@ func TestTaskSessionRuntimeDefaultCommandUsesBaseServeBuilder(t *testing.T) {
 		if binary != "/tmp/custom-opencode" {
 			t.Fatalf("expected runtime binary to flow into base serve builder, got %q", binary)
 		}
-		return []string{binary, "serve"}
+		return []string{binary, "serve", "--hostname", "127.0.0.1"}
 	}
 
 	var startedSpec ServeCommandSpec

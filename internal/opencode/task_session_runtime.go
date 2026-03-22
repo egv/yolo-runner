@@ -206,7 +206,19 @@ func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequ
 		return strings.TrimSpace(r.binary), resolveServeArgs(r.args, request, hostname, port)
 	}
 	binary, args := resolveServeBaseCommand(r.binary)
-	return binary, append(args, "--hostname", hostname, "--port", strconv.Itoa(port))
+	if !containsServeHostnameFlag(args) {
+		args = append(args, "--hostname", hostname)
+	}
+	return binary, append(args, "--port", strconv.Itoa(port))
+}
+
+func containsServeHostnameFlag(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if strings.TrimSpace(args[i]) == "--hostname" {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveServeArgs(raw []string, request contracts.TaskSessionStartRequest, hostname string, port int) []string {
