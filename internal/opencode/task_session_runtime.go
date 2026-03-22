@@ -156,21 +156,9 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 		}
 	}()
 
-	binary, args := runtime.buildCommand(request, runtime.hostname, port)
-	spec := ServeCommandSpec{
-		Binary: binary,
-		Args:   args,
-		Env:    flattenServeEnv(request.Env),
-		Dir:    strings.TrimSpace(request.RepoRoot),
-		Stdout: stdoutFile,
-		Stderr: stderrFile,
-	}
-	proc, err := runtime.starter.Start(ctx, spec)
+	proc, err := runtime.startPreparedServeProcess(ctx, request, stdoutFile, stderrFile, runtime.hostname, port)
 	if err != nil {
 		return nil, err
-	}
-	if proc == nil {
-		return nil, errors.New("opencode serve starter returned nil process")
 	}
 
 	baseURL := resolveServeBaseURL(runtime.hostname, port)
@@ -197,23 +185,67 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 	return session, nil
 }
 
+func (r *TaskSessionRuntime) startPreparedServeProcess(ctx context.Context, request contracts.TaskSessionStartRequest, stdout io.Writer, stderr io.Writer, hostname string, port int) (serveProcess, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil {
+		return nil, errors.New("nil opencode task session runtime")
+	}
+
+	starter := r.starter
+	if starter == nil {
+		starter = serveProcessStarterFunc(startServeProcess)
+	}
+
+	binary, args := r.buildCommand(request, hostname, port)
+	spec := ServeCommandSpec{
+		Binary: binary,
+		Args:   args,
+		Env:    flattenServeEnv(request.Env),
+		Dir:    strings.TrimSpace(request.RepoRoot),
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+	proc, err := starter.Start(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	if proc == nil {
+		return nil, errors.New("opencode serve starter returned nil process")
+	}
+	return proc, nil
+}
+
 func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequest, hostname string, port int) (string, []string) {
+	var raw []string
 	if len(request.Command) > 0 {
-		return strings.TrimSpace(r.binary), resolveServeArgs(request.Command, request, hostname, port)
+		raw = resolveServeArgs(request.Command, request, hostname, port)
+	} else if len(r.args) > 0 {
+		raw = resolveServeArgs(r.args, request, hostname, port)
 	}
-	if len(r.args) > 0 {
-		return strings.TrimSpace(r.binary), resolveServeArgs(r.args, request, hostname, port)
-	}
-	binary, args := resolveServeBaseCommand(r.binary)
+	binary, args := resolveServeCommand(r.binary, raw)
 	if !containsServeHostnameFlag(args) {
 		args = append(args, "--hostname", hostname)
 	}
-	return binary, append(args, "--port", strconv.Itoa(port))
+	if !containsServePortFlag(args) {
+		args = append(args, "--port", strconv.Itoa(port))
+	}
+	return binary, args
 }
 
 func containsServeHostnameFlag(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		if strings.TrimSpace(args[i]) == "--hostname" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsServePortFlag(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if strings.TrimSpace(args[i]) == "--port" {
 			return true
 		}
 	}
