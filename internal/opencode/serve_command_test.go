@@ -45,3 +45,47 @@ func TestBuildServeCommandArgsReturnsLoopbackServeArgsOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveServeBaseCommandPreservesInjectedBinaryAndCommandPrefix(t *testing.T) {
+	t.Run("custom binary uses base serve args", func(t *testing.T) {
+		binary, args := resolveServeBaseCommand("/tmp/custom-opencode")
+		expectedArgs := []string{"serve", "--hostname", "127.0.0.1"}
+
+		if binary != "/tmp/custom-opencode" {
+			t.Fatalf("expected custom binary, got %q", binary)
+		}
+		if len(args) != len(expectedArgs) {
+			t.Fatalf("expected args %#v, got %#v", expectedArgs, args)
+		}
+		for i, want := range expectedArgs {
+			if args[i] != want {
+				t.Fatalf("expected arg %q at %d, got %q", want, i, args[i])
+			}
+		}
+	})
+
+	t.Run("command prefix keeps injected binary and serve args", func(t *testing.T) {
+		originalBuildServeCommand := buildServeCommand
+		buildServeCommand = func(string) []string {
+			return []string{"env", "PATH=/tmp/opencode-bin"}
+		}
+		t.Cleanup(func() {
+			buildServeCommand = originalBuildServeCommand
+		})
+
+		binary, args := resolveServeBaseCommand("/tmp/custom-opencode")
+		expectedArgs := []string{"PATH=/tmp/opencode-bin", "/tmp/custom-opencode", "serve", "--hostname", "127.0.0.1"}
+
+		if binary != "env" {
+			t.Fatalf("expected prefix binary, got %q", binary)
+		}
+		if len(args) != len(expectedArgs) {
+			t.Fatalf("expected args %#v, got %#v", expectedArgs, args)
+		}
+		for i, want := range expectedArgs {
+			if args[i] != want {
+				t.Fatalf("expected arg %q at %d, got %q", want, i, args[i])
+			}
+		}
+	})
+}
