@@ -365,7 +365,19 @@ func (s *ServeTaskSession) WaitReady(ctx context.Context) error {
 
 		if err := s.waitForHealth(readyCtx); err != nil {
 			s.readyErr = err
+			return
 		}
+
+		sessionID, err := s.createSession(readyCtx)
+		if err != nil {
+			s.readyErr = err
+			return
+		}
+
+		s.stateMu.Lock()
+		s.sessionID = sessionID
+		s.stateMu.Unlock()
+
 	})
 	return s.readyErr
 }

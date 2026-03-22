@@ -226,6 +226,9 @@ func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndPollsHealthUntilRead
 	if err := session.WaitReady(context.Background()); err != nil {
 		t.Fatalf("wait ready: %v", err)
 	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready second call: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
 	})
@@ -237,8 +240,8 @@ func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndPollsHealthUntilRead
 	if appSession.ID() != "task-1" {
 		t.Fatalf("expected task session id task-1, got %q", appSession.ID())
 	}
-	if appSession.currentSessionID() != "" {
-		t.Fatalf("expected readiness to stop before creating an opencode session, got %q", appSession.currentSessionID())
+	if appSession.currentSessionID() != "session-1" {
+		t.Fatalf("expected readiness to create opencode session session-1, got %q", appSession.currentSessionID())
 	}
 	if startedSpec.Binary != "opencode" {
 		t.Fatalf("expected opencode binary, got %q", startedSpec.Binary)
@@ -258,13 +261,20 @@ func TestTaskSessionRuntimeWaitReadyStartsServeOnLoopbackAndPollsHealthUntilRead
 	}
 
 	requests := api.Requests()
-	if len(requests) != 2 {
-		t.Fatalf("expected exactly two health polling requests before readiness succeeded, got %#v", requests)
+	if len(requests) != 3 {
+		t.Fatalf("expected exactly two health polls and one session creation request, got %#v", requests)
 	}
-	for i, request := range requests {
+	for i, request := range requests[:2] {
 		if request.Method != http.MethodGet || request.Path != "/global/health" {
 			t.Fatalf("expected health polling request at %d, got %#v", i, request)
 		}
+	}
+	createRequest := requests[2]
+	if createRequest.Method != http.MethodPost || createRequest.Path != "/session" {
+		t.Fatalf("expected session creation request, got %#v", createRequest)
+	}
+	if !strings.Contains(createRequest.Body, `"title":"task-1"`) {
+		t.Fatalf("expected session creation body to include task title, got %q", createRequest.Body)
 	}
 }
 
