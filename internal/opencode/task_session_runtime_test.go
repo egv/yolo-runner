@@ -71,6 +71,8 @@ type serveTestAPI struct {
 	sessionID       string
 	healthBody      string
 	healthResponses []serveHealthResponse
+	messageStatus   int
+	messageBody     string
 }
 
 func newServeTestAPI(t *testing.T) *serveTestAPI {
@@ -82,9 +84,10 @@ func newServeTestAPI(t *testing.T) *serveTestAPI {
 	}
 
 	api := &serveTestAPI{
-		listener:   listener,
-		sessionID:  "session-1",
-		healthBody: `{"healthy":true,"version":"test"}`,
+		listener:    listener,
+		sessionID:   "session-1",
+		healthBody:  `{"healthy":true,"version":"test"}`,
+		messageBody: `{"info":{"id":"message-1"},"parts":[]}`,
 	}
 
 	mux := http.NewServeMux()
@@ -175,7 +178,26 @@ func (api *serveTestAPI) handleSessionByID(w http.ResponseWriter, r *http.Reques
 	body, _ := io.ReadAll(r.Body)
 	api.record(r, body)
 	switch r.Method {
-	case http.MethodDelete, http.MethodPost:
+	case http.MethodDelete:
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `true`)
+	case http.MethodPost:
+		if strings.HasSuffix(r.URL.Path, "/message") {
+			api.mu.Lock()
+			status := api.messageStatus
+			body := api.messageBody
+			api.mu.Unlock()
+			if status == 0 {
+				status = http.StatusOK
+			}
+			if strings.TrimSpace(body) == "" {
+				body = `{"info":{"id":"message-1"},"parts":[]}`
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, body)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `true`)
 	default:
@@ -616,6 +638,116 @@ func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testi
 	}
 	if proc.killCount != 0 {
 		t.Fatalf("did not expect forced kill, got %d", proc.killCount)
+	}
+}
+
+func TestServeTaskSessionExecutePostsPromptToExistingSessionMessageEndpoint(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-execute",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-execute.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+
+	if err := session.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
+		Prompt: "ship the fix",
+	}); err != nil {
+		t.Fatalf("execute session: %v", err)
+	}
+
+	requests := api.Requests()
+	found := false
+	for _, request := range requests {
+		if request.Method != http.MethodPost || request.Path != "/session/session-1/message" {
+			continue
+		}
+		found = true
+
+		var payload struct {
+			Parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"parts"`
+		}
+		if err := json.Unmarshal([]byte(request.Body), &payload); err != nil {
+			t.Fatalf("decode execute body: %v", err)
+		}
+		if len(payload.Parts) != 1 {
+			t.Fatalf("expected one prompt part, got %#v", payload.Parts)
+		}
+		if payload.Parts[0].Type != "text" {
+			t.Fatalf("expected text prompt part, got %#v", payload.Parts[0])
+		}
+		if payload.Parts[0].Text != "ship the fix" {
+			t.Fatalf("expected prompt text in execute body, got %#v", payload.Parts[0])
+		}
+	}
+	if !found {
+		t.Fatalf("expected execute request to /session/session-1/message, got %#v", requests)
+	}
+}
+
+func TestServeTaskSessionExecuteReturnsHTTPErrorDetails(t *testing.T) {
+	api := newServeTestAPI(t)
+	api.messageStatus = http.StatusBadGateway
+	api.messageBody = `{"error":"upstream failure"}`
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-execute-error",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-execute-error.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+
+	err = session.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
+		Prompt: "ship the fix",
+	})
+	if err == nil {
+		t.Fatal("expected execute error")
+	}
+	if !strings.Contains(err.Error(), "submit session message returned 502") {
+		t.Fatalf("expected execute status in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "upstream failure") {
+		t.Fatalf("expected execute response body in error, got %v", err)
 	}
 }
 
