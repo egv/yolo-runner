@@ -41,6 +41,7 @@ func timeoutResultReason(timeout time.Duration, runErr error) string {
 		return reason
 	}
 	detail := strings.TrimSpace(runErr.Error())
+	detail = strings.TrimSpace(strings.TrimSuffix(detail, ": "+context.DeadlineExceeded.Error()))
 	if detail == "" || detail == context.DeadlineExceeded.Error() {
 		return reason
 	}

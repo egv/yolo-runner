@@ -296,11 +296,17 @@ func TestCLIRunnerAdapterPreservesServeReadinessTimeoutDetailsInResultReason(t *
 	if result.Status != contracts.RunnerResultBlocked {
 		t.Fatalf("expected blocked status, got %s", result.Status)
 	}
+	if !strings.Contains(result.Reason, "runner timeout after 5ms") {
+		t.Fatalf("expected readiness timeout to include runner timeout context, got %q", result.Reason)
+	}
 	if !strings.Contains(result.Reason, healthURL) {
 		t.Fatalf("expected readiness timeout to preserve health URL, got %q", result.Reason)
 	}
 	if !strings.Contains(result.Reason, stderrPath) {
 		t.Fatalf("expected readiness timeout to preserve stderr log path, got %q", result.Reason)
+	}
+	if strings.Contains(result.Reason, context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected readiness timeout to omit raw deadline exceeded detail, got %q", result.Reason)
 	}
 }
 
