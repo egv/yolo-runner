@@ -21,7 +21,14 @@ func buildServeBaseArgs() []string {
 }
 
 func resolveServeBaseCommand(binary string) (string, []string) {
-	command := compactServeCommand(buildServeCommand(binary))
+	return resolveServeCommand(binary, nil)
+}
+
+func resolveServeCommand(binary string, command []string) (string, []string) {
+	command = compactServeCommand(command)
+	if len(command) == 0 {
+		command = compactServeCommand(buildServeCommand(binary))
+	}
 	if len(command) == 0 {
 		command = BuildServeCommand(binary)
 	}

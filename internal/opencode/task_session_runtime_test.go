@@ -368,6 +368,98 @@ func TestTaskSessionRuntimeDefaultCommandTrimsBuilderPrefixArgs(t *testing.T) {
 	}
 }
 
+func TestTaskSessionRuntimeStartPreparedServeProcessUsesConfiguredStarterPrefix(t *testing.T) {
+	proc := newFakeServeProcess()
+
+	var startedSpec ServeCommandSpec
+	runtime := NewTaskSessionRuntime("/tmp/custom-opencode", "env", "OPENCODE_TRACE=1")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		startedSpec = spec
+		return proc, nil
+	})
+
+	startedProc, err := runtime.startPreparedServeProcess(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-configured-starter",
+		RepoRoot: t.TempDir(),
+	}, io.Discard, io.Discard, defaultServeHostname, 43123)
+	if err != nil {
+		t.Fatalf("start prepared serve process: %v", err)
+	}
+	if startedProc != proc {
+		t.Fatalf("expected helper to return starter process handle")
+	}
+
+	if startedSpec.Binary != "env" {
+		t.Fatalf("expected configured starter prefix binary, got %q", startedSpec.Binary)
+	}
+	expectedArgs := []string{"OPENCODE_TRACE=1", "/tmp/custom-opencode", "serve", "--hostname", "127.0.0.1", "--port", "43123"}
+	if len(startedSpec.Args) != len(expectedArgs) {
+		t.Fatalf("expected args %#v, got %#v", expectedArgs, startedSpec.Args)
+	}
+	for i, want := range expectedArgs {
+		if startedSpec.Args[i] != want {
+			t.Fatalf("expected arg %q at %d, got %q", want, i, startedSpec.Args[i])
+		}
+	}
+}
+
+func TestTaskSessionRuntimeStartPreparedServeProcessUsesRequestCommandStarterPrefix(t *testing.T) {
+	proc := newFakeServeProcess()
+
+	var startedSpec ServeCommandSpec
+	runtime := NewTaskSessionRuntime("/tmp/custom-opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		startedSpec = spec
+		return proc, nil
+	})
+
+	startedProc, err := runtime.startPreparedServeProcess(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-request-starter",
+		RepoRoot: t.TempDir(),
+		Command:  []string{"env", "OPENCODE_TRACE=1"},
+	}, io.Discard, io.Discard, defaultServeHostname, 43123)
+	if err != nil {
+		t.Fatalf("start prepared serve process: %v", err)
+	}
+	if startedProc != proc {
+		t.Fatalf("expected helper to return starter process handle")
+	}
+
+	if startedSpec.Binary != "env" {
+		t.Fatalf("expected request command starter prefix binary, got %q", startedSpec.Binary)
+	}
+	expectedArgs := []string{"OPENCODE_TRACE=1", "/tmp/custom-opencode", "serve", "--hostname", "127.0.0.1", "--port", "43123"}
+	if len(startedSpec.Args) != len(expectedArgs) {
+		t.Fatalf("expected args %#v, got %#v", expectedArgs, startedSpec.Args)
+	}
+	for i, want := range expectedArgs {
+		if startedSpec.Args[i] != want {
+			t.Fatalf("expected arg %q at %d, got %q", want, i, startedSpec.Args[i])
+		}
+	}
+}
+
+func TestTaskSessionRuntimeStartPreparedServeProcessRejectsNilProcess(t *testing.T) {
+	runtime := NewTaskSessionRuntime("/tmp/custom-opencode")
+	runtime.starter = serveProcessStarterFunc(func(context.Context, ServeCommandSpec) (serveProcess, error) {
+		return nil, nil
+	})
+
+	startedProc, err := runtime.startPreparedServeProcess(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-nil-process",
+		RepoRoot: t.TempDir(),
+	}, io.Discard, io.Discard, defaultServeHostname, 43123)
+	if err == nil {
+		t.Fatal("expected nil process error")
+	}
+	if startedProc != nil {
+		t.Fatalf("expected nil process handle, got %#v", startedProc)
+	}
+	if !strings.Contains(err.Error(), "nil process") {
+		t.Fatalf("expected nil process error, got %v", err)
+	}
+}
+
 func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testing.T) {
 	api := newServeTestAPI(t)
 	proc := newFakeServeProcess()
