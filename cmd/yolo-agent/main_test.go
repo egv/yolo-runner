@@ -424,6 +424,32 @@ func TestBuildRunnerAdapterUsesCodexAppServerAndCodexCLIFallback(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerAdapterDefaultBackendUsesCodexAppServerAdapter(t *testing.T) {
+	repoRoot := t.TempDir()
+	binDir := t.TempDir()
+	binaryPath := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake codex binary: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	catalog, err := codingagents.LoadCatalog(repoRoot)
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	runner, err := buildRunnerAdapter(runConfig{
+		backend:      "",
+		codingAgents: catalog,
+	})
+	if err != nil {
+		t.Fatalf("build default adapter: %v", err)
+	}
+	if _, ok := runner.(*codex.CLIRunnerAdapter); !ok {
+		t.Fatalf("expected default backend to use codex app-server adapter, got %T", runner)
+	}
+}
+
 func TestRunMainDefaultsModelFromBackendWhenConfigOmitsModel(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
