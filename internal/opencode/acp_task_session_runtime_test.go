@@ -588,6 +588,124 @@ func TestACPTaskSessionStartPropagatesRunnerError(t *testing.T) {
 	}
 }
 
+// TestACPTaskSessionCancelForceKillsProcess verifies that a forced Cancel
+// immediately calls Kill and waits for the process to exit (mirrors the
+// equivalent Teardown test for the Cancel path).
+func TestACPTaskSessionCancelForceKillsProcess(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-cancel-force",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "acp.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Force: true}); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionCancelIsIdempotent verifies that calling Cancel more than
+// once does not kill the process multiple times (mirrors the equivalent
+// Teardown test for the Cancel path).
+func TestACPTaskSessionCancelIsIdempotent(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-cancel-idempotent",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "acp.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Force: true}); err != nil {
+		t.Fatalf("first Cancel: %v", err)
+	}
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Force: true}); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once (idempotent via sync.Once), got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionCancelPropagatesContextCancellation verifies that when
+// the context passed to Cancel is already cancelled, the close propagates
+// that cancellation and kills the process instead of waiting for stopTimeout
+// (mirrors the equivalent Teardown test for the Cancel path).
+func TestACPTaskSessionCancelPropagatesContextCancellation(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	// Use a very long StopTimeout so the test would stall if context is ignored.
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-cancel-ctx-cancel",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so Cancel sees a cancelled context
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = session.Cancel(ctx, contracts.TaskSessionCancellation{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Cancel blocked instead of respecting cancelled context")
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once when context cancelled, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionStopTimeoutValueDefaultFallback verifies that when
+// StopTimeout is not configured (zero), stopTimeoutValue returns
+// defaultACPStopTimeout.
+func TestACPTaskSessionStopTimeoutValueDefaultFallback(t *testing.T) {
+	session := &ACPTaskSession{stopTimeout: 0}
+	if got := session.stopTimeoutValue(); got != defaultACPStopTimeout {
+		t.Fatalf("expected default stop timeout %v, got %v", defaultACPStopTimeout, got)
+	}
+}
+
+// TestACPTaskSessionStopTimeoutValueUsesConfiguredTimeout verifies that when
+// StopTimeout is explicitly set, stopTimeoutValue returns that value.
+func TestACPTaskSessionStopTimeoutValueUsesConfiguredTimeout(t *testing.T) {
+	const configured = 42 * time.Millisecond
+	session := &ACPTaskSession{stopTimeout: configured}
+	if got := session.stopTimeoutValue(); got != configured {
+		t.Fatalf("expected configured timeout %v, got %v", configured, got)
+	}
+}
+
 // TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
 // than once does not kill the process multiple times.
 func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {
