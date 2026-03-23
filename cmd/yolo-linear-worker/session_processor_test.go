@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egv/yolo-runner/v2/internal/codex"
+	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/linear"
 	"github.com/egv/yolo-runner/v2/internal/linear/webhook"
@@ -454,6 +456,20 @@ func TestLinearIssueStarterClientSkipsTransitionWhenIssueAlreadyStartedOrTermina
 				t.Fatalf("expected no state transition mutation for %s state, got %d updates", tc.name, updateCalls)
 			}
 		})
+	}
+}
+
+func TestNewLinearWorkerRunnerResolvesCodexToAppServerAdapterByDefault(t *testing.T) {
+	catalog, err := codingagents.LoadCatalog(t.TempDir())
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	runner, err := newLinearWorkerRunner(catalog, "codex", "")
+	if err != nil {
+		t.Fatalf("newLinearWorkerRunner returned error: %v", err)
+	}
+	if _, ok := runner.(*codex.AppServerRunnerAdapter); !ok {
+		t.Fatalf("expected *codex.AppServerRunnerAdapter for codex backend, got %T", runner)
 	}
 }
 

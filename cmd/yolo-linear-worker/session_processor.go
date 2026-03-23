@@ -175,7 +175,9 @@ func newLinearWorkerRunner(catalog codingagents.Catalog, backend string, binary 
 		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, "", "", adapterBinary, command...), nil
 	case "opencode-serve":
 		return opencode.NewServeRunnerAdapter(adapterBinary, command...), nil
-	case "codex", "codex-app-server":
+	case "codex-app-server":
+		return codex.NewAppServerRunnerAdapter(adapterBinary, definition.Args...), nil
+	case "codex":
 		return codex.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "claude":
 		return claude.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
