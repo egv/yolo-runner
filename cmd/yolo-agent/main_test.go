@@ -255,7 +255,7 @@ func TestRunMainRejectsUnknownConfigSubcommand(t *testing.T) {
 	}
 }
 
-func TestRunMainDefaultsBackendToCodex(t *testing.T) {
+func TestRunMainDefaultsBackendToOpencode(t *testing.T) {
 	called := false
 	var got runConfig
 	run := func(_ context.Context, cfg runConfig) error {
@@ -271,17 +271,17 @@ func TestRunMainDefaultsBackendToCodex(t *testing.T) {
 	if !called {
 		t.Fatalf("expected run function to be called")
 	}
-	if got.backend != backendCodex {
-		t.Fatalf("expected default backend=%q, got %q", backendCodex, got.backend)
+	if got.backend != backendOpenCode {
+		t.Fatalf("expected default backend=%q, got %q", backendOpenCode, got.backend)
 	}
 }
 
-func TestNormalizeBackendDefaultsToCodex(t *testing.T) {
-	if got := normalizeBackend(""); got != backendCodex {
-		t.Fatalf("expected empty backend to normalize to %q, got %q", backendCodex, got)
+func TestNormalizeBackendDefaultsToOpencode(t *testing.T) {
+	if got := normalizeBackend(""); got != backendOpenCode {
+		t.Fatalf("expected empty backend to normalize to %q, got %q", backendOpenCode, got)
 	}
-	if got := normalizeBackend("   "); got != backendCodex {
-		t.Fatalf("expected whitespace backend to normalize to %q, got %q", backendCodex, got)
+	if got := normalizeBackend("   "); got != backendOpenCode {
+		t.Fatalf("expected whitespace backend to normalize to %q, got %q", backendOpenCode, got)
 	}
 }
 
@@ -424,16 +424,8 @@ func TestBuildRunnerAdapterUsesCodexAppServerAndCodexCLIFallback(t *testing.T) {
 	}
 }
 
-func TestBuildRunnerAdapterDefaultBackendUsesCodexAppServerAdapter(t *testing.T) {
-	repoRoot := t.TempDir()
-	binDir := t.TempDir()
-	binaryPath := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write fake codex binary: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	catalog, err := codingagents.LoadCatalog(repoRoot)
+func TestBuildRunnerAdapterDefaultBackendUsesOpencodeServeAdapter(t *testing.T) {
+	catalog, err := codingagents.LoadCatalog("")
 	if err != nil {
 		t.Fatalf("load catalog: %v", err)
 	}
@@ -445,8 +437,8 @@ func TestBuildRunnerAdapterDefaultBackendUsesCodexAppServerAdapter(t *testing.T)
 	if err != nil {
 		t.Fatalf("build default adapter: %v", err)
 	}
-	if _, ok := runner.(*codex.CLIRunnerAdapter); !ok {
-		t.Fatalf("expected default backend to use codex app-server adapter, got %T", runner)
+	if _, ok := runner.(*opencode.ServeRunnerAdapter); !ok {
+		t.Fatalf("expected default backend to use opencode serve adapter, got %T", runner)
 	}
 }
 

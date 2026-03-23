@@ -95,9 +95,9 @@ func TestResolveBackendSelectionPolicyFallsBackToProfileDefault(t *testing.T) {
 	}
 }
 
-func TestResolveBackendSelectionPolicyDefaultsToCodex(t *testing.T) {
+func TestResolveBackendSelectionPolicyDefaultsToOpencode(t *testing.T) {
 	got := resolveBackendSelectionPolicy(backendSelectionPolicyInput{})
-	if got != backendCodex {
-		t.Fatalf("expected fallback backend %q, got %q", backendCodex, got)
+	if got != backendOpenCode {
+		t.Fatalf("expected fallback backend %q, got %q", backendOpenCode, got)
 	}
 }
