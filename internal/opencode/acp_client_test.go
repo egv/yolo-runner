@@ -733,6 +733,113 @@ func TestACPClientRequestPermissionEmitsApprovalEventToSink(t *testing.T) {
 		"issue-1", "tool-bash-1", "bash: echo hello", len(received), received)
 }
 
+// TestACPClientRequestPermissionEmitsQuestionEventToSink verifies that
+// question-type tool calls emit a TaskSessionEventTypeQuestionAsked event to
+// the event sink with the correct SessionID and question ID.
+func TestACPClientRequestPermissionEmitsQuestionEventToSink(t *testing.T) {
+	var mu sync.Mutex
+	var received []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, ev contracts.TaskSessionEvent) error {
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	questionKind := acp.ToolKind("question")
+	client := &acpClient{
+		handler:       NewACPHandler("issue-1", "log", nil),
+		taskSessionID: "issue-1",
+	}
+	client.setEventSink(sink)
+
+	_, err := client.RequestPermission(context.Background(), &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("q-42"),
+			Title:      "Which approach should I take?",
+			Kind:       &questionKind,
+		},
+		Options: []acp.PermissionOption{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range received {
+		if ev.Type == contracts.TaskSessionEventTypeQuestionAsked &&
+			ev.SessionID == "issue-1" &&
+			ev.Question != nil &&
+			ev.Question.Request.ID == "q-42" {
+			return
+		}
+	}
+	t.Fatalf("expected TaskSessionEventTypeQuestionAsked event with SessionID %q and ID %q, got %d events: %#v",
+		"issue-1", "q-42", len(received), received)
+}
+
+// TestACPClientRequestPermissionUsesQuestionHandlerWhenSet verifies that when
+// a questionHandler is set on the acpClient, it is called and the response is
+// enqueued instead of using the fallback ACPHandler.
+func TestACPClientRequestPermissionUsesQuestionHandlerWhenSet(t *testing.T) {
+	questionHandler := contracts.TaskSessionQuestionHandlerFunc(func(_ context.Context, req contracts.TaskSessionQuestionRequest) (contracts.TaskSessionQuestionResponse, error) {
+		return contracts.TaskSessionQuestionResponse{Answer: "use approach A"}, nil
+	})
+
+	questionKind := acp.ToolKind("question")
+	client := &acpClient{
+		handler:       NewACPHandler("issue-1", "log", nil),
+		taskSessionID: "issue-1",
+	}
+	client.setQuestionHandler(questionHandler)
+
+	_, err := client.RequestPermission(context.Background(), &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("q-handler"),
+			Title:      "Which approach?",
+			Kind:       &questionKind,
+		},
+		Options: []acp.PermissionOption{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	responses := client.drainQuestionResponses()
+	if len(responses) != 1 || responses[0] != "use approach A" {
+		t.Fatalf("expected question handler response %q to be queued, got %#v", "use approach A", responses)
+	}
+}
+
+// TestACPTaskSessionExecuteWiresQuestionHandlerToACPClient verifies that
+// Execute() sets the QuestionHandler from the request onto the acpClient.
+func TestACPTaskSessionExecuteWiresQuestionHandlerToACPClient(t *testing.T) {
+	cli := &acpClient{}
+	handler := contracts.TaskSessionQuestionHandlerFunc(func(_ context.Context, _ contracts.TaskSessionQuestionRequest) (contracts.TaskSessionQuestionResponse, error) {
+		return contracts.TaskSessionQuestionResponse{}, nil
+	})
+
+	session := &ACPTaskSession{
+		id:       "wire-question-test",
+		logPath:  "",
+		waitDone: make(chan struct{}),
+		acpCli:   cli,
+	}
+	session.readyOnce.Do(func() {})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = session.Execute(ctx, contracts.TaskSessionExecuteRequest{
+		Prompt:          "test",
+		QuestionHandler: handler,
+	})
+
+	if cli.getQuestionHandler() == nil {
+		t.Fatal("expected acpClient.questionHandler to be wired from TaskSessionExecuteRequest, got nil")
+	}
+}
+
 // TestACPClientRequestPermissionDoesNotEmitApprovalEventForQuestions verifies
 // that question-type tool calls do not emit an approval event to the sink.
 func TestACPClientRequestPermissionDoesNotEmitApprovalEventForQuestions(t *testing.T) {
