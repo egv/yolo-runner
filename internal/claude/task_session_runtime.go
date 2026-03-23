@@ -189,6 +189,7 @@ func NewTaskSessionRuntime(binary string, args ...string) *TaskSessionRuntime {
 // StdinTaskSession is a running claude session backed by a single OS process.
 type StdinTaskSession struct {
 	id           string
+	logPath      string // retained after logFile is closed
 	proc         *osStdinProcess
 	logFile      *os.File
 	stderrFile   *os.File
@@ -244,6 +245,7 @@ func (r *TaskSessionRuntime) Start(ctx context.Context, request contracts.TaskSe
 
 	sess := &StdinTaskSession{
 		id:           resolveStdinTaskSessionID(request),
+		logPath:      logPath,
 		proc:         proc,
 		logFile:      logFile,
 		stderrFile:   stderrFile,
@@ -328,11 +330,13 @@ func flattenStdinEnv(env map[string]string) []string {
 }
 
 // LogPath returns the path of the stdout log file for this session.
+// It is safe to call after Teardown — the path is stored separately from
+// the file handle so it survives closeLogs().
 func (s *StdinTaskSession) LogPath() string {
-	if s == nil || s.logFile == nil {
+	if s == nil {
 		return ""
 	}
-	return s.logFile.Name()
+	return s.logPath
 }
 
 func (s *StdinTaskSession) ID() string {
