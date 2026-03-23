@@ -9,6 +9,22 @@ import (
 	"time"
 )
 
+func TestOutputEntryStructAndBufCap(t *testing.T) {
+	entry := OutputEntry{
+		Kind:    OutputEntryKindText,
+		Content: "hello world",
+	}
+	if entry.Kind != OutputEntryKindText {
+		t.Fatalf("expected Kind %q, got %q", OutputEntryKindText, entry.Kind)
+	}
+	if entry.Content != "hello world" {
+		t.Fatalf("expected Content %q, got %q", "hello world", entry.Content)
+	}
+	if outputBufCap <= 0 {
+		t.Fatalf("outputBufCap must be positive, got %d", outputBufCap)
+	}
+}
+
 func TestOutputEntryKindTypeAndConstants(t *testing.T) {
 	kinds := []OutputEntryKind{
 		OutputEntryKindText,
