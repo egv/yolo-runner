@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"sync"
@@ -515,6 +516,75 @@ func TestACPTaskSessionExecuteWiresEventSinkToACPClient(t *testing.T) {
 
 	if cli.getEventSink() == nil {
 		t.Fatal("expected acpClient.eventSink to be wired from TaskSessionExecuteRequest, got nil")
+	}
+}
+
+// noStdioProcess is a fake process that implements Process but NOT stdioProcess.
+// It is used to test the startup fallback path where the process has no pipes.
+type noStdioProcess struct {
+	mu        sync.Mutex
+	killCalls int
+	waitCh    chan error
+}
+
+func newNoStdioProcess() *noStdioProcess {
+	return &noStdioProcess{waitCh: make(chan error, 1)}
+}
+
+func (p *noStdioProcess) Wait() error { return <-p.waitCh }
+func (p *noStdioProcess) Kill() error {
+	p.mu.Lock()
+	p.killCalls++
+	p.mu.Unlock()
+	p.waitCh <- nil
+	return nil
+}
+func (p *noStdioProcess) kills() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killCalls
+}
+
+// TestACPTaskSessionStartKillsProcessWhenNoStdioPipes verifies the startup
+// fallback: when the runner returns a process that does not expose stdin/stdout
+// pipes, Start() kills the process and returns an error.
+func TestACPTaskSessionStartKillsProcessWhenNoStdioPipes(t *testing.T) {
+	proc := newNoStdioProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	_, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-no-stdio",
+		RepoRoot: t.TempDir(),
+		LogPath:  t.TempDir() + "/acp.jsonl",
+	})
+	if err == nil {
+		t.Fatal("expected Start to return error when process has no stdio pipes")
+	}
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once as fallback, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionStartPropagatesRunnerError verifies that when the runner
+// itself fails, Start() propagates the error to the caller.
+func TestACPTaskSessionStartPropagatesRunnerError(t *testing.T) {
+	runnerErr := errors.New("runner failed")
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return nil, runnerErr
+	}))
+
+	_, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-runner-err",
+		RepoRoot: t.TempDir(),
+		LogPath:  t.TempDir() + "/acp.jsonl",
+	})
+	if err == nil {
+		t.Fatal("expected Start to return error when runner fails")
+	}
+	if !errors.Is(err, runnerErr) {
+		t.Fatalf("expected runner error to be propagated, got: %v", err)
 	}
 }
 
