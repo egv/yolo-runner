@@ -16,6 +16,15 @@ const (
 	BackendLogProtocolTrace BackendLogKind = "protocol"
 )
 
+type OutputEntryKind string
+
+const (
+	OutputEntryKindText     OutputEntryKind = "text"
+	OutputEntryKindThinking OutputEntryKind = "thinking"
+	OutputEntryKindTool     OutputEntryKind = "tool"
+	OutputEntryKindSystem   OutputEntryKind = "system"
+)
+
 type HTTPReadinessCheck struct {
 	Endpoint string
 	Method   string

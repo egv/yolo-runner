@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+func TestOutputEntryKindTypeAndConstants(t *testing.T) {
+	kinds := []OutputEntryKind{
+		OutputEntryKindText,
+		OutputEntryKindThinking,
+		OutputEntryKindTool,
+		OutputEntryKindSystem,
+	}
+	if len(kinds) != 4 {
+		t.Fatalf("expected 4 OutputEntryKind constants, got %d", len(kinds))
+	}
+	seen := map[OutputEntryKind]struct{}{}
+	for _, k := range kinds {
+		if k == "" {
+			t.Fatalf("OutputEntryKind constant must not be empty")
+		}
+		if _, dup := seen[k]; dup {
+			t.Fatalf("duplicate OutputEntryKind constant %q", k)
+		}
+		seen[k] = struct{}{}
+	}
+}
+
 func TestTaskStageTypeAndConstants(t *testing.T) {
 	stages := []TaskStage{
 		TaskStageIdle,
