@@ -16,8 +16,8 @@ profiles:
         auth:
           token_env: GITHUB_TOKEN
 agent:
-  backend: codex
-  model: gpt-5.4
+  backend: claude
+  model: claude-sonnet-4-6
   concurrency: 3
   runner_timeout: 20m
   watchdog_timeout: 10m
