@@ -1,0 +1,389 @@
+package claude
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
+)
+
+// T1: compile-time conformance — stdinProcess interface satisfied by *osStdinProcess
+var _ stdinProcess = (*osStdinProcess)(nil)
+
+func TestOsStdinProcess_Compile(t *testing.T) {
+	// If the file compiles, the interface is satisfied.
+	t.Log("osStdinProcess satisfies stdinProcess interface")
+}
+
+// T8: Execute writes prompt+newline to stdin.
+func TestStdinTaskSession_Execute_WritesPromptToStdin(t *testing.T) {
+	// stdin side: we read what Execute writes
+	stdinR, stdinW := io.Pipe()
+	// stdout side: emit init then block (Execute should return after result)
+	stdoutR, stdoutW := io.Pipe()
+
+	sess := newTestSession(stdinW, stdoutR)
+
+	// Writer goroutine: emit init then success result
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success","result":"ok"}`)
+		_ = stdoutW.Close()
+	}()
+
+	// Reader goroutine: capture what arrives on stdin
+	var gotBytes []byte
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		gotBytes, _ = io.ReadAll(stdinR)
+	}()
+
+	err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "hello world"})
+	if err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+	_ = sess.proc.stdin.Close()
+	<-readDone
+
+	got := string(gotBytes)
+	if !strings.Contains(got, "hello world\n") {
+		t.Errorf("stdin got %q; want prompt+newline", got)
+	}
+}
+
+// T9: Execute returns nil on success result, error on error result.
+func TestStdinTaskSession_Execute_SuccessResult(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success","result":"done"}`)
+		_ = stdoutW.Close()
+	}()
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p"}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+}
+
+func TestStdinTaskSession_Execute_ErrorResult(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"error_during_execution","error":"boom"}`)
+		_ = stdoutW.Close()
+	}()
+	err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error %q does not contain 'boom'", err.Error())
+	}
+}
+
+// T10: Execute emits output events to EventSink on assistant messages.
+func TestStdinTaskSession_Execute_EmitsOutputEvent(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	var events []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, e contracts.TaskSessionEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p", EventSink: sink}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events; want 1", len(events))
+	}
+	if events[0].Type != contracts.TaskSessionEventTypeOutput {
+		t.Errorf("event type = %q; want output", events[0].Type)
+	}
+	if events[0].Message != "hello" {
+		t.Errorf("event message = %q; want 'hello'", events[0].Message)
+	}
+}
+
+// T11: Execute writes y\n to stdin and emits approval event on tool_use.
+func TestStdinTaskSession_Execute_ApprovesToolUse(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	sess := newTestSession(stdinW, stdoutR)
+
+	// capture everything written to stdin
+	var stdinBytes []byte
+	stdinDone := make(chan struct{})
+	go func() {
+		defer close(stdinDone)
+		stdinBytes, _ = io.ReadAll(stdinR)
+	}()
+
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"tool_use","id":"t1","name":"bash"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	var events []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, e contracts.TaskSessionEvent) error {
+		events = append(events, e)
+		return nil
+	})
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p", EventSink: sink}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+	_ = sess.proc.stdin.Close()
+	<-stdinDone
+
+	got := string(stdinBytes)
+	if !strings.Contains(got, "y\n") {
+		t.Errorf("stdin %q does not contain approval 'y\\n'", got)
+	}
+	var approvalEvents []contracts.TaskSessionEvent
+	for _, e := range events {
+		if e.Type == contracts.TaskSessionEventTypeApprovalRequired {
+			approvalEvents = append(approvalEvents, e)
+		}
+	}
+	if len(approvalEvents) != 1 {
+		t.Fatalf("got %d approval events; want 1", len(approvalEvents))
+	}
+}
+
+// T12: Cancel sends Stop; Teardown force kills.
+func TestStdinTaskSession_Cancel_StopsProcess(t *testing.T) {
+	cmd := exec.Command("cat") // blocks waiting for stdin
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cmd.Start: %v", err)
+	}
+	waitDone := make(chan struct{})
+	proc := &osStdinProcess{cmd: cmd, waitDone: waitDone}
+	sess := &StdinTaskSession{
+		id:       "test",
+		proc:     proc,
+		waitDone: waitDone,
+	}
+	go proc.Wait() //nolint:errcheck
+	if err := sess.Cancel(t.Context(), contracts.TaskSessionCancellation{Force: false}); err != nil {
+		t.Errorf("Cancel() = %v; want nil", err)
+	}
+}
+
+func TestStdinTaskSession_Teardown_Force(t *testing.T) {
+	_, stdinW := io.Pipe()
+	stdoutR, _ := io.Pipe()
+	cmd := exec.Command("cat")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cmd.Start: %v", err)
+	}
+	waitDone := make(chan struct{})
+	proc := &osStdinProcess{cmd: cmd, stdin: stdinW, stdout: stdoutR, waitDone: waitDone}
+	sess := &StdinTaskSession{id: "test", proc: proc, waitDone: waitDone}
+	go proc.Wait() //nolint:errcheck
+	if err := sess.Teardown(t.Context(), contracts.TaskSessionTeardown{Force: true}); err != nil {
+		t.Errorf("Teardown(force=true) = %v; want nil", err)
+	}
+}
+
+// T13: resolveStdinLogPath returns correct paths for all cases.
+func TestResolveStdinLogPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		request  contracts.TaskSessionStartRequest
+		wantSuff string
+	}{
+		{
+			name:     "explicit log path",
+			request:  contracts.TaskSessionStartRequest{LogPath: "/tmp/custom.jsonl"},
+			wantSuff: "/tmp/custom.jsonl",
+		},
+		{
+			name:     "taskID and repoRoot",
+			request:  contracts.TaskSessionStartRequest{TaskID: "t1", RepoRoot: "/repo"},
+			wantSuff: "/repo/runner-logs/claude/t1.jsonl",
+		},
+		{
+			name:     "taskID only",
+			request:  contracts.TaskSessionStartRequest{TaskID: "t2"},
+			wantSuff: "runner-logs/claude/t2.jsonl",
+		},
+		{
+			name:     "empty",
+			request:  contracts.TaskSessionStartRequest{},
+			wantSuff: "runner-logs/claude/claude-stdin.jsonl",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveStdinLogPath(tc.request)
+			if got != tc.wantSuff {
+				t.Errorf("resolveStdinLogPath() = %q; want %q", got, tc.wantSuff)
+			}
+		})
+	}
+}
+
+func newTestSession(stdinW io.WriteCloser, stdoutR io.ReadCloser) *StdinTaskSession {
+	waitDone := make(chan struct{})
+	proc := &osStdinProcess{
+		stdin:    stdinW,
+		stdout:   stdoutR,
+		waitDone: waitDone,
+	}
+	return &StdinTaskSession{
+		id:       "test",
+		proc:     proc,
+		waitDone: waitDone,
+	}
+}
+
+// T7: WaitReady returns a useful error when the process exits before init.
+func TestStdinTaskSession_WaitReady_ProcessExitsEarly(t *testing.T) {
+	pr, pw := io.Pipe()
+	waitDone := make(chan struct{})
+	sess := &StdinTaskSession{
+		id:       "test",
+		waitDone: waitDone,
+		proc: &osStdinProcess{
+			stdout:   pr,
+			waitDone: make(chan struct{}),
+		},
+	}
+	// Close write end immediately and signal process done.
+	_ = pw.Close()
+	close(waitDone)
+
+	err := sess.WaitReady(t.Context())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "exited before ready") {
+		t.Errorf("error %q does not contain 'exited before ready'", err.Error())
+	}
+}
+
+func TestStdinTaskSession_WaitReady_Timeout(t *testing.T) {
+	pr, _ := io.Pipe() // write end never written — init never arrives
+	sess := &StdinTaskSession{
+		id:           "test",
+		waitDone:     make(chan struct{}),
+		readyTimeout: 1 * time.Millisecond,
+		proc: &osStdinProcess{
+			stdout:   pr,
+			waitDone: make(chan struct{}),
+		},
+	}
+	err := sess.WaitReady(t.Context())
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error %q does not contain 'timed out'", err.Error())
+	}
+}
+
+// T6: WaitReady returns nil when the system/init event is received on stdout.
+func TestStdinTaskSession_WaitReady_InitEvent(t *testing.T) {
+	pr, pw := io.Pipe()
+	sess := &StdinTaskSession{
+		id:       "test",
+		waitDone: make(chan struct{}),
+		proc: &osStdinProcess{
+			stdout:   pr,
+			waitDone: make(chan struct{}),
+		},
+	}
+	go func() {
+		_, _ = fmt.Fprintln(pw, `{"type":"system","subtype":"init","session":{"id":"s1"}}`)
+	}()
+	if err := sess.WaitReady(t.Context()); err != nil {
+		t.Fatalf("WaitReady() = %v; want nil", err)
+	}
+}
+
+// T5: NewTaskSessionRuntime defaults binary to "claude"; Start returns non-nil session.
+func TestTaskSessionRuntime_DefaultBinary(t *testing.T) {
+	rt := NewTaskSessionRuntime("")
+	if rt.binary != "claude" {
+		t.Errorf("binary = %q; want %q", rt.binary, "claude")
+	}
+}
+
+var _ contracts.TaskSessionRuntime = (*TaskSessionRuntime)(nil)
+
+// T4: startStdinProcess rejects empty binary and spawns a real process.
+func TestStartStdinProcess_BinaryRequired(t *testing.T) {
+	_, err := startStdinProcess(t.Context(), StdinProcessSpec{Binary: ""})
+	if err == nil {
+		t.Fatal("expected error for empty binary, got nil")
+	}
+}
+
+func TestStartStdinProcess_SpawnsProcess(t *testing.T) {
+	proc, err := startStdinProcess(t.Context(), StdinProcessSpec{Binary: "cat"})
+	if err != nil {
+		t.Fatalf("startStdinProcess: %v", err)
+	}
+	if proc.Stdin() == nil {
+		t.Error("Stdin() is nil")
+	}
+	if proc.Stdout() == nil {
+		t.Error("Stdout() is nil")
+	}
+	_ = proc.Kill()
+	_ = proc.Wait()
+}
+
+// T3: Stop/Kill do not error on an already-exited process.
+func TestOsStdinProcess_Stop_NoErrorWhenAlreadyDone(t *testing.T) {
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cmd.Start: %v", err)
+	}
+	p := &osStdinProcess{cmd: cmd, waitDone: make(chan struct{})}
+	_ = p.Wait() // let it exit
+	if err := p.Stop(); err != nil {
+		t.Errorf("Stop() = %v; want nil", err)
+	}
+	if err := p.Kill(); err != nil {
+		t.Errorf("Kill() = %v; want nil", err)
+	}
+}
+
+// T2: Wait() is idempotent and returns the correct exit error.
+func TestOsStdinProcess_Wait_ReturnsOnExit(t *testing.T) {
+	cmd := exec.Command("true") // exits immediately with code 0
+	cmd.Stdin = nil
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("cmd.Start: %v", err)
+	}
+	p := &osStdinProcess{cmd: cmd, waitDone: make(chan struct{})}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait() = %v; want nil", err)
+	}
+	// idempotent
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait() second call = %v; want nil", err)
+	}
+}
