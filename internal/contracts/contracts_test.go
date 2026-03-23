@@ -9,6 +9,31 @@ import (
 	"time"
 )
 
+func TestTaskStageTypeAndConstants(t *testing.T) {
+	stages := []TaskStage{
+		TaskStageIdle,
+		TaskStageSelecting,
+		TaskStageRunning,
+		TaskStageCommitting,
+		TaskStageClosing,
+		TaskStageBlocked,
+		TaskStageDone,
+	}
+	if len(stages) != 7 {
+		t.Fatalf("expected 7 TaskStage constants, got %d", len(stages))
+	}
+	seen := map[TaskStage]struct{}{}
+	for _, s := range stages {
+		if s == "" {
+			t.Fatalf("TaskStage constant must not be empty")
+		}
+		if _, dup := seen[s]; dup {
+			t.Fatalf("duplicate TaskStage constant %q", s)
+		}
+		seen[s] = struct{}{}
+	}
+}
+
 func TestTaskStatusConstants(t *testing.T) {
 	expected := []TaskStatus{TaskStatusOpen, TaskStatusInProgress, TaskStatusBlocked, TaskStatusClosed, TaskStatusFailed}
 	for _, status := range expected {

@@ -17,6 +17,19 @@ const (
 	TaskStatusFailed     TaskStatus = "failed"
 )
 
+// TaskStage represents the execution stage of a task within the runner pipeline.
+type TaskStage string
+
+const (
+	TaskStageIdle       TaskStage = "idle"
+	TaskStageSelecting  TaskStage = "selecting"
+	TaskStageRunning    TaskStage = "running"
+	TaskStageCommitting TaskStage = "committing"
+	TaskStageClosing    TaskStage = "closing"
+	TaskStageBlocked    TaskStage = "blocked"
+	TaskStageDone       TaskStage = "done"
+)
+
 type TaskSummary struct {
 	ID       string
 	Title    string
