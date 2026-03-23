@@ -52,6 +52,8 @@ type UIState struct {
 	LastOutputAge     string
 	StatusSummary     string
 	StatusMetrics     statusMetrics
+	CompletedCount    int
+	TotalCount        int
 	StatusBar         []string
 	Performance       []string
 	PanelLines        []UIPanelLine
@@ -486,6 +488,8 @@ func (m *Model) UIState() UIState {
 		LastOutputAge:     ageSince(m.now(), m.lastOutputAt),
 		StatusSummary:     fmt.Sprintf("⏱ %s  %s  ✅%d  🟡%d  ❌%d/%d  👷 %d%%  📦 %d  ⚡ %s", metrics.runtime, metrics.activity, metrics.completed, metrics.blocked, metrics.failed, metrics.total, metrics.workerUtilization, metrics.queueDepth, metrics.throughput),
 		StatusMetrics:     metrics,
+		CompletedCount:    metrics.completed,
+		TotalCount:        metrics.total,
 		StatusBar:         renderStatusBar(metrics),
 		Performance:       renderPerformance(m.PerformanceSnapshot()),
 		PanelLines:        m.uiPanelLines(),
