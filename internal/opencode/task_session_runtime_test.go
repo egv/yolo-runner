@@ -52,6 +52,37 @@ func (p *fakeServeProcess) Kill() error {
 	return p.killErr
 }
 
+// hangingFakeServeProcess simulates a process that ignores Stop() and only
+// exits when Kill() is called. Used to test the stop-timeout fallback path.
+type hangingFakeServeProcess struct {
+	waitCh    chan error
+	stopCount int
+	killCount int
+}
+
+func newHangingFakeServeProcess() *hangingFakeServeProcess {
+	return &hangingFakeServeProcess{waitCh: make(chan error, 1)}
+}
+
+func (p *hangingFakeServeProcess) Wait() error {
+	return <-p.waitCh
+}
+
+func (p *hangingFakeServeProcess) Stop() error {
+	p.stopCount++
+	// deliberately does NOT send to waitCh — process keeps running
+	return nil
+}
+
+func (p *hangingFakeServeProcess) Kill() error {
+	p.killCount++
+	select {
+	case p.waitCh <- nil:
+	default:
+	}
+	return nil
+}
+
 type recordedServeRequest struct {
 	Method string
 	Path   string
@@ -1282,5 +1313,192 @@ func TestSubmitPromptMessageReturnsErrorWithBodyOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "prompt too long") {
 		t.Fatalf("expected error to include response body, got %v", err)
+	}
+}
+
+// TestServeTaskSessionCancelReturnsNilWhenNoSessionEstablished verifies that
+// Cancel with force=false returns nil immediately when no session ID has been
+// established yet, without sending any HTTP request.
+func TestServeTaskSessionCancelReturnsNilWhenNoSessionEstablished(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	waitDone := make(chan struct{})
+	close(waitDone)
+	session := &ServeTaskSession{
+		client:     srv.Client(),
+		sessionURL: srv.URL + "/session",
+		waitDone:   waitDone,
+		proc:       newFakeServeProcess(),
+	}
+	// sessionID is "" (zero value) — no session established
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Reason: "no session yet"}); err != nil {
+		t.Fatalf("expected nil from Cancel when no session established, got %v", err)
+	}
+	if requestCount != 0 {
+		t.Fatalf("expected no HTTP requests when no session established, got %d", requestCount)
+	}
+}
+
+// TestServeTaskSessionTeardownSkipsSessionDeleteWhenNoSessionEstablished verifies
+// that Teardown omits the DELETE /session/{id} request when no session ID was ever
+// set, while still calling /instance/dispose and stopping the process.
+func TestServeTaskSessionTeardownSkipsSessionDeleteWhenNoSessionEstablished(t *testing.T) {
+	var deleteCalled bool
+	var disposeCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/session/") {
+			deleteCalled = true
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/instance/dispose" {
+			disposeCalled = true
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `true`)
+	}))
+	defer srv.Close()
+
+	proc := newFakeServeProcess()
+	session := &ServeTaskSession{
+		client:     srv.Client(),
+		sessionURL: srv.URL + "/session",
+		disposeURL: srv.URL + "/instance/dispose",
+		proc:       proc,
+		waitDone:   make(chan struct{}),
+	}
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
+	}()
+
+	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "no session"}); err != nil {
+		t.Fatalf("unexpected teardown error: %v", err)
+	}
+	if deleteCalled {
+		t.Fatal("expected DELETE session to be skipped when no session ID")
+	}
+	if !disposeCalled {
+		t.Fatal("expected /instance/dispose to be called even without session ID")
+	}
+	if proc.stopCount != 1 {
+		t.Fatalf("expected one graceful stop, got %d", proc.stopCount)
+	}
+}
+
+// TestServeTaskSessionTeardownIsIdempotent verifies that calling Teardown a
+// second time returns the same result as the first call without making additional
+// HTTP requests or additional process signals.
+func TestServeTaskSessionTeardownIsIdempotent(t *testing.T) {
+	disposeCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/instance/dispose" {
+			disposeCount++
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `true`)
+	}))
+	defer srv.Close()
+
+	proc := newFakeServeProcess()
+	session := &ServeTaskSession{
+		client:     srv.Client(),
+		sessionURL: srv.URL + "/session",
+		disposeURL: srv.URL + "/instance/dispose",
+		proc:       proc,
+		waitDone:   make(chan struct{}),
+	}
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
+	}()
+
+	err1 := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "first call"})
+	err2 := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "second call"})
+
+	if err1 != err2 {
+		t.Fatalf("expected idempotent teardown: first %v, second %v", err1, err2)
+	}
+	if disposeCount != 1 {
+		t.Fatalf("expected dispose called exactly once, got %d", disposeCount)
+	}
+	if proc.stopCount != 1 {
+		t.Fatalf("expected stop called exactly once, got %d", proc.stopCount)
+	}
+}
+
+// TestServeTaskSessionTeardownPropagatesDisposeInstanceError verifies that when
+// the /instance/dispose endpoint returns an error status, Teardown propagates it.
+func TestServeTaskSessionTeardownPropagatesDisposeInstanceError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/instance/dispose" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"dispose failed"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `true`)
+	}))
+	defer srv.Close()
+
+	proc := newFakeServeProcess()
+	session := &ServeTaskSession{
+		client:     srv.Client(),
+		sessionURL: srv.URL + "/session",
+		disposeURL: srv.URL + "/instance/dispose",
+		proc:       proc,
+		waitDone:   make(chan struct{}),
+	}
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
+	}()
+
+	err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "dispose error"})
+	if err == nil {
+		t.Fatal("expected error when dispose instance fails")
+	}
+	if !strings.Contains(err.Error(), "dispose instance returned 500") {
+		t.Fatalf("expected dispose error in teardown error, got %v", err)
+	}
+}
+
+// TestServeTaskSessionTeardownFallsBackToKillWhenStopTimesOut verifies that when
+// the process does not exit within stopTimeout after receiving Stop(), the teardown
+// falls back to Kill() to force termination.
+func TestServeTaskSessionTeardownFallsBackToKillWhenStopTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `true`)
+	}))
+	defer srv.Close()
+
+	proc := newHangingFakeServeProcess()
+	session := &ServeTaskSession{
+		client:      srv.Client(),
+		sessionURL:  srv.URL + "/session",
+		disposeURL:  srv.URL + "/instance/dispose",
+		proc:        proc,
+		waitDone:    make(chan struct{}),
+		stopTimeout: 10 * time.Millisecond,
+	}
+	go func() {
+		session.waitErr = proc.Wait()
+		close(session.waitDone)
+	}()
+
+	// Teardown may return an error (DeadlineExceeded) because the graceful stop
+	// timed out; that is expected. What matters is that Kill was called.
+	_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "kill fallback"})
+
+	if proc.stopCount != 1 {
+		t.Fatalf("expected Stop to be called once, got %d", proc.stopCount)
+	}
+	if proc.killCount != 1 {
+		t.Fatalf("expected Kill to be called as fallback, got %d", proc.killCount)
 	}
 }
