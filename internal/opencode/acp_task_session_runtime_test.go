@@ -487,6 +487,37 @@ func TestACPTaskSessionExecuteEmitsArtifactEventToSink(t *testing.T) {
 	}
 }
 
+// TestACPTaskSessionExecuteWiresEventSinkToACPClient verifies that Execute()
+// sets the EventSink from the request onto the internal acpClient so that
+// permission events are routed to the caller's sink.
+func TestACPTaskSessionExecuteWiresEventSinkToACPClient(t *testing.T) {
+	cli := &acpClient{}
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, _ contracts.TaskSessionEvent) error {
+		return nil
+	})
+
+	session := &ACPTaskSession{
+		id:       "wire-test",
+		logPath:  "",
+		waitDone: make(chan struct{}),
+		acpCli:   cli,
+	}
+	// Mark readyOnce as already done with no error so WaitReady returns immediately.
+	session.readyOnce.Do(func() {})
+
+	// Execute will fail (nil connection) but must wire the sink before that.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = session.Execute(ctx, contracts.TaskSessionExecuteRequest{
+		Prompt:    "test",
+		EventSink: sink,
+	})
+
+	if cli.getEventSink() == nil {
+		t.Fatal("expected acpClient.eventSink to be wired from TaskSessionExecuteRequest, got nil")
+	}
+}
+
 // TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
 // than once does not kill the process multiple times.
 func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {

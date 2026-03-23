@@ -680,3 +680,94 @@ func (a *testACPAgent) getPromptRecords() []promptRecord {
 func (a *testACPAgent) Cancel(ctx context.Context, params *acp.CancelNotification) error {
 	return nil
 }
+
+// TestACPClientRequestPermissionEmitsApprovalEventToSink verifies that when a
+// non-question permission is requested, the acpClient emits a
+// TaskSessionEventTypeApprovalRequired event to its event sink with the
+// correct SessionID, request ID, and title.
+func TestACPClientRequestPermissionEmitsApprovalEventToSink(t *testing.T) {
+	var mu sync.Mutex
+	var received []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, ev contracts.TaskSessionEvent) error {
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	client := &acpClient{
+		handler:         NewACPHandler("issue-1", "log", nil),
+		taskSessionID:   "issue-1",
+	}
+	client.setEventSink(sink)
+
+	_, err := client.RequestPermission(context.Background(), &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("tool-bash-1"),
+			Title:      "bash: echo hello",
+		},
+		Options: []acp.PermissionOption{
+			{
+				Kind:     acp.PermissionOptionKindAllowOnce,
+				Name:     "Allow Once",
+				OptionId: acp.PermissionOptionId("allow-once-id"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range received {
+		if ev.Type == contracts.TaskSessionEventTypeApprovalRequired &&
+			ev.SessionID == "issue-1" &&
+			ev.Approval != nil &&
+			ev.Approval.Request.ID == "tool-bash-1" &&
+			ev.Approval.Request.Title == "bash: echo hello" {
+			return
+		}
+	}
+	t.Fatalf("expected TaskSessionEventTypeApprovalRequired event with SessionID %q, ID %q and title %q, got %d events: %#v",
+		"issue-1", "tool-bash-1", "bash: echo hello", len(received), received)
+}
+
+// TestACPClientRequestPermissionDoesNotEmitApprovalEventForQuestions verifies
+// that question-type tool calls do not emit an approval event to the sink.
+func TestACPClientRequestPermissionDoesNotEmitApprovalEventForQuestions(t *testing.T) {
+	var mu sync.Mutex
+	var received []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, ev contracts.TaskSessionEvent) error {
+		mu.Lock()
+		received = append(received, ev)
+		mu.Unlock()
+		return nil
+	})
+
+	questionKind := acp.ToolKind("question")
+	client := &acpClient{
+		handler: NewACPHandler("issue-1", "log", nil),
+	}
+	client.setEventSink(sink)
+
+	_, err := client.RequestPermission(context.Background(), &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("question-1"),
+			Title:      "What should I do?",
+			Kind:       &questionKind,
+		},
+		Options: []acp.PermissionOption{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ev := range received {
+		if ev.Type == contracts.TaskSessionEventTypeApprovalRequired {
+			t.Fatalf("expected no approval event for question, got: %#v", ev)
+		}
+	}
+}
