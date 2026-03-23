@@ -314,7 +314,6 @@ func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
 	return lastFeedback, found
 }
 
-
 type lineWriter struct {
 	target  io.Writer
 	emit    func(string)

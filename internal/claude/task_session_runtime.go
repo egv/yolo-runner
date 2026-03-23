@@ -342,8 +342,9 @@ func (s *StdinTaskSession) ID() string {
 	return s.id
 }
 
-// WaitReady blocks until claude emits {"type":"system","subtype":"init"} on stdout
-// or the readyTimeout elapses or the process exits early.
+// WaitReady checks that the claude process is still running. In --print mode
+// the prompt is passed as a CLI argument, so there is no init-event handshake
+// to wait for — the process is ready as soon as it has started.
 func (s *StdinTaskSession) WaitReady(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -352,64 +353,17 @@ func (s *StdinTaskSession) WaitReady(ctx context.Context) error {
 		return errors.New("nil claude stdin task session")
 	}
 	s.readyOnce.Do(func() {
-		readyCtx, cancel := withStdinOptionalTimeout(ctx, s.readyTimeout)
-		defer cancel()
-		s.readyErr = s.waitForInit(readyCtx)
+		select {
+		case <-s.waitDone:
+			// Process exited at startup — startup failure.
+			s.readyErr = s.stdinExitedBeforeReadyError(s.waitErr)
+		case <-ctx.Done():
+			s.readyErr = ctx.Err()
+		default:
+			// Process is alive — ready to produce output.
+		}
 	})
 	return s.readyErr
-}
-
-func (s *StdinTaskSession) waitForInit(ctx context.Context) error {
-	initCh := make(chan error, 1)
-	go func() {
-		// The scanner goroutine is unblocked when the process exits and closes
-		// the pipe (bounded by process lifetime).
-		initCh <- s.scanForInit()
-	}()
-	select {
-	case err := <-initCh:
-		return err
-	case <-s.waitDone:
-		return s.stdinExitedBeforeReadyError(s.waitErr)
-	case <-ctx.Done():
-		if _, done := s.processWaitErr(); done {
-			return s.stdinExitedBeforeReadyError(s.waitErr)
-		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return s.stdinReadinessTimeoutError(ctx.Err())
-		}
-		return ctx.Err()
-	}
-}
-
-func (s *StdinTaskSession) scanForInit() error {
-	stdout := s.proc.Stdout()
-	if stdout == nil {
-		return errors.New("claude stdout pipe is nil")
-	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		var msg struct {
-			Type    string `json:"type"`
-			Subtype string `json:"subtype"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue
-		}
-		if msg.Type == "system" && msg.Subtype == "init" {
-			return nil
-		}
-	}
-	return scanner.Err()
-}
-
-func (s *StdinTaskSession) processWaitErr() (error, bool) {
-	select {
-	case <-s.waitDone:
-		return s.waitErr, true
-	default:
-		return nil, false
-	}
 }
 
 func (s *StdinTaskSession) stdinExitedBeforeReadyError(waitErr error) error {
@@ -421,14 +375,6 @@ func (s *StdinTaskSession) stdinExitedBeforeReadyError(waitErr error) error {
 		return errors.New(msg)
 	}
 	return fmt.Errorf("%s: %w", msg, waitErr)
-}
-
-func (s *StdinTaskSession) stdinReadinessTimeoutError(timeoutErr error) error {
-	msg := "timed out waiting for claude readiness"
-	if summary := s.stderrSummary(); summary != "" {
-		msg += "; stderr: " + summary
-	}
-	return fmt.Errorf("%s: %w", msg, timeoutErr)
 }
 
 func (s *StdinTaskSession) stderrSummary() string {
@@ -452,16 +398,6 @@ func (s *StdinTaskSession) stderrSummary() string {
 	return strings.Join(last, " | ")
 }
 
-func withStdinOptionalTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if d <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, d)
-}
-
 func (s *StdinTaskSession) Execute(ctx context.Context, req contracts.TaskSessionExecuteRequest) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -469,10 +405,8 @@ func (s *StdinTaskSession) Execute(ctx context.Context, req contracts.TaskSessio
 	if err := s.WaitReady(ctx); err != nil {
 		return fmt.Errorf("claude not ready: %w", err)
 	}
-	if _, err := fmt.Fprintln(s.proc.Stdin(), req.Prompt); err != nil {
-		return fmt.Errorf("claude stdin write: %w", err)
-	}
-	// Close stdin to signal EOF so claude starts processing the prompt.
+	// The prompt was passed as a CLI argument at process start; no stdin write
+	// needed. Close stdin to signal EOF so claude does not wait for input.
 	_ = s.proc.Stdin().Close()
 	return s.readUntilResult(ctx, req)
 }
@@ -619,6 +553,16 @@ func (s *StdinTaskSession) Teardown(ctx context.Context, req contracts.TaskSessi
 		return errors.New("nil claude stdin task session")
 	}
 	return s.close(ctx, req.Force)
+}
+
+func withStdinOptionalTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if d <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 func (s *StdinTaskSession) close(ctx context.Context, force bool) error {

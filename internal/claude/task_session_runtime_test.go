@@ -21,43 +21,6 @@ func TestOsStdinProcess_Compile(t *testing.T) {
 	t.Log("osStdinProcess satisfies stdinProcess interface")
 }
 
-// T8: Execute writes prompt+newline to stdin.
-func TestStdinTaskSession_Execute_WritesPromptToStdin(t *testing.T) {
-	// stdin side: we read what Execute writes
-	stdinR, stdinW := io.Pipe()
-	// stdout side: emit init then block (Execute should return after result)
-	stdoutR, stdoutW := io.Pipe()
-
-	sess := newTestSession(stdinW, stdoutR)
-
-	// Writer goroutine: emit init then success result
-	go func() {
-		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
-		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success","result":"ok"}`)
-		_ = stdoutW.Close()
-	}()
-
-	// Reader goroutine: capture what arrives on stdin
-	var gotBytes []byte
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		gotBytes, _ = io.ReadAll(stdinR)
-	}()
-
-	err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "hello world"})
-	if err != nil {
-		t.Fatalf("Execute() = %v; want nil", err)
-	}
-	_ = sess.proc.stdin.Close()
-	<-readDone
-
-	got := string(gotBytes)
-	if !strings.Contains(got, "hello world\n") {
-		t.Errorf("stdin got %q; want prompt+newline", got)
-	}
-}
-
 // T9: Execute returns nil on success result, error on error result.
 func TestStdinTaskSession_Execute_SuccessResult(t *testing.T) {
 	stdinR, stdinW := io.Pipe()
@@ -271,42 +234,15 @@ func TestStdinTaskSession_WaitReady_ProcessExitsEarly(t *testing.T) {
 	}
 }
 
-func TestStdinTaskSession_WaitReady_Timeout(t *testing.T) {
-	pr, _ := io.Pipe() // write end never written — init never arrives
-	sess := &StdinTaskSession{
-		id:           "test",
-		waitDone:     make(chan struct{}),
-		readyTimeout: 1 * time.Millisecond,
-		proc: &osStdinProcess{
-			stdout:   pr,
-			waitDone: make(chan struct{}),
-		},
-	}
-	err := sess.WaitReady(t.Context())
-	if err == nil {
-		t.Fatal("expected timeout error, got nil")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error %q does not contain 'timed out'", err.Error())
-	}
-}
-
-// T6: WaitReady returns nil when the system/init event is received on stdout.
-func TestStdinTaskSession_WaitReady_InitEvent(t *testing.T) {
-	pr, pw := io.Pipe()
+// WaitReady returns nil when the process is alive (non-blocking alive check).
+func TestStdinTaskSession_WaitReady_ProcessAlive(t *testing.T) {
 	sess := &StdinTaskSession{
 		id:       "test",
-		waitDone: make(chan struct{}),
-		proc: &osStdinProcess{
-			stdout:   pr,
-			waitDone: make(chan struct{}),
-		},
+		waitDone: make(chan struct{}), // never closed → process alive
+		proc:     &osStdinProcess{waitDone: make(chan struct{})},
 	}
-	go func() {
-		_, _ = fmt.Fprintln(pw, `{"type":"system","subtype":"init","session":{"id":"s1"}}`)
-	}()
 	if err := sess.WaitReady(t.Context()); err != nil {
-		t.Fatalf("WaitReady() = %v; want nil", err)
+		t.Fatalf("WaitReady() = %v; want nil for alive process", err)
 	}
 }
 
@@ -359,31 +295,37 @@ func TestOsStdinProcess_Stop_NoErrorWhenAlreadyDone(t *testing.T) {
 	}
 }
 
-// defaultStdinArgs must include --print, --output-format stream-json, and
-// --dangerously-skip-permissions. Without --print the flag is ignored and
-// claude exits with code 1 in pipe mode; without skip-permissions tool use
-// blocks on a closed stdin.
-func TestDefaultStdinArgs_RequiredFlags(t *testing.T) {
-	args := defaultStdinArgs(contracts.TaskSessionStartRequest{})
+// buildClaudeArgs must include required flags and the prompt as the last arg.
+// Passing the prompt as a CLI argument avoids the stdin-before-init-event
+// deadlock that occurs in --print mode when reading from stdin.
+func TestBuildClaudeArgs_RequiredFlagsAndPrompt(t *testing.T) {
+	prompt := "do the thing"
+	args := buildClaudeArgs("claude-test-model", prompt)
 	for _, required := range []string{"--print", "--output-format", "stream-json", "--dangerously-skip-permissions"} {
 		if !slices.Contains(args, required) {
-			t.Errorf("defaultStdinArgs missing %q; got %v", required, args)
+			t.Errorf("buildClaudeArgs missing %q; got %v", required, args)
 		}
 	}
-}
-
-func TestDefaultStdinArgs_ModelAppended(t *testing.T) {
-	args := defaultStdinArgs(contracts.TaskSessionStartRequest{
-		Metadata: map[string]string{"model": "claude-test-model"},
-	})
 	idx := slices.Index(args, "--model")
 	if idx == -1 || idx+1 >= len(args) || args[idx+1] != "claude-test-model" {
 		t.Errorf("expected --model claude-test-model in args; got %v", args)
 	}
+	if args[len(args)-1] != prompt {
+		t.Errorf("prompt not last arg; got %v", args)
+	}
 }
 
-// Execute must close stdin after writing the prompt so that claude (running
-// with --print) starts processing instead of waiting for more input.
+func TestBuildClaudeArgs_NoModelFlag(t *testing.T) {
+	args := buildClaudeArgs("", "hello")
+	if slices.Contains(args, "--model") {
+		t.Errorf("expected no --model flag for empty model; got %v", args)
+	}
+	if args[len(args)-1] != "hello" {
+		t.Errorf("prompt not last arg; got %v", args)
+	}
+}
+
+// Execute must close stdin so claude does not block waiting for more input.
 func TestStdinTaskSession_Execute_CloseStdinAfterPrompt(t *testing.T) {
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
@@ -396,7 +338,6 @@ func TestStdinTaskSession_Execute_CloseStdinAfterPrompt(t *testing.T) {
 	}()
 
 	go func() {
-		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
 		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
 		_ = stdoutW.Close()
 	}()

@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -9,18 +10,29 @@ import (
 
 // SessionRunnerAdapter implements contracts.AgentRunner backed by the claude
 // stdin/stdout TaskSessionRuntime. Each Run() call spawns one claude process,
-// writes the prompt to stdin, reads stream-json events, then tears down.
+// passes the prompt as a CLI argument, reads stream-json events, then tears down.
 type SessionRunnerAdapter struct {
 	runtime *TaskSessionRuntime
 }
 
 // NewSessionRunnerAdapter returns an AgentRunner that uses the claude CLI in
-// --output-format stream-json (stdin/stdout) mode.
+// --output-format stream-json (--print) mode.
 func NewSessionRunnerAdapter(binary string) *SessionRunnerAdapter {
 	return &SessionRunnerAdapter{runtime: NewTaskSessionRuntime(binary)}
 }
 
 var _ contracts.AgentRunner = (*SessionRunnerAdapter)(nil)
+
+// buildClaudeArgs returns the full claude CLI argument list with the prompt as
+// the last positional argument. Passing the prompt via args (not stdin) means
+// claude processes it immediately without waiting for stdin EOF.
+func buildClaudeArgs(model, prompt string) []string {
+	args := []string{"--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	if m := strings.TrimSpace(model); m != "" {
+		args = append(args, "--model", m)
+	}
+	return append(args, prompt)
+}
 
 func (a *SessionRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
 	if ctx == nil {
@@ -31,19 +43,18 @@ func (a *SessionRunnerAdapter) Run(ctx context.Context, request contracts.Runner
 	runCtx, cancel := contracts.WithOptionalTimeout(ctx, request.Timeout)
 	defer cancel()
 
-	// Pass model via metadata so defaultStdinArgs can append --model <value>.
-	metadata := make(map[string]string, len(request.Metadata)+1)
+	metadata := make(map[string]string, len(request.Metadata))
 	for k, v := range request.Metadata {
 		metadata[k] = v
-	}
-	if model := request.Model; model != "" {
-		metadata["model"] = model
 	}
 
 	startReq := contracts.TaskSessionStartRequest{
 		TaskID:   request.TaskID,
 		RepoRoot: request.RepoRoot,
 		Metadata: metadata,
+		// Pass the prompt as a CLI argument so claude processes it immediately
+		// without waiting for stdin input.
+		Command: buildClaudeArgs(request.Model, request.Prompt),
 	}
 
 	session, err := a.runtime.Start(runCtx, startReq)
