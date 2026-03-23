@@ -507,7 +507,7 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 	case "codex":
 		return codex.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "claude":
-		return claude.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
+		return claude.NewSessionRunnerAdapter(definition.Binary), nil
 	case "kimi":
 		return kimi.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "command":

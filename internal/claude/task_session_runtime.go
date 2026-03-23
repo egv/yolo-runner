@@ -327,6 +327,14 @@ func flattenStdinEnv(env map[string]string) []string {
 	return out
 }
 
+// LogPath returns the path of the stdout log file for this session.
+func (s *StdinTaskSession) LogPath() string {
+	if s == nil || s.logFile == nil {
+		return ""
+	}
+	return s.logFile.Name()
+}
+
 func (s *StdinTaskSession) ID() string {
 	if s == nil {
 		return ""

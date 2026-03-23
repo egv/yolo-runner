@@ -1,14 +1,6 @@
 name: claude
 adapter: claude
 binary: claude
-args:
-  - --print
-  - --output-format
-  - text
-  - --model
-  - "{{model}}"
-  - --prompt
-  - "{{prompt}}"
 model: claude-opus-4.1
 capabilities:
   languages:
