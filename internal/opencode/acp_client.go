@@ -255,6 +255,8 @@ type acpClient struct {
 	taskSessionID           string
 	eventSink               contracts.TaskSessionEventSink
 	eventSinkMu             sync.RWMutex
+	questionHandler         contracts.TaskSessionQuestionHandler
+	questionHandlerMu       sync.RWMutex
 	questionResponses       []string
 	questionResponsesMu     sync.Mutex
 	questionResponsesClosed bool
@@ -278,6 +280,18 @@ func (c *acpClient) getEventSink() contracts.TaskSessionEventSink {
 	return c.eventSink
 }
 
+func (c *acpClient) setQuestionHandler(handler contracts.TaskSessionQuestionHandler) {
+	c.questionHandlerMu.Lock()
+	defer c.questionHandlerMu.Unlock()
+	c.questionHandler = handler
+}
+
+func (c *acpClient) getQuestionHandler() contracts.TaskSessionQuestionHandler {
+	c.questionHandlerMu.RLock()
+	defer c.questionHandlerMu.RUnlock()
+	return c.questionHandler
+}
+
 func (c *acpClient) SessionUpdate(ctx context.Context, params *acp.SessionNotification) error {
 	if c != nil && c.onUpdate != nil {
 		c.onUpdate(params)
@@ -297,9 +311,31 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 		isQuestion = true
 	}
 	if isQuestion {
+		questionReq := contracts.TaskSessionQuestionRequest{
+			ID:     string(params.ToolCall.ToolCallId),
+			Prompt: params.ToolCall.Title,
+		}
+		if c != nil {
+			if sink := c.getEventSink(); sink != nil {
+				_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
+					Type:      contracts.TaskSessionEventTypeQuestionAsked,
+					SessionID: c.taskSessionID,
+					Timestamp: time.Now().UTC(),
+					Question: &contracts.TaskSessionQuestionEvent{
+						Request: questionReq,
+					},
+				})
+			}
+		}
 		response := ""
-		if c != nil && c.handler != nil {
-			response = c.handler.HandleQuestion(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
+		if c != nil {
+			if qh := c.getQuestionHandler(); qh != nil {
+				if resp, err := qh.HandleQuestion(ctx, questionReq); err == nil {
+					response = resp.Answer
+				}
+			} else if c.handler != nil {
+				response = c.handler.HandleQuestion(ctx, questionReq.ID, questionReq.Prompt)
+			}
 		}
 		if response != "" && c != nil {
 			c.enqueueQuestionResponse(response)

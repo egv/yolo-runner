@@ -201,6 +201,9 @@ func (s *ACPTaskSession) Execute(ctx context.Context, req contracts.TaskSessionE
 
 	cli := s.acpCli
 	cli.setEventSink(req.EventSink)
+	if req.QuestionHandler != nil {
+		cli.setQuestionHandler(req.QuestionHandler)
+	}
 	conn := s.connection
 	if conn == nil {
 		return errors.New("ACP connection is not initialized")
