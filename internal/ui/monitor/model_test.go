@@ -863,6 +863,44 @@ func TestTaskStateReviewCountIncrementedByReviewFinishedEvent(t *testing.T) {
 	}
 }
 
+func TestPanelRowStageIsPopulatedFromTaskState(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 3, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.panelExpand["tasks"] = true
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-s", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-s", Timestamp: now.Add(-2 * time.Second)})
+
+	row, ok := panelRowForTask(model.panelRows(), "task-s")
+	if !ok {
+		t.Fatalf("expected panelRow for task-s")
+	}
+	if row.stage != contracts.TaskStageRunning {
+		t.Fatalf("expected stage %q, got %q", contracts.TaskStageRunning, row.stage)
+	}
+}
+
+func TestUIPanelLineStageAndOutputSnippetArePopulated(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 4, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.panelExpand["tasks"] = true
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-t", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-t", Message: "hello output", Timestamp: now.Add(-3 * time.Second)})
+
+	state := model.UIState()
+	line, ok := panelLineForTask(state.PanelLines, "task-t")
+	if !ok {
+		t.Fatalf("expected UIPanelLine for task-t, got %#v", state.PanelLines)
+	}
+	if line.Stage != contracts.TaskStageRunning {
+		t.Fatalf("expected Stage %q, got %q", contracts.TaskStageRunning, line.Stage)
+	}
+	if line.OutputSnippet != "hello output" {
+		t.Fatalf("expected OutputSnippet %q, got %q", "hello output", line.OutputSnippet)
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {
