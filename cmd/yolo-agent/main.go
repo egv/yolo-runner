@@ -1413,7 +1413,7 @@ func buildRunFinishedMetadata(cfg runConfig, summary contracts.LoopSummary, runE
 func normalizeBackend(raw string) string {
 	backend := strings.ToLower(strings.TrimSpace(raw))
 	if backend == "" {
-		return backendCodex
+		return backendOpenCode
 	}
 	return backend
 }
