@@ -73,6 +73,7 @@ type serveTestAPI struct {
 	healthResponses []serveHealthResponse
 	messageStatus   int
 	messageBody     string
+	abortStatus     int
 }
 
 func newServeTestAPI(t *testing.T) *serveTestAPI {
@@ -196,6 +197,17 @@ func (api *serveTestAPI) handleSessionByID(w http.ResponseWriter, r *http.Reques
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, body)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/abort") {
+			api.mu.Lock()
+			status := api.abortStatus
+			api.mu.Unlock()
+			if status == 0 {
+				status = http.StatusOK
+			}
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `true`)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -960,6 +972,140 @@ func TestServeTaskSessionWaitReadyTimeoutIncludesHealthContext(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)) {
 		t.Fatalf("expected stderr log path in readiness timeout, got %v", err)
+	}
+}
+
+func TestServeTaskSessionCancelSendsAbortToActiveSession(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-cancel",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-cancel.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Reason: "user cancelled"}); err != nil {
+		t.Fatalf("cancel session: %v", err)
+	}
+
+	requests := api.Requests()
+	foundAbort := false
+	for _, request := range requests {
+		if request.Method == http.MethodPost && request.Path == "/session/session-1/abort" {
+			foundAbort = true
+		}
+	}
+	if !foundAbort {
+		t.Fatalf("expected abort request to /session/session-1/abort, got %#v", requests)
+	}
+}
+
+func TestServeTaskSessionCancelReturnsErrorWhenAbortEndpointFails(t *testing.T) {
+	api := newServeTestAPI(t)
+	api.abortStatus = http.StatusInternalServerError
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-cancel-error",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-cancel-error.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	err = session.Cancel(context.Background(), contracts.TaskSessionCancellation{Reason: "user cancelled"})
+	if err == nil {
+		t.Fatal("expected cancel error when abort endpoint fails")
+	}
+	if !strings.Contains(err.Error(), "abort session returned 500") {
+		t.Fatalf("expected abort status in error, got %v", err)
+	}
+}
+
+func TestServeTaskSessionCancelForceKillsProcessAndCleansUpSession(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-cancel-force",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-cancel-force.jsonl"),
+		StopTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Reason: "user cancelled", Force: true}); err != nil {
+		t.Fatalf("force cancel session: %v", err)
+	}
+
+	requests := api.Requests()
+	foundDelete := false
+	foundDispose := false
+	for _, request := range requests {
+		if request.Method == http.MethodDelete && request.Path == "/session/session-1" {
+			foundDelete = true
+		}
+		if request.Method == http.MethodPost && request.Path == "/instance/dispose" {
+			foundDispose = true
+		}
+	}
+	if !foundDelete {
+		t.Fatalf("expected session delete request during force cancel, got %#v", requests)
+	}
+	if !foundDispose {
+		t.Fatalf("expected instance dispose request during force cancel, got %#v", requests)
+	}
+	if proc.killCount != 1 {
+		t.Fatalf("expected one forced kill during force cancel, got %d", proc.killCount)
+	}
+	if proc.stopCount != 0 {
+		t.Fatalf("did not expect graceful stop during force cancel, got %d", proc.stopCount)
 	}
 }
 
