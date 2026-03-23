@@ -133,7 +133,7 @@ func (s *ACPTaskSession) WaitReady(ctx context.Context) error {
 }
 
 func (s *ACPTaskSession) doWaitReady(ctx context.Context) error {
-	cli := &acpClient{}
+	cli := &acpClient{taskSessionID: s.id}
 	connection := acp.NewClientSideConnection(cli, s.stdin, s.stdout)
 
 	startErrCh := make(chan error, 1)
@@ -200,7 +200,11 @@ func (s *ACPTaskSession) Execute(ctx context.Context, req contracts.TaskSessionE
 	}
 
 	cli := s.acpCli
+	cli.setEventSink(req.EventSink)
 	conn := s.connection
+	if conn == nil {
+		return errors.New("ACP connection is not initialized")
+	}
 
 	newSession := func() (acp.SessionId, error) {
 		session, err := conn.NewSession(ctx, &acp.NewSessionRequest{

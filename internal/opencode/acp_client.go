@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	acp "github.com/ironpark/acp-go"
 )
 
@@ -251,6 +252,9 @@ func parseVerificationResponse(text string) (bool, bool) {
 type acpClient struct {
 	handler                 *ACPHandler
 	onUpdate                func(*acp.SessionNotification)
+	taskSessionID           string
+	eventSink               contracts.TaskSessionEventSink
+	eventSinkMu             sync.RWMutex
 	questionResponses       []string
 	questionResponsesMu     sync.Mutex
 	questionResponsesClosed bool
@@ -260,6 +264,18 @@ type acpClient struct {
 	captureStartedAt        time.Time
 	captureLastUpdate       time.Time
 	promptCompleted         chan struct{}
+}
+
+func (c *acpClient) setEventSink(sink contracts.TaskSessionEventSink) {
+	c.eventSinkMu.Lock()
+	defer c.eventSinkMu.Unlock()
+	c.eventSink = sink
+}
+
+func (c *acpClient) getEventSink() contracts.TaskSessionEventSink {
+	c.eventSinkMu.RLock()
+	defer c.eventSinkMu.RUnlock()
+	return c.eventSink
 }
 
 func (c *acpClient) SessionUpdate(ctx context.Context, params *acp.SessionNotification) error {
@@ -296,6 +312,23 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 	decision := ACPDecisionAllow
 	if c != nil && c.handler != nil {
 		decision = c.handler.HandlePermission(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
+	}
+
+	if c != nil {
+		if sink := c.getEventSink(); sink != nil {
+			_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
+				Type:      contracts.TaskSessionEventTypeApprovalRequired,
+				SessionID: c.taskSessionID,
+				Timestamp: time.Now().UTC(),
+				Approval: &contracts.TaskSessionApprovalEvent{
+					Request: contracts.TaskSessionApprovalRequest{
+						ID:    string(params.ToolCall.ToolCallId),
+						Kind:  contracts.TaskSessionApprovalKindToolCall,
+						Title: params.ToolCall.Title,
+					},
+				},
+			})
+		}
 	}
 
 	if decision != ACPDecisionAllow || len(params.Options) == 0 {
