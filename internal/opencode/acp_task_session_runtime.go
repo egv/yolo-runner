@@ -67,6 +67,7 @@ func (r *ACPTaskSessionRuntime) Start(ctx context.Context, request contracts.Tas
 	session := &ACPTaskSession{
 		id:          resolveACPTaskSessionID(request),
 		repoRoot:    strings.TrimSpace(request.RepoRoot),
+		logPath:     logPath,
 		proc:        proc,
 		stdin:       stdio.Stdin(),
 		stdout:      stdio.Stdout(),
@@ -88,6 +89,7 @@ const defaultACPStopTimeout = 5 * time.Second
 type ACPTaskSession struct {
 	id          string
 	repoRoot    string
+	logPath     string
 	proc        Process
 	stdin       io.WriteCloser
 	stdout      io.ReadCloser
@@ -185,6 +187,9 @@ func (s *ACPTaskSession) Execute(ctx context.Context, req contracts.TaskSessionE
 	if s == nil {
 		return errors.New("nil ACP task session")
 	}
+
+	emitSessionEvents(ctx, s.id, s.logPath, req.EventSink)
+
 	if err := s.WaitReady(ctx); err != nil {
 		return err
 	}
@@ -379,6 +384,33 @@ func resolveACPLogDir(logPath string) string {
 		}
 	}
 	return "."
+}
+
+// emitSessionEvents emits the log-path and artifact events for an ACP session
+// to sink. It is a no-op when sink is nil or logPath is empty.
+func emitSessionEvents(ctx context.Context, sessionID string, logPath string, sink contracts.TaskSessionEventSink) {
+	if sink == nil || strings.TrimSpace(logPath) == "" {
+		return
+	}
+	now := time.Now().UTC()
+	_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
+		Type:      contracts.TaskSessionEventTypeLog,
+		SessionID: sessionID,
+		Timestamp: now,
+		Log: &contracts.TaskSessionLogEvent{
+			Path: logPath,
+		},
+	})
+	_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
+		Type:      contracts.TaskSessionEventTypeArtifact,
+		SessionID: sessionID,
+		Timestamp: now,
+		Artifact: &contracts.TaskSessionArtifactEvent{
+			Name: "acp_log",
+			Path: logPath,
+			Kind: "log",
+		},
+	})
 }
 
 // resolveACPStartArgs returns the command args for the ACP process.
