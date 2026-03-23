@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1157,5 +1158,129 @@ func TestServeTaskSessionWaitReadyIncludesStderrDetailsWhenServeExitsBeforeReadi
 	}
 	if !strings.Contains(err.Error(), contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)) {
 		t.Fatalf("expected stderr log path in readiness error, got %v", err)
+	}
+}
+
+func TestCreateSessionPostsTitleBodyAndReturnsSessionID(t *testing.T) {
+	var recordedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/session" {
+			http.NotFound(w, r)
+			return
+		}
+		recordedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": "ses-focused"})
+	}))
+	defer server.Close()
+
+	session := &ServeTaskSession{
+		client:     server.Client(),
+		sessionURL: server.URL + "/session",
+		taskTitle:  "focused-title",
+	}
+
+	id, err := session.createSession(context.Background())
+	if err != nil {
+		t.Fatalf("createSession: %v", err)
+	}
+	if id != "ses-focused" {
+		t.Fatalf("expected ses-focused, got %q", id)
+	}
+	if strings.TrimSpace(string(recordedBody)) != `{"title":"focused-title"}` {
+		t.Fatalf("unexpected request body: %q", string(recordedBody))
+	}
+}
+
+func TestCreateSessionReturnsErrorForNonSuccessStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	session := &ServeTaskSession{
+		client:     server.Client(),
+		sessionURL: server.URL + "/session",
+	}
+
+	_, err := session.createSession(context.Background())
+	if err == nil {
+		t.Fatalf("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("expected error to mention status 500, got %v", err)
+	}
+}
+
+func TestCreateSessionReturnsErrorWhenResponseIDIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": ""})
+	}))
+	defer server.Close()
+
+	session := &ServeTaskSession{
+		client:     server.Client(),
+		sessionURL: server.URL + "/session",
+	}
+
+	_, err := session.createSession(context.Background())
+	if err == nil {
+		t.Fatalf("expected error for empty session ID")
+	}
+	if !strings.Contains(err.Error(), "missing id") {
+		t.Fatalf("expected missing id error, got %v", err)
+	}
+}
+
+func TestSubmitPromptMessagePostsPartsPayloadToSessionMessageEndpoint(t *testing.T) {
+	var recordedPath string
+	var recordedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recordedPath = r.URL.Path
+		recordedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	session := &ServeTaskSession{
+		client:     server.Client(),
+		sessionURL: server.URL + "/session",
+	}
+
+	err := session.submitPromptMessage(context.Background(), "ses-abc", "ship it")
+	if err != nil {
+		t.Fatalf("submitPromptMessage: %v", err)
+	}
+	if recordedPath != "/session/ses-abc/message" {
+		t.Fatalf("expected /session/ses-abc/message, got %q", recordedPath)
+	}
+	expected := `{"parts":[{"type":"text","text":"ship it"}]}`
+	if strings.TrimSpace(string(recordedBody)) != expected {
+		t.Fatalf("unexpected body: %q", string(recordedBody))
+	}
+}
+
+func TestSubmitPromptMessageReturnsErrorWithBodyOnFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"error":"prompt too long"}`)
+	}))
+	defer server.Close()
+
+	session := &ServeTaskSession{
+		client:     server.Client(),
+		sessionURL: server.URL + "/session",
+	}
+
+	err := session.submitPromptMessage(context.Background(), "ses-xyz", "some prompt")
+	if err == nil {
+		t.Fatalf("expected error for 422 response")
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Fatalf("expected error to mention status 422, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "prompt too long") {
+		t.Fatalf("expected error to include response body, got %v", err)
 	}
 }

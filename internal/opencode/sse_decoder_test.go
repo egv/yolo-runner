@@ -163,6 +163,37 @@ func TestDecodeNextSSEFrameReturnsOpenCodeTokenEvent(t *testing.T) {
 	}
 }
 
+func TestDecodeNextSSEFrameDecodesDataFieldWithoutLeadingSpace(t *testing.T) {
+	// SSE spec allows "data:value" (no space after colon) as well as "data: value".
+	input := "event: msg\ndata:hello-no-space\n\n"
+	scanner := bufio.NewScanner(strings.NewReader(input))
+
+	event, ok, err := decodeNextSSEFrame(scanner)
+	if err != nil || !ok {
+		t.Fatalf("expected decoded frame: err=%v ok=%v", err, ok)
+	}
+	if event.Data != "hello-no-space" {
+		t.Fatalf("expected data without leading space, got %q", event.Data)
+	}
+}
+
+func TestDecodeNextSSEFrameDecodesFrameWithOnlyEventField(t *testing.T) {
+	// A frame with only an event field (no data or id) should be dispatched.
+	input := "event: ping\n\n"
+	scanner := bufio.NewScanner(strings.NewReader(input))
+
+	event, ok, err := decodeNextSSEFrame(scanner)
+	if err != nil || !ok {
+		t.Fatalf("expected decoded frame: err=%v ok=%v", err, ok)
+	}
+	if event.Event != "ping" {
+		t.Fatalf("expected event 'ping', got %q", event.Event)
+	}
+	if event.Data != "" {
+		t.Fatalf("expected empty data, got %q", event.Data)
+	}
+}
+
 // Verify the decoder result satisfies the contracts.SSEEvent type shape used
 // elsewhere in the codebase.
 var _ contracts.SSEEvent = contracts.SSEEvent{}
