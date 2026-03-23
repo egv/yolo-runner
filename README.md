@@ -384,12 +384,12 @@ Common options:
 - `--concurrency N` or `--concurrency auto` - Parallel task execution (default: 1)
 - `--tdd` enable strict TDD mode (Red/Green/Refactor)
 - `--quality-gate` validate task clarity before execution
-- `--mode ui|headless` force UI or headless mode
+- `--mode stream|ui` set output mode; omit for headless (no streaming)
 - `--stream` output JSONL events for TUI consumption
 - `--events PATH` write events to file
 - `--retry-budget N` max retries per task (default: 5)
 - `--profile NAME` use tracker profile from config
-- `--backend codex|claude|kimi|gemini|opencode` agent backend
+- `--backend codex|codex-cli|opencode|opencode-serve|opencode-acp|claude|kimi|gemini` agent backend
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
 
@@ -592,7 +592,8 @@ Precedence rules:
 
 Validation rules for `agent.*` values:
 
-- `agent.backend` must be one of `opencode`, `codex`, `claude`, `kimi`, `gemini`.
+- `agent.backend` must be one of `opencode`, `opencode-serve`, `opencode-acp`, `codex`, `codex-cli`, `claude`, `kimi`, `gemini`.
+- `agent.mode` must be one of `stream`, `ui` when set; omit for headless (default: no streaming).
 - `agent.concurrency` must be greater than `0`.
 - `agent.runner_timeout` must be greater than or equal to `0`.
 - `agent.watchdog_timeout` must be greater than `0`.

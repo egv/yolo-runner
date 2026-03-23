@@ -172,6 +172,50 @@ func TestConfigWorkflowDocsCoverValidateInitAndTroubleshooting(t *testing.T) {
 	}
 }
 
+func TestReadmeDocumentsNewServerBackedBackendNames(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	readme := string(contents)
+	for _, backend := range []string{"opencode-serve", "opencode-acp"} {
+		if !strings.Contains(readme, backend) {
+			t.Fatalf("README missing documentation for server-backed backend %q", backend)
+		}
+	}
+}
+
+func TestReadmeDocumentsDefaultAgentOutputMode(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	readmePath := filepath.Join(repoRoot, "README.md")
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+
+	readme := string(contents)
+	required := []string{
+		"--mode stream|ui",
+		"agent.mode",
+	}
+	for _, needle := range required {
+		if !strings.Contains(readme, needle) {
+			t.Fatalf("README missing agent output mode documentation: %q", needle)
+		}
+	}
+}
+
 func TestConfigWorkflowRunbookPrecedenceMatchesConfigValidateBehavior(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
