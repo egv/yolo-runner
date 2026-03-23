@@ -166,9 +166,9 @@ func TestInstallScriptInstallModeUsesExpectedBinaryAndInstallPath(t *testing.T) 
 		name        string
 		osInput     string
 		archInput   string
-			artifact    string
-			binaryName  string
-			installPath string
+		artifact    string
+		binaryName  string
+		installPath string
 	}{
 		{
 			name:        "linux amd64",

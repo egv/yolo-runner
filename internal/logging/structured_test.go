@@ -90,4 +90,3 @@ func TestStructuredLoggerFiltersByLevel(t *testing.T) {
 		t.Fatalf("expected second visible entry to be error, got %#v", entries[1]["message"])
 	}
 }
-

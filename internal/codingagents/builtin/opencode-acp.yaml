@@ -1,0 +1,38 @@
+name: opencode-acp
+type: opencode
+backend: opencode-acp
+model: zai-coding-plan/glm-4.7
+binary: opencode
+args:
+  - acp
+  - --print-logs
+  - --log-level
+  - DEBUG
+  - --cwd
+  - "{{repo_root}}"
+capabilities:
+  languages:
+    - go
+    - python
+    - rust
+  features:
+    - implement
+    - review
+    - service_proxy
+    - larger_model
+    - stream
+config:
+  timeout: 30s
+health:
+  enabled: true
+  endpoint: http://localhost:0/healthz
+  interval: 5s
+  timeout: 2s
+adapter: opencode
+supports_review: true
+supports_stream: true
+distributed_capabilities:
+  - implement
+  - review
+  - service_proxy
+  - larger_model

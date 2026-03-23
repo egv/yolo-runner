@@ -20,11 +20,11 @@ func (r *stubServeRuntime) Start(_ context.Context, _ contracts.TaskSessionStart
 
 // stubServeSession implements contracts.TaskSession and serveSessionWaiter for testing.
 type stubServeSession struct {
-	executeErr    error
-	waitResultFn  func(ctx context.Context) error
+	executeErr   error
+	waitResultFn func(ctx context.Context) error
 }
 
-func (s *stubServeSession) ID() string { return "stub-session-1" }
+func (s *stubServeSession) ID() string                        { return "stub-session-1" }
 func (s *stubServeSession) WaitReady(_ context.Context) error { return nil }
 func (s *stubServeSession) Execute(_ context.Context, _ contracts.TaskSessionExecuteRequest) error {
 	return s.executeErr

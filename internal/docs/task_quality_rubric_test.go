@@ -17,7 +17,7 @@ func TestTaskQualityRubricDocumentsRequiredFieldsAndClarityRules(t *testing.T) {
 	contents, err := os.ReadFile(rubricPath)
 	if err != nil {
 		t.Fatalf("read task quality rubric: %v", err)
-}
+	}
 
 	rubric := string(contents)
 	required := []string{

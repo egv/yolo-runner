@@ -3,8 +3,8 @@
 package main
 
 import (
-	"encoding/json"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,10 +75,10 @@ func TestHeadlessModeShowsHighLevelLabels(t *testing.T) {
 	if _, ok := entry["stdout"]; !ok {
 		t.Fatalf("log should contain stdout field: %s", logStr)
 	}
-		if _, ok := entry["stderr"]; !ok {
-			t.Fatalf("log should contain stderr field: %s", logStr)
-		}
+	if _, ok := entry["stderr"]; !ok {
+		t.Fatalf("log should contain stderr field: %s", logStr)
 	}
+}
 
 // TestCommandRunnerDoesNotEchoToStdoutForLoggedCommands verifies that
 // when CommandRunner is used with a writer, it doesn't echo logged commands

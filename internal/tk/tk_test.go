@@ -91,7 +91,7 @@ func TestParseTicketQueryParsesDependencyMetadata(t *testing.T) {
 		want  []string
 	}{
 		{
-			name: "missing dependency metadata",
+			name:  "missing dependency metadata",
 			query: `{"id":"t-1","status":"open","type":"task","title":"No deps"}`,
 			want:  nil,
 		},

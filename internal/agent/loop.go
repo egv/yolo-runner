@@ -889,9 +889,9 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries+1, completionReason)
 				blockedData := map[string]string{
 					"triage_status":          "blocked",
-					"completion_retry_count":  fmt.Sprintf("%d", completionRetries),
-					"completion_addendum":     completionAddendum,
-					"triage_reason":           completionReason,
+					"completion_retry_count": fmt.Sprintf("%d", completionRetries),
+					"completion_addendum":    completionAddendum,
+					"triage_reason":          completionReason,
 				}
 				blockedData = appendDecisionMetadata(blockedData, "blocked", completionReason)
 				blockedData = appendReviewOutcomeMetadata(blockedData, result)
@@ -904,8 +904,8 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				finishedMetadata := map[string]string{
 					"triage_status":          "blocked",
 					"triage_reason":          completionReason,
-					"completion_retry_count":  fmt.Sprintf("%d", completionRetries),
-					"completion_addendum":     completionAddendum,
+					"completion_retry_count": fmt.Sprintf("%d", completionRetries),
+					"completion_addendum":    completionAddendum,
 				}
 				finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", completionReason)
 				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})

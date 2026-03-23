@@ -107,9 +107,9 @@ func TestIntegrationCoverageGateBlocksUntilFixedForTDDTask(t *testing.T) {
 		Metadata: map[string]string{"coverage": "45"},
 	})
 	loop := NewLoop(mgr, &fakeRunner{}, nil, LoopOptions{
-		ParentID:          "root",
-		RepoRoot:          repoRoot,
-		TDDMode:           false,
+		ParentID:             "root",
+		RepoRoot:             repoRoot,
+		TDDMode:              false,
 		QualityGateThreshold: 50,
 	})
 
@@ -141,9 +141,9 @@ func TestIntegrationCoverageGateBlocksUntilFixedForTDDTask(t *testing.T) {
 		},
 	}
 	loop = NewLoop(mgr, runner, nil, LoopOptions{
-		ParentID:            "root",
-		RepoRoot:            repoRoot,
-		TDDMode:             false,
+		ParentID:             "root",
+		RepoRoot:             repoRoot,
+		TDDMode:              false,
 		QualityGateThreshold: 50,
 	})
 
