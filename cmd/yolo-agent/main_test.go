@@ -21,6 +21,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/github"
 	"github.com/egv/yolo-runner/v2/internal/linear"
+	"github.com/egv/yolo-runner/v2/internal/opencode"
 )
 
 type runnerTransportRequest struct {
@@ -323,6 +324,24 @@ func TestRunMainAcceptsCodexCLILegacyFallbackBackend(t *testing.T) {
 	}
 	if got.backend != "codex-cli" {
 		t.Fatalf("expected backend=%q, got %q", "codex-cli", got.backend)
+	}
+}
+
+func TestBuildRunnerAdapterUsesServeAdapterForOpencodeServeBackend(t *testing.T) {
+	catalog, err := codingagents.LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	runner, err := buildRunnerAdapter(runConfig{
+		backend:      "opencode-serve",
+		codingAgents: catalog,
+	})
+	if err != nil {
+		t.Fatalf("build opencode-serve adapter: %v", err)
+	}
+	if _, ok := runner.(*opencode.ServeRunnerAdapter); !ok {
+		t.Fatalf("expected *opencode.ServeRunnerAdapter, got %T", runner)
 	}
 }
 

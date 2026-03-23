@@ -1,0 +1,33 @@
+name: opencode-serve
+type: opencode-serve
+backend: opencode-serve
+model: zai-coding-plan/glm-4.7
+binary: opencode
+args:
+  - serve
+  - --hostname
+  - "127.0.0.1"
+capabilities:
+  languages:
+    - go
+    - python
+    - rust
+  features:
+    - implement
+    - review
+    - service_proxy
+    - larger_model
+    - stream
+health:
+  enabled: true
+  endpoint: http://127.0.0.1:38000/health
+  interval: 5s
+  timeout: 2s
+adapter: opencode-serve
+supports_review: true
+supports_stream: true
+distributed_capabilities:
+  - implement
+  - review
+  - service_proxy
+  - larger_model
