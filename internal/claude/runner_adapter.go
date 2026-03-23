@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -282,12 +283,14 @@ func lastStructuredVerdictLine(text string) (string, bool) {
 	lastVerdict := ""
 	found := false
 	for _, line := range strings.Split(normalized, "\n") {
-		matches := structuredReviewVerdictLinePattern.FindStringSubmatch(line)
-		if len(matches) < 2 {
-			continue
+		for _, candidate := range expandJSONLLine(line) {
+			matches := structuredReviewVerdictLinePattern.FindStringSubmatch(candidate)
+			if len(matches) < 2 {
+				continue
+			}
+			lastVerdict = strings.ToLower(matches[1])
+			found = true
 		}
-		lastVerdict = strings.ToLower(matches[1])
-		found = true
 	}
 	return lastVerdict, found
 }
@@ -300,18 +303,53 @@ func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
 	lastFeedback := ""
 	found := false
 	for _, line := range strings.Split(normalized, "\n") {
-		matches := structuredReviewFailFeedbackLinePattern.FindStringSubmatch(line)
-		if len(matches) < 2 {
-			continue
+		for _, candidate := range expandJSONLLine(line) {
+			matches := structuredReviewFailFeedbackLinePattern.FindStringSubmatch(candidate)
+			if len(matches) < 2 {
+				continue
+			}
+			feedback := strings.Join(strings.Fields(matches[1]), " ")
+			if feedback == "" {
+				continue
+			}
+			lastFeedback = feedback
+			found = true
 		}
-		candidate := strings.Join(strings.Fields(matches[1]), " ")
-		if candidate == "" {
-			continue
-		}
-		lastFeedback = candidate
-		found = true
 	}
 	return lastFeedback, found
+}
+
+// expandJSONLLine returns the candidate text lines to match against for a single
+// log file line. For plain-text logs it returns the line itself. For stream-json
+// JSONL logs it additionally returns the extracted text content of assistant
+// messages so that REVIEW_VERDICT / REVIEW_FAIL_FEEDBACK markers are visible.
+func expandJSONLLine(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "{") {
+		return []string{line}
+	}
+	var msg struct {
+		Type    string `json:"type"`
+		Message struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(line), &msg); err != nil || msg.Type != "assistant" {
+		return []string{line}
+	}
+	var texts []string
+	for _, c := range msg.Message.Content {
+		if c.Type == "text" {
+			texts = append(texts, strings.Split(c.Text, "\n")...)
+		}
+	}
+	if len(texts) == 0 {
+		return []string{line}
+	}
+	return texts
 }
 
 type lineWriter struct {
