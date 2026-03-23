@@ -78,4 +78,3 @@ func TestMockProcessKillUnblocksWait(t *testing.T) {
 		t.Fatal("killCalled was not set to true")
 	}
 }
-

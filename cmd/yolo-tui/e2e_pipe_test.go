@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egv/yolo-runner/v2/internal/contracts"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 func TestE2E_StreamPipe_AgentToTUI(t *testing.T) {

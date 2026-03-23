@@ -13,7 +13,7 @@ import (
 
 var (
 	executorConfigRequiredStages = []string{"quality_gate", "execute", "qc_gate", "complete"}
-	executorConfigValidActions  = map[string]struct{}{
+	executorConfigValidActions   = map[string]struct{}{
 		"next":     {},
 		"retry":    {},
 		"fail":     {},
@@ -29,15 +29,15 @@ var (
 )
 
 type executorConfigFixture struct {
-	Name     string                    `json:"name" yaml:"name"`
-	Type     string                    `json:"type" yaml:"type"`
-	Backend  string                    `json:"backend" yaml:"backend"`
-	Pipeline map[string]executorStage   `json:"pipeline" yaml:"pipeline"`
+	Name     string                   `json:"name" yaml:"name"`
+	Type     string                   `json:"type" yaml:"type"`
+	Backend  string                   `json:"backend" yaml:"backend"`
+	Pipeline map[string]executorStage `json:"pipeline" yaml:"pipeline"`
 }
 
 type executorStage struct {
-	Tools      []string                 `json:"tools" yaml:"tools"`
-	Retry      executorRetryPolicy      `json:"retry" yaml:"retry"`
+	Tools       []string                 `json:"tools" yaml:"tools"`
+	Retry       executorRetryPolicy      `json:"retry" yaml:"retry"`
 	Transitions executorStageTransitions `json:"transitions" yaml:"transitions"`
 }
 

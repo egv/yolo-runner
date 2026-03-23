@@ -29,6 +29,7 @@ import (
 
 const (
 	backendOpenCode     = "opencode"
+	backendOpenCodeACP  = "opencode-acp"
 	backendCodex        = "codex"
 	backendCodexCLI     = "codex-cli"
 	backendClaude       = "claude"

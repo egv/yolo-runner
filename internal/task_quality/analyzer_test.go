@@ -50,7 +50,7 @@ func TestAssessTaskQuality_HighQualitySampleScoresAboveThresholdAndIsClean(t *te
 		Deliverables: `- internal/task_quality/analyzer.go
 - cmd/yolo-agent integration for task quality gating (future task)
 - Unit tests with both good and bad samples`,
-	TestingPlan: `- go test ./internal/task_quality -run TestAssessTaskQuality
+		TestingPlan: `- go test ./internal/task_quality -run TestAssessTaskQuality
 - go test ./internal/agent -run TestRunTask
 - go test ./internal/task_quality -run TestAssessTaskQuality_ScoreIsBoundedToHundred`,
 		DefinitionOfDone: `- Tests cover low and high quality samples.
@@ -157,8 +157,8 @@ func TestAssessTaskQuality_RejectsShortDescriptionsAndVagueLanguage(t *testing.T
 	task := TaskInput{
 		Title:               "Improve workflow",
 		Description:         "Maybe we should maybe consider this later.",
-		AcceptanceCriteria: "- Given a request, when handled, then output is returned.",
-		Deliverables:       "- Updated docs.",
+		AcceptanceCriteria:  "- Given a request, when handled, then output is returned.",
+		Deliverables:        "- Updated docs.",
 		TestingPlan:         "- go test ./internal/task_quality -run TestAssessTaskQuality",
 		DefinitionOfDone:    "- Evidence exists.",
 		DependenciesContext: "- Existing acceptance framework.",
@@ -202,8 +202,8 @@ func TestAssessTaskQuality_ScoreIsBoundedToHundred(t *testing.T) {
 
 func fullyPopulatedTaskQualityInput() TaskInput {
 	return TaskInput{
-		Title:       "Implement acceptance criteria coverage tracking",
-		Description: "Add deterministic acceptance criteria coverage reporting for task quality analysis.",
+		Title:              "Implement acceptance criteria coverage tracking",
+		Description:        "Add deterministic acceptance criteria coverage reporting for task quality analysis.",
 		AcceptanceCriteria: "- Given a task has acceptance criteria, when coverage is computed, then each criterion is accounted for.",
 		Deliverables: `- internal/task_quality/analyzer.go
 	- Unit tests for acceptance coverage`,

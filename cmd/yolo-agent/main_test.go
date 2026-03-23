@@ -327,6 +327,24 @@ func TestRunMainAcceptsCodexCLILegacyFallbackBackend(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerAdapterUsesCLIAdapterForOpencodeACPBackend(t *testing.T) {
+	catalog, err := codingagents.LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	runner, err := buildRunnerAdapter(runConfig{
+		backend:      backendOpenCodeACP,
+		codingAgents: catalog,
+	})
+	if err != nil {
+		t.Fatalf("build opencode-acp adapter: %v", err)
+	}
+	if _, ok := runner.(*opencode.CLIRunnerAdapter); !ok {
+		t.Fatalf("expected *opencode.CLIRunnerAdapter for %q backend, got %T", backendOpenCodeACP, runner)
+	}
+}
+
 func TestBuildRunnerAdapterUsesServeAdapterForOpencodeServeBackend(t *testing.T) {
 	catalog, err := codingagents.LoadCatalog("")
 	if err != nil {

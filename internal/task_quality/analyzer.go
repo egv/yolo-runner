@@ -24,10 +24,10 @@ type Assessment struct {
 var vagueLanguagePattern = regexp.MustCompile(`(?:^|[\s\W])(maybe|consider)(?:[\s\W]|$)`)
 
 type CoverageReport struct {
-	TotalCases    int
-	CoveredCases  int
-	MissingCases  []string
-	OverallScore  int
+	TotalCases   int
+	CoveredCases int
+	MissingCases []string
+	OverallScore int
 }
 
 func AssessTaskQuality(task TaskInput) Assessment {
