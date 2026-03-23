@@ -473,6 +473,36 @@ Features:
 - Control panel to change task status (blocked, in_progress, closed)
 - Run history and triage
 
+#### Distributed bus operator notes
+
+**Fallback backend:** When `--distributed-bus-backend` is omitted, it defaults to `redis`. Pass `--distributed-bus-backend nats` to use NATS instead.
+
+**Startup:** Before starting `yolo-agent` in distributed mode, verify the bus is reachable:
+
+```bash
+# Redis
+redis-cli -u "redis://${YOLO_TAILNET_IP}:16379" ping
+
+# NATS
+nats account info --server "nats://${YOLO_TAILNET_IP}:14222"
+```
+
+If the bus is unavailable at startup, `yolo-agent` exits immediately with a connection error. Run `make distributed-dev-up` and confirm containers are running before retrying.
+
+**Cancellation:** Send SIGTERM or press Ctrl+C to stop the scheduler. The agent finishes its current dispatch loop iteration and then exits cleanly. In-flight tasks that were already dispatched to executors continue running; their results are recorded when they complete. Tasks that were queued but not yet dispatched are left in their current state and will be picked up on the next run.
+
+**Teardown:** Stop containers and remove volumes after a distributed run:
+
+```bash
+make distributed-dev-down
+```
+
+If in-flight tasks were interrupted before completing, reset them before the next run:
+
+1. Set interrupted tasks back to `open` status.
+2. Remove stale entries from `.yolo-runner/scheduler-state.json`.
+3. Remove stale clone directories under `.yolo-runner/clones/<task-id>`.
+
 ### Streaming Mode (Real-time TUI)
 
 Stream events to TUI for real-time monitoring:
