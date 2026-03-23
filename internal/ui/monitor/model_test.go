@@ -753,6 +753,23 @@ func TestModelCountsDoneTasksAsCompleted(t *testing.T) {
 	}
 }
 
+func TestUIStateExposesCompletedCountAndTotalCount(t *testing.T) {
+	now := time.Date(2026, 2, 10, 12, 14, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-8 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-1", TaskTitle: "First", Message: "done", Timestamp: now.Add(-6 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-2", TaskTitle: "Second", WorkerID: "worker-1", QueuePos: 2, Timestamp: now.Add(-4 * time.Second)})
+
+	state := model.UIState()
+	if state.CompletedCount != 1 {
+		t.Fatalf("expected CompletedCount=1, got %d", state.CompletedCount)
+	}
+	if state.TotalCount != 2 {
+		t.Fatalf("expected TotalCount=2, got %d", state.TotalCount)
+	}
+}
+
 func TestModelProvidesExecutorDashboardAndQueueFiltering(t *testing.T) {
 	now := time.Date(2026, 2, 10, 12, 30, 0, 0, time.UTC)
 	model := NewModel(func() time.Time { return now })
