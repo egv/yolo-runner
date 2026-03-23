@@ -676,7 +676,10 @@ func TestServeTaskSessionExecuteReusesExistingSessionForOnePromptMessage(t *test
 	if !ok {
 		t.Fatalf("expected ServeTaskSession, got %T", session)
 	}
+	// WaitReady already created "session-1"; override to verify Execute reuses without creating another.
 	appSession.setSessionID("session-existing")
+
+	requestsAfterReady := len(api.Requests())
 
 	err = appSession.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
 		Prompt: "continue the task",
@@ -686,9 +689,9 @@ func TestServeTaskSessionExecuteReusesExistingSessionForOnePromptMessage(t *test
 	}
 
 	requests := api.Requests()
-	for _, request := range requests {
+	for _, request := range requests[requestsAfterReady:] {
 		if request.Method == http.MethodPost && request.Path == "/session" {
-			t.Fatalf("did not expect create session request, got %#v", requests)
+			t.Fatalf("Execute must not create a second session, got %#v", requests)
 		}
 	}
 

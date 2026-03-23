@@ -365,7 +365,14 @@ func (s *ServeTaskSession) WaitReady(ctx context.Context) error {
 
 		if err := s.waitForHealth(readyCtx); err != nil {
 			s.readyErr = err
+			return
 		}
+		createdID, err := s.createSession(readyCtx)
+		if err != nil {
+			s.readyErr = err
+			return
+		}
+		s.setSessionID(createdID)
 	})
 	return s.readyErr
 }
@@ -523,7 +530,11 @@ func (s *ServeTaskSession) submitPromptMessage(ctx context.Context, sessionID st
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("submit message returned %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		if len(respBody) > 0 {
+			return fmt.Errorf("submit session message returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		}
+		return fmt.Errorf("submit session message returned %d", resp.StatusCode)
 	}
 	return nil
 }
