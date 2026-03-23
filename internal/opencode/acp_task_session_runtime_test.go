@@ -379,6 +379,114 @@ func TestACPTaskSessionTeardownPropagatesContextCancellation(t *testing.T) {
 	}
 }
 
+// TestACPTaskSessionExecuteEmitsLogEventToSink verifies that Execute() emits a
+// TaskSessionLogEvent containing the session log path to the EventSink even
+// when execution fails early (e.g. cancelled context → WaitReady error).
+func TestACPTaskSessionExecuteEmitsLogEventToSink(t *testing.T) {
+	proc := newACPTeardownProcess()
+	logPath := filepath.Join(t.TempDir(), "runner-logs", "opencode", "test-log-event.jsonl")
+
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "test-log-event",
+		RepoRoot: t.TempDir(),
+		LogPath:  logPath,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true})
+	})
+
+	var mu sync.Mutex
+	var receivedEvents []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, event contracts.TaskSessionEvent) error {
+		mu.Lock()
+		receivedEvents = append(receivedEvents, event)
+		mu.Unlock()
+		return nil
+	})
+
+	// Cancel context immediately so WaitReady fails fast.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = session.Execute(ctx, contracts.TaskSessionExecuteRequest{
+		Prompt:    "do something",
+		EventSink: sink,
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, ev := range receivedEvents {
+		if ev.Type == contracts.TaskSessionEventTypeLog && ev.Log != nil && ev.Log.Path == logPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected TaskSessionLogEvent with path %q to be emitted via EventSink, got %d events: %#v", logPath, len(receivedEvents), receivedEvents)
+	}
+}
+
+// TestACPTaskSessionExecuteEmitsArtifactEventToSink verifies that Execute()
+// emits a TaskSessionArtifactEvent for the log artifact via the EventSink.
+func TestACPTaskSessionExecuteEmitsArtifactEventToSink(t *testing.T) {
+	proc := newACPTeardownProcess()
+	logPath := filepath.Join(t.TempDir(), "runner-logs", "opencode", "test-artifact.jsonl")
+
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "test-artifact",
+		RepoRoot: t.TempDir(),
+		LogPath:  logPath,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true})
+	})
+
+	var mu sync.Mutex
+	var receivedEvents []contracts.TaskSessionEvent
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, event contracts.TaskSessionEvent) error {
+		mu.Lock()
+		receivedEvents = append(receivedEvents, event)
+		mu.Unlock()
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = session.Execute(ctx, contracts.TaskSessionExecuteRequest{
+		Prompt:    "do something",
+		EventSink: sink,
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, ev := range receivedEvents {
+		if ev.Type == contracts.TaskSessionEventTypeArtifact && ev.Artifact != nil && ev.Artifact.Path == logPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected TaskSessionArtifactEvent with path %q to be emitted via EventSink, got %d events: %#v", logPath, len(receivedEvents), receivedEvents)
+	}
+}
+
 // TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
 // than once does not kill the process multiple times.
 func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {
