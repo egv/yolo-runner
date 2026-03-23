@@ -213,6 +213,24 @@ func TestCatalogBuiltinOpencodeServeIsRegistered(t *testing.T) {
 	}
 }
 
+func TestCatalogBuiltinOpencodeUsesServeAdapter(t *testing.T) {
+	catalog, err := LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	backend, ok := catalog.Backend("opencode")
+	if !ok {
+		t.Fatal("expected builtin opencode backend to be registered in the catalog")
+	}
+	if backend.Adapter != "opencode-serve" {
+		t.Errorf("expected opencode adapter %q, got %q", "opencode-serve", backend.Adapter)
+	}
+	if len(backend.Args) == 0 || backend.Args[0] != "serve" {
+		t.Errorf("expected opencode args to start with %q, got %v", "serve", backend.Args)
+	}
+}
+
 func TestCatalogBuiltinCodexUsesAppServerAdapter(t *testing.T) {
 	catalog, err := LoadCatalog("")
 	if err != nil {

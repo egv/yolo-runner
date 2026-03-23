@@ -4,12 +4,9 @@ backend: opencode
 model: zai-coding-plan/glm-4.7
 binary: opencode
 args:
-  - acp
-  - --print-logs
-  - --log-level
-  - DEBUG
-  - --cwd
-  - "{{repo_root}}"
+  - serve
+  - --hostname
+  - "127.0.0.1"
 capabilities:
   languages:
     - go
@@ -28,7 +25,7 @@ health:
   endpoint: http://localhost:0/healthz
   interval: 5s
   timeout: 2s
-adapter: opencode
+adapter: opencode-serve
 supports_review: true
 supports_stream: true
 distributed_capabilities:
