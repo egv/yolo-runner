@@ -437,9 +437,6 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if s.logFile != nil {
-			_, _ = fmt.Fprintf(s.logFile, "%s\n", line)
-		}
 		var msg struct {
 			Type    string `json:"type"`
 			Subtype string `json:"subtype"`
@@ -468,8 +465,14 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 				return errors.New("claude execution error")
 			}
 		case "assistant":
+			text := stdinExtractAssistantText(msg.Message.Content)
+			// Write plain text to the log file so that structuredReviewVerdict
+			// can find REVIEW_VERDICT / REVIEW_FAIL_FEEDBACK lines without
+			// having to parse JSONL.
+			if s.logFile != nil && text != "" {
+				_, _ = fmt.Fprintln(s.logFile, text)
+			}
 			if req.EventSink != nil {
-				text := stdinExtractAssistantText(msg.Message.Content)
 				_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
 					Type:      contracts.TaskSessionEventTypeOutput,
 					SessionID: s.id,
