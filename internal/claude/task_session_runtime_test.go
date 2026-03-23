@@ -124,19 +124,12 @@ func TestStdinTaskSession_Execute_EmitsOutputEvent(t *testing.T) {
 	}
 }
 
-// T11: Execute writes y\n to stdin and emits approval event on tool_use.
+// T11: Execute emits approval event on tool_use (no stdin write — permissions bypassed).
 func TestStdinTaskSession_Execute_ApprovesToolUse(t *testing.T) {
 	stdinR, stdinW := io.Pipe()
 	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
 	sess := newTestSession(stdinW, stdoutR)
-
-	// capture everything written to stdin
-	var stdinBytes []byte
-	stdinDone := make(chan struct{})
-	go func() {
-		defer close(stdinDone)
-		stdinBytes, _ = io.ReadAll(stdinR)
-	}()
 
 	go func() {
 		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
@@ -153,13 +146,7 @@ func TestStdinTaskSession_Execute_ApprovesToolUse(t *testing.T) {
 	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p", EventSink: sink}); err != nil {
 		t.Fatalf("Execute() = %v; want nil", err)
 	}
-	_ = sess.proc.stdin.Close()
-	<-stdinDone
 
-	got := string(stdinBytes)
-	if !strings.Contains(got, "y\n") {
-		t.Errorf("stdin %q does not contain approval 'y\\n'", got)
-	}
 	var approvalEvents []contracts.TaskSessionEvent
 	for _, e := range events {
 		if e.Type == contracts.TaskSessionEventTypeApprovalRequired {

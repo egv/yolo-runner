@@ -270,7 +270,7 @@ func (r *TaskSessionRuntime) buildCommand(request contracts.TaskSessionStartRequ
 }
 
 func defaultStdinArgs(request contracts.TaskSessionStartRequest) []string {
-	args := []string{"--output-format", "stream-json", "--verbose"}
+	args := []string{"--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 	if model := strings.TrimSpace(request.Metadata["model"]); model != "" {
 		args = append(args, "--model", model)
 	}
@@ -472,6 +472,8 @@ func (s *StdinTaskSession) Execute(ctx context.Context, req contracts.TaskSessio
 	if _, err := fmt.Fprintln(s.proc.Stdin(), req.Prompt); err != nil {
 		return fmt.Errorf("claude stdin write: %w", err)
 	}
+	// Close stdin to signal EOF so claude starts processing the prompt.
+	_ = s.proc.Stdin().Close()
 	return s.readUntilResult(ctx, req)
 }
 
@@ -581,10 +583,8 @@ func (s *StdinTaskSession) handleToolUse(ctx context.Context, id, name string, r
 			decision = d
 		}
 	}
-	// Always write y\n regardless of handler decision — this runtime auto-approves.
-	if _, err := fmt.Fprintln(s.proc.Stdin(), "y"); err != nil {
-		return fmt.Errorf("claude stdin approval write: %w", err)
-	}
+	// In --print --dangerously-skip-permissions mode, tool_use events are
+	// informational only — permissions are already bypassed, no stdin write needed.
 	if req.EventSink != nil {
 		_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
 			Type:      contracts.TaskSessionEventTypeApprovalRequired,
