@@ -151,6 +151,7 @@ func (p *osStdinProcess) Kill() error {
 // ---- TaskSessionRuntime ----
 
 const defaultStdinBinary = "claude"
+const defaultStdinStopTimeout = 10 * time.Second
 
 // stdinProcessStarter is a factory for osStdinProcess instances.
 type stdinProcessStarter interface {
@@ -326,8 +327,6 @@ func flattenStdinEnv(env map[string]string) []string {
 	return out
 }
 
-// ---- StdinTaskSession interface stubs (implemented in later tasks) ----
-
 func (s *StdinTaskSession) ID() string {
 	if s == nil {
 		return ""
@@ -355,6 +354,8 @@ func (s *StdinTaskSession) WaitReady(ctx context.Context) error {
 func (s *StdinTaskSession) waitForInit(ctx context.Context) error {
 	initCh := make(chan error, 1)
 	go func() {
+		// The scanner goroutine is unblocked when the process exits and closes
+		// the pipe (bounded by process lifetime).
 		initCh <- s.scanForInit()
 	}()
 	select {
@@ -452,6 +453,7 @@ func withStdinOptionalTimeout(ctx context.Context, d time.Duration) (context.Con
 	}
 	return context.WithTimeout(ctx, d)
 }
+
 func (s *StdinTaskSession) Execute(ctx context.Context, req contracts.TaskSessionExecuteRequest) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -468,7 +470,10 @@ func (s *StdinTaskSession) Execute(ctx context.Context, req contracts.TaskSessio
 func (s *StdinTaskSession) readUntilResult(ctx context.Context, req contracts.TaskSessionExecuteRequest) error {
 	resultCh := make(chan error, 1)
 	go func() {
-		resultCh <- s.scanForResult(req)
+		// The scanner goroutine holds stdout until a result event or EOF.
+		// On ctx cancel or early process exit, it is unblocked when the
+		// process exits and closes the pipe (bounded by process lifetime).
+		resultCh <- s.scanForResult(ctx, req)
 	}()
 	select {
 	case err := <-resultCh:
@@ -480,13 +485,17 @@ func (s *StdinTaskSession) readUntilResult(ctx context.Context, req contracts.Ta
 	}
 }
 
-func (s *StdinTaskSession) scanForResult(req contracts.TaskSessionExecuteRequest) error {
+func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.TaskSessionExecuteRequest) error {
 	stdout := s.proc.Stdout()
 	if stdout == nil {
 		return errors.New("claude stdout pipe is nil")
 	}
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
+		line := scanner.Bytes()
+		if s.logFile != nil {
+			_, _ = fmt.Fprintf(s.logFile, "%s\n", line)
+		}
 		var msg struct {
 			Type    string `json:"type"`
 			Subtype string `json:"subtype"`
@@ -500,8 +509,7 @@ func (s *StdinTaskSession) scanForResult(req contracts.TaskSessionExecuteRequest
 				} `json:"content"`
 			} `json:"message"`
 		}
-		raw := scanner.Bytes()
-		if err := json.Unmarshal(raw, &msg); err != nil {
+		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
 		}
 		switch msg.Type {
@@ -518,7 +526,7 @@ func (s *StdinTaskSession) scanForResult(req contracts.TaskSessionExecuteRequest
 		case "assistant":
 			if req.EventSink != nil {
 				text := stdinExtractAssistantText(msg.Message.Content)
-				_ = req.EventSink.HandleEvent(context.Background(), contracts.TaskSessionEvent{
+				_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
 					Type:      contracts.TaskSessionEventTypeOutput,
 					SessionID: s.id,
 					Message:   text,
@@ -526,7 +534,7 @@ func (s *StdinTaskSession) scanForResult(req contracts.TaskSessionExecuteRequest
 				})
 			}
 		case "tool_use":
-			if err := s.handleToolUse(msg.ID, msg.Name, req); err != nil {
+			if err := s.handleToolUse(ctx, msg.ID, msg.Name, req); err != nil {
 				return err
 			}
 		}
@@ -550,7 +558,10 @@ func stdinExtractAssistantText(content []struct {
 	return strings.Join(parts, "")
 }
 
-func (s *StdinTaskSession) handleToolUse(id, name string, req contracts.TaskSessionExecuteRequest) error {
+// handleToolUse always approves tool_use requests by writing "y\n" to stdin.
+// ApprovalHandler is called for observation only — its decision is not honoured
+// because this runtime auto-approves all tool calls per its contract.
+func (s *StdinTaskSession) handleToolUse(ctx context.Context, id, name string, req contracts.TaskSessionExecuteRequest) error {
 	approvalReq := contracts.TaskSessionApprovalRequest{
 		ID:    id,
 		Kind:  contracts.TaskSessionApprovalKindToolCall,
@@ -558,17 +569,16 @@ func (s *StdinTaskSession) handleToolUse(id, name string, req contracts.TaskSess
 	}
 	decision := contracts.TaskSessionApprovalDecision{Outcome: contracts.TaskSessionApprovalApproved}
 	if req.ApprovalHandler != nil {
-		var err error
-		decision, err = req.ApprovalHandler.HandleApproval(context.Background(), approvalReq)
-		if err != nil {
-			decision = contracts.TaskSessionApprovalDecision{Outcome: contracts.TaskSessionApprovalApproved}
+		if d, err := req.ApprovalHandler.HandleApproval(ctx, approvalReq); err == nil {
+			decision = d
 		}
 	}
+	// Always write y\n regardless of handler decision — this runtime auto-approves.
 	if _, err := fmt.Fprintln(s.proc.Stdin(), "y"); err != nil {
 		return fmt.Errorf("claude stdin approval write: %w", err)
 	}
 	if req.EventSink != nil {
-		_ = req.EventSink.HandleEvent(context.Background(), contracts.TaskSessionEvent{
+		_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
 			Type:      contracts.TaskSessionEventTypeApprovalRequired,
 			SessionID: s.id,
 			Timestamp: time.Now().UTC(),
@@ -628,11 +638,9 @@ func (s *StdinTaskSession) close(ctx context.Context, force bool) error {
 }
 
 func (s *StdinTaskSession) waitWithContext(ctx context.Context) error {
-	done := make(chan error, 1)
-	go func() { done <- s.proc.Wait() }()
 	select {
-	case err := <-done:
-		return err
+	case <-s.waitDone:
+		return s.waitErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -653,7 +661,7 @@ func (s *StdinTaskSession) stopTimeoutValue() time.Duration {
 	if s.stopTimeout > 0 {
 		return s.stopTimeout
 	}
-	return 10 * time.Second
+	return defaultStdinStopTimeout
 }
 
 func ignoreStdinProcessDone(err error) error {
