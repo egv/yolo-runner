@@ -21,6 +21,7 @@ type agentBackendFixture struct {
 	Type         string                          `json:"type" yaml:"type"`
 	Backend      string                          `json:"backend" yaml:"backend"`
 	Model        string                          `json:"model" yaml:"model"`
+	Adapter      string                          `json:"adapter" yaml:"adapter"`
 	Capabilities agentBackendCapabilitiesFixture `json:"capabilities" yaml:"capabilities"`
 	Config       map[string]any                  `json:"config" yaml:"config"`
 	Health       map[string]any                  `json:"health" yaml:"health"`
@@ -255,4 +256,32 @@ func stringFromAny(value any) string {
 		return strings.TrimSpace(typed)
 	}
 	return ""
+}
+
+func TestCodexExampleReflectsServerBackedDefaults(t *testing.T) {
+	raw := readRepoFile(t, "docs", "agent-backends-valid.json")
+	var fixtures []agentBackendFixture
+	if err := json.Unmarshal([]byte(raw), &fixtures); err != nil {
+		t.Fatalf("parse agent-backends-valid.json: %v", err)
+	}
+
+	var codex *agentBackendFixture
+	for i := range fixtures {
+		if fixtures[i].Name == "codex" {
+			codex = &fixtures[i]
+			break
+		}
+	}
+	if codex == nil {
+		t.Fatal("codex backend not found in agent-backends-valid.json")
+	}
+
+	if codex.Adapter != "codex-app-server" {
+		t.Errorf("codex example adapter = %q, want %q", codex.Adapter, "codex-app-server")
+	}
+	if codex.Health == nil {
+		t.Error("codex example missing health block")
+	} else if stringFromAny(codex.Health["enabled"]) != "true" {
+		t.Errorf("codex example health.enabled = %v, want true", codex.Health["enabled"])
+	}
 }
