@@ -13,6 +13,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/linear"
 	"github.com/egv/yolo-runner/v2/internal/linear/webhook"
+	"github.com/egv/yolo-runner/v2/internal/opencode"
 )
 
 type captureLinearRunner struct {
@@ -470,6 +471,20 @@ func TestNewLinearWorkerRunnerResolvesCodexToAppServerAdapterByDefault(t *testin
 	}
 	if _, ok := runner.(*codex.AppServerRunnerAdapter); !ok {
 		t.Fatalf("expected *codex.AppServerRunnerAdapter for codex backend, got %T", runner)
+	}
+}
+
+func TestNewLinearWorkerRunnerResolvesOpenCodeToServeAdapterByDefault(t *testing.T) {
+	catalog, err := codingagents.LoadCatalog(t.TempDir())
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+	runner, err := newLinearWorkerRunner(catalog, "opencode", "")
+	if err != nil {
+		t.Fatalf("newLinearWorkerRunner returned error: %v", err)
+	}
+	if _, ok := runner.(*opencode.ServeRunnerAdapter); !ok {
+		t.Fatalf("expected *opencode.ServeRunnerAdapter for opencode backend, got %T", runner)
 	}
 }
 
