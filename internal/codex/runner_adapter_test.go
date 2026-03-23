@@ -2610,3 +2610,189 @@ func TestCLIRunnerAdapterMapsGenericErrorToFailed(t *testing.T) {
 		t.Fatalf("expected failure reason to contain codex failed, got %q", result.Reason)
 	}
 }
+
+func TestAppServerRunnerAdapterRunHappyPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	clientWriter, clientReader := harness.ClientIO()
+	serverWriter, serverReader := harness.ServerIO()
+
+	waitCh := make(chan error, 1)
+	proc := &fakeAppServerProcess{
+		stdin:  clientWriter,
+		stdout: clientReader,
+		stderr: io.NopCloser(strings.NewReader("")),
+		waitCh: waitCh,
+	}
+	proc.killFn = func() error {
+		_ = serverWriter.Close()
+		_ = serverReader.Close()
+		waitCh <- nil
+		return harness.Close()
+	}
+
+	runtime := NewTaskSessionRuntime("codex-bin")
+	runtime.starter = appServerStarterFunc(func(_ context.Context, _ CommandSpec) (appServerProcess, error) {
+		return proc, nil
+	})
+	adapter := &AppServerRunnerAdapter{runtime: runtime, now: time.Now}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+
+		msg, err := harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialize" {
+			serverDone <- errors.New("expected initialize request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"protocolVersion": 2},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "initialized" {
+			serverDone <- errors.New("expected initialized notification")
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "thread/start" {
+			serverDone <- errors.New("expected thread/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"thread": map[string]any{"id": "thread-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "thread/started",
+			Params:  map[string]any{"threadId": "thread-1"},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "turn/start" {
+			serverDone <- errors.New("expected turn/start request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{"turn": map[string]any{"id": "turn-1"}},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/started",
+			Params:  map[string]any{"threadId": "thread-1", "turnId": "turn-1"},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "item/agentMessage/delta",
+			Params:  map[string]any{"threadId": "thread-1", "turnId": "turn-1", "itemId": "item-1", "delta": "working on it"},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			Method:  "turn/completed",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"stopReason": "end_turn",
+			},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+
+		msg, err = harness.ReadMessage(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if msg.Method != "shutdown" {
+			serverDone <- errors.New("expected shutdown request")
+			return
+		}
+		if err := harness.SendMessage(contracts.JSONRPCMessage{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Result:  map[string]any{},
+		}); err != nil {
+			serverDone <- err
+			return
+		}
+		_ = serverWriter.Close()
+		_ = serverReader.Close()
+		waitCh <- nil
+		serverDone <- harness.Close()
+	}()
+
+	var progressUpdates []contracts.RunnerProgress
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "task-e2e",
+		RepoRoot: repoRoot,
+		Prompt:   "implement the feature",
+		Model:    "openai/gpt-5.3-codex",
+		Mode:     contracts.RunnerModeImplement,
+		OnProgress: func(p contracts.RunnerProgress) {
+			progressUpdates = append(progressUpdates, p)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	if result.LogPath == "" {
+		t.Fatal("expected non-empty log path")
+	}
+	if result.Artifacts["backend"] != "codex" {
+		t.Fatalf("expected backend artifact 'codex', got %q", result.Artifacts["backend"])
+	}
+	if len(progressUpdates) == 0 {
+		t.Fatal("expected at least one progress update")
+	}
+
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server interaction failed: %v", err)
+	}
+}
