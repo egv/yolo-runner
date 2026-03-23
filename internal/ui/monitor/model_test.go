@@ -798,6 +798,71 @@ func TestModelProvidesExecutorDashboardAndQueueFiltering(t *testing.T) {
 	}
 }
 
+func TestTaskStateStageTracksExecutionLifecycle(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 0, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", Timestamp: now.Add(-5 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageSelecting {
+		t.Fatalf("expected Stage %q after task_started, got %q", contracts.TaskStageSelecting, got)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-1", Timestamp: now.Add(-4 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageRunning {
+		t.Fatalf("expected Stage %q after runner_started, got %q", contracts.TaskStageRunning, got)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: "task-1", Message: "completed", Timestamp: now.Add(-3 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageClosing {
+		t.Fatalf("expected Stage %q after runner_finished, got %q", contracts.TaskStageClosing, got)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-1", Message: "closed", Timestamp: now.Add(-1 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageDone {
+		t.Fatalf("expected Stage %q after task_finished, got %q", contracts.TaskStageDone, got)
+	}
+}
+
+func TestTaskStateOutputBufAccumulatesRunnerOutputEvents(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 1, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-2", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-2", Message: "line one", Timestamp: now.Add(-2 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-2", Message: "line two", Metadata: map[string]string{"kind": "thinking"}, Timestamp: now.Add(-1 * time.Second)})
+
+	task := model.Snapshot().Root.Tasks["task-2"]
+	if len(task.OutputBuf) != 2 {
+		t.Fatalf("expected 2 output entries, got %d: %#v", len(task.OutputBuf), task.OutputBuf)
+	}
+	if task.OutputBuf[0].Content != "line one" || task.OutputBuf[0].Kind != contracts.OutputEntryKindText {
+		t.Fatalf("unexpected first output entry %#v", task.OutputBuf[0])
+	}
+	if task.OutputBuf[1].Content != "line two" || task.OutputBuf[1].Kind != contracts.OutputEntryKindThinking {
+		t.Fatalf("unexpected second output entry %#v", task.OutputBuf[1])
+	}
+}
+
+func TestTaskStateReviewCountIncrementedByReviewFinishedEvent(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 2, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-3", Timestamp: now.Add(-4 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 0 {
+		t.Fatalf("expected ReviewCount 0 before any review, got %d", got)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: "task-3", Message: "approved", Timestamp: now.Add(-2 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 1 {
+		t.Fatalf("expected ReviewCount 1 after one review_finished, got %d", got)
+	}
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: "task-3", Message: "approved again", Timestamp: now.Add(-1 * time.Second)})
+	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 2 {
+		t.Fatalf("expected ReviewCount 2 after two review_finished events, got %d", got)
+	}
+}
+
 func assertContains(t *testing.T, text string, expected string) {
 	t.Helper()
 	if !contains(text, expected) {

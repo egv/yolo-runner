@@ -113,11 +113,14 @@ type TaskState struct {
 	Dependencies         []string
 	QueuePos             int
 	RunnerPhase          string
+	Stage                contracts.TaskStage
 	LastMessage          string
 	LastUpdateAt         time.Time
 	CommandStartedCount  int
 	CommandFinishedCount int
 	OutputCount          int
+	OutputBuf            []contracts.OutputEntry
+	ReviewCount          int
 	WarningCount         int
 	WarningActive        bool
 	TerminalStatus       string
@@ -149,6 +152,7 @@ type triageState struct {
 const (
 	queueFilterAll    = "all"
 	queueFilterActive = "active"
+	outputBufCap      = 256
 )
 
 func NewModel(now func() time.Time) *Model {
@@ -387,6 +391,16 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		return
 	}
 	switch event.Type {
+	case contracts.EventTypeTaskStarted:
+		task.Stage = contracts.TaskStageSelecting
+	case contracts.EventTypeRunnerStarted:
+		task.Stage = contracts.TaskStageRunning
+	case contracts.EventTypeRunnerFinished:
+		task.Stage = contracts.TaskStageClosing
+	case contracts.EventTypeTaskFinished, contracts.EventTypeTaskCompleted:
+		task.Stage = contracts.TaskStageDone
+	}
+	switch event.Type {
 	case contracts.EventTypeRunnerCommandStarted:
 		task.CommandStartedCount++
 		task.LastCommandStarted = strings.TrimSpace(event.Message)
@@ -404,6 +418,14 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		}
 	case contracts.EventTypeRunnerOutput:
 		task.OutputCount++
+		kind := contracts.OutputEntryKind(strings.TrimSpace(event.Metadata["kind"]))
+		if kind == "" {
+			kind = contracts.OutputEntryKindText
+		}
+		task.OutputBuf = append(task.OutputBuf, contracts.OutputEntry{Kind: kind, Content: event.Message})
+		if len(task.OutputBuf) > outputBufCap {
+			task.OutputBuf = task.OutputBuf[len(task.OutputBuf)-outputBufCap:]
+		}
 	case contracts.EventTypeRunnerHeartbeat:
 		activeCommand := strings.TrimSpace(task.LastCommandStarted)
 		lastOutputAge := strings.TrimSpace(event.Metadata["last_output_age"])
@@ -424,6 +446,7 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		task.TerminalStatus = strings.TrimSpace(event.Message)
 		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
 	case contracts.EventTypeReviewFinished:
+		task.ReviewCount++
 		if reason := strings.TrimSpace(event.Metadata["reason"]); reason != "" {
 			task.LastMessage = strings.TrimSpace(event.Message) + " | " + reason
 		}
