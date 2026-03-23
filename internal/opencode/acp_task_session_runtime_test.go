@@ -339,6 +339,46 @@ func TestACPTaskSessionCancelNonForceFallsBackToKillWhenProcessStalls(t *testing
 	}
 }
 
+// TestACPTaskSessionTeardownPropagatesContextCancellation verifies that when
+// the context passed to Teardown is already cancelled, the close propagates
+// that cancellation and kills the process instead of waiting for stopTimeout.
+func TestACPTaskSessionTeardownPropagatesContextCancellation(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	// Use a very long StopTimeout so the test would stall if context is ignored.
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-ctx-cancel",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so Teardown sees a cancelled context
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = session.Teardown(ctx, contracts.TaskSessionTeardown{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Teardown blocked instead of respecting cancelled context")
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once when context cancelled, got %d calls", got)
+	}
+}
+
 // TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
 // than once does not kill the process multiple times.
 func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {
