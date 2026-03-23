@@ -25,6 +25,7 @@
     "type": "opencode",
     "backend": "opencode",
     "model": "zai-coding-plan/glm-4.7",
+    "adapter": "opencode-serve",
     "capabilities": {
       "languages": ["go", "python", "rust"],
       "features": ["implement", "review", "service_proxy", "larger_model", "stream"]
