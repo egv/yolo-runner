@@ -298,7 +298,7 @@ func (s *ACPTaskSession) Cancel(ctx context.Context, req contracts.TaskSessionCa
 	if s == nil {
 		return errors.New("nil ACP task session")
 	}
-	return s.close(req.Force)
+	return s.close(ctx, req.Force)
 }
 
 // Teardown cleans up the session, optionally forcing immediate termination.
@@ -309,11 +309,14 @@ func (s *ACPTaskSession) Teardown(ctx context.Context, req contracts.TaskSession
 	if s == nil {
 		return errors.New("nil ACP task session")
 	}
-	return s.close(req.Force)
+	return s.close(ctx, req.Force)
 }
 
-func (s *ACPTaskSession) close(force bool) error {
+func (s *ACPTaskSession) close(ctx context.Context, force bool) error {
 	s.closeOnce.Do(func() {
+		closeCtx, cancel := contracts.WithOptionalTimeout(ctx, s.stopTimeoutValue())
+		defer cancel()
+
 		_ = s.stdin.Close()
 		_ = s.stdout.Close()
 		if force {
@@ -322,21 +325,29 @@ func (s *ACPTaskSession) close(force bool) error {
 			return
 		}
 		// Graceful: wait for the process to exit after pipe closure, then fall
-		// back to Kill if it does not exit within the stop timeout.
-		timeout := s.stopTimeout
-		if timeout <= 0 {
-			timeout = defaultACPStopTimeout
-		}
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case <-s.waitDone:
-		case <-timer.C:
+		// back to Kill if the context times out or is cancelled.
+		if err := s.waitWithContext(closeCtx); err != nil {
 			s.closeErr = ignoreServeProcessDone(s.proc.Kill())
 			<-s.waitDone
 		}
 	})
 	return s.closeErr
+}
+
+func (s *ACPTaskSession) stopTimeoutValue() time.Duration {
+	if s.stopTimeout > 0 {
+		return s.stopTimeout
+	}
+	return defaultACPStopTimeout
+}
+
+func (s *ACPTaskSession) waitWithContext(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.waitDone:
+		return nil
+	}
 }
 
 // resolveACPTaskSessionID returns the task ID or a default session identifier.
