@@ -131,3 +131,33 @@ func sessionMetadata(sessionID string) map[string]string {
 	}
 	return map[string]string{"session_id": sessionID}
 }
+
+// NormalizeACPPromptResponse maps an ACP PromptResponse completion signal
+// to a shared RunnerProgress event. Returns (RunnerProgress, true) for known
+// stop reasons, or (zero, false) for nil, empty, or unrecognized stop reasons.
+func NormalizeACPPromptResponse(resp *acp.PromptResponse) (contracts.RunnerProgress, bool) {
+	if resp == nil {
+		return contracts.RunnerProgress{}, false
+	}
+	stopReason := strings.TrimSpace(string(resp.StopReason))
+	if stopReason == "" {
+		return contracts.RunnerProgress{}, false
+	}
+
+	var progressType contracts.EventType
+	switch resp.StopReason {
+	case acp.StopReasonEndTurn:
+		progressType = contracts.EventTypeRunnerCommandFinished
+	case acp.StopReasonMaxTokens, acp.StopReasonMaxTurnRequests, acp.StopReasonRefusal, acp.StopReasonCancelled:
+		progressType = contracts.EventTypeRunnerWarning
+	default:
+		return contracts.RunnerProgress{}, false
+	}
+
+	return contracts.RunnerProgress{
+		Type:      string(progressType),
+		Message:   stopReason,
+		Metadata:  map[string]string{"stop_reason": stopReason},
+		Timestamp: time.Now().UTC(),
+	}, true
+}

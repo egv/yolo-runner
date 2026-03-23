@@ -290,3 +290,118 @@ func TestNormalizeACPProgressNotificationToolCallMessageContainsTitle(t *testing
 		t.Fatalf("expected message to contain title, got %q", progress.Message)
 	}
 }
+
+func TestNormalizeACPPromptResponseNilIsNotOk(t *testing.T) {
+	_, ok := NormalizeACPPromptResponse(nil)
+	if ok {
+		t.Fatalf("expected ok=false for nil response")
+	}
+}
+
+func TestNormalizeACPPromptResponseEmptyStopReasonIsNotOk(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: ""}
+	_, ok := NormalizeACPPromptResponse(resp)
+	if ok {
+		t.Fatalf("expected ok=false for empty stop reason")
+	}
+}
+
+func TestNormalizeACPPromptResponseEndTurnIsCommandFinished(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true for end_turn")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerCommandFinished) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandFinished, progress.Type)
+	}
+	if progress.Message != "end_turn" {
+		t.Fatalf("expected message 'end_turn', got %q", progress.Message)
+	}
+}
+
+func TestNormalizeACPPromptResponseMaxTokensIsWarning(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonMaxTokens}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true for max_tokens")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerWarning) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	}
+	if progress.Message != "max_tokens" {
+		t.Fatalf("expected message 'max_tokens', got %q", progress.Message)
+	}
+}
+
+func TestNormalizeACPPromptResponseMaxTurnRequestsIsWarning(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonMaxTurnRequests}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true for max_turn_requests")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerWarning) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	}
+	if progress.Message != "max_turn_requests" {
+		t.Fatalf("expected message 'max_turn_requests', got %q", progress.Message)
+	}
+}
+
+func TestNormalizeACPPromptResponseRefusalIsWarning(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonRefusal}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true for refusal")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerWarning) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	}
+	if progress.Message != "refusal" {
+		t.Fatalf("expected message 'refusal', got %q", progress.Message)
+	}
+}
+
+func TestNormalizeACPPromptResponseCancelledIsWarning(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonCancelled}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true for cancelled")
+	}
+	if progress.Type != string(contracts.EventTypeRunnerWarning) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	}
+	if progress.Message != "cancelled" {
+		t.Fatalf("expected message 'cancelled', got %q", progress.Message)
+	}
+}
+
+func TestNormalizeACPPromptResponseStopReasonInMetadata(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if progress.Metadata["stop_reason"] != "end_turn" {
+		t.Fatalf("expected stop_reason=end_turn in metadata, got %q", progress.Metadata["stop_reason"])
+	}
+}
+
+func TestNormalizeACPPromptResponseTimestampIsSet(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
+	progress, ok := NormalizeACPPromptResponse(resp)
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if progress.Timestamp.IsZero() {
+		t.Fatalf("expected non-zero timestamp")
+	}
+}
+
+func TestNormalizeACPPromptResponseUnknownStopReasonIsNotOk(t *testing.T) {
+	resp := &acp.PromptResponse{StopReason: acp.StopReason("unknown_reason")}
+	_, ok := NormalizeACPPromptResponse(resp)
+	if ok {
+		t.Fatalf("expected ok=false for unknown stop reason")
+	}
+}
