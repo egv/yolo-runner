@@ -678,6 +678,7 @@ func TestServeTaskSessionExecuteReusesExistingSessionForOnePromptMessage(t *test
 	}
 	appSession.setSessionID("session-existing")
 
+	countBeforeExecute := len(api.Requests())
 	err = appSession.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
 		Prompt: "continue the task",
 	})
@@ -686,14 +687,15 @@ func TestServeTaskSessionExecuteReusesExistingSessionForOnePromptMessage(t *test
 	}
 
 	requests := api.Requests()
-	for _, request := range requests {
+	newRequests := requests[countBeforeExecute:]
+	for _, request := range newRequests {
 		if request.Method == http.MethodPost && request.Path == "/session" {
-			t.Fatalf("did not expect create session request, got %#v", requests)
+			t.Fatalf("did not expect create session request from Execute, got %#v", newRequests)
 		}
 	}
 
 	foundMessage := false
-	for _, request := range requests {
+	for _, request := range newRequests {
 		if request.Method == http.MethodPost && request.Path == "/session/session-existing/message" {
 			foundMessage = true
 			if strings.TrimSpace(request.Body) != `{"parts":[{"type":"text","text":"continue the task"}]}` {

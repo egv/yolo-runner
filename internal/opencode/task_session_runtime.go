@@ -365,7 +365,14 @@ func (s *ServeTaskSession) WaitReady(ctx context.Context) error {
 
 		if err := s.waitForHealth(readyCtx); err != nil {
 			s.readyErr = err
+			return
 		}
+		sessionID, err := s.createSession(readyCtx)
+		if err != nil {
+			s.readyErr = err
+			return
+		}
+		s.setSessionID(sessionID)
 	})
 	return s.readyErr
 }
@@ -475,17 +482,7 @@ func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSe
 		return err
 	}
 
-	sessionID := s.currentSessionID()
-	if sessionID == "" {
-		createdSessionID, err := s.createSession(ctx)
-		if err != nil {
-			return err
-		}
-		s.setSessionID(createdSessionID)
-		sessionID = createdSessionID
-	}
-
-	return s.submitPromptMessage(ctx, sessionID, strings.TrimSpace(request.Prompt))
+	return s.submitPromptMessage(ctx, s.currentSessionID(), strings.TrimSpace(request.Prompt))
 }
 
 func (s *ServeTaskSession) submitPromptMessage(ctx context.Context, sessionID string, prompt string) error {
@@ -523,7 +520,8 @@ func (s *ServeTaskSession) submitPromptMessage(ctx context.Context, sessionID st
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("submit message returned %d", resp.StatusCode)
+		rawBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("submit session message returned %d: %s", resp.StatusCode, strings.TrimSpace(string(rawBody)))
 	}
 	return nil
 }
