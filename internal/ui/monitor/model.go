@@ -68,14 +68,16 @@ type UIState struct {
 }
 
 type UIPanelLine struct {
-	ID        string
-	Depth     int
-	Label     string
-	Completed bool
-	Severity  string
-	Selected  bool
-	Expanded  bool
-	Leaf      bool
+	ID            string
+	Depth         int
+	Label         string
+	Completed     bool
+	Severity      string
+	Selected      bool
+	Expanded      bool
+	Leaf          bool
+	Stage         contracts.TaskStage
+	OutputSnippet string
 }
 
 type UIWorkerSummary struct {
@@ -517,14 +519,16 @@ func (m *Model) uiPanelLines() []UIPanelLine {
 	for i := start; i < end; i++ {
 		row := rows[i]
 		lines = append(lines, UIPanelLine{
-			ID:        row.id,
-			Depth:     row.indent,
-			Label:     row.label,
-			Completed: row.completed,
-			Severity:  row.severity,
-			Selected:  i == cursor,
-			Expanded:  row.expanded,
-			Leaf:      !row.hasChildren,
+			ID:            row.id,
+			Depth:         row.indent,
+			Label:         row.label,
+			Completed:     row.completed,
+			Severity:      row.severity,
+			Selected:      i == cursor,
+			Expanded:      row.expanded,
+			Leaf:          !row.hasChildren,
+			Stage:         row.stage,
+			OutputSnippet: row.outputSnip,
 		})
 	}
 	if hidden := len(rows) - end; hidden > 0 {
@@ -632,6 +636,8 @@ type panelRow struct {
 	severity    string
 	hasChildren bool
 	expanded    bool
+	stage       contracts.TaskStage
+	outputSnip  string
 }
 
 func (m *Model) panelRows() []panelRow {
@@ -670,6 +676,8 @@ func (m *Model) panelRows() []panelRow {
 						completed:   isTaskCompleted(task),
 						severity:    deriveTaskSeverity(task),
 						hasChildren: false,
+						stage:       task.Stage,
+						outputSnip:  taskOutputSnippet(task),
 					})
 				}
 			}
@@ -688,6 +696,8 @@ func (m *Model) panelRows() []panelRow {
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
 				hasChildren: false,
+				stage:       task.Stage,
+				outputSnip:  taskOutputSnippet(task),
 			})
 		}
 	}
@@ -703,6 +713,8 @@ func (m *Model) panelRows() []panelRow {
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
 				hasChildren: false,
+				stage:       task.Stage,
+				outputSnip:  taskOutputSnippet(task),
 			})
 		}
 	}
@@ -1492,6 +1504,13 @@ func renderTaskPanelLabel(task TaskState) string {
 
 func isTaskCompleted(task TaskState) bool {
 	return isCompletedTerminalStatus(normalizeTerminalStatus(task.TerminalStatus))
+}
+
+func taskOutputSnippet(task TaskState) string {
+	if len(task.OutputBuf) == 0 {
+		return ""
+	}
+	return task.OutputBuf[len(task.OutputBuf)-1].Content
 }
 
 func renderHistoryLine(event contracts.Event) string {
