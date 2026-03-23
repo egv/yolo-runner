@@ -577,6 +577,135 @@ func TestTaskSessionRuntimeNewInitialServeTaskSessionUsesResolvedURLsAndStartedP
 	}
 }
 
+func TestServeTaskSessionExecuteCreatesSessionAndSubmitsOnePromptMessage(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-execute",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-execute.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	appSession, ok := session.(*ServeTaskSession)
+	if !ok {
+		t.Fatalf("expected ServeTaskSession, got %T", session)
+	}
+
+	err = appSession.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
+		Prompt: "implement the task",
+	})
+	if err != nil {
+		t.Fatalf("execute session: %v", err)
+	}
+
+	if appSession.currentSessionID() != "session-1" {
+		t.Fatalf("expected created session id to be stored, got %q", appSession.currentSessionID())
+	}
+
+	requests := api.Requests()
+	foundCreate := false
+	foundMessage := false
+	for _, request := range requests {
+		if request.Method == http.MethodPost && request.Path == "/session" {
+			foundCreate = true
+			if strings.TrimSpace(request.Body) != `{"title":"task-execute"}` {
+				t.Fatalf("unexpected create session body %q", request.Body)
+			}
+		}
+		if request.Method == http.MethodPost && request.Path == "/session/session-1/message" {
+			foundMessage = true
+			if strings.TrimSpace(request.Body) != `{"parts":[{"type":"text","text":"implement the task"}]}` {
+				t.Fatalf("unexpected message submit body %q", request.Body)
+			}
+		}
+	}
+	if !foundCreate {
+		t.Fatalf("expected create session request, got %#v", requests)
+	}
+	if !foundMessage {
+		t.Fatalf("expected message submit request, got %#v", requests)
+	}
+}
+
+func TestServeTaskSessionExecuteReusesExistingSessionForOnePromptMessage(t *testing.T) {
+	api := newServeTestAPI(t)
+	proc := newFakeServeProcess()
+
+	runtime := NewTaskSessionRuntime("opencode")
+	runtime.starter = serveProcessStarterFunc(func(_ context.Context, spec ServeCommandSpec) (serveProcess, error) {
+		return proc, nil
+	})
+	runtime.allocatePort = func(string) (int, error) {
+		return api.port(t), nil
+	}
+
+	session, err := runtime.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-existing-session",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "runner-logs", "opencode", "task-existing-session.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	if err := session.WaitReady(context.Background()); err != nil {
+		t.Fatalf("wait ready: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Reason: "test cleanup", Force: true})
+	})
+
+	appSession, ok := session.(*ServeTaskSession)
+	if !ok {
+		t.Fatalf("expected ServeTaskSession, got %T", session)
+	}
+	appSession.setSessionID("session-existing")
+
+	err = appSession.Execute(context.Background(), contracts.TaskSessionExecuteRequest{
+		Prompt: "continue the task",
+	})
+	if err != nil {
+		t.Fatalf("execute session: %v", err)
+	}
+
+	requests := api.Requests()
+	for _, request := range requests {
+		if request.Method == http.MethodPost && request.Path == "/session" {
+			t.Fatalf("did not expect create session request, got %#v", requests)
+		}
+	}
+
+	foundMessage := false
+	for _, request := range requests {
+		if request.Method == http.MethodPost && request.Path == "/session/session-existing/message" {
+			foundMessage = true
+			if strings.TrimSpace(request.Body) != `{"parts":[{"type":"text","text":"continue the task"}]}` {
+				t.Fatalf("unexpected message submit body %q", request.Body)
+			}
+		}
+	}
+	if !foundMessage {
+		t.Fatalf("expected message submit request, got %#v", requests)
+	}
+}
+
 func TestServeTaskSessionTeardownDeletesEphemeralSessionAndStopsProcess(t *testing.T) {
 	api := newServeTestAPI(t)
 	proc := newFakeServeProcess()

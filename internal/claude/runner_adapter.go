@@ -19,7 +19,6 @@ const defaultBinary = "claude"
 
 var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERDICT\s*:\s*(pass|fail)(?:\s*DONE)?\s*$`)
 var structuredReviewFailFeedbackLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_(?:FAIL_)?FEEDBACK\s*:\s*(.+?)\s*$`)
-var tokenRedactionPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 
 type CommandSpec struct {
 	Binary string
@@ -88,14 +87,14 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	if err != nil {
 		return contracts.RunnerResult{}, err
 	}
-	defer stdoutFile.Close()
+	defer func() { _ = stdoutFile.Close() }()
 
 	stderrPath := contracts.BackendLogSidecarPath(logPath, contracts.BackendLogStderr)
 	stderrFile, err := os.Create(stderrPath)
 	if err != nil {
 		return contracts.RunnerResult{}, err
 	}
-	defer stderrFile.Close()
+	defer func() { _ = stderrFile.Close() }()
 
 	emitProgress := func(source string, line string) {
 		if request.OnProgress == nil {
@@ -315,20 +314,6 @@ func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
 	return lastFeedback, found
 }
 
-func normalizeLine(line string) string {
-	trimmed := strings.ReplaceAll(line, "\r", "")
-	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
-	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" {
-		return ""
-	}
-	trimmed = tokenRedactionPattern.ReplaceAllString(trimmed, "<redacted-token>")
-	const maxLen = 500
-	if len(trimmed) > maxLen {
-		trimmed = trimmed[:maxLen] + "..."
-	}
-	return trimmed
-}
 
 type lineWriter struct {
 	target  io.Writer

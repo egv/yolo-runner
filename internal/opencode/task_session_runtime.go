@@ -365,19 +365,7 @@ func (s *ServeTaskSession) WaitReady(ctx context.Context) error {
 
 		if err := s.waitForHealth(readyCtx); err != nil {
 			s.readyErr = err
-			return
 		}
-
-		sessionID, err := s.createSession(readyCtx)
-		if err != nil {
-			s.readyErr = err
-			return
-		}
-
-		s.stateMu.Lock()
-		s.sessionID = sessionID
-		s.stateMu.Unlock()
-
 	})
 	return s.readyErr
 }
@@ -483,11 +471,24 @@ func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSe
 	if s == nil {
 		return errors.New("nil opencode serve task session")
 	}
-	sessionID := s.currentSessionID()
-	if sessionID == "" {
-		return errors.New("opencode serve task session not ready")
+	if err := s.WaitReady(ctx); err != nil {
+		return err
 	}
 
+	sessionID := s.currentSessionID()
+	if sessionID == "" {
+		createdSessionID, err := s.createSession(ctx)
+		if err != nil {
+			return err
+		}
+		s.setSessionID(createdSessionID)
+		sessionID = createdSessionID
+	}
+
+	return s.submitPromptMessage(ctx, sessionID, strings.TrimSpace(request.Prompt))
+}
+
+func (s *ServeTaskSession) submitPromptMessage(ctx context.Context, sessionID string, prompt string) error {
 	body, err := json.Marshal(struct {
 		Parts []struct {
 			Type string `json:"type"`
@@ -500,7 +501,7 @@ func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSe
 		}{
 			{
 				Type: "text",
-				Text: request.Prompt,
+				Text: prompt,
 			},
 		},
 	})
@@ -508,7 +509,7 @@ func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSe
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sessionURL+"/"+sessionID+"/message", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.sessionURL+"/"+strings.TrimSpace(sessionID)+"/message", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -522,15 +523,7 @@ func (s *ServeTaskSession) Execute(ctx context.Context, request contracts.TaskSe
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		if readErr != nil {
-			return fmt.Errorf("submit session message returned %d", resp.StatusCode)
-		}
-		detail := strings.TrimSpace(string(payload))
-		if detail == "" {
-			return fmt.Errorf("submit session message returned %d", resp.StatusCode)
-		}
-		return fmt.Errorf("submit session message returned %d: %s", resp.StatusCode, detail)
+		return fmt.Errorf("submit message returned %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -654,6 +647,12 @@ func (s *ServeTaskSession) currentSessionID() string {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	return strings.TrimSpace(s.sessionID)
+}
+
+func (s *ServeTaskSession) setSessionID(sessionID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.sessionID = strings.TrimSpace(sessionID)
 }
 
 func (s *ServeTaskSession) processWaitErr() (error, bool) {
