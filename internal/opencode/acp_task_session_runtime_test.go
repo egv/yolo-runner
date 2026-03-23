@@ -281,6 +281,64 @@ func TestACPTaskSessionTeardownForceKillsProcess(t *testing.T) {
 	}
 }
 
+// TestACPTaskSessionCancelNonForceDoesNotKillWhenProcessExitsCleanly verifies
+// that a non-force Cancel does not call Kill immediately when the process exits
+// on its own within the stop timeout (mirrors graceful Teardown behaviour).
+func TestACPTaskSessionCancelNonForceDoesNotKillWhenProcessExitsCleanly(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-cancel-graceful",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate process exiting naturally before the stop timeout expires.
+	proc.exitNaturally()
+
+	if err := session.Cancel(context.Background(), contracts.TaskSessionCancellation{Force: false}); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	if got := proc.kills(); got != 0 {
+		t.Fatalf("expected Kill not called for non-force cancel with natural exit, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionCancelNonForceFallsBackToKillWhenProcessStalls verifies
+// that a non-force Cancel falls back to Kill when the process does not exit
+// within the stop timeout (mirrors graceful Teardown behaviour).
+func TestACPTaskSessionCancelNonForceFallsBackToKillWhenProcessStalls(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-cancel-stall",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Process never exits naturally — Cancel must fall back to Kill.
+	_ = session.Cancel(context.Background(), contracts.TaskSessionCancellation{Force: false})
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once as fallback, got %d calls", got)
+	}
+}
+
 // TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
 // than once does not kill the process multiple times.
 func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {

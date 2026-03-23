@@ -298,11 +298,7 @@ func (s *ACPTaskSession) Cancel(ctx context.Context, req contracts.TaskSessionCa
 	if s == nil {
 		return errors.New("nil ACP task session")
 	}
-	if req.Force {
-		return s.close(true)
-	}
-	_ = ignoreServeProcessDone(s.proc.Kill())
-	return nil
+	return s.close(req.Force)
 }
 
 // Teardown cleans up the session, optionally forcing immediate termination.
