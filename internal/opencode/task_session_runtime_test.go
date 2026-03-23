@@ -106,6 +106,7 @@ type serveTestAPI struct {
 	messageStatus   int
 	messageBody     string
 	abortStatus     int
+	messageNotify   chan struct{}
 }
 
 func newServeTestAPI(t *testing.T) *serveTestAPI {
@@ -219,6 +220,7 @@ func (api *serveTestAPI) handleSessionByID(w http.ResponseWriter, r *http.Reques
 			api.mu.Lock()
 			status := api.messageStatus
 			body := api.messageBody
+			notify := api.messageNotify
 			api.mu.Unlock()
 			if status == 0 {
 				status = http.StatusOK
@@ -229,6 +231,12 @@ func (api *serveTestAPI) handleSessionByID(w http.ResponseWriter, r *http.Reques
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, body)
+			if notify != nil {
+				select {
+				case notify <- struct{}{}:
+				default:
+				}
+			}
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/abort") {
