@@ -65,12 +65,13 @@ func (r *ACPTaskSessionRuntime) Start(ctx context.Context, request contracts.Tas
 	}
 
 	session := &ACPTaskSession{
-		id:       resolveACPTaskSessionID(request),
-		repoRoot: strings.TrimSpace(request.RepoRoot),
-		proc:     proc,
-		stdin:    stdio.Stdin(),
-		stdout:   stdio.Stdout(),
-		waitDone: make(chan struct{}),
+		id:          resolveACPTaskSessionID(request),
+		repoRoot:    strings.TrimSpace(request.RepoRoot),
+		proc:        proc,
+		stdin:       stdio.Stdin(),
+		stdout:      stdio.Stdout(),
+		stopTimeout: request.StopTimeout,
+		waitDone:    make(chan struct{}),
 	}
 	go func() {
 		session.waitErr = proc.Wait()
@@ -79,13 +80,18 @@ func (r *ACPTaskSessionRuntime) Start(ctx context.Context, request contracts.Tas
 	return session, nil
 }
 
+// defaultACPStopTimeout is the grace period given to the ACP process to exit
+// on its own after stdin/stdout are closed before it is forcibly killed.
+const defaultACPStopTimeout = 5 * time.Second
+
 // ACPTaskSession is a running ACP session backed by a single OS process.
 type ACPTaskSession struct {
-	id       string
-	repoRoot string
-	proc     Process
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
+	id          string
+	repoRoot    string
+	proc        Process
+	stdin       io.WriteCloser
+	stdout      io.ReadCloser
+	stopTimeout time.Duration
 
 	readyOnce  sync.Once
 	readyErr   error
@@ -316,8 +322,22 @@ func (s *ACPTaskSession) close(force bool) error {
 		_ = s.stdout.Close()
 		if force {
 			s.closeErr = ignoreServeProcessDone(s.proc.Kill())
-		} else {
+			<-s.waitDone
+			return
+		}
+		// Graceful: wait for the process to exit after pipe closure, then fall
+		// back to Kill if it does not exit within the stop timeout.
+		timeout := s.stopTimeout
+		if timeout <= 0 {
+			timeout = defaultACPStopTimeout
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-s.waitDone:
+		case <-timer.C:
 			s.closeErr = ignoreServeProcessDone(s.proc.Kill())
+			<-s.waitDone
 		}
 	})
 	return s.closeErr
