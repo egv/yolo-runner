@@ -25,6 +25,15 @@ const (
 	OutputEntryKindSystem   OutputEntryKind = "system"
 )
 
+// OutputEntry holds a single captured output line with its classification.
+type OutputEntry struct {
+	Kind    OutputEntryKind
+	Content string
+}
+
+// outputBufCap is the default capacity for output entry ring buffers.
+const outputBufCap = 256
+
 type HTTPReadinessCheck struct {
 	Endpoint string
 	Method   string
