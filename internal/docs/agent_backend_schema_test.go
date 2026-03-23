@@ -258,6 +258,34 @@ func stringFromAny(value any) string {
 	return ""
 }
 
+func TestOpencodeExampleReflectsServerBackedDefaults(t *testing.T) {
+	raw := readRepoFile(t, "docs", "agent-backends-valid.json")
+	var fixtures []agentBackendFixture
+	if err := json.Unmarshal([]byte(raw), &fixtures); err != nil {
+		t.Fatalf("parse agent-backends-valid.json: %v", err)
+	}
+
+	var opencode *agentBackendFixture
+	for i := range fixtures {
+		if fixtures[i].Name == "opencode" {
+			opencode = &fixtures[i]
+			break
+		}
+	}
+	if opencode == nil {
+		t.Fatal("opencode backend not found in agent-backends-valid.json")
+	}
+
+	if opencode.Adapter != "opencode-serve" {
+		t.Errorf("opencode example adapter = %q, want %q", opencode.Adapter, "opencode-serve")
+	}
+	if opencode.Health == nil {
+		t.Error("opencode example missing health block")
+	} else if stringFromAny(opencode.Health["enabled"]) != "true" {
+		t.Errorf("opencode example health.enabled = %v, want true", opencode.Health["enabled"])
+	}
+}
+
 func TestCodexExampleReflectsServerBackedDefaults(t *testing.T) {
 	raw := readRepoFile(t, "docs", "agent-backends-valid.json")
 	var fixtures []agentBackendFixture
