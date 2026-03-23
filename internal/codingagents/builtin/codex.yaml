@@ -23,7 +23,7 @@ health:
   endpoint: http://localhost:0/healthz
   interval: 5s
   timeout: 2s
-adapter: codex
+adapter: codex-app-server
 supports_review: true
 supports_stream: true
 distributed_capabilities:
