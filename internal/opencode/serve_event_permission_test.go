@@ -265,3 +265,39 @@ func TestRespondServePermissionRequestReturnsErrorOnServerFailure(t *testing.T) 
 		t.Fatal("expected error on server failure")
 	}
 }
+
+// TestRespondServePermissionRequestReturnsErrorForNilRequest verifies that
+// a nil permission request returns an error without panicking.
+func TestRespondServePermissionRequestReturnsErrorForNilRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected HTTP request for nil permission request")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := RespondServePermissionRequest(context.Background(), srv.Client(), srv.URL, nil)
+	if err == nil {
+		t.Fatal("expected error for nil permission request")
+	}
+}
+
+// TestDetectServeEventPermissionRequestReturnsFalseForEmptyOptions verifies
+// that a permission.requested event with an empty options array is detected
+// correctly and the resulting options slice is empty.
+func TestDetectServeEventPermissionRequestReturnsFalseForEmptyOptions(t *testing.T) {
+	event := contracts.SSEEvent{
+		Event: "event",
+		Data:  `{"type":"permission.requested","properties":{"id":"perm_no_opts","toolName":"bash","options":[]}}`,
+	}
+
+	req, ok := DetectServeEventPermissionRequest(event)
+	if !ok {
+		t.Fatal("expected permission.requested to be detected even with empty options")
+	}
+	if req == nil {
+		t.Fatal("expected non-nil request")
+	}
+	if len(req.Options) != 0 {
+		t.Fatalf("expected zero options, got %d", len(req.Options))
+	}
+}
