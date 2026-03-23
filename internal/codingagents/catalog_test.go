@@ -183,6 +183,36 @@ config:
 	}
 }
 
+func TestCatalogBuiltinOpencodeServeIsRegistered(t *testing.T) {
+	catalog, err := LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	backend, ok := catalog.Backend("opencode-serve")
+	if !ok {
+		t.Fatal("expected builtin opencode-serve backend to be registered in the catalog")
+	}
+	if backend.Adapter != "opencode-serve" {
+		t.Errorf("expected adapter %q, got %q", "opencode-serve", backend.Adapter)
+	}
+	if backend.Binary != "opencode" {
+		t.Errorf("expected binary %q, got %q", "opencode", backend.Binary)
+	}
+	if !backend.SupportsReview {
+		t.Error("expected opencode-serve to support review")
+	}
+	if !backend.SupportsStream {
+		t.Error("expected opencode-serve to support stream")
+	}
+	if !hasDistributedCapability(backend.DistributedCaps, distributed.CapabilityImplement) {
+		t.Errorf("expected opencode-serve to advertise implement capability, got %#v", backend.DistributedCaps)
+	}
+	if !hasDistributedCapability(backend.DistributedCaps, distributed.CapabilityServiceProxy) {
+		t.Errorf("expected opencode-serve to advertise service_proxy capability, got %#v", backend.DistributedCaps)
+	}
+}
+
 func TestCatalogBuiltinCodexCLIPreservesLegacyFallbackCapabilitiesOnly(t *testing.T) {
 	catalog, err := LoadCatalog("")
 	if err != nil {

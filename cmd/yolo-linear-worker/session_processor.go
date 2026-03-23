@@ -173,6 +173,8 @@ func newLinearWorkerRunner(catalog codingagents.Catalog, backend string, binary 
 	switch strings.ToLower(strings.TrimSpace(definition.Adapter)) {
 	case "opencode":
 		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, "", "", adapterBinary, command...), nil
+	case "opencode-serve":
+		return opencode.NewServeRunnerAdapter(adapterBinary, command...), nil
 	case "codex":
 		return codex.NewCLIRunnerAdapter(adapterBinary, nil, definition.Args...), nil
 	case "claude":

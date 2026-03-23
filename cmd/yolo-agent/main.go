@@ -504,6 +504,8 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 	case "opencode":
 		command := append([]string{}, definition.Args...)
 		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir(), definition.Binary, command...), nil
+	case "opencode-serve":
+		return opencode.NewServeRunnerAdapter(definition.Binary, definition.Args...), nil
 	case "codex":
 		return codex.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "claude":
