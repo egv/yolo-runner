@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,61 @@ func TestOsStdinProcess_Stop_NoErrorWhenAlreadyDone(t *testing.T) {
 	}
 	if err := p.Kill(); err != nil {
 		t.Errorf("Kill() = %v; want nil", err)
+	}
+}
+
+// defaultStdinArgs must include --print, --output-format stream-json, and
+// --dangerously-skip-permissions. Without --print the flag is ignored and
+// claude exits with code 1 in pipe mode; without skip-permissions tool use
+// blocks on a closed stdin.
+func TestDefaultStdinArgs_RequiredFlags(t *testing.T) {
+	args := defaultStdinArgs(contracts.TaskSessionStartRequest{})
+	for _, required := range []string{"--print", "--output-format", "stream-json", "--dangerously-skip-permissions"} {
+		if !slices.Contains(args, required) {
+			t.Errorf("defaultStdinArgs missing %q; got %v", required, args)
+		}
+	}
+}
+
+func TestDefaultStdinArgs_ModelAppended(t *testing.T) {
+	args := defaultStdinArgs(contracts.TaskSessionStartRequest{
+		Metadata: map[string]string{"model": "claude-test-model"},
+	})
+	idx := slices.Index(args, "--model")
+	if idx == -1 || idx+1 >= len(args) || args[idx+1] != "claude-test-model" {
+		t.Errorf("expected --model claude-test-model in args; got %v", args)
+	}
+}
+
+// Execute must close stdin after writing the prompt so that claude (running
+// with --print) starts processing instead of waiting for more input.
+func TestStdinTaskSession_Execute_CloseStdinAfterPrompt(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	sess := newTestSession(stdinW, stdoutR)
+
+	stdinClosed := make(chan struct{})
+	go func() {
+		defer close(stdinClosed)
+		io.Copy(io.Discard, stdinR) //nolint:errcheck
+	}()
+
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p"}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+
+	// stdinClosed should be closed because Execute() closed the write end.
+	select {
+	case <-stdinClosed:
+		// good — EOF was signalled
+	case <-time.After(time.Second):
+		t.Error("stdin was not closed after Execute(); claude would block waiting for more input")
 	}
 }
 
