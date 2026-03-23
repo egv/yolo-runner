@@ -507,7 +507,7 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir(), definition.Binary, command...), nil
 	case "opencode-serve":
 		return opencode.NewServeRunnerAdapter(definition.Binary, definition.Args...), nil
-	case "codex":
+	case "codex", "codex-app-server":
 		return codex.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
 	case "claude":
 		return claude.NewSessionRunnerAdapter(definition.Binary), nil

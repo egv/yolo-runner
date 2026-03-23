@@ -213,6 +213,24 @@ func TestCatalogBuiltinOpencodeServeIsRegistered(t *testing.T) {
 	}
 }
 
+func TestCatalogBuiltinCodexUsesAppServerAdapter(t *testing.T) {
+	catalog, err := LoadCatalog("")
+	if err != nil {
+		t.Fatalf("load catalog: %v", err)
+	}
+
+	codex, ok := catalog.Backend("codex")
+	if !ok {
+		t.Fatal("expected builtin codex backend")
+	}
+	if codex.Adapter != "codex-app-server" {
+		t.Errorf("expected codex adapter %q, got %q", "codex-app-server", codex.Adapter)
+	}
+	if len(codex.Args) == 0 || codex.Args[0] != "app-server" {
+		t.Errorf("expected codex args to start with %q, got %v", "app-server", codex.Args)
+	}
+}
+
 func TestCatalogBuiltinCodexCLIPreservesLegacyFallbackCapabilitiesOnly(t *testing.T) {
 	catalog, err := LoadCatalog("")
 	if err != nil {

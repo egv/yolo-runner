@@ -284,7 +284,7 @@ func validateBackendDefinition(definition BackendDefinition) error {
 		}
 	}
 	switch definition.Adapter {
-	case "opencode", "opencode-serve", "codex", "claude", "kimi", "command":
+	case "opencode", "opencode-serve", "codex", "codex-app-server", "claude", "kimi", "command":
 	default:
 		return fmt.Errorf("unsupported adapter %q", definition.Adapter)
 	}
