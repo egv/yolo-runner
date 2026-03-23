@@ -4,7 +4,9 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
@@ -139,4 +141,171 @@ func TestACPTaskSessionWaitReadyReturnsErrorWhenContextCancelled(t *testing.T) {
 // ACPTaskSessionRuntime satisfies the contracts.TaskSessionRuntime interface.
 func TestACPTaskSessionRuntimeImplementsTaskSessionRuntime(t *testing.T) {
 	var _ contracts.TaskSessionRuntime = (*ACPTaskSessionRuntime)(nil)
+}
+
+// acpTeardownProcess is a fake process for testing ACP session teardown.
+// It tracks Kill calls and supports simulating both forced and natural exit.
+type acpTeardownProcess struct {
+	stdinR  *io.PipeReader
+	stdinW  *io.PipeWriter
+	stdoutR *io.PipeReader
+	stdoutW *io.PipeWriter
+	waitCh  chan error
+
+	mu        sync.Mutex
+	killCalls int
+	exitOnce  sync.Once
+}
+
+func newACPTeardownProcess() *acpTeardownProcess {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	return &acpTeardownProcess{
+		stdinR:  stdinR,
+		stdinW:  stdinW,
+		stdoutR: stdoutR,
+		stdoutW: stdoutW,
+		waitCh:  make(chan error, 1),
+	}
+}
+
+func (p *acpTeardownProcess) Stdin() io.WriteCloser { return p.stdinW }
+func (p *acpTeardownProcess) Stdout() io.ReadCloser { return p.stdoutR }
+func (p *acpTeardownProcess) Wait() error           { return <-p.waitCh }
+func (p *acpTeardownProcess) Kill() error {
+	p.mu.Lock()
+	p.killCalls++
+	p.mu.Unlock()
+	p.exitOnce.Do(func() {
+		_ = p.stdinR.Close()
+		_ = p.stdoutW.Close()
+		p.waitCh <- nil
+	})
+	return nil
+}
+
+// exitNaturally simulates the process exiting on its own without Kill.
+func (p *acpTeardownProcess) exitNaturally() {
+	p.exitOnce.Do(func() {
+		p.waitCh <- nil
+	})
+}
+
+func (p *acpTeardownProcess) kills() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killCalls
+}
+
+// TestACPTaskSessionTeardownGracefulDoesNotKillWhenProcessExitsCleanly verifies
+// that a graceful (non-force) teardown does not call Kill when the process exits
+// on its own within the stop timeout.
+func TestACPTaskSessionTeardownGracefulDoesNotKillWhenProcessExitsCleanly(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-graceful",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate process exiting naturally before the stop timeout expires.
+	proc.exitNaturally()
+
+	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{}); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	if got := proc.kills(); got != 0 {
+		t.Fatalf("expected Kill not called for graceful exit, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionTeardownGracefulFallsBackToKillWhenProcessStalls verifies
+// that a graceful teardown falls back to Kill when the process does not exit
+// within the stop timeout.
+func TestACPTaskSessionTeardownGracefulFallsBackToKillWhenProcessStalls(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:      "task-stall",
+		RepoRoot:    t.TempDir(),
+		LogPath:     filepath.Join(t.TempDir(), "acp.jsonl"),
+		StopTimeout: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Process never exits naturally — teardown must fall back to Kill.
+	_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{})
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once as fallback, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionTeardownForceKillsProcess verifies that a forced teardown
+// immediately calls Kill and waits for the process to exit.
+func TestACPTaskSessionTeardownForceKillsProcess(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-force",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "acp.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true}); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once, got %d calls", got)
+	}
+}
+
+// TestACPTaskSessionTeardownIsIdempotent verifies that calling Teardown more
+// than once does not kill the process multiple times.
+func TestACPTaskSessionTeardownIsIdempotent(t *testing.T) {
+	proc := newACPTeardownProcess()
+	rt := NewACPTaskSessionRuntime(RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+		return proc, nil
+	}))
+
+	session, err := rt.Start(context.Background(), contracts.TaskSessionStartRequest{
+		TaskID:   "task-idempotent",
+		RepoRoot: t.TempDir(),
+		LogPath:  filepath.Join(t.TempDir(), "acp.jsonl"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true}); err != nil {
+		t.Fatalf("first Teardown: %v", err)
+	}
+	if err := session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true}); err != nil {
+		t.Fatalf("second Teardown: %v", err)
+	}
+
+	if got := proc.kills(); got != 1 {
+		t.Fatalf("expected Kill called once (idempotent via sync.Once), got %d calls", got)
+	}
 }
