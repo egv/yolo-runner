@@ -3,7 +3,8 @@
     "name": "codex",
     "type": "codex",
     "backend": "codex",
-    "model": "gpt-5",
+    "model": "gpt-5.3-codex",
+    "adapter": "codex-app-server",
     "capabilities": {
       "languages": ["go", "python", "typescript"],
       "features": ["implement", "review", "stream", "larger_model", "service_proxy"]
@@ -11,6 +12,12 @@
     "config": {
       "api_key_env": "OPENAI_API_KEY",
       "timeout": "45s"
+    },
+    "health": {
+      "enabled": true,
+      "endpoint": "http://localhost:0/healthz",
+      "interval": "5s",
+      "timeout": "2s"
     }
   },
   {
