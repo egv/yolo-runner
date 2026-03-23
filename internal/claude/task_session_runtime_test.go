@@ -355,6 +355,52 @@ func TestStdinTaskSession_Execute_CloseStdinAfterPrompt(t *testing.T) {
 	}
 }
 
+// TestStdinTaskSession_Execute_HandlesLineLargerThanDefaultBuffer is a regression
+// test for "bufio.Scanner: token too long": an assistant output line larger than
+// the default scanner buffer (64 KiB) must not cause Execute to fail.
+func TestStdinTaskSession_Execute_HandlesLineLargerThanDefaultBuffer(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+
+	go func() {
+		// Build an assistant message line well over 64 KiB.
+		longText := strings.Repeat("a", 100*1024)
+		bigLine := fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}`, longText)
+		_, _ = fmt.Fprintln(stdoutW, bigLine)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p"}); err != nil {
+		t.Fatalf("Execute() = %v; want nil (scanner buffer may be too small for large lines)", err)
+	}
+}
+
+// TestStdinTaskSession_Execute_HandlesLargeToolUsePermissionEvent is a regression
+// test for "bufio.Scanner: token too long": a tool_use (permission) event whose
+// JSON line exceeds 64 KiB must be handled without error.
+func TestStdinTaskSession_Execute_HandlesLargeToolUsePermissionEvent(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+
+	go func() {
+		// Build a tool_use line well over 64 KiB.
+		longName := strings.Repeat("b", 100*1024)
+		bigLine := fmt.Sprintf(`{"type":"tool_use","id":"t1","name":"%s"}`, longName)
+		_, _ = fmt.Fprintln(stdoutW, bigLine)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p"}); err != nil {
+		t.Fatalf("Execute() = %v; want nil (large tool_use/permission event must not break scanner)", err)
+	}
+}
+
 // T2: Wait() is idempotent and returns the correct exit error.
 func TestOsStdinProcess_Wait_ReturnsOnExit(t *testing.T) {
 	cmd := exec.Command("true") // exits immediately with code 0
