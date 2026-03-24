@@ -253,6 +253,96 @@ func TestEventRouter_RoutesAgentThoughts(t *testing.T) {
 	}
 }
 
+// fakeRunnerEvent is a minimal RunnerEvent implementation for testing.
+type fakeRunnerEvent struct {
+	eventType string
+	title     string
+	thought   string
+	message   string
+}
+
+func (e *fakeRunnerEvent) RunnerEventType() string    { return e.eventType }
+func (e *fakeRunnerEvent) RunnerEventTitle() string   { return e.title }
+func (e *fakeRunnerEvent) RunnerEventThought() string { return e.thought }
+func (e *fakeRunnerEvent) RunnerEventMessage() string { return e.message }
+
+// TestEventRouter_RunnerCmdStartedAppendsNewEntry verifies that runner_cmd_started
+// events append a new tool entry to the bubble store.
+func TestEventRouter_RunnerCmdStartedAppendsNewEntry(t *testing.T) {
+	store := NewLogBubbleStore()
+	router := NewEventRouter(store)
+
+	event := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Running Read"}
+	if err := router.RouteRunnerEvent(event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	bubbles := store.GetBubbles()
+	if len(bubbles) != 1 {
+		t.Fatalf("expected 1 bubble after runner_cmd_started, got %d", len(bubbles))
+	}
+	if !containsString(bubbles[0], "⏳ Running Read") {
+		t.Errorf("expected bubble to contain message, got: %s", bubbles[0])
+	}
+}
+
+// TestEventRouter_RunnerCmdFinishedMutatesExistingEntry verifies that runner_cmd_finished
+// updates the last runner_cmd_started entry in place (same position, same count).
+func TestEventRouter_RunnerCmdFinishedMutatesExistingEntry(t *testing.T) {
+	store := NewLogBubbleStore()
+	router := NewEventRouter(store)
+
+	startEvent := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Running Read"}
+	if err := router.RouteRunnerEvent(startEvent); err != nil {
+		t.Fatalf("unexpected error routing started: %v", err)
+	}
+
+	finishEvent := &fakeRunnerEvent{eventType: "runner_cmd_finished", message: "✅ Running Read"}
+	if err := router.RouteRunnerEvent(finishEvent); err != nil {
+		t.Fatalf("unexpected error routing finished: %v", err)
+	}
+
+	bubbles := store.GetBubbles()
+	if len(bubbles) != 1 {
+		t.Fatalf("expected 1 bubble after start+finish (mutated in place), got %d", len(bubbles))
+	}
+	if !containsString(bubbles[0], "✅ Running Read") {
+		t.Errorf("expected bubble to contain finish message, got: %s", bubbles[0])
+	}
+}
+
+// TestEventRouter_RunnerCmdOrderStabilityWithOtherBubbles verifies that a finished
+// event mutates the cmd entry in its original position among other bubbles.
+func TestEventRouter_RunnerCmdOrderStabilityWithOtherBubbles(t *testing.T) {
+	store := NewLogBubbleStore()
+	router := NewEventRouter(store)
+
+	// Add a regular log entry before the cmd
+	store.AddLogEntry("task started")
+
+	startEvent := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Reading"}
+	router.RouteRunnerEvent(startEvent)
+
+	store.AddLogEntry("other output")
+
+	finishEvent := &fakeRunnerEvent{eventType: "runner_cmd_finished", message: "✅ Reading"}
+	router.RouteRunnerEvent(finishEvent)
+
+	bubbles := store.GetBubbles()
+	if len(bubbles) != 3 {
+		t.Fatalf("expected 3 bubbles (log, cmd, log), got %d", len(bubbles))
+	}
+	if bubbles[0] != "task started" {
+		t.Errorf("expected first bubble unchanged, got: %s", bubbles[0])
+	}
+	if !containsString(bubbles[1], "✅ Reading") {
+		t.Errorf("expected cmd bubble mutated in position 1, got: %s", bubbles[1])
+	}
+	if bubbles[2] != "other output" {
+		t.Errorf("expected third bubble unchanged, got: %s", bubbles[2])
+	}
+}
+
 // TestEventRouter_MaintainsOrderingAcrossUpdates tests that bubble store maintains
 // correct ordering when multiple tool calls are updated
 func TestEventRouter_MaintainsOrderingAcrossUpdates(t *testing.T) {

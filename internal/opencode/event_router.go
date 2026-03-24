@@ -92,7 +92,15 @@ func (er *EventRouter) RouteRunnerEvent(event RunnerEvent) error {
 	if message := event.RunnerEventMessage(); message != "" {
 		parts = append(parts, message)
 	}
+	entry := strings.Join(parts, " ")
 
-	er.store.AddLogEntry(strings.Join(parts, " "))
+	switch event.RunnerEventType() {
+	case "runner_cmd_started":
+		er.store.AppendRunnerCmdEntry(entry)
+	case "runner_cmd_finished":
+		er.store.MutateLastRunnerCmdEntry(entry)
+	default:
+		er.store.AddLogEntry(entry)
+	}
 	return nil
 }
