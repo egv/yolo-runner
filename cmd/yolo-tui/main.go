@@ -484,6 +484,8 @@ func stylePanelLines(lines []monitor.UIPanelLine, width int) []displayLine {
 		label := line.Label
 		if line.Completed && !strings.HasPrefix(strings.TrimSpace(label), "✅") {
 			label = "✅ " + label
+		} else if !line.Completed && strings.HasPrefix(line.ID, "task:") {
+			label = monitor.StageIcon(line.Stage) + " " + label
 		}
 		text := strings.Repeat("  ", maxInt(0, line.Depth)) + glyph + " " + label
 		tone := "normal"

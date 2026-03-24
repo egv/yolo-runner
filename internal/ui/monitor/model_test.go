@@ -1275,7 +1275,7 @@ func TestStageIcon(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(string(tc.stage), func(t *testing.T) {
-			got := stageIcon(tc.stage)
+			got := StageIcon(tc.stage)
 			if got != tc.expected {
 				t.Errorf("stageIcon(%q) = %q, want %q", tc.stage, got, tc.expected)
 			}
