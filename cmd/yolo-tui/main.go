@@ -487,6 +487,9 @@ func stylePanelLines(lines []monitor.UIPanelLine, width int) []displayLine {
 		} else if !line.Completed && strings.HasPrefix(line.ID, "task:") {
 			label = monitor.StageIcon(line.Stage) + " " + label
 		}
+		if !line.Expanded && !line.Leaf && line.OutputSnippet != "" {
+			label = label + " | " + line.OutputSnippet
+		}
 		text := strings.Repeat("  ", maxInt(0, line.Depth)) + glyph + " " + label
 		tone := "normal"
 		if line.Severity == "warning" {

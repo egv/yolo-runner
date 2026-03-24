@@ -500,6 +500,32 @@ func TestStylePanelLinesDoesNotPrependStageIconForNonTaskRows(t *testing.T) {
 	}
 }
 
+func TestStylePanelLinesAppendsOutputSnippetWhenCollapsed(t *testing.T) {
+	lines := []monitor.UIPanelLine{
+		{ID: "task:task-1", Depth: 1, Label: "task-1", Leaf: false, Expanded: false, OutputSnippet: "building output"},
+	}
+	styled := stylePanelLines(lines, 80)
+	if len(styled) != 1 {
+		t.Fatalf("expected one line, got %#v", styled)
+	}
+	if !contains(styled[0].text, "building output") {
+		t.Fatalf("expected output snippet in collapsed line, got %q", styled[0].text)
+	}
+}
+
+func TestStylePanelLinesDoesNotAppendOutputSnippetWhenExpanded(t *testing.T) {
+	lines := []monitor.UIPanelLine{
+		{ID: "task:task-1", Depth: 1, Label: "task-1", Leaf: false, Expanded: true, OutputSnippet: "building output"},
+	}
+	styled := stylePanelLines(lines, 80)
+	if len(styled) != 1 {
+		t.Fatalf("expected one line, got %#v", styled)
+	}
+	if contains(styled[0].text, "building output") {
+		t.Fatalf("expected no output snippet for expanded line, got %q", styled[0].text)
+	}
+}
+
 func TestRenderTopKeepsHeaderSingleLineAtTerminalWidth(t *testing.T) {
 	state := monitor.UIState{
 		CurrentTask:   "yr-very-long-task-id-with-a-title-that-keeps-going",
