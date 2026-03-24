@@ -221,6 +221,24 @@ func AppendOutputEntry(buf []OutputEntry, entry OutputEntry) []OutputEntry {
 	return buf
 }
 
+// WarningEntry holds a single captured warning message.
+type WarningEntry struct {
+	Message string
+}
+
+// warningBufCap is the default capacity for warning entry ring buffers.
+const warningBufCap = 64
+
+// AppendWarningEntry appends entry to buf and trims the oldest entry when the
+// buffer would exceed warningBufCap.
+func AppendWarningEntry(buf []WarningEntry, entry WarningEntry) []WarningEntry {
+	buf = append(buf, entry)
+	if len(buf) > warningBufCap {
+		buf = buf[len(buf)-warningBufCap:]
+	}
+	return buf
+}
+
 func normalizeRuntimeLine(raw string) string {
 	return strings.TrimSpace(strings.ReplaceAll(raw, "\x00", ""))
 }

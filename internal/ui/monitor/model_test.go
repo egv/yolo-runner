@@ -860,6 +860,26 @@ func TestTaskStateOutputBufAccumulatesRunnerOutputEvents(t *testing.T) {
 	}
 }
 
+func TestTaskStateWarningBufAccumulatesRunnerWarningEvents(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 3, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-4", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-4", Message: "stall warning one", Timestamp: now.Add(-2 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, TaskID: "task-4", Message: "stall warning two", Timestamp: now.Add(-1 * time.Second)})
+
+	task := model.Snapshot().Root.Tasks["task-4"]
+	if len(task.WarningBuf) != 2 {
+		t.Fatalf("expected 2 warning entries, got %d: %#v", len(task.WarningBuf), task.WarningBuf)
+	}
+	if task.WarningBuf[0].Message != "stall warning one" {
+		t.Fatalf("unexpected first warning entry %#v", task.WarningBuf[0])
+	}
+	if task.WarningBuf[1].Message != "stall warning two" {
+		t.Fatalf("unexpected second warning entry %#v", task.WarningBuf[1])
+	}
+}
+
 func TestTaskStateReviewCountIncrementedByReviewFinishedEvent(t *testing.T) {
 	now := time.Date(2026, 3, 24, 10, 2, 0, 0, time.UTC)
 	model := NewModel(func() time.Time { return now })
