@@ -462,7 +462,7 @@ func (m *fullscreenModel) renderBody() string {
 }
 
 func renderTop(width int, state monitor.UIState) string {
-	header := fmt.Sprintf("🚀 %s   🎯 %s   ⏳ %s", state.CurrentTask, state.Phase, state.LastOutputAge)
+	header := fmt.Sprintf("🚀 %s   🎯 %s   ⏳ %s   %d / %d tasks", state.CurrentTask, state.Phase, state.LastOutputAge, state.CompletedCount, state.TotalCount)
 	style := lipgloss.NewStyle().Width(width).Padding(0, 1).Background(lipgloss.Color("24")).Foreground(lipgloss.Color("230")).Bold(true)
 	return style.Render(truncateDisplayWidth(header, width-2))
 }
