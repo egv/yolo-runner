@@ -526,6 +526,20 @@ func TestStylePanelLinesDoesNotAppendOutputSnippetWhenExpanded(t *testing.T) {
 	}
 }
 
+func TestRenderTopIncludesTaskProgressCounter(t *testing.T) {
+	state := monitor.UIState{
+		CurrentTask:    "task-1 - My task",
+		Phase:          "running",
+		LastOutputAge:  "5s",
+		CompletedCount: 3,
+		TotalCount:     7,
+	}
+	rendered := renderTop(80, state)
+	if !strings.Contains(rendered, "3 / 7 tasks") {
+		t.Fatalf("expected progress counter '3 / 7 tasks' in header, got %q", rendered)
+	}
+}
+
 func TestRenderTopKeepsHeaderSingleLineAtTerminalWidth(t *testing.T) {
 	state := monitor.UIState{
 		CurrentTask:   "yr-very-long-task-id-with-a-title-that-keeps-going",
