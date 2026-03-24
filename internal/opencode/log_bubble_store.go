@@ -15,10 +15,11 @@ type LogBubbleStore struct {
 }
 
 type logBubble struct {
-	id       string        // ToolCallId for tool calls, empty string for regular log entries
-	content  string        // Formatted string representation
-	isTool   bool          // True if this is a tool call bubble
-	toolCall *acp.ToolCall // Full tool call data for updates
+	id          string        // ToolCallId for tool calls, empty string for regular log entries
+	content     string        // Formatted string representation
+	isTool      bool          // True if this is a tool call bubble
+	toolCall    *acp.ToolCall // Full tool call data for updates
+	isRunnerCmd bool          // True if this is a runner command lifecycle entry
 }
 
 // NewLogBubbleStore creates a new empty log bubble store.
@@ -101,6 +102,45 @@ func (s *LogBubbleStore) UpsertToolCallUpdate(toolUpdate *acp.ToolCallUpdate) {
 		content:  content,
 		isTool:   true,
 		toolCall: nil,
+	})
+}
+
+// AppendRunnerCmdEntry appends a new runner command lifecycle entry to the store.
+// Used for runner_cmd_started events.
+func (s *LogBubbleStore) AppendRunnerCmdEntry(message string) {
+	if message == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.bubbles = append(s.bubbles, logBubble{
+		content:     message,
+		isRunnerCmd: true,
+	})
+}
+
+// MutateLastRunnerCmdEntry finds the last runner command entry and updates it in place.
+// Used for runner_cmd_finished events. If no entry exists, appends a new one.
+func (s *LogBubbleStore) MutateLastRunnerCmdEntry(message string) {
+	if message == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := len(s.bubbles) - 1; i >= 0; i-- {
+		if s.bubbles[i].isRunnerCmd {
+			s.bubbles[i].content = message
+			return
+		}
+	}
+
+	s.bubbles = append(s.bubbles, logBubble{
+		content:     message,
+		isRunnerCmd: true,
 	})
 }
 
