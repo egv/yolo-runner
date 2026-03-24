@@ -1570,6 +1570,27 @@ func isTaskCompleted(task TaskState) bool {
 	return isCompletedTerminalStatus(normalizeTerminalStatus(task.TerminalStatus))
 }
 
+func stageIcon(stage contracts.TaskStage) string {
+	switch stage {
+	case contracts.TaskStageIdle:
+		return "○"
+	case contracts.TaskStageSelecting:
+		return "◎"
+	case contracts.TaskStageRunning:
+		return "▶"
+	case contracts.TaskStageCommitting:
+		return "↑"
+	case contracts.TaskStageClosing:
+		return "✓"
+	case contracts.TaskStageBlocked:
+		return "⚠"
+	case contracts.TaskStageDone:
+		return "✅"
+	default:
+		return "?"
+	}
+}
+
 func taskOutputSnippet(task TaskState) string {
 	if len(task.OutputBuf) == 0 {
 		return ""

@@ -1258,3 +1258,27 @@ func TestExpandedTaskRowEmitsOutputChildRows(t *testing.T) {
 		t.Fatalf("expected child1 label %q, got %q", "second output", child1.label)
 	}
 }
+
+func TestStageIcon(t *testing.T) {
+	tests := []struct {
+		stage    contracts.TaskStage
+		expected string
+	}{
+		{contracts.TaskStageIdle, "○"},
+		{contracts.TaskStageSelecting, "◎"},
+		{contracts.TaskStageRunning, "▶"},
+		{contracts.TaskStageCommitting, "↑"},
+		{contracts.TaskStageClosing, "✓"},
+		{contracts.TaskStageBlocked, "⚠"},
+		{contracts.TaskStageDone, "✅"},
+		{"unknown_stage", "?"},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.stage), func(t *testing.T) {
+			got := stageIcon(tc.stage)
+			if got != tc.expected {
+				t.Errorf("stageIcon(%q) = %q, want %q", tc.stage, got, tc.expected)
+			}
+		})
+	}
+}
