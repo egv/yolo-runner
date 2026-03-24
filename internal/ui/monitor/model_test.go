@@ -1006,6 +1006,32 @@ func panelRowForTask(rows []panelRow, taskID string) (panelRow, bool) {
 	return panelRow{}, false
 }
 
+func TestTaskPanelRowHasChildrenFromOutputBufLength(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 6, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.panelExpand["tasks"] = true
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-no-out", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-with-out", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-with-out", Message: "some output", Timestamp: now.Add(-3 * time.Second)})
+
+	rowNoOut, ok := panelRowForTask(model.panelRows(), "task-no-out")
+	if !ok {
+		t.Fatalf("expected panelRow for task-no-out")
+	}
+	if rowNoOut.hasChildren {
+		t.Fatalf("expected hasChildren=false for task with empty OutputBuf, got true")
+	}
+
+	rowWithOut, ok := panelRowForTask(model.panelRows(), "task-with-out")
+	if !ok {
+		t.Fatalf("expected panelRow for task-with-out")
+	}
+	if !rowWithOut.hasChildren {
+		t.Fatalf("expected hasChildren=true for task with non-empty OutputBuf, got false")
+	}
+}
+
 func panelExpandEquals(a map[string]bool, b map[string]bool) bool {
 	if len(a) != len(b) {
 		return false
