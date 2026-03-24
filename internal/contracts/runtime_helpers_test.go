@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -373,6 +374,40 @@ func TestFakeHTTPSSEHarnessSupportsHealthJSONAndSSE(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("send sse event: %v", err)
 	}
+}
+
+func TestAppendOutputEntryAppendsAndTrimsAtCap(t *testing.T) {
+	t.Run("appends entries below cap", func(t *testing.T) {
+		var buf []OutputEntry
+		buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "hello"})
+		if len(buf) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(buf))
+		}
+		if buf[0].Content != "hello" {
+			t.Fatalf("unexpected content %q", buf[0].Content)
+		}
+	})
+
+	t.Run("trims oldest entries once cap is reached", func(t *testing.T) {
+		var buf []OutputEntry
+		for i := range outputBufCap {
+			buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: fmt.Sprintf("line-%d", i)})
+		}
+		if len(buf) != outputBufCap {
+			t.Fatalf("expected %d entries at cap, got %d", outputBufCap, len(buf))
+		}
+
+		buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "overflow"})
+		if len(buf) != outputBufCap {
+			t.Fatalf("expected cap %d after overflow, got %d", outputBufCap, len(buf))
+		}
+		if buf[len(buf)-1].Content != "overflow" {
+			t.Fatalf("expected last entry to be overflow, got %q", buf[len(buf)-1].Content)
+		}
+		if buf[0].Content != "line-1" {
+			t.Fatalf("expected oldest entry trimmed, first entry should be line-1 got %q", buf[0].Content)
+		}
+	})
 }
 
 func TestFakeHTTPSSEHarnessSendSSEReturnsWhenClientBacksUp(t *testing.T) {
