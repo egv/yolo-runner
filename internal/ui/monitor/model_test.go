@@ -917,6 +917,30 @@ func TestPanelRowStageIsPopulatedFromTaskState(t *testing.T) {
 	}
 }
 
+func TestGraphPanelRowStageIsPopulated(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 5, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.panelExpand["graph"] = true
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-g", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-g", Timestamp: now.Add(-2 * time.Second)})
+
+	rows := model.panelRows()
+	var graphRow *panelRow
+	for i := range rows {
+		if rows[i].id == "graph:task-g" {
+			graphRow = &rows[i]
+			break
+		}
+	}
+	if graphRow == nil {
+		t.Fatalf("expected graph panelRow for task-g, got %#v", rows)
+	}
+	if graphRow.stage != contracts.TaskStageRunning {
+		t.Fatalf("expected stage %q, got %q", contracts.TaskStageRunning, graphRow.stage)
+	}
+}
+
 func TestUIPanelLineStageAndOutputSnippetArePopulated(t *testing.T) {
 	now := time.Date(2026, 3, 24, 10, 4, 0, 0, time.UTC)
 	model := NewModel(func() time.Time { return now })

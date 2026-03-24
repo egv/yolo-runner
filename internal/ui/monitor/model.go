@@ -1301,6 +1301,7 @@ func emitGraphPanelRows(tasks map[string]TaskState, children map[string][]string
 		completed:   isTaskCompleted(task),
 		severity:    deriveTaskSeverity(task),
 		hasChildren: len(children[taskID]) > 0,
+		stage:       task.Stage,
 	})
 	for _, childID := range children[taskID] {
 		emitGraphPanelRows(tasks, children, childID, depth+1, visited, out)
