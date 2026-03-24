@@ -379,7 +379,7 @@ func TestFakeHTTPSSEHarnessSupportsHealthJSONAndSSE(t *testing.T) {
 func TestAppendOutputEntryAppendsAndTrimsAtCap(t *testing.T) {
 	t.Run("appends entries below cap", func(t *testing.T) {
 		var buf []OutputEntry
-		buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "hello"})
+		buf = AppendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "hello"})
 		if len(buf) != 1 {
 			t.Fatalf("expected 1 entry, got %d", len(buf))
 		}
@@ -391,13 +391,13 @@ func TestAppendOutputEntryAppendsAndTrimsAtCap(t *testing.T) {
 	t.Run("trims oldest entries once cap is reached", func(t *testing.T) {
 		var buf []OutputEntry
 		for i := range outputBufCap {
-			buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: fmt.Sprintf("line-%d", i)})
+			buf = AppendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: fmt.Sprintf("line-%d", i)})
 		}
 		if len(buf) != outputBufCap {
 			t.Fatalf("expected %d entries at cap, got %d", outputBufCap, len(buf))
 		}
 
-		buf = appendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "overflow"})
+		buf = AppendOutputEntry(buf, OutputEntry{Kind: OutputEntryKindText, Content: "overflow"})
 		if len(buf) != outputBufCap {
 			t.Fatalf("expected cap %d after overflow, got %d", outputBufCap, len(buf))
 		}

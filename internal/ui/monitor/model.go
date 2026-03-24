@@ -156,7 +156,6 @@ type triageState struct {
 const (
 	queueFilterAll    = "all"
 	queueFilterActive = "active"
-	outputBufCap      = 256
 )
 
 func NewModel(now func() time.Time) *Model {
@@ -436,10 +435,7 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		if kind == "" {
 			kind = contracts.OutputEntryKindText
 		}
-		task.OutputBuf = append(task.OutputBuf, contracts.OutputEntry{Kind: kind, Content: event.Message})
-		if len(task.OutputBuf) > outputBufCap {
-			task.OutputBuf = task.OutputBuf[len(task.OutputBuf)-outputBufCap:]
-		}
+		task.OutputBuf = contracts.AppendOutputEntry(task.OutputBuf, contracts.OutputEntry{Kind: kind, Content: event.Message})
 	case contracts.EventTypeRunnerHeartbeat:
 		activeCommand := strings.TrimSpace(task.LastCommandStarted)
 		lastOutputAge := strings.TrimSpace(event.Metadata["last_output_age"])

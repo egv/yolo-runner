@@ -211,9 +211,9 @@ func WithOptionalTimeout(ctx context.Context, timeout time.Duration) (context.Co
 	return context.WithTimeout(ctx, timeout)
 }
 
-// appendOutputEntry appends entry to buf and trims the oldest entry when the
+// AppendOutputEntry appends entry to buf and trims the oldest entry when the
 // buffer would exceed outputBufCap.
-func appendOutputEntry(buf []OutputEntry, entry OutputEntry) []OutputEntry {
+func AppendOutputEntry(buf []OutputEntry, entry OutputEntry) []OutputEntry {
 	buf = append(buf, entry)
 	if len(buf) > outputBufCap {
 		buf = buf[len(buf)-outputBufCap:]
