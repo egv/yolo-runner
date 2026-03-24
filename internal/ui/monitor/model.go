@@ -390,19 +390,29 @@ func (m *Model) Apply(event contracts.Event) {
 	m.panelRowsDirty = true
 }
 
+// deriveTaskStage maps an event type to the TaskStage it implies.
+// Returns ("", false) for event types that do not change the stage.
+func deriveTaskStage(eventType contracts.EventType) (contracts.TaskStage, bool) {
+	switch eventType {
+	case contracts.EventTypeTaskStarted:
+		return contracts.TaskStageSelecting, true
+	case contracts.EventTypeRunnerStarted:
+		return contracts.TaskStageRunning, true
+	case contracts.EventTypeRunnerFinished:
+		return contracts.TaskStageClosing, true
+	case contracts.EventTypeTaskFinished, contracts.EventTypeTaskCompleted:
+		return contracts.TaskStageDone, true
+	default:
+		return "", false
+	}
+}
+
 func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 	if task == nil {
 		return
 	}
-	switch event.Type {
-	case contracts.EventTypeTaskStarted:
-		task.Stage = contracts.TaskStageSelecting
-	case contracts.EventTypeRunnerStarted:
-		task.Stage = contracts.TaskStageRunning
-	case contracts.EventTypeRunnerFinished:
-		task.Stage = contracts.TaskStageClosing
-	case contracts.EventTypeTaskFinished, contracts.EventTypeTaskCompleted:
-		task.Stage = contracts.TaskStageDone
+	if stage, ok := deriveTaskStage(event.Type); ok {
+		task.Stage = stage
 	}
 	switch event.Type {
 	case contracts.EventTypeRunnerCommandStarted:
