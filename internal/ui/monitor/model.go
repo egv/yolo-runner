@@ -124,6 +124,7 @@ type TaskState struct {
 	CommandFinishedCount int
 	OutputCount          int
 	OutputBuf            []contracts.OutputEntry
+	WarningBuf           []contracts.WarningEntry
 	ReviewCount          int
 	WarningCount         int
 	WarningActive        bool
@@ -451,6 +452,7 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		task.WarningCount++
 		task.WarningActive = true
 		task.LastSeverity = "warning"
+		task.WarningBuf = contracts.AppendWarningEntry(task.WarningBuf, contracts.WarningEntry{Message: event.Message})
 	case contracts.EventTypeRunnerFinished:
 		task.WarningActive = false
 		task.TerminalStatus = strings.TrimSpace(event.Message)
