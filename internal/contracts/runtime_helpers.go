@@ -239,6 +239,25 @@ func AppendWarningEntry(buf []WarningEntry, entry WarningEntry) []WarningEntry {
 	return buf
 }
 
+// StatusEntry holds a single lifecycle status event for a task.
+type StatusEntry struct {
+	EventType string
+	Message   string
+}
+
+// statusBufCap is the default capacity for status entry ring buffers.
+const statusBufCap = 64
+
+// AppendStatusEntry appends entry to buf and trims the oldest entry when the
+// buffer would exceed statusBufCap.
+func AppendStatusEntry(buf []StatusEntry, entry StatusEntry) []StatusEntry {
+	buf = append(buf, entry)
+	if len(buf) > statusBufCap {
+		buf = buf[len(buf)-statusBufCap:]
+	}
+	return buf
+}
+
 func normalizeRuntimeLine(raw string) string {
 	return strings.TrimSpace(strings.ReplaceAll(raw, "\x00", ""))
 }

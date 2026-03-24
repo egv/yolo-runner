@@ -1064,3 +1064,77 @@ func TestDeriveTaskStage(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskStateStatusBufAccumulatesLifecycleEvents(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 5, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-6", Timestamp: now.Add(-6 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: "task-6", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: "task-6", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: "task-6", Message: "approved", Timestamp: now.Add(-3 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: "task-6", Message: "completed", Timestamp: now.Add(-2 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-6", Message: "closed", Timestamp: now.Add(-1 * time.Second)})
+
+	task := model.Snapshot().Root.Tasks["task-6"]
+	if len(task.StatusBuf) != 6 {
+		t.Fatalf("expected 6 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
+	}
+	if task.StatusBuf[0].EventType != string(contracts.EventTypeTaskStarted) {
+		t.Fatalf("unexpected first status entry %#v", task.StatusBuf[0])
+	}
+	if task.StatusBuf[1].EventType != string(contracts.EventTypeRunnerStarted) {
+		t.Fatalf("unexpected second status entry %#v", task.StatusBuf[1])
+	}
+	if task.StatusBuf[2].EventType != string(contracts.EventTypeReviewStarted) {
+		t.Fatalf("unexpected third status entry %#v", task.StatusBuf[2])
+	}
+	if task.StatusBuf[3].EventType != string(contracts.EventTypeReviewFinished) {
+		t.Fatalf("unexpected fourth status entry %#v", task.StatusBuf[3])
+	}
+	if task.StatusBuf[4].EventType != string(contracts.EventTypeRunnerFinished) {
+		t.Fatalf("unexpected fifth status entry %#v", task.StatusBuf[4])
+	}
+	if task.StatusBuf[5].EventType != string(contracts.EventTypeTaskFinished) {
+		t.Fatalf("unexpected sixth status entry %#v", task.StatusBuf[5])
+	}
+	if task.StatusBuf[3].Message != "approved" {
+		t.Fatalf("expected review_finished message 'approved', got %q", task.StatusBuf[3].Message)
+	}
+}
+
+func TestTaskStateStatusBufAccumulatesCompletedAndFailed(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 5, 0, 0, time.UTC)
+
+	t.Run("task_completed", func(t *testing.T) {
+		model := NewModel(func() time.Time { return now })
+		model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-c", Timestamp: now.Add(-2 * time.Second)})
+		model.Apply(contracts.Event{Type: contracts.EventTypeTaskCompleted, TaskID: "task-c", Message: "success", Timestamp: now.Add(-1 * time.Second)})
+		task := model.Snapshot().Root.Tasks["task-c"]
+		if len(task.StatusBuf) != 2 {
+			t.Fatalf("expected 2 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
+		}
+		if task.StatusBuf[1].EventType != string(contracts.EventTypeTaskCompleted) {
+			t.Fatalf("unexpected second status entry %#v", task.StatusBuf[1])
+		}
+		if task.StatusBuf[1].Message != "success" {
+			t.Fatalf("expected task_completed message 'success', got %q", task.StatusBuf[1].Message)
+		}
+	})
+
+	t.Run("task_failed", func(t *testing.T) {
+		model := NewModel(func() time.Time { return now })
+		model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-f", Timestamp: now.Add(-2 * time.Second)})
+		model.Apply(contracts.Event{Type: contracts.EventTypeTaskFailed, TaskID: "task-f", Message: "error", Timestamp: now.Add(-1 * time.Second)})
+		task := model.Snapshot().Root.Tasks["task-f"]
+		if len(task.StatusBuf) != 2 {
+			t.Fatalf("expected 2 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
+		}
+		if task.StatusBuf[1].EventType != string(contracts.EventTypeTaskFailed) {
+			t.Fatalf("unexpected second status entry %#v", task.StatusBuf[1])
+		}
+		if task.StatusBuf[1].Message != "error" {
+			t.Fatalf("expected task_failed message 'error', got %q", task.StatusBuf[1].Message)
+		}
+	})
+}

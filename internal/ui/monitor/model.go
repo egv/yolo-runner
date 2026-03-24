@@ -125,6 +125,7 @@ type TaskState struct {
 	OutputCount          int
 	OutputBuf            []contracts.OutputEntry
 	WarningBuf           []contracts.WarningEntry
+	StatusBuf            []contracts.StatusEntry
 	ReviewCount          int
 	WarningCount         int
 	WarningActive        bool
@@ -407,12 +408,29 @@ func deriveTaskStage(eventType contracts.EventType) (contracts.TaskStage, bool) 
 	}
 }
 
+var lifecycleEventTypes = map[contracts.EventType]bool{
+	contracts.EventTypeTaskStarted:    true,
+	contracts.EventTypeRunnerStarted:  true,
+	contracts.EventTypeReviewStarted:  true,
+	contracts.EventTypeReviewFinished: true,
+	contracts.EventTypeRunnerFinished: true,
+	contracts.EventTypeTaskCompleted:  true,
+	contracts.EventTypeTaskFailed:     true,
+	contracts.EventTypeTaskFinished:   true,
+}
+
 func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 	if task == nil {
 		return
 	}
 	if stage, ok := deriveTaskStage(event.Type); ok {
 		task.Stage = stage
+	}
+	if lifecycleEventTypes[event.Type] {
+		task.StatusBuf = contracts.AppendStatusEntry(task.StatusBuf, contracts.StatusEntry{
+			EventType: string(event.Type),
+			Message:   strings.TrimSpace(event.Message),
+		})
 	}
 	switch event.Type {
 	case contracts.EventTypeRunnerCommandStarted:
