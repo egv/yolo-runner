@@ -474,6 +474,32 @@ func TestStylePanelLinesAddsCompletedMarkerFromUIState(t *testing.T) {
 	}
 }
 
+func TestStylePanelLinesPrependsStageIconForTaskRows(t *testing.T) {
+	lines := []monitor.UIPanelLine{
+		{ID: "task:task-1", Depth: 2, Label: "task-1 - First", Leaf: true, Stage: contracts.TaskStageRunning},
+	}
+	styled := stylePanelLines(lines, 80)
+	if len(styled) != 1 {
+		t.Fatalf("expected one line, got %#v", styled)
+	}
+	if !contains(styled[0].text, "▶ task-1 - First") {
+		t.Fatalf("expected stage icon prepended, got %q", styled[0].text)
+	}
+}
+
+func TestStylePanelLinesDoesNotPrependStageIconForNonTaskRows(t *testing.T) {
+	lines := []monitor.UIPanelLine{
+		{ID: "tasks", Depth: 0, Label: "Tasks", Leaf: false, Expanded: true, Stage: contracts.TaskStageRunning},
+	}
+	styled := stylePanelLines(lines, 80)
+	if len(styled) != 1 {
+		t.Fatalf("expected one line, got %#v", styled)
+	}
+	if contains(styled[0].text, "▶") {
+		t.Fatalf("expected no stage icon for non-task row, got %q", styled[0].text)
+	}
+}
+
 func TestRenderTopKeepsHeaderSingleLineAtTerminalWidth(t *testing.T) {
 	state := monitor.UIState{
 		CurrentTask:   "yr-very-long-task-id-with-a-title-that-keeps-going",

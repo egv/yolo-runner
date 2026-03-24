@@ -1570,7 +1570,7 @@ func isTaskCompleted(task TaskState) bool {
 	return isCompletedTerminalStatus(normalizeTerminalStatus(task.TerminalStatus))
 }
 
-func stageIcon(stage contracts.TaskStage) string {
+func StageIcon(stage contracts.TaskStage) string {
 	switch stage {
 	case contracts.TaskStageIdle:
 		return "○"
