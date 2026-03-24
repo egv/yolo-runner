@@ -1188,3 +1188,73 @@ func TestTaskStateStatusBufAccumulatesCompletedAndFailed(t *testing.T) {
 		}
 	})
 }
+
+func TestExpandedTaskRowEmitsOutputChildRows(t *testing.T) {
+	now := time.Date(2026, 3, 24, 10, 6, 0, 0, time.UTC)
+	model := NewModel(func() time.Time { return now })
+	model.panelExpand["tasks"] = true
+
+	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-exp", Timestamp: now.Add(-5 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-exp", Message: "first output", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "task-exp", Message: "second output", Timestamp: now.Add(-3 * time.Second)})
+
+	// Without expansion, no child rows should appear.
+	rows := model.panelRows()
+	taskRow, ok := panelRowForTask(rows, "task-exp")
+	if !ok {
+		t.Fatalf("expected panelRow for task-exp")
+	}
+	if !taskRow.hasChildren {
+		t.Fatalf("expected hasChildren=true for task with output")
+	}
+	for _, row := range rows {
+		if strings.HasPrefix(row.id, "task:task-exp:output:") {
+			t.Fatalf("unexpected output child row before expansion: %q", row.id)
+		}
+	}
+
+	// Expand the task row.
+	model.panelExpand["task:task-exp"] = true
+	model.panelRowsDirty = true
+
+	rows = model.panelRows()
+
+	// Find the task row index.
+	taskIdx := -1
+	for i, row := range rows {
+		if row.id == "task:task-exp" {
+			taskIdx = i
+			break
+		}
+	}
+	if taskIdx == -1 {
+		t.Fatalf("expected panelRow for task:task-exp after expansion")
+	}
+
+	// Verify two child rows follow immediately.
+	if taskIdx+2 >= len(rows) {
+		t.Fatalf("expected at least 2 child rows after task row at index %d, rows=%d", taskIdx, len(rows))
+	}
+	child0 := rows[taskIdx+1]
+	child1 := rows[taskIdx+2]
+
+	if child0.id != "task:task-exp:output:0" {
+		t.Fatalf("expected child0 id %q, got %q", "task:task-exp:output:0", child0.id)
+	}
+	if child0.label != "first output" {
+		t.Fatalf("expected child0 label %q, got %q", "first output", child0.label)
+	}
+	if child0.indent != taskRow.indent+1 {
+		t.Fatalf("expected child0 indent %d, got %d", taskRow.indent+1, child0.indent)
+	}
+	if child0.hasChildren {
+		t.Fatalf("expected child0 hasChildren=false")
+	}
+
+	if child1.id != "task:task-exp:output:1" {
+		t.Fatalf("expected child1 id %q, got %q", "task:task-exp:output:1", child1.id)
+	}
+	if child1.label != "second output" {
+		t.Fatalf("expected child1 label %q, got %q", "second output", child1.label)
+	}
+}

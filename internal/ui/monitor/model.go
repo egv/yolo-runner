@@ -699,16 +699,27 @@ func (m *Model) panelRows() []panelRow {
 			rows = append(rows, workerRow)
 			if workerRow.expanded {
 				for _, task := range tasksForWorker(m.root.Tasks, workerID) {
+					taskRowID := "worker:" + workerID + ":task:" + task.TaskID
 					rows = append(rows, panelRow{
-						id:          "worker:" + workerID + ":task:" + task.TaskID,
+						id:          taskRowID,
 						indent:      3,
 						label:       renderTaskPanelLabel(task),
 						completed:   isTaskCompleted(task),
 						severity:    deriveTaskSeverity(task),
 						hasChildren: len(task.OutputBuf) > 0,
+						expanded:    m.isPanelExpanded(taskRowID),
 						stage:       task.Stage,
 						outputSnip:  taskOutputSnippet(task),
 					})
+					if m.isPanelExpanded(taskRowID) {
+						for i, entry := range task.OutputBuf {
+							rows = append(rows, panelRow{
+								id:     fmt.Sprintf("%s:output:%d", taskRowID, i),
+								indent: 4,
+								label:  entry.Content,
+							})
+						}
+					}
 				}
 			}
 		}
@@ -719,16 +730,27 @@ func (m *Model) panelRows() []panelRow {
 	if tasksRow.expanded {
 		for _, taskID := range sortedTaskIDs(m.root.Tasks) {
 			task := m.root.Tasks[taskID]
+			taskRowID := "task:" + taskID
 			rows = append(rows, panelRow{
-				id:          "task:" + taskID,
+				id:          taskRowID,
 				indent:      2,
 				label:       renderTaskPanelLabel(task),
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
 				hasChildren: len(task.OutputBuf) > 0,
+				expanded:    m.isPanelExpanded(taskRowID),
 				stage:       task.Stage,
 				outputSnip:  taskOutputSnippet(task),
 			})
+			if m.isPanelExpanded(taskRowID) {
+				for i, entry := range task.OutputBuf {
+					rows = append(rows, panelRow{
+						id:     fmt.Sprintf("%s:output:%d", taskRowID, i),
+						indent: 3,
+						label:  entry.Content,
+					})
+				}
+			}
 		}
 	}
 
@@ -736,16 +758,27 @@ func (m *Model) panelRows() []panelRow {
 	if queueRow.expanded {
 		for _, taskID := range sortedQueueTaskIDs(m.root.Tasks, m.queueFilter) {
 			task := m.root.Tasks[taskID]
+			queueTaskRowID := "queue:task:" + task.TaskID
 			rows = append(rows, panelRow{
-				id:          "queue:task:" + task.TaskID,
+				id:          queueTaskRowID,
 				indent:      2,
 				label:       renderQueueRowLabel(task),
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
 				hasChildren: len(task.OutputBuf) > 0,
+				expanded:    m.isPanelExpanded(queueTaskRowID),
 				stage:       task.Stage,
 				outputSnip:  taskOutputSnippet(task),
 			})
+			if m.isPanelExpanded(queueTaskRowID) {
+				for i, entry := range task.OutputBuf {
+					rows = append(rows, panelRow{
+						id:     fmt.Sprintf("%s:output:%d", queueTaskRowID, i),
+						indent: 3,
+						label:  entry.Content,
+					})
+				}
+			}
 		}
 	}
 
