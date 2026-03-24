@@ -705,7 +705,7 @@ func (m *Model) panelRows() []panelRow {
 						label:       renderTaskPanelLabel(task),
 						completed:   isTaskCompleted(task),
 						severity:    deriveTaskSeverity(task),
-						hasChildren: false,
+						hasChildren: len(task.OutputBuf) > 0,
 						stage:       task.Stage,
 						outputSnip:  taskOutputSnippet(task),
 					})
@@ -725,7 +725,7 @@ func (m *Model) panelRows() []panelRow {
 				label:       renderTaskPanelLabel(task),
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
-				hasChildren: false,
+				hasChildren: len(task.OutputBuf) > 0,
 				stage:       task.Stage,
 				outputSnip:  taskOutputSnippet(task),
 			})
@@ -742,7 +742,7 @@ func (m *Model) panelRows() []panelRow {
 				label:       renderQueueRowLabel(task),
 				completed:   isTaskCompleted(task),
 				severity:    deriveTaskSeverity(task),
-				hasChildren: false,
+				hasChildren: len(task.OutputBuf) > 0,
 				stage:       task.Stage,
 				outputSnip:  taskOutputSnippet(task),
 			})
