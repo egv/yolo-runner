@@ -986,6 +986,39 @@ func contains(text string, sub string) bool {
 	return false
 }
 
+func TestApplyDerivedTaskEventSetsStage(t *testing.T) {
+	stageEvents := []struct {
+		eventType contracts.EventType
+		wantStage contracts.TaskStage
+	}{
+		{contracts.EventTypeTaskStarted, contracts.TaskStageSelecting},
+		{contracts.EventTypeRunnerStarted, contracts.TaskStageRunning},
+		{contracts.EventTypeRunnerFinished, contracts.TaskStageClosing},
+		{contracts.EventTypeTaskFinished, contracts.TaskStageDone},
+		{contracts.EventTypeTaskCompleted, contracts.TaskStageDone},
+	}
+	for _, tc := range stageEvents {
+		task := &TaskState{}
+		applyDerivedTaskEvent(task, contracts.Event{Type: tc.eventType})
+		if task.Stage != tc.wantStage {
+			t.Errorf("applyDerivedTaskEvent(%q): got stage=%q, want %q", tc.eventType, task.Stage, tc.wantStage)
+		}
+	}
+
+	noStageEvents := []contracts.EventType{
+		contracts.EventTypeRunnerOutput,
+		contracts.EventTypeRunnerHeartbeat,
+		contracts.EventTypeRunnerCommandStarted,
+	}
+	for _, et := range noStageEvents {
+		task := &TaskState{Stage: contracts.TaskStageRunning}
+		applyDerivedTaskEvent(task, contracts.Event{Type: et})
+		if task.Stage != contracts.TaskStageRunning {
+			t.Errorf("applyDerivedTaskEvent(%q): stage should not change, got %q", et, task.Stage)
+		}
+	}
+}
+
 func TestDeriveTaskStage(t *testing.T) {
 	cases := []struct {
 		eventType contracts.EventType
