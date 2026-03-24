@@ -985,3 +985,29 @@ func contains(text string, sub string) bool {
 	}
 	return false
 }
+
+func TestDeriveTaskStage(t *testing.T) {
+	cases := []struct {
+		eventType contracts.EventType
+		wantStage contracts.TaskStage
+		wantOK    bool
+	}{
+		{contracts.EventTypeTaskStarted, contracts.TaskStageSelecting, true},
+		{contracts.EventTypeRunnerStarted, contracts.TaskStageRunning, true},
+		{contracts.EventTypeRunnerFinished, contracts.TaskStageClosing, true},
+		{contracts.EventTypeTaskFinished, contracts.TaskStageDone, true},
+		{contracts.EventTypeTaskCompleted, contracts.TaskStageDone, true},
+		{contracts.EventTypeRunnerOutput, "", false},
+		{contracts.EventTypeRunnerHeartbeat, "", false},
+		{contracts.EventType("unknown"), "", false},
+	}
+	for _, tc := range cases {
+		stage, ok := deriveTaskStage(tc.eventType)
+		if ok != tc.wantOK {
+			t.Errorf("deriveTaskStage(%q): got ok=%v, want %v", tc.eventType, ok, tc.wantOK)
+		}
+		if stage != tc.wantStage {
+			t.Errorf("deriveTaskStage(%q): got stage=%q, want %q", tc.eventType, stage, tc.wantStage)
+		}
+	}
+}
