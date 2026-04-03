@@ -26,19 +26,7 @@ release-gate-e8:
 
 RELEASE_WITH_GATE ?= 0
 
-release-v2.6.0:
-	@if [ -n "$$(git status --short)" ]; then \
-		echo "release preflight failed: working tree is not clean"; \
-		git status --short; \
-		exit 1; \
-	fi
-	go test ./...
-	go build ./...
-	@echo "Tagging:"
-	@echo "git tag -a v2.6.0 -m \"Release v2.6.0\""
-	@echo "git push origin v2.6.0"
-
-release-v2.5.0:
+release-v2.6.1:
 	@if [ -n "$$(git status --short)" ]; then \
 		echo "release preflight failed: working tree is not clean"; \
 		git status --short; \
@@ -48,8 +36,8 @@ release-v2.5.0:
 	go build ./...
 	@if [ "$(RELEASE_WITH_GATE)" = "1" ]; then make release-gate-e8; fi
 	@echo "Tagging:"
-	@echo "git tag -a v2.5.0 -m \"Release v2.5.0\""
-	@echo "git push origin v2.5.0"
+	@echo "git tag -a v2.6.1 -m \"Release v2.6.1\""
+	@echo "git push origin v2.6.1"
 
 build:
 	mkdir -p bin

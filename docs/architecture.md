@@ -1,38 +1,41 @@
 # Architecture
 
-This diagram reflects the current repository after removing the legacy `yolo-runner` compatibility stack.
+This diagram reflects the current detailed runtime architecture.
 
 ```mermaid
 flowchart TB
   User["Developer / CI"]
   GitRepo[(Git repository)]
   RepoConfig[".yolo-runner/config.yaml"]
-  TaskClones[".yolo-runner/clones/*"]
-  EventLogs["runner-logs/*.jsonl"]
+  CloneRoots[".yolo-runner/clones/*"]
+  EventLogs["runner-logs/*.events.jsonl"]
   TicketFiles[".tickets/ markdown"]
   BeadsState[".beads / br storage"]
   GitHubAPI[(GitHub API)]
   LinearAPI[(Linear API)]
   BusInfra[(Redis / NATS)]
-  AgentProcesses["Agent runtimes<br/>OpenCode / Codex / Claude / Kimi / Gemini"]
+  AgentProcesses["External agent CLIs<br/>OpenCode / Codex / Claude / Kimi / Gemini"]
 
-  subgraph EntryPoints["CLI / Service Entry Points"]
-    YoloTask["cmd/yolo-task"]
+  subgraph CLIs["CLI Entry Points"]
+    YoloAgent["cmd/yolo-agent"]
     YoloTUI["cmd/yolo-tui"]
-    YoloWebUI["cmd/yolo-webui"]
   end
 
-  subgraph Foundation["Shared Foundation"]
+  subgraph Shared["Shared Contracts"]
     Contracts["internal/contracts"]
-    Logging["internal/logging"]
   end
 
-  subgraph Core["Core Orchestration"]
-    StorageMgr["internal/agent/storageEngineTaskManager"]
+  subgraph AgentRuntime["yolo-agent Runtime"]
+    ProfileResolver["tracker profile + config resolver"]
+    Catalog["internal/codingagents<br/>builtin + custom backend catalog"]
+    LocalLoop["local role<br/>internal/agent.Loop"]
+    StorageMgr["storageEngineTaskManager"]
     Engine["internal/engine<br/>task graph + concurrency"]
-    AgentLoop["internal/agent<br/>concurrent loop, retries,<br/>review, merge, clone management"]
     Quality["internal/task_quality"]
+    CloneManager["Git clone manager"]
     VCS["internal/vcs/git"]
+    Executor["executor role<br/>internal/distributed.ExecutorWorker"]
+    Bus["internal/distributed.Bus"]
   end
 
   subgraph Storage["Tracker / Storage Backends"]
@@ -42,44 +45,40 @@ flowchart TB
     Beads["internal/beads"]
   end
 
-  subgraph AgentBackends["Coding Agent Backend Layer"]
-    Catalog["internal/codingagents<br/>builtin + custom catalog"]
+  subgraph Runners["Agent Runner Adapters"]
     OpenCode["internal/opencode"]
     Codex["internal/codex"]
     Claude["internal/claude"]
     Kimi["internal/kimi"]
-    GenericCmd["command adapter<br/>Gemini / custom command"]
+    GenericCmd["generic command adapter"]
   end
 
-  subgraph Distributed["Distributed Execution"]
-    Bus["internal/distributed.Bus"]
-    Mastermind["Mastermind<br/>dispatch, task-graph sync,<br/>status updates, review/rewrite services"]
-    Executor["ExecutorWorker<br/>capability-based task execution"]
-  end
-
-  subgraph Monitoring["Monitoring / UI"]
+  subgraph Monitoring["Monitoring / UI State"]
     MonitorModel["internal/ui/monitor"]
   end
 
-  User --> YoloTask
+  User --> YoloAgent
   User --> YoloTUI
-  User --> YoloWebUI
 
-  YoloTask --> TK
-  YoloTUI --> MonitorModel
-  YoloWebUI --> MonitorModel
-  YoloWebUI -- monitor events --> Bus
-  YoloWebUI -- control commands --> Bus
-  EventLogs -- read --> YoloTUI
-  Bus -- monitor events --> YoloTUI
+  YoloAgent --> RepoConfig
+  YoloAgent --> ProfileResolver
+  YoloAgent --> Catalog
+  YoloAgent -- role=local --> LocalLoop
+  YoloAgent -- role=executor --> Executor
+  YoloAgent -- mode=ui launches --> YoloTUI
+  YoloAgent -- stream/file sinks --> EventLogs
+  YoloAgent -- monitor sink --> Bus
 
-  AgentLoop --> StorageMgr
-  AgentLoop --> Quality
-  AgentLoop --> VCS
-  AgentLoop --> Catalog
-  AgentLoop --> TaskClones
-  AgentLoop --> EventLogs
-  AgentLoop -- monitor events --> Bus
+  ProfileResolver --> TK
+  ProfileResolver --> GitHubBackend
+  ProfileResolver --> LinearBackend
+  ProfileResolver --> Beads
+
+  LocalLoop --> StorageMgr
+  LocalLoop --> Quality
+  LocalLoop --> CloneManager
+  LocalLoop --> VCS
+  LocalLoop --> Catalog
 
   StorageMgr --> Engine
   StorageMgr --> TK
@@ -99,29 +98,35 @@ flowchart TB
   Kimi --> AgentProcesses
   GenericCmd --> AgentProcesses
 
-  Mastermind --> Bus
-  Mastermind --> GitHubBackend
-  Mastermind --> LinearBackend
-  Mastermind --> TK
-  Mastermind --> Beads
   Executor --> Bus
   Executor --> Catalog
+
   Bus -- backend --> BusInfra
 
+  YoloTUI --> MonitorModel
+  EventLogs -- stdin/file --> YoloTUI
+  Bus -- monitor events --> YoloTUI
+
   TK -- local tickets --> TicketFiles
-  Beads -- issue store --> BeadsState
+  Beads -- CLI / state --> BeadsState
   GitHubBackend -- API --> GitHubAPI
   LinearBackend -- API --> LinearAPI
+  CloneManager --> CloneRoots
+  CloneManager --> GitRepo
   VCS --> GitRepo
-  GitRepo --> TaskClones
 
-  AgentLoop --> Contracts
+  LocalLoop --> Contracts
   StorageMgr --> Contracts
   Engine --> Contracts
+  Executor --> Contracts
   TK --> Contracts
   GitHubBackend --> Contracts
   LinearBackend --> Contracts
   Beads --> Contracts
+  OpenCode --> Contracts
+  Codex --> Contracts
+  Claude --> Contracts
+  Kimi --> Contracts
   MonitorModel --> Contracts
   Bus --> Contracts
 ```

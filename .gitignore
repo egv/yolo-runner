@@ -8,6 +8,7 @@ yolo-runner
 
 # Runtime logs and OpenCode outputs
 runner-logs/
+.vite/
 .serena/
 .yolo-runner/
 internal/beads/.beads/
