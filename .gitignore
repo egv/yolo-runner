@@ -3,6 +3,7 @@
 
 # Build artifacts
 bin/
+node_modules/
 yolo-agent
 yolo-runner
 
