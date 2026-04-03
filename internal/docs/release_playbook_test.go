@@ -42,8 +42,9 @@ func TestReleasePlaybookCoversVerificationAndSmokeInstall(t *testing.T) {
 		"gh release view",
 		"checksums-",
 		"sha256sum",
-		"## Smoke Install and Update Check",
-		"yolo-runner update --check",
+		"## Smoke Install and CLI Check",
+		"/tmp/yolo-task --version",
+		"/tmp/yolo-tui --version",
 	}
 	for _, needle := range required {
 		if !strings.Contains(playbook, needle) {

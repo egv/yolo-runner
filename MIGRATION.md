@@ -1,6 +1,6 @@
 # v2 CLI Migration
 
-`yolo-runner` remains available in compatibility mode, but new workflows should use the split v2 CLIs:
+Previous releases used `yolo-runner`, but current workflows use the split v2 CLIs:
 
 - `yolo-agent`: orchestrates task loop execution
 - `yolo-task`: task-tracker facade operations
@@ -56,10 +56,6 @@ Use the split v2 CLIs for each E8 demo lane, then run the consolidated gate:
 Run the E8 release checklist in one command:
 
 - `make release-gate-e8`
-
-## Compatibility Behavior
-
-Invoking `yolo-runner` prints a compatibility notice and continues to run, so existing scripts are preserved while migration proceeds.
 
 ## Linear Agent Deferred Scope (v2.1)
 

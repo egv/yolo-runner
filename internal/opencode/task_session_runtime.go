@@ -290,7 +290,7 @@ func resolveServeTaskSessionTitle(request contracts.TaskSessionStartRequest) str
 	if title := strings.TrimSpace(request.TaskID); title != "" {
 		return title
 	}
-	return "yolo-runner task"
+	return "yolo-agent task"
 }
 
 func resolveServeSessionLogPath(request contracts.TaskSessionStartRequest) string {

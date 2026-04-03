@@ -9,7 +9,7 @@ import (
 // RunnerEvent is the minimal shape needed to render runner-side events in the
 // OpenCode TUI log bubble store.
 //
-// It is intentionally an interface to avoid an import cycle with internal/runner.
+// It is intentionally an interface to avoid importing a specific runner package.
 type RunnerEvent interface {
 	RunnerEventType() string
 	RunnerEventTitle() string
@@ -17,7 +17,7 @@ type RunnerEvent interface {
 	RunnerEventMessage() string
 }
 
-// EventRouter routes ACP updates (from opencode) and runner events (from yolo-runner)
+// EventRouter routes ACP updates and runner events
 // into a shared LogBubbleStore.
 type EventRouter struct {
 	store *LogBubbleStore

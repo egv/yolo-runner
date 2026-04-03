@@ -67,4 +67,4 @@ if (-not $installed) {
     throw "expected binaries not found in artifact: $artifact"
 }
 
-Write-Output "next: run 'yolo-runner init --repo <repo>' inside a repository to install .opencode/agent/yolo.md, the task-splitting skill, and split-tasks commands"
+Write-Output "next: install the repo-local OpenCode assets under .opencode/agent, .opencode/skills, and .opencode/commands inside your repository"

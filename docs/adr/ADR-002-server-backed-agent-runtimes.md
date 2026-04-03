@@ -138,7 +138,6 @@ Rejected because `stdio` is simpler, more local, and easier to supervise for per
 - `internal/opencode`
 - `internal/codingagents`
 - `cmd/yolo-agent`
-- `cmd/yolo-linear-worker`
 - `docs/plans/2026-01-25-acp-opencode-runner-design.md`
 
 ## Decision Date

@@ -36,7 +36,7 @@ func ValidateAgent(repoRoot string) error {
 		return err
 	}
 	if !hasPermissionAllow(content) {
-		return fmt.Errorf("yolo agent missing permission: allow; run yolo-runner init to create .opencode/agent/yolo.md")
+		return fmt.Errorf("yolo agent missing permission: allow; install .opencode/agent/yolo.md and bundled .opencode skills/commands into this repo")
 	}
 	return nil
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	enginepkg "github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/logging"
-	"github.com/egv/yolo-runner/v2/internal/ui/tui"
 )
 
 func TestLoopCompletesTask(t *testing.T) {
@@ -3044,22 +3043,8 @@ func TestLoopWritesObservabilityPipelineArtifactsForFailedTask(t *testing.T) {
 		t.Fatalf("expected blocked decision metadata in events file, got %q", string(eventsFile))
 	}
 
-	browser, err := tui.NewLogBrowser(filepath.Join(repoRoot, "runner-logs"))
-	if err != nil {
-		t.Fatalf("new log browser: %v", err)
-	}
-	if got := browser.CurrentTask(); got != "t-1" {
-		browser.SelectTask(1)
-		if got := browser.CurrentTask(); got != "t-1" {
-			t.Fatalf("expected log browser to select task-1, got %q", got)
-		}
-	}
-	if got := browser.CurrentLogFile(); got != expected {
-		t.Fatalf("expected log browser selected log path %q, got %q", expected, got)
-	}
-	view := browser.View()
-	if !strings.Contains(view, "t-1") || !strings.Contains(view, "level") {
-		t.Fatalf("expected log browser view to include rendered task log content, got %q", view)
+	if !strings.Contains(string(content), "\"level\"") {
+		t.Fatalf("expected structured log content in %q, got %q", expected, string(content))
 	}
 }
 

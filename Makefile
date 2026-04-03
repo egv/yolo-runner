@@ -41,23 +41,17 @@ release-v2.5.0:
 
 build:
 	mkdir -p bin
-	go build -o bin/yolo-runner ./cmd/yolo-runner
 	go build -o bin/yolo-agent ./cmd/yolo-agent
 	go build -o bin/yolo-task ./cmd/yolo-task
 	go build -o bin/yolo-tui ./cmd/yolo-tui
 	go build -o bin/yolo-webui ./cmd/yolo-webui
-	go build -o bin/yolo-linear-webhook ./cmd/yolo-linear-webhook
-	go build -o bin/yolo-linear-worker ./cmd/yolo-linear-worker
 
 PREFIX ?= /usr/local
 
 install: build
 	mkdir -p $(PREFIX)/bin
-	cp bin/yolo-runner $(PREFIX)/bin/yolo-runner
 	cp bin/yolo-agent $(PREFIX)/bin/yolo-agent
 	cp bin/yolo-task $(PREFIX)/bin/yolo-task
 	cp bin/yolo-tui $(PREFIX)/bin/yolo-tui
 	cp bin/yolo-webui $(PREFIX)/bin/yolo-webui
-	cp bin/yolo-linear-webhook $(PREFIX)/bin/yolo-linear-webhook
-	cp bin/yolo-linear-worker $(PREFIX)/bin/yolo-linear-worker
-	chmod 755 $(PREFIX)/bin/yolo-runner $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-task $(PREFIX)/bin/yolo-tui $(PREFIX)/bin/yolo-webui $(PREFIX)/bin/yolo-linear-webhook $(PREFIX)/bin/yolo-linear-worker
+	chmod 755 $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-task $(PREFIX)/bin/yolo-tui $(PREFIX)/bin/yolo-webui

@@ -10,12 +10,27 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/egv/yolo-runner/v2/internal/runner"
 	"gopkg.in/yaml.v3"
 )
 
 type Runner interface {
 	Run(args ...string) (string, error)
+}
+
+type Issue struct {
+	ID        string  `json:"id"`
+	IssueType string  `json:"issue_type"`
+	Status    string  `json:"status"`
+	Priority  *int    `json:"priority"`
+	Children  []Issue `json:"children"`
+}
+
+type Bead struct {
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	AcceptanceCriteria string `json:"acceptance_criteria"`
+	Status             string `json:"status"`
 }
 
 type Adapter struct {
@@ -94,15 +109,15 @@ func parseDependencyString(raw string) []string {
 	return deps
 }
 
-func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
+func (a *Adapter) Ready(rootID string) (Issue, error) {
 	tickets, err := a.queryTickets()
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 
 	readyOutput, err := a.runner.Run("tk", "ready")
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 	readyIDs := parseReadyIDs(readyOutput)
 
@@ -119,7 +134,7 @@ func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
 		lookup[t.ID] = t
 	}
 
-	var ready []runner.Issue
+	var ready []Issue
 	for _, id := range readyIDs {
 		if _, blocked := blockedIDs[id]; blocked {
 			continue
@@ -144,13 +159,13 @@ func (a *Adapter) Ready(rootID string) (runner.Issue, error) {
 		return ready[0], nil
 	}
 
-	return runner.Issue{ID: rootID, IssueType: "epic", Status: "open", Children: ready}, nil
+	return Issue{ID: rootID, IssueType: "epic", Status: "open", Children: ready}, nil
 }
 
-func (a *Adapter) Tree(rootID string) (runner.Issue, error) {
+func (a *Adapter) Tree(rootID string) (Issue, error) {
 	tickets, err := a.queryTickets()
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 
 	lookup := map[string]ticket{}
@@ -160,7 +175,7 @@ func (a *Adapter) Tree(rootID string) (runner.Issue, error) {
 
 	root, ok := lookup[rootID]
 	if !ok {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 
 	issue := ticketToIssue(root)
@@ -173,11 +188,10 @@ func (a *Adapter) Tree(rootID string) (runner.Issue, error) {
 	return issue, nil
 }
 
-func (a *Adapter) Show(id string) (runner.Bead, error) {
-	// Keep an explicit tk show call for detail retrieval flow and parity with CLI behavior.
+func (a *Adapter) Show(id string) (Bead, error) {
 	showOutput, err := a.runner.Run("tk", "show", id)
 	if err != nil {
-		return runner.Bead{}, err
+		return Bead{}, err
 	}
 	titleFromShow := parseTitleFromShowOutput(showOutput)
 	shownTicket, shownErr := parseTicketFromShowOutput(id, showOutput)
@@ -189,15 +203,9 @@ func (a *Adapter) Show(id string) (runner.Bead, error) {
 			if strings.TrimSpace(title) == "" {
 				title = titleFromShow
 			}
-			return runner.Bead{
-				ID:                 shownTicket.ID,
-				Title:              title,
-				Description:        shownTicket.Description,
-				AcceptanceCriteria: "",
-				Status:             shownTicket.Status,
-			}, nil
+			return Bead{ID: shownTicket.ID, Title: title, Description: shownTicket.Description, Status: shownTicket.Status}, nil
 		}
-		return runner.Bead{}, err
+		return Bead{}, err
 	}
 	for _, t := range tickets {
 		if t.ID == id {
@@ -205,13 +213,7 @@ func (a *Adapter) Show(id string) (runner.Bead, error) {
 			if strings.TrimSpace(title) == "" {
 				title = titleFromShow
 			}
-			return runner.Bead{
-				ID:                 t.ID,
-				Title:              title,
-				Description:        t.Description,
-				AcceptanceCriteria: "",
-				Status:             t.Status,
-			}, nil
+			return Bead{ID: t.ID, Title: title, Description: t.Description, Status: t.Status}, nil
 		}
 	}
 
@@ -220,16 +222,10 @@ func (a *Adapter) Show(id string) (runner.Bead, error) {
 		if strings.TrimSpace(title) == "" {
 			title = titleFromShow
 		}
-		return runner.Bead{
-			ID:                 shownTicket.ID,
-			Title:              title,
-			Description:        shownTicket.Description,
-			AcceptanceCriteria: "",
-			Status:             shownTicket.Status,
-		}, nil
+		return Bead{ID: shownTicket.ID, Title: title, Description: shownTicket.Description, Status: shownTicket.Status}, nil
 	}
 
-	return runner.Bead{}, nil
+	return Bead{}, nil
 }
 
 func parseTitleFromShowOutput(output string) string {
@@ -297,7 +293,6 @@ func (a *Adapter) queryTickets() ([]ticket, error) {
 		}
 	}
 
-	// List all ticket IDs from tk ready (includes open/in_progress)
 	readyOutput, err := a.runner.Run("tk", "ready")
 	if err != nil {
 		if queryErr != nil {
@@ -306,10 +301,7 @@ func (a *Adapter) queryTickets() ([]ticket, error) {
 		return nil, fmt.Errorf("tk ready failed: %w", err)
 	}
 
-	// Also get blocked tickets to have complete view
 	blockedOutput, _ := a.runner.Run("tk", "blocked")
-
-	// Collect all unique ticket IDs
 	idSet := make(map[string]struct{})
 	for _, id := range parseReadyIDs(readyOutput) {
 		idSet[id] = struct{}{}
@@ -318,12 +310,11 @@ func (a *Adapter) queryTickets() ([]ticket, error) {
 		idSet[id] = struct{}{}
 	}
 
-	// Fetch each ticket individually using tk show
 	result := make([]ticket, 0, len(idSet))
 	for id := range idSet {
 		t, err := a.fetchTicket(id)
 		if err != nil {
-			continue // Skip tickets we can't fetch
+			continue
 		}
 		result = append(result, t)
 	}
@@ -355,21 +346,17 @@ func parseTicketQuery(output string) ([]ticket, error) {
 }
 
 func parseTicketFromShowOutput(id string, output string) (ticket, error) {
-	// Extract YAML frontmatter between --- delimiters
 	frontmatter, found, err := extractLeadingFrontmatter(output)
 	if err != nil || !found {
 		return ticket{}, fmt.Errorf("no frontmatter found")
 	}
 
-	// Parse YAML frontmatter
 	values := make(map[string]any)
 	if err := yaml.Unmarshal([]byte(frontmatter), &values); err != nil {
 		return ticket{}, fmt.Errorf("invalid frontmatter YAML: %w", err)
 	}
 
 	t := ticket{ID: id}
-
-	// Extract fields from frontmatter
 	if v, ok := values["title"].(string); ok {
 		t.Title = v
 	}
@@ -443,29 +430,24 @@ func isDescendantOrSelf(id string, rootID string, lookup map[string]ticket) bool
 	return false
 }
 
-func (a *Adapter) readyFallback(rootID string, lookup map[string]ticket) (runner.Issue, error) {
+func (a *Adapter) readyFallback(rootID string, lookup map[string]ticket) (Issue, error) {
 	t, ok := lookup[rootID]
 	if !ok {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	issue := ticketToIssue(t)
 	if issue.Status != "open" {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	if issue.IssueType == "epic" || issue.IssueType == "molecule" {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	return issue, nil
 }
 
-func ticketToIssue(t ticket) runner.Issue {
+func ticketToIssue(t ticket) Issue {
 	priority := ticketPriority(t.Priority)
-	return runner.Issue{
-		ID:        t.ID,
-		IssueType: t.Type,
-		Status:    t.Status,
-		Priority:  &priority,
-	}
+	return Issue{ID: t.ID, IssueType: t.Type, Status: t.Status, Priority: &priority}
 }
 
 func ticketPriority(raw any) int {

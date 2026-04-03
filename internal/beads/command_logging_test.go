@@ -23,9 +23,9 @@ func TestBeadsCommandsRouteOutputToLogFiles(t *testing.T) {
 
 	// Create a CommandRunner that logs to our temp directory
 	commandRunner := exec.NewCommandRunner(logDir, nil) // nil = no stdout output
-	adapter := New(commandRunner)
+	adapter := NewRustAdapter(commandRunner)
 
-	// Test various bd commands that should route output to logs
+	// Test various br commands that should route output to logs
 	testCases := []struct {
 		name     string
 		testFunc func() error
@@ -131,8 +131,8 @@ func TestBeadsCommandsRouteOutputToLogFiles(t *testing.T) {
 				t.Fatalf("invalid json log entry: %v", err)
 			}
 			command, _ := entry["command"].(string)
-			if !strings.Contains(command, "bd ") {
-				t.Fatalf("log file should contain bd command, got: %s", logContentStr)
+			if !strings.Contains(command, "br --no-daemon ") {
+				t.Fatalf("log file should contain br command, got: %s", logContentStr)
 			}
 		})
 	}

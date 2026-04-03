@@ -23,7 +23,7 @@ func populateRequiredLogFields(fields LoggingSchemaFields, defaultTaskID string)
 		fields.Level = "info"
 	}
 	if strings.TrimSpace(fields.Component) == "" {
-		fields.Component = "yolo-runner"
+		fields.Component = "yolo-agent"
 	}
 	if strings.TrimSpace(fields.TaskID) == "" {
 		fields.TaskID = defaultTaskID

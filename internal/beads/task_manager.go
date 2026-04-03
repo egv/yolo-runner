@@ -12,7 +12,6 @@ import (
 	"sync"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
-	"github.com/egv/yolo-runner/v2/internal/runner"
 )
 
 // TaskManager implements the contracts.TaskManager interface for beads_rust (br)
@@ -149,7 +148,7 @@ func (m *TaskManager) GetTaskTree(ctx context.Context, rootID string) (*contract
 	// Get root bead for full details
 	rootBead, err := m.adapter.Show(rootID)
 	if err != nil {
-		rootBead = runner.Bead{ID: rootID, Title: rootID, Status: "open"}
+		rootBead = Bead{ID: rootID, Title: rootID, Status: "open"}
 	}
 
 	// Collect all tasks from the tree
@@ -311,7 +310,7 @@ func (m *TaskManager) getTaskTreeFromJSONL(rootID string) (*contracts.TaskTree, 
 }
 
 // processChildren recursively processes child issues
-func (m *TaskManager) processChildren(children []runner.Issue, parentID string, tasks map[string]contracts.Task, relations *[]contracts.TaskRelation) {
+func (m *TaskManager) processChildren(children []Issue, parentID string, tasks map[string]contracts.Task, relations *[]contracts.TaskRelation) {
 	for _, child := range children {
 		if child.ID == "" {
 			continue
@@ -320,7 +319,7 @@ func (m *TaskManager) processChildren(children []runner.Issue, parentID string, 
 		// Get full details
 		bead, err := m.adapter.Show(child.ID)
 		if err != nil {
-			bead = runner.Bead{ID: child.ID, Title: child.ID, Status: child.Status}
+			bead = Bead{ID: child.ID, Title: child.ID, Status: child.Status}
 		}
 
 		// Add task

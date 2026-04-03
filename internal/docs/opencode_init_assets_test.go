@@ -14,7 +14,8 @@ func TestReadmeDocumentsTaskSplittingSkillInstallAndUsage(t *testing.T) {
 		".opencode/commands/split-tasks-strict.md",
 		"/split-tasks",
 		"/split-tasks-strict",
-		"yolo-runner init --repo <repo>",
+		"Repo-local OpenCode Assets",
+		".opencode/agent/yolo.md",
 	}
 	for _, needle := range required {
 		if !strings.Contains(readme, needle) {
@@ -25,7 +26,7 @@ func TestReadmeDocumentsTaskSplittingSkillInstallAndUsage(t *testing.T) {
 
 func TestInstallMatrixMentionsInitReminderAfterScriptInstall(t *testing.T) {
 	matrix := readRepoFile(t, "docs", "install-matrix.md")
-	if !strings.Contains(matrix, "script prints `yolo-runner init --repo <repo>` reminder") {
+	if !strings.Contains(matrix, "script prints a repo-local OpenCode asset reminder") {
 		t.Fatalf("install matrix missing init reminder after install script runs")
 	}
 }

@@ -10,7 +10,6 @@ AI-powered task execution system with pluggable storage backends (GitHub, Linear
 - **TDD Mode**: Strict Red/Green/Refactor enforcement for test-driven development
 - **Structured Logging**: JSONL event streams with log browser TUI
 - **Installation Scripts**: One-line install via `install.sh` or `install.ps1`
-- **Auto-Update**: Built-in binary updates from GitHub releases
 - **Multi-Backend Support**: OpenCode, Codex, Claude, Kimi
 
 ## CLI Tools
@@ -18,10 +17,8 @@ AI-powered task execution system with pluggable storage backends (GitHub, Linear
 - `yolo-agent` - Task orchestration and scheduling
 - `yolo-task` - Task management operations
 - `yolo-tui` - Real-time event monitoring with log browser
-- `yolo-linear-worker` - Linear webhook processor
-- `yolo-linear-webhook` - Linear webhook handler
 
-See `MIGRATION.md` for command mapping and compatibility details.
+See `MIGRATION.md` for historical command mapping.
 
 ## Installation
 
@@ -41,11 +38,12 @@ irm https://raw.githubusercontent.com/egv/yolo-runner/main/install.ps1 | iex
 make install
 ```
 
-### Update Existing Installation
+### Verify Installation
 
 ```bash
-./bin/yolo-runner update
-./bin/yolo-runner update --release v1.2.3  # Pin to specific version
+./bin/yolo-agent --version
+./bin/yolo-task --version
+./bin/yolo-tui --version
 ```
 
 ## Storage Backends
@@ -103,26 +101,24 @@ The production stdin monitor (`yolo-tui`) follows an Elm-style `Model/Update/Vie
 
 These UI dependencies are mandatory for GUI workflow evolution and should be treated as part of the runtime contract.
 
-## Location
+## Current Orchestration Model
 
-- Canonical script: `tools/yolo-runner/beads_yolo_runner.py`
-- Compatibility copy (in-use by existing invocations): `scripts/beads_yolo_runner.py`
+- `yolo-agent` owns task selection, dependency-aware scheduling, retries, review, and event emission.
+- `yolo-task` exposes direct tracker operations.
+- `yolo-tui` and `yolo-webui` consume the event stream for monitoring.
 
 ## What It Does
 
-- Selects the next open leaf task using beads (`bd ready`).
-- Builds a task prompt with title, description, and acceptance criteria.
-- Runs OpenCode with the YOLO agent using a single prompt.
-- Captures OpenCode JSON output to a per-task log file.
-- Commits changes, closes the bead, verifies it is closed, then runs `bd sync`.
-- If no code changes were produced, marks the task as `blocked` and exits.
+- Loads tasks from tracker/storage backends such as GitHub, Linear, TK, or beads/br.
+- Builds a dependency graph and calculates runnable concurrency.
+- Runs the selected coding-agent backend for implementation and review.
+- Writes structured JSONL events and per-task backend logs.
+- Updates task status/data and manages task clones under `.yolo-runner/clones/`.
 
 ## Requirements
 
-- `bd` (beads) CLI available and initialized.
 - `opencode` CLI available.
 - `git` installed and repo cloned.
-- `uv` installed for the Python runner (bootstrap only).
 - Go 1.21+ for building the runner.
 - `gopls` available on `PATH` (required by Serena/OpenCode for Go language services).
 
@@ -140,29 +136,10 @@ make build
 
 ```bash
 ./bin/yolo-agent --version
-./bin/yolo-runner --version
+./bin/yolo-task --version
 ./bin/yolo-tui --version
+./bin/yolo-webui --version
 ```
-
-### Update Binary
-
-```bash
-# Update to latest release
-./bin/yolo-runner update
-
-# Update to specific version
-./bin/yolo-runner update --release v1.2.3
-
-# Update with custom OS/arch
-./bin/yolo-runner update --os linux --arch arm64
-```
-
-Update flags:
-- `--release VERSION` - Target version (default: `latest`)
-- `--os OS` - Target OS: `linux`, `darwin`, `windows`
-- `--arch ARCH` - Target arch: `amd64`, `arm64`
-- `--install-dir PATH` - Custom install directory
-- `--release-api URL` - GitHub API base URL
 
 ## Installation Matrix
 
@@ -227,17 +204,9 @@ The gate verifies these acceptance tests:
 
 It also validates docs contracts for this checklist and the migration guidance.
 
-## Init
+## Repo-local OpenCode Assets
 
-The runner includes a helper to install the YOLO agent, the task-splitting skill, and task-splitting commands into the OpenCode project directory.
-
-Init usage:
-
-```
-./bin/yolo-runner init --repo .
-```
-
-This installs the following repo-local OpenCode assets:
+Copy these bundled assets into the repository-local `.opencode/` tree before running OpenCode-backed flows:
 
 - `yolo.md` -> `.opencode/agent/yolo.md`
 - `agent/release.md` -> `.opencode/agent/release.md` (when present)
@@ -245,7 +214,7 @@ This installs the following repo-local OpenCode assets:
 - `commands/split-tasks.md` -> `.opencode/commands/split-tasks.md`
 - `commands/split-tasks-strict.md` -> `.opencode/commands/split-tasks-strict.md`
 
-After installing the binary with `install.sh` or `install.ps1`, run `yolo-runner init --repo <repo>` inside each target repository so those OpenCode assets are installed locally.
+These files are intentionally repo-local so task clones inherit the same OpenCode agent, skill, and command behavior.
 
 ### Task Splitting Skill
 
@@ -265,35 +234,6 @@ Examples:
 ```text
 /split-tasks-strict Break this feature request into the smallest useful tasks for an autonomous coding agent.
 ```
-
-## Update
-
-Use `update` to refresh `yolo-runner` from GitHub release artifacts.
-
-```bash
-./bin/yolo-runner update [flags]
-```
-
-Flags:
-
-- `--release` (default `latest`): install the latest release, or pin to a specific tag like `v1.2.3`.
-- `--os` (default local OS): target OS (`linux`, `darwin`, `windows`).
-- `--arch` (default local architecture): target architecture (`amd64`, `arm64`).
-- `--install-dir`: optional destination directory (defaults to platform-specific `~/.local/bin`, or `%LOCALAPPDATA%/yolo-runner/bin` on Windows).
-- `--release-api`: base GitHub releases API URL (default `https://api.github.com/repos/egv/yolo-runner`).
-
-Resolution and selection behavior:
-
-- Release resolution uses `/releases/latest` for `latest`, or `/releases/tags/<tag>` for pinned tags.
-- The installer selects `yolo-runner_<os>_<arch>.tar.gz` for non-Windows and `yolo-runner_<os>_<arch>.zip` for Windows.
-- Checksums are validated from matching `checksums-<artifact>.txt` entries before install.
-
-Install constraints:
-
-- Install is transactional. If any file copy fails, the command rolls back all changes to the previous state.
-- The selected destination directory must be writable; updates fail with `not writable` when permissions block extraction or write.
-- On Windows, `--install-dir` must be an absolute Windows path (drive/UNC path) or the command fails with `unsupported Windows install path`.
-- Ensure the install directory is on `PATH`, or run `./bin/yolo-runner` with the full path.
 
 ## Features & Flags
 
@@ -371,25 +311,24 @@ Features:
 From repo root:
 
 ```
-./bin/yolo-runner --repo . --root algi-8bt --model gpt-4o
-./bin/yolo-runner --repo . --root algi-8bt --dry-run
+./bin/yolo-agent --repo . --root algi-8bt --model gpt-4o
+./bin/yolo-agent --repo . --root algi-8bt --dry-run
 ```
 
-The runner starts a TUI by default when attached to a TTY. Use `--headless` to disable the TUI and force plain log output.
+Pipe `--stream` output into `yolo-tui` for live monitoring, or use `yolo-webui` against the distributed bus.
 
 Common options:
 - `--max N` limit number of tasks processed
 - `--dry-run` print the task prompt without running OpenCode
-- `--headless` disable the TUI (useful for CI or non-TTY runs)
 - `--concurrency N` or `--concurrency auto` - Parallel task execution (default: 1)
 - `--tdd` enable strict TDD mode (Red/Green/Refactor)
 - `--quality-gate` validate task clarity before execution
-- `--mode stream|ui` set output mode; omit for headless (no streaming)
+- `--mode stream|ui` set output mode for event delivery
 - `--stream` output JSONL events for TUI consumption
 - `--events PATH` write events to file
 - `--retry-budget N` max retries per task (default: 5)
 - `--profile NAME` use tracker profile from config
-- `--backend codex|codex-cli|opencode|opencode-serve|opencode-acp|claude|kimi|gemini` agent backend
+- `--backend codex|opencode|claude|kimi|gemini` agent backend
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
 
@@ -771,20 +710,10 @@ Features:
 - View agent thoughts and tool calls
 - Export filtered logs
 
-## Legacy Logging
+## Task Logs
 
-- Runner summary log: `runner-logs/beads_yolo_runner.jsonl`
-- Per-task OpenCode logs: `runner-logs/opencode/<issue-id>.jsonl`
-
-## Sample output
-
-```
-$ ./bin/yolo-runner --repo . --root algi-8bt --max 1
-[runner] selected bead yolo-runner-127.2.5
-[runner] starting opencode run
-[opencode] running task yolo-runner-127.2.5
-[runner] commit created and bead closed
-```
+- Event stream: `runner-logs/*.events.jsonl`
+- Per-task backend logs: `.yolo-runner/clones/<task-id>/runner-logs/`
 
 ## Troubleshooting: output looks stuck
 
@@ -806,15 +735,13 @@ If flags are added later to change the config location, use those to override th
 
 ## Manual Smoke Test
 
-Use a throwaway branch or a fresh worktree so the run-once flow can safely create a commit and update beads.
+1. Create a throwaway branch and ensure the repo is clean.
+2. Confirm the repo-local `.opencode/` assets are installed.
+3. Run `./bin/yolo-agent --repo . --root <root-id> --max 1 --stream | ./bin/yolo-tui --events-stdin`.
+4. Inspect the resulting commit and confirm it only includes the expected task changes.
+5. Review the emitted event log and the per-task backend log under `.yolo-runner/clones/<task-id>/runner-logs/`.
 
-1. Create a throwaway branch (or worktree) and ensure the repo is clean.
-2. Run `bd ready` and confirm the selected bead is the one you want to exercise end-to-end.
-3. Run the runner once, for example: `./bin/yolo-runner --repo . --root <root-id> --max 1`.
-4. Inspect the resulting commit and confirm it only includes the expected changes for the bead.
-5. Review the logs at `runner-logs/beads_yolo_runner.jsonl` and `runner-logs/opencode/<issue-id>.jsonl` to confirm the run-once flow completed.
-
-Success looks like: the runner finishes without errors, a single commit exists for the bead, the bead is closed and synced, and the logs show a complete OpenCode run with a recorded commit and `bd close`/`bd sync` steps.
+Success looks like: the agent run finishes without errors, task status/data are updated as expected, and the logs show a complete implementation/review cycle.
 
 ## Session Completion
 
@@ -833,19 +760,14 @@ rm -rf .yolo-runner/clones/*
 
 This keeps `tk ready` output clean and removes old working directories.
 
-## Failure Modes
-
-- **No changes after OpenCode run**: task is marked `blocked`; no commit or close.
-- **Commit fails**: runner exits with the git error; task remains in progress.
-- **OpenCode fails**: runner exits with the OpenCode error code.
-
 ## Troubleshooting
 
 ### Agent Or Skill Not Found
 
-```bash
-./bin/yolo-runner init --repo .
-```
+- Confirm `.opencode/agent/yolo.md` exists.
+- Confirm it includes `permission: allow`.
+- Confirm `.opencode/skills/task-splitting/SKILL.md` exists when task splitting is expected.
+- Confirm `.opencode/commands/split-tasks.md` and `.opencode/commands/split-tasks-strict.md` exist when those commands are expected.
 
 ### Task Not Found in Clone
 
@@ -893,17 +815,16 @@ Enable verbose output:
 ./bin/yolo-agent --repo . --root <epic> --stream --verbose 2>&1 | tee debug.log
 ```
 
-### Legacy Agent Issues
+### OpenCode Asset Issues
 
-If the runner refuses to start with agent errors:
+If startup fails with agent/skill/command errors:
 
-1. Run `./bin/yolo-runner init --repo .` to reinstall the agent, skill, and commands.
+1. Reinstall the repo-local `.opencode/` assets from the tracked source files in this repo.
 2. Confirm `.opencode/agent/yolo.md` exists and includes `permission: allow`.
 3. Confirm `.opencode/skills/task-splitting/SKILL.md` exists.
 4. Confirm `.opencode/commands/split-tasks.md` and `.opencode/commands/split-tasks-strict.md` exist.
-5. Re-run the runner after the OpenCode asset installation is complete.
+5. Re-run the agent after the OpenCode asset installation is complete.
 
 ## Notes
 
 - OpenCode is run in CI mode to avoid interactive prompts.
-- The runner is responsible for `bd close` and `bd sync` after a successful commit.

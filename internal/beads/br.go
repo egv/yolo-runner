@@ -3,8 +3,6 @@ package beads
 import (
 	"os"
 	"path/filepath"
-
-	"github.com/egv/yolo-runner/v2/internal/runner"
 )
 
 // RustAdapter provides beads_rust (br) CLI integration
@@ -43,14 +41,14 @@ func NewRustAdapter(runner Runner) *RustAdapter {
 }
 
 // Ready returns the next ready issue under the given root
-func (a *RustAdapter) Ready(rootID string) (runner.Issue, error) {
+func (a *RustAdapter) Ready(rootID string) (Issue, error) {
 	output, err := a.run("ready", "--parent", rootID, "--json")
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
-	var issues []runner.Issue
+	var issues []Issue
 	if err := traceJSONParse("Ready", []byte(output), &issues); err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 	if len(issues) == 0 {
 		return a.readyFallback(rootID)
@@ -58,7 +56,7 @@ func (a *RustAdapter) Ready(rootID string) (runner.Issue, error) {
 	if len(issues) == 1 {
 		return issues[0], nil
 	}
-	return runner.Issue{
+	return Issue{
 		ID:        rootID,
 		IssueType: "epic",
 		Status:    "open",
@@ -67,10 +65,10 @@ func (a *RustAdapter) Ready(rootID string) (runner.Issue, error) {
 }
 
 // Tree returns the full issue tree for a root ID
-func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
+func (a *RustAdapter) Tree(rootID string) (Issue, error) {
 	issues, err := a.listTree(rootID)
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 	if len(issues) > 0 {
 		for _, issue := range issues {
@@ -78,7 +76,7 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 				return issue, nil
 			}
 		}
-		return runner.Issue{
+		return Issue{
 			ID:        rootID,
 			IssueType: "epic",
 			Status:    "open",
@@ -89,25 +87,25 @@ func (a *RustAdapter) Tree(rootID string) (runner.Issue, error) {
 	// Fallback: try to show the root directly
 	output, err := a.run("show", rootID, "--json")
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
-	var fallback []runner.Issue
+	var fallback []Issue
 	if err := traceJSONParse("TreeFallback", []byte(output), &fallback); err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 	if len(fallback) == 0 {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	return fallback[0], nil
 }
 
 // listTree fetches child issues using br ready with parent filter
-func (a *RustAdapter) listTree(rootID string) ([]runner.Issue, error) {
+func (a *RustAdapter) listTree(rootID string) ([]Issue, error) {
 	output, err := a.run("ready", "--parent", rootID, "--recursive", "--json")
 	if err != nil {
 		return nil, err
 	}
-	var issues []runner.Issue
+	var issues []Issue
 	if err := traceJSONParse("listTree", []byte(output), &issues); err != nil {
 		return nil, err
 	}
@@ -115,24 +113,24 @@ func (a *RustAdapter) listTree(rootID string) ([]runner.Issue, error) {
 }
 
 // readyFallback handles case when no children are ready
-func (a *RustAdapter) readyFallback(rootID string) (runner.Issue, error) {
+func (a *RustAdapter) readyFallback(rootID string) (Issue, error) {
 	output, err := a.run("show", rootID, "--json")
 	if err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
-	var issues []runner.Issue
+	var issues []Issue
 	if err := traceJSONParse("readyFallback", []byte(output), &issues); err != nil {
-		return runner.Issue{}, err
+		return Issue{}, err
 	}
 	if len(issues) == 0 {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	issue := issues[0]
 	if issue.Status != "open" {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	if issue.IssueType == "epic" {
-		return runner.Issue{}, nil
+		return Issue{}, nil
 	}
 	return issue, nil
 }
@@ -147,20 +145,20 @@ type brShowIssue struct {
 }
 
 // Show returns a single issue by ID
-func (a *RustAdapter) Show(id string) (runner.Bead, error) {
+func (a *RustAdapter) Show(id string) (Bead, error) {
 	output, err := a.run("show", id, "--json")
 	if err != nil {
-		return runner.Bead{}, err
+		return Bead{}, err
 	}
 	var issues []brShowIssue
 	if err := traceJSONParse("Show", []byte(output), &issues); err != nil {
-		return runner.Bead{}, err
+		return Bead{}, err
 	}
 	if len(issues) == 0 {
-		return runner.Bead{}, nil
+		return Bead{}, nil
 	}
 	issue := issues[0]
-	return runner.Bead{
+	return Bead{
 		ID:                 issue.ID,
 		Title:              issue.Title,
 		Description:        issue.Description,

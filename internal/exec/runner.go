@@ -74,10 +74,10 @@ func (cr *CommandRunner) shouldLogCommand(args []string) bool {
 	}
 
 	command := args[0]
-	return command == "bd" || command == "git"
+	return command == "br" || command == "git" || command == "tk"
 }
 
-// These functions are copied from cmd/yolo-runner/exec.go to avoid import cycles
+// These helpers keep shell output formatting local to the command runner.
 func printCommand(out io.Writer, args []string) {
 	if out == nil {
 		return

@@ -109,9 +109,7 @@ If a run is interrupted, reset state before restarting:
 3. Remove stale clone(s) under `.yolo-runner/clones/<task-id>`.
 4. Clear stale `in_flight` entries in `.yolo-runner/scheduler-state.json`.
 
-## yolo-runner / yolo-agent Examples
-
-Prefer `yolo-agent` for new runs (legacy `yolo-runner` remains compatibility mode).
+## yolo-agent Examples
 
 ### GitHub profile + TUI streaming
 
@@ -141,10 +139,4 @@ export GITHUB_TOKEN=<github-personal-access-token>
   --repo . \
   --root <github-epic-issue-number> \
   --stream | ./bin/yolo-tui --events-stdin
-```
-
-### Legacy compatibility command
-
-```bash
-./bin/yolo-runner --repo . --root <root-id> --model gpt-5.3-codex-spark
 ```

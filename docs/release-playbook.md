@@ -31,12 +31,12 @@ gh release download v2.5.0 --pattern "checksums-*.txt"
 sha256sum -c checksums-yolo-runner_linux_amd64.tar.gz.txt
 ```
 
-## Smoke Install and Update Check
+## Smoke Install and CLI Check
 
 ```bash
 export TAG=v2.5.0
 curl -fsSL -o /tmp/yolo-runner-linux-amd64.tar.gz https://github.com/egv/yolo-runner/releases/download/${TAG}/yolo-runner_linux_amd64.tar.gz
 tar -xzf /tmp/yolo-runner-linux-amd64.tar.gz -C /tmp
-/tmp/yolo-runner --version
-/tmp/yolo-runner update --check
+/tmp/yolo-task --version
+/tmp/yolo-tui --version
 ```
