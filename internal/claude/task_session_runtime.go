@@ -439,7 +439,7 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 		return errors.New("claude stdout pipe is nil")
 	}
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var msg struct {
