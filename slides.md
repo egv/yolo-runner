@@ -6,6 +6,9 @@ info: |
   Preliminary Slidev deck based on keynote.md.
 aspectRatio: 16/9
 transition: slide-left
+layout: cover
+background: radial-gradient(circle at top left, rgba(109,91,208,0.18), transparent 28%), radial-gradient(circle at top right, rgba(47,143,91,0.14), transparent 24%), linear-gradient(180deg, #fbfaf7 0%, #f3efe6 100%)
+class: text-left
 mdc: true
 drawings:
   persist: false
@@ -49,6 +52,7 @@ drawings:
   line-height: 1;
   font-weight: 700;
   margin: 0.3rem 0 0.8rem;
+  color: var(--yr-ink);
 }
 
 .hero-subtitle {
@@ -88,6 +92,16 @@ drawings:
 .idea-card h4 {
   margin: 0 0 0.6rem;
   font-size: 1.08rem;
+}
+
+.compact-card {
+  padding: 0.85rem 0.95rem;
+  font-size: 0.94rem;
+}
+
+.compact-card h3 {
+  margin-bottom: 0.45rem;
+  font-size: 1rem;
 }
 
 .idea-card ul {
@@ -134,26 +148,85 @@ drawings:
 .soft-list li + li {
   margin-top: 0.45rem;
 }
+
+.prompt-card pre {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  background: rgba(31, 41, 55, 0.94);
+  color: #f9fafb;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  overflow: hidden;
+}
+
+.tight-list li + li {
+  margin-top: 0.3rem;
+}
+
+.cover-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(18rem, 0.85fr);
+  gap: 1.8rem;
+  align-items: end;
+  margin-top: -1.6rem;
+}
+
+.cover-main {
+  padding-top: 0.6rem;
+}
+
+.cover-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 1.15rem;
+}
+
+.cover-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.36rem 0.72rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  color: var(--yr-ink);
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(31, 41, 55, 0.12);
+}
+
+.slidev-layout.cover .cover-panel {
+  padding: 1.15rem 1.2rem;
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.62));
+  border: 1px solid rgba(109, 91, 208, 0.18);
+  box-shadow: 0 18px 40px rgba(31, 41, 55, 0.08);
+  color: var(--yr-ink) !important;
+}
+
+.slidev-layout.cover .cover-panel h3 {
+  margin: 0 0 0.7rem;
+  font-size: 1.08rem;
+  color: var(--yr-ink) !important;
+}
+
+.slidev-layout.cover .cover-panel ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--yr-ink) !important;
+}
+
+.slidev-layout.cover .cover-panel li {
+  color: var(--yr-ink) !important;
+}
+
+.cover-caption {
+  margin-top: 0.9rem;
+  font-size: 0.9rem;
+  color: var(--yr-muted);
+}
 </style>
 
----
-layout: cover
-background: radial-gradient(circle at top left, rgba(109,91,208,0.18), transparent 28%), radial-gradient(circle at top right, rgba(47,143,91,0.14), transparent 24%), linear-gradient(180deg, #fbfaf7 0%, #f3efe6 100%)
-class: text-left
----
-
-<div class="deck-kicker">Черновик доклада</div>
-
-<div class="hero-title">YOLO Runner</div>
-
-<div class="hero-subtitle">
-Как я собираю себе систему для долгой автономной работы кодинг-агентов:
-через задачи в трекере, оркестратор и раннеры.
-</div>
-
-<div class="mini-note">
-Предварительная версия на основе <code>keynote.md</code>.
-</div>
+<div class="cover-shell"><div class="cover-main"><div class="deck-kicker">Оркестрация кодинг-агентов</div><div class="hero-title">YOLO Runner</div><div class="hero-subtitle">Как я собираю себе control plane для долгой автономной работы кодинг-агентов: через задачи в трекере, оркестратор, раннеры и жесткие гардрейлы.</div><div class="cover-pills"><span class="cover-pill">tracker-first</span><span class="cover-pill">review + guardrails</span><span class="cover-pill">multi-runner</span><span class="cover-pill">hackathon ideas inside</span></div></div><div class="cover-panel accent-purple"><h3>Внутри</h3><ul class="soft-list tight-list"><li>почему chat-first loop перестал хватать</li><li>архитектура: tracker, orchestrator, runners</li><li>review, prompts и guardrails</li><li>идеи, которые можно утащить себе</li></ul><div class="cover-caption">Не про «еще один AI chat», а про слой управления длинной работой агентов.</div></div></div>
 
 ---
 
@@ -180,64 +253,100 @@ layout: section
 
 ---
 
-# Проблема
+# Проблема, которую я реально хотел решить
 
 <div class="card-grid grid-3">
   <div class="idea-card accent-purple">
-    <h3>Дефицит внимания</h3>
-    <p>Постоянное переключение между окнами и задачами ломает фокус и мешает возвращаться к важному.</p>
+    <h3>Агент полезен, но живет короткими сессиями</h3>
+    <p>Без отдельного control plane каждая длинная задача распадается на пачку ручных возвратов в чат и повторное восстановление контекста.</p>
   </div>
   <div class="idea-card accent-blue">
-    <h3>Слишком много ручного контроля</h3>
-    <p>Нужно бесконечно подтверждать, уточнять, принимать решения и держать всё в голове.</p>
+    <h3>Управление живет у меня в голове</h3>
+    <p>Статусы, зависимости, кто что уже сделал и что еще надо проверить не должны существовать только в памяти оператора.</p>
   </div>
   <div class="idea-card accent-green">
-    <h3>Ночные лимиты простаивают</h3>
-    <p>Дорогие и полезные токены есть, но они не превращаются в длинную автономную работу.</p>
+    <h3>Пока меня нет, система простаивает</h3>
+    <p>Ночные лимиты и параллельный compute почти не используются, если каждое следующее действие требует моего ручного пинка.</p>
   </div>
 </div>
 
+<div class="mini-note">То есть мне был нужен не просто еще один чат с агентом, а рабочий слой оркестрации для длинного цикла разработки.</div>
+
 ---
 
-# Мои интересы очень специфичны
+# Требования, которые я себе поставил
 
 <div class="card-grid grid-3">
   <div class="idea-card accent-gold">
-    <h3>Долгая работа без меня</h3>
-    <p>Хочется, чтобы система продолжала двигаться по задачам, пока я сплю или занят другим.</p>
+    <h3>Tracker-first</h3>
+    <p>Задачи, статусы и зависимости должны жить в привычном трекере, а не в отдельном закрытом UI.</p>
   </div>
   <div class="idea-card accent-blue">
-    <h3>Контроль через трекер</h3>
-    <p>Управление должно идти через привычные задачи и статусы, а не через отдельный чат-ритуал.</p>
+    <h3>Долгая работа без меня</h3>
+    <p>Система должна уметь сама брать ready-задачи и двигаться дальше, пока я сплю или занят другим.</p>
   </div>
   <div class="idea-card accent-green">
-    <h3>Разные агенты</h3>
-    <p>Нужна возможность выбирать модель, инструменты и раннер под конкретный тип работы.</p>
+    <h3>Несколько раннеров</h3>
+    <p>Нужно легко менять модель, тулы, execution profile и тип раннера под конкретную задачу.</p>
+  </div>
+  <div class="idea-card accent-purple">
+    <h3>Восстановимость</h3>
+    <p>После падения или остановки должно быть понятно, что уже произошло, что завершилось и что можно безопасно продолжать.</p>
+  </div>
+  <div class="idea-card accent-gold">
+    <h3>Жесткие гардрейлы</h3>
+    <p>Git, ревью, тесты и переходы статусов должны быть ограничены политикой, а не свободной импровизацией модели.</p>
+  </div>
+  <div class="idea-card accent-blue">
+    <h3>Наблюдаемость</h3>
+    <p>Нужны события, логи и понятный мониторинг, чтобы я видел систему целиком, а не гадал, что там происходит.</p>
   </div>
 </div>
 
 ---
 
-# Почему не что-то готовое
+# Что я пробовал до этого
 
-<div class="card-grid grid-2">
+<div class="card-grid grid-3">
   <div class="idea-card accent-purple">
-    <h3>Мои задачи довольно нишевые</h3>
-    <ul class="soft-list">
-      <li>длинные автономные прогоны</li>
-      <li>жесткая привязка к трекеру задач</li>
-      <li>несколько типов раннеров и агентов</li>
-    </ul>
+    <h3>Обычный chat-first loop</h3>
+    <p><b>Нравится:</b> очень низкий порог входа, быстрый старт.</p>
+    <p><b>Не нравится:</b> плохо держит длинную очередь задач и почти всегда требует постоянного babysitting.</p>
   </div>
   <div class="idea-card accent-blue">
-    <h3>Это еще и учебный проект</h3>
-    <ul class="soft-list">
-      <li>понять, как устроены такие системы внутри</li>
-      <li>пощупать реальные ограничения и компромиссы</li>
-      <li>собрать свой слой управления поверх агентов</li>
-    </ul>
+    <h3>Ad-hoc скрипты и automation</h3>
+    <p><b>Нравится:</b> детерминированность и предсказуемость.</p>
+    <p><b>Не нравится:</b> быстро упирается в бедный контекст, слабое ревью и жесткую ручную интеграцию с репозиторием.</p>
+  </div>
+  <div class="idea-card accent-green">
+    <h3>Чужие идеи оркестрации</h3>
+    <p><b>Нравится:</b> там очень много хороших паттернов, которые можно украсть.</p>
+    <p><b>Не нравится:</b> подгонять их под tracker-first workflow, мои гардрейлы и мой набор агентов оказалось дороже, чем собрать тонкий свой слой.</p>
   </div>
 </div>
+
+<div class="mini-note">Это не хейт на готовые решения. Наоборот: большая часть хороших идей в таких системах переиспользуется, просто не всегда в исходной форме.</div>
+
+---
+
+# Почему в итоге я пошел в NIH
+
+<div class="card-grid grid-3">
+  <div class="idea-card accent-purple">
+    <h3>Не ради платформы</h3>
+    <p>Я не хотел строить новый большой продукт. Мне нужен был рабочий control plane для моего способа разработки.</p>
+  </div>
+  <div class="idea-card accent-blue">
+    <h3>Мне важна inspectability</h3>
+    <p>Я хочу сам видеть статусы, prompts, policy, git-следы, review-решения и понимать, почему система приняла именно такое решение.</p>
+  </div>
+  <div class="idea-card accent-green">
+    <h3>Цена кастомизации оказалась ниже</h3>
+    <p>В моем случае оказалось проще написать тонкий orchestration layer вокруг агентов, чем ломать свои ограничения об чужую abstraction.</p>
+  </div>
+</div>
+
+<div class="mini-note">Для меня NIH здесь не про «переписать всё», а про «держать собственными руками слой принятия решений и гардрейлов».</div>
 
 ---
 layout: section
@@ -269,90 +378,282 @@ layout: section
 # Верхнеуровневая схема
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 42, 'rankSpacing': 58, 'padding': 12 } } }%%
 flowchart LR
-  Storage["Хранилище задач"]
-  Orchestrator["Агент-оркестратор"]
-  Runners["Раннеры"]
-  Agents["Кодинг-агенты"]
-  Repo["Репозиторий / task clones"]
-  Monitor["Мониторинг / yolo-tui"]
+  User["<div align='left'><b>Пользователь</b><br/>ставит задачи<br/>и следит за прогрессом</div>"]
 
-  Storage --> Orchestrator
+  subgraph MainPath[" "]
+    direction TB
+    Storage["<div align='left'><b>Хранилище задач</b><br/>задачи, статусы,<br/>связи</div>"]
+    Orchestrator["<div align='left'><b>Оркестратор</b><br/>берет ready-задачи<br/>запускает раннеры<br/>делает review / merge</div>"]
+    Monitor["<div align='left'><b>Мониторинг</b><br/>yolo-tui + events</div>"]
+
+    Storage --> Orchestrator --> Monitor
+  end
+
+  subgraph ExecPath[" "]
+    direction TB
+    Runners["<div align='left'><b>Раннеры</b><br/>workspace + вызов<br/>агента</div>"]
+    Agents["<div align='left'><b>Кодинг-агенты</b><br/>OpenCode / Codex /<br/>Claude / Kimi</div>"]
+    Repo["<div align='left'><b>Репозиторий</b><br/>код, task clones,<br/>commits</div>"]
+
+    Runners --> Agents
+    Runners --> Repo
+  end
+
+  User --> Storage
   Orchestrator --> Runners
-  Runners --> Agents
-  Runners --> Repo
-  Orchestrator --> Monitor
+
+  classDef user fill:#f4f1ff,stroke:#6d5bd0,stroke-width:1.5px,color:#1f183d;
+  classDef core fill:#eef6ff,stroke:#3f7ad6,stroke-width:1.5px,color:#10233f;
+  classDef runtime fill:#eefbf3,stroke:#2f8f5b,stroke-width:1.5px,color:#123020;
+  classDef support fill:#fff8e8,stroke:#c38a1b,stroke-width:1.5px,color:#3d2a08;
+
+  class User user;
+  class Storage,Orchestrator core;
+  class Runners,Agents,Repo runtime;
+  class Monitor support;
+  style MainPath fill:transparent,stroke:transparent;
+  style ExecPath fill:transparent,stroke:transparent;
 ```
 
 ---
 
-# Хранилище задач
+# Хранилище задач: как работает поток
 
-<div class="card-grid grid-2">
-  <div class="idea-card accent-blue">
-    <h3>Что оно хранит</h3>
-    <ul class="soft-list">
-      <li>сами задачи</li>
-      <li>статусы</li>
-      <li>родительские связи</li>
-      <li>зависимости между задачами</li>
-    </ul>
-  </div>
-  <div class="idea-card accent-gold">
-    <h3>Зачем это важно</h3>
-    <ul class="soft-list">
-      <li>можно запускать только то, что действительно готово к выполнению</li>
-      <li>можно управлять всем через привычный трекер</li>
-      <li>система не живет отдельной жизнью от задач</li>
-    </ul>
-  </div>
-</div>
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  Tracker["TK / GitHub /<br/>Linear / beads"]
+  Adapter["адаптер<br/>backend-а"]
+  Model["общая модель<br/>задач"]
+  Storage["storage<br/>manager"]
+  Graph["граф задач<br/>и связей"]
+  Ready["ready / runnable<br/>queue"]
+  Update["апдейты<br/>статусов и связей"]
 
-<div class="mini-note">В текущей реализации это могут быть TK, GitHub, Linear, beads/br.</div>
+  Tracker --> Adapter --> Model --> Storage --> Graph --> Ready
+  Storage --> Update --> Adapter --> Tracker
+```
+
+<div class="mini-note">Идея простая: какой бы трекер ни стоял под капотом, оркестратор видит одну и ту же нормализованную модель задач.</div>
 
 ---
 
-# Агент-оркестратор
+# Агент-оркестратор: цикл работы
 
-<div class="idea-card accent-purple">
-  <ul class="soft-list">
-    <li>получает текущее дерево задач</li>
-    <li>решает, что можно запускать прямо сейчас</li>
-    <li>раздает задачи раннерам в нужном порядке</li>
-    <li>контролирует прогресс, логи, проверки и завершение работы</li>
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  Start["старт"] --> Config["profile<br/>+ config"]
+  Config --> Load["загрузка дерева<br/>задач"]
+  Load --> Pick["выбор ready-<br/>задач"]
+  Pick --> Launch["запуск<br/>раннеров"]
+  Launch --> Watch["события, логи,<br/>проверки"]
+  Watch --> Decide["review / retry /<br/>merge"]
+  Decide --> Update["обновление<br/>tracker"]
+  Update -. следующий цикл .-> Load
+```
+
+<div class="mini-note">Именно здесь живет логика «что запускать дальше», «кого перезапустить» и «когда задачу можно закрыть».</div>
+
+---
+
+# Что происходит на этапе ревью
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  Result["результат<br/>раннера"] --> Tests["таргетные<br/>проверки"]
+  Tests --> Diff["diff + измененные<br/>файлы"]
+  Diff --> Review["review-проход"]
+  Review --> Policy["guardrails /<br/>policy"]
+  Policy --> Ok{"OK?"}
+  Ok -->|да| Merge["merge +<br/>close"]
+  Ok -->|нет| Retry["retry / rewrite<br/>/ comment"]
+  Retry --> Result
+```
+
+<div class="mini-note">Сначала детерминированные проверки, потом judgement, и только в конце изменение статуса. Это сильно снижает хаос.</div>
+
+---
+
+# Где тут вообще живут промпты
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  State["task state +<br/>retry context"] --> TaskPrompt["implement / review<br/>prompt builder"]
+  TaskPrompt --> Runner["runner / agent"]
+  Runner --> ReviewPrompt["structured review<br/>verdict + feedback"]
+  ReviewPrompt --> Policy["merge / retry /<br/>policy"]
+```
+
+<div class="mini-note">Для этого доклада важен именно prompt builder в <code>internal/agent/loop.go</code>: он собирает implementation/review prompts из режима, состояния задачи и retry-контекста.</div>
+
+---
+layout: two-cols
+---
+
+# Реальный implement prompt из кода
+
+```text
+Command Contract:
+- Work only on this task; do not switch tasks.
+- Do not call task-selection/status tools
+  (the runner owns task state).
+- Keep edits scoped to files required
+  for this task.
+
+Strict TDD Checklist:
+[ ] Add or update a test that fails
+    for the target behavior.
+[ ] Run the targeted test and confirm
+    it fails before implementation.
+[ ] Implement the minimal code change
+    required for the test to pass.
+```
+
+<div class="mini-note">Источник: <code>internal/agent/loop.go</code>, функция <code>buildPrompt</code>.</div>
+
+::right::
+
+<div class="idea-card accent-gold">
+  <h3>Что здесь важно</h3>
+  <ul class="soft-list tight-list">
+    <li>это не моя интерпретация, а реальный excerpt из <code>buildPrompt</code></li>
+    <li>runner явно забирает себе task selection и status management</li>
+    <li>scope control и tests-first зашиты прямо в prompt contract</li>
+    <li>по коду видно, что при включенном TDD mode checklist заменяется на еще более жесткий Red-Green-Refactor workflow</li>
   </ul>
 </div>
 
-<div class="mini-note">Именно здесь живет вся логика «что делать дальше».</div>
+---
+layout: two-cols
+---
+
+# Реальный review prompt из кода
+
+```text
+Review Instructions:
+- Include exactly one verdict line in this format:
+  REVIEW_VERDICT: pass OR REVIEW_VERDICT: fail
+- Use pass only when implementation satisfies
+  acceptance criteria and tests.
+- If fail, include exactly one structured line:
+  REVIEW_FAIL_FEEDBACK: <blocking gaps and fixes>
+
+Verdict-only follow-up:
+- Respond with exactly one line and no extra text:
+  REVIEW_VERDICT: pass
+  or
+  REVIEW_VERDICT: fail
+```
+
+<div class="mini-note">Источники: <code>internal/agent/loop.go</code>, функции <code>buildPrompt</code> и <code>buildReviewVerdictPrompt</code>.</div>
+
+::right::
+
+<div class="idea-card accent-green compact-card">
+  <h3>Что здесь важно</h3>
+  <ul class="soft-list tight-list">
+    <li>review здесь не prose, а structured protocol</li>
+    <li>verdict и feedback нормализованы под автоматический retry-loop</li>
+    <li>если reviewer не вернул verdict format, код шлет отдельный follow-up prompt</li>
+    <li>это уже prompt как interface, а не просто текст для модели</li>
+  </ul>
+</div>
 
 ---
 
-# Раннер
+# Раннер: жизненный цикл задачи
 
-<div class="card-grid grid-2">
-  <div class="idea-card accent-green">
-    <h3>Что делает</h3>
-    <ul class="soft-list">
-      <li>запускает backend кодинг-агента</li>
-      <li>общается через ACP, CLI или app server</li>
-      <li>выполняет задачу в рабочей копии репозитория</li>
-    </ul>
-  </div>
-  <div class="idea-card accent-gold">
-    <h3>Что для меня важно</h3>
-    <ul class="soft-list">
-      <li>можно подменять модель и инструменты</li>
-      <li>можно делать YOLO-режим там, где это уместно</li>
-      <li>можно сравнивать поведение разных агентов</li>
-    </ul>
-  </div>
-</div>
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  Task["задача"] --> Prep["clone + brief<br/>+ profile"]
+  Prep --> Backend["runner backend<br/>+ transport"]
+  Backend --> Agent["coding agent"]
+  Agent --> Work["код, тесты,<br/>git, артефакты"]
+  Work --> Report["events + status<br/>обратно в loop"]
+```
+
+<div class="mini-note">За счет этого слоя можно менять модель, набор инструментов и execution profile, не ломая весь остальной pipeline.</div>
+
+---
+
+# Мониторинг и распределенный режим
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+flowchart LR
+  Local["локальный<br/>оркестратор"] --> Files["events.jsonl"]
+  Local --> Bus["event bus"]
+  Executor["удаленный<br/>executor"] --> Bus
+  Bus --> TUI["yolo-tui"]
+  Files --> TUI
+  TUI --> User["оператор"]
+```
+
+<div class="mini-note">Даже если задачи исполняются на других машинах, оператор продолжает смотреть на один поток событий и один мониторинг. Под капотом bus может быть Redis или NATS.</div>
 
 ---
 layout: section
 ---
 
-# Что самое важное
+# Что можно утащить себе
+
+---
+
+# С чего начать на хакатоне
+
+<div class="card-grid grid-2">
+  <div class="idea-card accent-blue">
+    <h3>1. Возьмите один backend задач</h3>
+    <p>Не начинайте с «поддержим всё». Один tracker, одна схема статусов, один ready-queue уже дают половину системы.</p>
+  </div>
+  <div class="idea-card accent-purple">
+    <h3>2. Захардкодьте один flow</h3>
+    <p><code>ready -> run -> review -> close</code> почти всегда полезнее, чем «универсальный framework» в первый weekend.</p>
+  </div>
+  <div class="idea-card accent-green">
+    <h3>3. Возьмите одного раннера</h3>
+    <p>Один агент, один prompt, один event format. Мультиагентность стоит добавлять только после первого устойчивого прохода.</p>
+  </div>
+  <div class="idea-card accent-gold">
+    <h3>4. Сразу делайте мониторинг</h3>
+    <p>JSONL events, простая TUI или хотя бы timeline логов нужны с первого дня. Иначе вы не поймете, что ломается.</p>
+  </div>
+</div>
+
+<div class="mini-note">Самая частая ошибка: начать с абстракций, а не с одного жестко работающего контура.</div>
+
+---
+
+# Жестко заданные flow-ы, которые реально работают
+
+<div class="card-grid grid-2">
+  <div class="idea-card accent-purple">
+    <h3>Implement lane</h3>
+    <p><code>task -> implement -> review -> PR/merge</code></p>
+    <p>Хорошая базовая дорожка почти для любого хакатона.</p>
+  </div>
+  <div class="idea-card accent-blue">
+    <h3>Bugfix lane</h3>
+    <p><code>issue -> reproduce -> fix -> targeted tests -> close</code></p>
+    <p>Лучше всего работает на узких задачах с понятным критерием done.</p>
+  </div>
+  <div class="idea-card accent-green">
+    <h3>Cleanup / docs lane</h3>
+    <p><code>task -> diff -> lint/check -> merge</code></p>
+    <p>Удобный полигон, чтобы обкатать events, review и статусы без высокого риска.</p>
+  </div>
+  <div class="idea-card accent-gold">
+    <h3>Batch backlog lane</h3>
+    <p><code>ready queue -> N workers -> auto review -> human gate</code></p>
+    <p>Подходит, когда уже есть уверенность в базовом контуре и хочется параллелизма.</p>
+  </div>
+</div>
 
 ---
 
@@ -379,11 +680,11 @@ layout: section
 
 ---
 
-# Roadmap
+# Что дальше в самом проекте
 
 <div class="card-grid grid-2">
   <div class="idea-card accent-blue">
-    <h3>Больше раннеров</h3>
+    <h3>Больше раннеров и профилей</h3>
     <ul class="soft-list">
       <li>разные модели</li>
       <li>разные инструменты</li>
@@ -395,21 +696,30 @@ layout: section
     <ul class="soft-list">
       <li>подключение раннеров по сети</li>
       <li>параллельная работа на отдельных машинах</li>
+      <li>нормальная диспетчеризация executor-ов</li>
     </ul>
   </div>
+</div>
+
+---
+
+# Что дальше: hardening и reusable kit
+
+<div class="card-grid grid-2">
   <div class="idea-card accent-gold">
-    <h3>Безопасность</h3>
+    <h3>Безопасность и секреты</h3>
     <ul class="soft-list">
       <li>усиление sandbox-модели</li>
-      <li>возможно контейнеризация</li>
+      <li>контейнеризация там, где она окупается</li>
       <li>более аккуратная передача секретов</li>
     </ul>
   </div>
   <div class="idea-card accent-purple">
-    <h3>Оргмодель</h3>
+    <h3>То, что можно превратить в kit</h3>
     <ul class="soft-list">
-      <li>BYOT / shared ownership</li>
-      <li>использование не только для одного проекта</li>
+      <li>starter templates для хакатона</li>
+      <li>набор готовых flow presets</li>
+      <li>повторно используемые prompt / policy packs</li>
     </ul>
   </div>
 </div>
