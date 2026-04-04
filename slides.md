@@ -36,6 +36,11 @@ drawings:
   letter-spacing: -0.02em;
 }
 
+.slidev-layout h3 {
+  font-size: 1.22rem;
+  line-height: 1.18;
+}
+
 .deck-kicker {
   display: inline-block;
   margin-bottom: 1rem;
@@ -91,17 +96,24 @@ drawings:
 .idea-card h3,
 .idea-card h4 {
   margin: 0 0 0.6rem;
-  font-size: 1.08rem;
+  font-size: 1.18rem;
+  line-height: 1.16;
+}
+
+.idea-card p,
+.idea-card li {
+  font-size: 0.96rem;
+  line-height: 1.35;
 }
 
 .compact-card {
   padding: 0.85rem 0.95rem;
-  font-size: 0.94rem;
+  font-size: 0.9rem;
 }
 
 .compact-card h3 {
   margin-bottom: 0.45rem;
-  font-size: 1rem;
+  font-size: 1.06rem;
 }
 
 .idea-card ul {
@@ -224,9 +236,77 @@ drawings:
   font-size: 0.9rem;
   color: var(--yr-muted);
 }
+
+.mermaid {
+  font-size: 0.82rem;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid :is(foreignObject div, .label, .nodeLabel) {
+  font-size: 0.78rem !important;
+  line-height: 1.12 !important;
+}
+
+.qr-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+  margin-top: 1.8rem;
+}
+
+.qr-card {
+  padding: 0.9rem;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(31, 41, 55, 0.12);
+  box-shadow: 0 10px 30px rgba(31, 41, 55, 0.08);
+}
+
+.repo-qr {
+  display: block;
+  width: 10.5rem;
+  height: 10.5rem;
+}
+
+.repo-link-block {
+  max-width: 18rem;
+  text-align: left;
+}
+
+.repo-link {
+  font-size: 1.05rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.repo-link a {
+  color: var(--yr-purple);
+  text-decoration: none;
+}
 </style>
 
 <div class="cover-shell"><div class="cover-main"><div class="deck-kicker">Оркестрация кодинг-агентов</div><div class="hero-title">YOLO Runner</div><div class="hero-subtitle">Как я собираю себе control plane для долгой автономной работы кодинг-агентов: через задачи в трекере, оркестратор, раннеры и жесткие гардрейлы.</div><div class="cover-pills"><span class="cover-pill">tracker-first</span><span class="cover-pill">review + guardrails</span><span class="cover-pill">multi-runner</span><span class="cover-pill">hackathon ideas inside</span></div></div><div class="cover-panel accent-purple"><h3>Внутри</h3><ul class="soft-list tight-list"><li>почему chat-first loop перестал хватать</li><li>архитектура: tracker, orchestrator, runners</li><li>review, prompts и guardrails</li><li>идеи, которые можно утащить себе</li></ul><div class="cover-caption">Не про «еще один AI chat», а про слой управления длинной работой агентов.</div></div></div>
+
+---
+
+# Репозиторий
+
+<div class="qr-panel">
+  <div class="qr-card">
+    <img class="repo-qr" src="/docs/repo-qr.svg" alt="QR code to github.com/egv/yolo-runner" />
+  </div>
+  <div class="repo-link-block">
+    <div class="deck-kicker">Сканируйте сразу</div>
+    <div class="repo-link"><a href="https://github.com/egv/yolo-runner" target="_blank">github.com/egv/yolo-runner</a></div>
+    <div class="mini-note">Код, README и текущий статус проекта лежат в репозитории.</div>
+  </div>
+</div>
 
 ---
 
@@ -235,14 +315,14 @@ drawings:
 <div class="idea-card accent-purple">
   <h3>Заготовка для короткого интро</h3>
   <ul class="soft-list">
-    <li><b>[Имя, команда, роль]</b></li>
-    <li>[Чем занимаетесь в обычной жизни]</li>
-    <li>[Почему вам вообще понадобилась такая система]</li>
+    <li><b>Гена Евстратов</b></li>
+    <li>работаю в сфере ИИ</li>
+    <li>вне работы тоже делаю ИИ, потому что недостаёт естественного</li>
   </ul>
 </div>
 
 <div class="mini-note">
-Сюда можно вставить короткую подводку на 20-30 секунд, когда появится финальный контекст выступления.
+из-за дичайшего FOMO захотел сделать свой харнесс
 </div>
 
 ---
@@ -378,14 +458,14 @@ layout: section
 # Верхнеуровневая схема
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 42, 'rankSpacing': 58, 'padding': 12 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 48, 'rankSpacing': 64, 'padding': 9 } } }%%
 flowchart LR
   User["<div align='left'><b>Пользователь</b><br/>ставит задачи<br/>и следит за прогрессом</div>"]
 
   subgraph MainPath[" "]
     direction TB
     Storage["<div align='left'><b>Хранилище задач</b><br/>задачи, статусы,<br/>связи</div>"]
-    Orchestrator["<div align='left'><b>Оркестратор</b><br/>берет ready-задачи<br/>запускает раннеры<br/>делает review / merge</div>"]
+    Orchestrator["<div align='left'><b>Оркестратор</b><br/>берет ready-задачи<br/>запускает раннеры<br/>review,<br/>merge</div>"]
     Monitor["<div align='left'><b>Мониторинг</b><br/>yolo-tui + events</div>"]
 
     Storage --> Orchestrator --> Monitor
@@ -393,9 +473,9 @@ flowchart LR
 
   subgraph ExecPath[" "]
     direction TB
-    Runners["<div align='left'><b>Раннеры</b><br/>workspace + вызов<br/>агента</div>"]
+    Runners["<div align='left'><b>Раннеры</b><br/>workspace<br/>+ запуск<br/>агента</div>"]
     Agents["<div align='left'><b>Кодинг-агенты</b><br/>OpenCode / Codex /<br/>Claude / Kimi</div>"]
-    Repo["<div align='left'><b>Репозиторий</b><br/>код, task clones,<br/>commits</div>"]
+    Repo["<div align='left'><b>Репозиторий</b><br/>код,<br/>task clones,<br/>commits</div>"]
 
     Runners --> Agents
     Runners --> Repo
@@ -422,15 +502,15 @@ flowchart LR
 # Хранилище задач: как работает поток
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   Tracker["TK / GitHub /<br/>Linear / beads"]
-  Adapter["адаптер<br/>backend-а"]
+  Adapter["адаптер<br/>трекера"]
   Model["общая модель<br/>задач"]
   Storage["storage<br/>manager"]
   Graph["граф задач<br/>и связей"]
   Ready["ready / runnable<br/>queue"]
-  Update["апдейты<br/>статусов и связей"]
+  Update["апдейты<br/>статусов<br/>и связей"]
 
   Tracker --> Adapter --> Model --> Storage --> Graph --> Ready
   Storage --> Update --> Adapter --> Tracker
@@ -443,13 +523,13 @@ flowchart LR
 # Агент-оркестратор: цикл работы
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   Start["старт"] --> Config["profile<br/>+ config"]
   Config --> Load["загрузка дерева<br/>задач"]
   Load --> Pick["выбор ready-<br/>задач"]
   Pick --> Launch["запуск<br/>раннеров"]
-  Launch --> Watch["события, логи,<br/>проверки"]
+  Launch --> Watch["события,<br/>логи,<br/>проверки"]
   Watch --> Decide["review / retry /<br/>merge"]
   Decide --> Update["обновление<br/>tracker"]
   Update -. следующий цикл .-> Load
@@ -462,7 +542,7 @@ flowchart LR
 # Что происходит на этапе ревью
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   Result["результат<br/>раннера"] --> Tests["таргетные<br/>проверки"]
   Tests --> Diff["diff + измененные<br/>файлы"]
@@ -481,11 +561,11 @@ flowchart LR
 # Где тут вообще живут промпты
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   State["task state +<br/>retry context"] --> TaskPrompt["implement / review<br/>prompt builder"]
   TaskPrompt --> Runner["runner / agent"]
-  Runner --> ReviewPrompt["structured review<br/>verdict + feedback"]
+  Runner --> ReviewPrompt["structured review<br/>verdict +<br/>feedback"]
   ReviewPrompt --> Policy["merge / retry /<br/>policy"]
 ```
 
@@ -569,13 +649,13 @@ Verdict-only follow-up:
 # Раннер: жизненный цикл задачи
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   Task["задача"] --> Prep["clone + brief<br/>+ profile"]
   Prep --> Backend["runner backend<br/>+ transport"]
   Backend --> Agent["coding agent"]
   Agent --> Work["код, тесты,<br/>git, артефакты"]
-  Work --> Report["events + status<br/>обратно в loop"]
+  Work --> Report["events +<br/>status<br/>обратно в loop"]
 ```
 
 <div class="mini-note">За счет этого слоя можно менять модель, набор инструментов и execution profile, не ломая весь остальной pipeline.</div>
@@ -585,7 +665,7 @@ flowchart LR
 # Мониторинг и распределенный режим
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '16px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 24, 'rankSpacing': 32, 'padding': 10 } } }%%
+%%{init: {'theme': 'base', 'themeVariables': { 'fontFamily': 'Inter, ui-sans-serif, system-ui', 'fontSize': '13px', 'primaryColor': '#f0ecff', 'primaryTextColor': '#1f2937', 'primaryBorderColor': '#8a76e0', 'lineColor': '#4b5563', 'secondaryColor': '#eef5ff', 'tertiaryColor': '#eefaf2' }, 'flowchart': { 'htmlLabels': true, 'curve': 'basis', 'nodeSpacing': 28, 'rankSpacing': 38, 'padding': 9 } } }%%
 flowchart LR
   Local["локальный<br/>оркестратор"] --> Files["events.jsonl"]
   Local --> Bus["event bus"]
@@ -732,6 +812,17 @@ class: text-center
 # Спасибо
 
 ### Вопросы, идеи, возражения
+
+<div class="qr-panel">
+  <div class="qr-card">
+    <img class="repo-qr" src="/docs/repo-qr.svg" alt="QR code to github.com/egv/yolo-runner" />
+  </div>
+  <div class="repo-link-block">
+    <div class="deck-kicker">Репозиторий</div>
+    <div class="repo-link"><a href="https://github.com/egv/yolo-runner" target="_blank">github.com/egv/yolo-runner</a></div>
+    <div class="mini-note">Можно сканировать прямо с финального слайда.</div>
+  </div>
+</div>
 
 <div class="mini-note">
 Следующий шаг для этого черновика: добавить один живой кейс, короткое демо и финальный слайд «что уже работает сегодня».
