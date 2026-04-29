@@ -17,3 +17,4 @@ internal/beads/.beads/
 # Python cache (bootstrap runner only; never commit)
 __pycache__/
 *.pyc
+.DS_Store

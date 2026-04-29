@@ -60,11 +60,11 @@ type TaskTree struct {
 	Relations []TaskRelation
 
 	// MissingDependencyIDs contains dependency IDs referenced by tasks in the tree
-	// that are not present in the snapshot.
+	// that are unresolved outside the current snapshot.
 	MissingDependencyIDs []string
 
 	// MissingDependenciesByTask maps task IDs to dependency IDs they reference that are
-	// missing from the snapshot.
+	// unresolved outside the current snapshot.
 	MissingDependenciesByTask map[string][]string
 }
 
@@ -94,9 +94,10 @@ type TaskEngine interface {
 
 // TaskGraph represents a directed task graph with explicit nodes and edges.
 type TaskGraph struct {
-	RootID string
-	Nodes  map[string]*TaskNode
-	Edges  []TaskEdge
+	RootID                    string
+	Nodes                     map[string]*TaskNode
+	Edges                     []TaskEdge
+	MissingDependenciesByTask map[string][]string
 }
 
 // TaskEdge is a directed relationship from FromID -> ToID.

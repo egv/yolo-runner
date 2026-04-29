@@ -132,3 +132,41 @@ func TestGetTaskTreeFromJSONLRespectsSiblingOrdering(t *testing.T) {
 		t.Fatalf("expected only first task to be ready, got %#v", ready)
 	}
 }
+
+func TestGetTaskTreeFromJSONLBlocksUnclosedExternalDependencies(t *testing.T) {
+	repoRoot := t.TempDir()
+	beadsDir := filepath.Join(repoRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+	issues := strings.Join([]string{
+		`{"id":"root","title":"OpenCode Epic","status":"open","issue_type":"epic"}`,
+		`{"id":"root.ready","title":"Ready Task","status":"open","issue_type":"task","dependencies":[{"issue_id":"root.ready","depends_on_id":"root","type":"parent-child"},{"issue_id":"root.ready","depends_on_id":"external.closed","type":"blocks"}]}`,
+		`{"id":"root.blocked","title":"Blocked Task","status":"open","issue_type":"task","dependencies":[{"issue_id":"root.blocked","depends_on_id":"root","type":"parent-child"},{"issue_id":"root.blocked","depends_on_id":"external.open","type":"blocks"}]}`,
+		`{"id":"external.closed","title":"External Closed","status":"closed","issue_type":"task"}`,
+		`{"id":"external.open","title":"External Open","status":"open","issue_type":"task"}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), []byte(issues+"\n"), 0o644); err != nil {
+		t.Fatalf("write issues.jsonl: %v", err)
+	}
+
+	manager := NewTaskManager(&fakeRunner{}, repoRoot)
+	tree, err := manager.GetTaskTree(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := tree.MissingDependenciesByTask["root.ready"]; len(got) != 0 {
+		t.Fatalf("closed external dependency should not block root.ready, got %#v", got)
+	}
+	if got := tree.MissingDependenciesByTask["root.blocked"]; !reflect.DeepEqual(got, []string{"external.open"}) {
+		t.Fatalf("expected root.blocked to be blocked by external.open, got %#v", got)
+	}
+	graph, err := engine.NewTaskEngine().BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+	ready := engine.NewTaskEngine().GetNextAvailable(graph)
+	if len(ready) != 1 || ready[0].ID != "root.ready" {
+		t.Fatalf("expected only task with closed external dependency to be ready, got %#v", ready)
+	}
+}

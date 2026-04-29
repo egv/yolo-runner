@@ -467,6 +467,33 @@ func TestTaskEngineGetNextAvailableSkipsTasksWithMissingDependencyNodes(t *testi
 	}
 }
 
+func TestTaskEngineGetNextAvailableSkipsTasksWithUnresolvedExternalDependencies(t *testing.T) {
+	engine := NewTaskEngine()
+	tree := &contracts.TaskTree{
+		Root: contracts.Task{ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
+		Tasks: map[string]contracts.Task{
+			"root": {ID: "root", Title: "Root", Status: contracts.TaskStatusOpen},
+			"task": {ID: "task", Title: "Task", Status: contracts.TaskStatusOpen},
+		},
+		Relations: []contracts.TaskRelation{
+			{FromID: "root", ToID: "task", Type: contracts.RelationParent},
+		},
+		MissingDependenciesByTask: map[string][]string{
+			"task": {"external-open"},
+		},
+	}
+
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+
+	got := engine.GetNextAvailable(graph)
+	if len(got) != 0 {
+		t.Fatalf("GetNextAvailable() = %v, want no runnable tasks with unresolved external dependencies", summaryIDs(got))
+	}
+}
+
 func TestTaskEngineGetNextAvailableReturnsOnlyLeafTasks(t *testing.T) {
 	engine := NewTaskEngine()
 	tree := &contracts.TaskTree{

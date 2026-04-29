@@ -135,9 +135,10 @@ func (e *TaskEngine) BuildGraph(tree *contracts.TaskTree) (*contracts.TaskGraph,
 	sortTaskEdges(edges)
 
 	return &contracts.TaskGraph{
-		RootID: rootID,
-		Nodes:  nodes,
-		Edges:  edges,
+		RootID:                    rootID,
+		Nodes:                     nodes,
+		Edges:                     edges,
+		MissingDependenciesByTask: cloneMissingDependenciesByTask(tree.MissingDependenciesByTask),
 	}, nil
 }
 
@@ -164,7 +165,7 @@ func (e *TaskEngine) GetNextAvailable(graph *contracts.TaskGraph) []contracts.Ta
 		if isContainerNode(id, graph.RootID, node) {
 			continue
 		}
-		if dependenciesSatisfied(graph.Nodes, node) {
+		if dependenciesSatisfied(graph, node) {
 			available = append(available, contracts.TaskSummary{
 				ID:       node.ID,
 				Title:    node.Task.Title,
@@ -187,6 +188,9 @@ func (e *TaskEngine) CalculateConcurrency(graph *contracts.TaskGraph, opts contr
 			continue
 		}
 		deps := 0
+		if len(graph.MissingDependenciesByTask[id]) > 0 {
+			deps++
+		}
 		for _, dependency := range node.Dependencies {
 			if dependency == nil {
 				continue
@@ -270,7 +274,7 @@ func (e *TaskEngine) UpdateTaskStatus(graph *contracts.TaskGraph, taskID string,
 	if node == nil {
 		return fmt.Errorf("task %q not found", taskID)
 	}
-	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(graph.Nodes, node) {
+	if status == contracts.TaskStatusClosed && !dependenciesSatisfied(graph, node) {
 		return fmt.Errorf("cannot close task %q: dependencies are not closed", taskID)
 	}
 	node.Status = status
@@ -598,12 +602,53 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 	return copy
 }
 
-func dependenciesSatisfied(nodes map[string]*contracts.TaskNode, node *contracts.TaskNode) bool {
+func cloneMissingDependenciesByTask(depsByTask map[string][]string) map[string][]string {
+	if len(depsByTask) == 0 {
+		return nil
+	}
+	copy := make(map[string][]string, len(depsByTask))
+	for taskID, deps := range depsByTask {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" || len(deps) == 0 {
+			continue
+		}
+		depCopy := make([]string, 0, len(deps))
+		seen := make(map[string]struct{}, len(deps))
+		for _, depID := range deps {
+			depID = strings.TrimSpace(depID)
+			if depID == "" {
+				continue
+			}
+			if _, exists := seen[depID]; exists {
+				continue
+			}
+			seen[depID] = struct{}{}
+			depCopy = append(depCopy, depID)
+		}
+		if len(depCopy) == 0 {
+			continue
+		}
+		sort.Strings(depCopy)
+		copy[taskID] = depCopy
+	}
+	if len(copy) == 0 {
+		return nil
+	}
+	return copy
+}
+
+func dependenciesSatisfied(graph *contracts.TaskGraph, node *contracts.TaskNode) bool {
+	if graph == nil || node == nil {
+		return false
+	}
+	if len(graph.MissingDependenciesByTask[node.ID]) > 0 {
+		return false
+	}
 	for _, dependency := range node.Dependencies {
 		if dependency == nil {
 			return false
 		}
-		graphDependency, exists := nodes[dependency.ID]
+		graphDependency, exists := graph.Nodes[dependency.ID]
 		if !exists || graphDependency == nil || graphDependency.Status != contracts.TaskStatusClosed {
 			return false
 		}

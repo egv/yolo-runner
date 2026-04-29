@@ -274,7 +274,8 @@ func (m *TaskManager) getTaskTreeFromJSONL(rootID string) (*contracts.TaskTree, 
 				relations = append(relations, contracts.TaskRelation{FromID: id, ToID: dependsOnID, Type: contracts.RelationDependsOn})
 				continue
 			}
-			if _, ok := issues[dependsOnID]; ok {
+			depIssue, ok := issues[dependsOnID]
+			if !ok || contracts.TaskStatus(depIssue.Status) != contracts.TaskStatusClosed {
 				missingSet[dependsOnID] = struct{}{}
 				missingByTask[id] = append(missingByTask[id], dependsOnID)
 			}
