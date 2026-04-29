@@ -26,7 +26,7 @@ release-gate-e8:
 
 RELEASE_WITH_GATE ?= 0
 
-release-v2.6.1:
+release-v2.7.0:
 	@if [ -n "$$(git status --short)" ]; then \
 		echo "release preflight failed: working tree is not clean"; \
 		git status --short; \
@@ -36,8 +36,8 @@ release-v2.6.1:
 	go build ./...
 	@if [ "$(RELEASE_WITH_GATE)" = "1" ]; then make release-gate-e8; fi
 	@echo "Tagging:"
-	@echo "git tag -a v2.6.1 -m \"Release v2.6.1\""
-	@echo "git push origin v2.6.1"
+	@echo "git tag -a v2.7.0 -m \"Release v2.7.0\""
+	@echo "git push origin v2.7.0"
 
 build:
 	mkdir -p bin
