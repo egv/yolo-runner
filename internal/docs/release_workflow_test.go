@@ -2,6 +2,8 @@ package docs
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -226,6 +228,11 @@ func TestReleaseWorkflowBuildsToolchainBundleWithVersionMetadata(t *testing.T) {
 	}
 
 	buildBinaries := releaseWorkflowBinariesFromStepRun(buildStepRun)
+	for _, binary := range buildBinaries {
+		if _, err := os.Stat(filepath.Join("..", "..", "cmd", binary)); err != nil {
+			t.Fatalf("release workflow includes binary %q without tracked cmd package: %v", binary, err)
+		}
+	}
 	for _, binary := range binaries {
 		found := false
 		for _, listed := range buildBinaries {

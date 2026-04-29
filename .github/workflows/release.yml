@@ -41,7 +41,7 @@ jobs:
       - name: Build and package release artifact
         run: |
           mkdir -p dist
-          binaries="yolo-runner yolo-agent yolo-task yolo-tui yolo-webui"
+          binaries="yolo-agent yolo-task yolo-tui yolo-webui"
 
           if [[ "${{ matrix.os }}" == "windows" ]]; then
             ext=".exe"
