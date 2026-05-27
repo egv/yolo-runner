@@ -36,6 +36,14 @@ func (s trackerConfigService) ResolveAgentDefaults(repoRoot string) (yoloAgentCo
 	return resolveYoloAgentConfigDefaults(model.Agent, catalog)
 }
 
+func (s trackerConfigService) ResolveTrackerAgentConfig(repoRoot string) (trackerAgentConfig, error) {
+	model, err := s.LoadModel(repoRoot)
+	if err != nil {
+		return trackerAgentConfig{}, err
+	}
+	return resolveTrackerAgentConfig(model.TrackerAgent, repoRoot)
+}
+
 func (s trackerConfigService) ResolveTrackerProfile(repoRoot string, selectedProfile string, rootID string, getenv func(string) string) (resolvedTrackerProfile, error) {
 	model, err := s.LoadModel(repoRoot)
 	if err != nil {
