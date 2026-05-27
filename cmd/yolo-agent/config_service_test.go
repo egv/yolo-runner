@@ -1,8 +1,10 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTrackerConfigServiceLoadModelDefaultsWhenConfigMissing(t *testing.T) {
@@ -124,6 +126,86 @@ agent:
 	}
 	if !strings.Contains(err.Error(), "agent.backend") {
 		t.Fatalf("expected backend field guidance, got %q", err.Error())
+	}
+}
+
+func TestTrackerConfigServiceResolveTrackerAgentConfigAcceptsFieldsAndDefaults(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+tracker_agent:
+  poll_interval: 45s
+  lock_path: locks/tracker-agent.lock
+  labels:
+    ready: custom-ready
+    in_progress: custom-running
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveTrackerAgentConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected tracker_agent config to resolve, got %v", err)
+	}
+	if cfg.PollInterval != 45*time.Second {
+		t.Fatalf("expected poll interval 45s, got %s", cfg.PollInterval)
+	}
+	if got, want := cfg.LockPath, filepath.Join(repoRoot, "locks", "tracker-agent.lock"); got != want {
+		t.Fatalf("expected lock path %q, got %q", want, got)
+	}
+	if cfg.Labels.Ready != "custom-ready" {
+		t.Fatalf("expected custom ready label, got %q", cfg.Labels.Ready)
+	}
+	if cfg.Labels.InProgress != "custom-running" {
+		t.Fatalf("expected custom in-progress label, got %q", cfg.Labels.InProgress)
+	}
+	if cfg.Labels.Completed != "yolo-agent-completed" {
+		t.Fatalf("expected default completed label, got %q", cfg.Labels.Completed)
+	}
+	if cfg.Labels.Blocked != "yolo-agent-blocked" {
+		t.Fatalf("expected default blocked label, got %q", cfg.Labels.Blocked)
+	}
+	if cfg.Labels.Failed != "yolo-agent-failed" {
+		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
+	}
+}
+
+func TestTrackerConfigServiceResolveTrackerAgentConfigDefaultsWhenOmitted(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveTrackerAgentConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected default tracker_agent config to resolve, got %v", err)
+	}
+	if cfg.PollInterval != 30*time.Second {
+		t.Fatalf("expected default poll interval 30s, got %s", cfg.PollInterval)
+	}
+	if got, want := cfg.LockPath, filepath.Join(repoRoot, ".yolo-runner", "tracker-agent.lock"); got != want {
+		t.Fatalf("expected default lock path %q, got %q", want, got)
+	}
+	if cfg.Labels.Ready != "yolo-agent-ready" {
+		t.Fatalf("expected default ready label, got %q", cfg.Labels.Ready)
+	}
+	if cfg.Labels.InProgress != "yolo-agent-in-progress" {
+		t.Fatalf("expected default in-progress label, got %q", cfg.Labels.InProgress)
+	}
+	if cfg.Labels.Completed != "yolo-agent-completed" {
+		t.Fatalf("expected default completed label, got %q", cfg.Labels.Completed)
+	}
+	if cfg.Labels.Blocked != "yolo-agent-blocked" {
+		t.Fatalf("expected default blocked label, got %q", cfg.Labels.Blocked)
+	}
+	if cfg.Labels.Failed != "yolo-agent-failed" {
+		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
 	}
 }
 

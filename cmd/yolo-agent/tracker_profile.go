@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/beads"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -25,6 +26,14 @@ const (
 	trackerConfigRelPath   = ".yolo-runner/config.yaml"
 	linearTokenEnvVarLabel = "linear.auth.token_env"
 	githubTokenEnvVarLabel = "github.auth.token_env"
+
+	defaultTrackerAgentPollInterval = 30 * time.Second
+	defaultTrackerAgentLockPath     = ".yolo-runner/tracker-agent.lock"
+	defaultTrackerAgentReadyLabel   = "yolo-agent-ready"
+	defaultTrackerAgentRunningLabel = "yolo-agent-in-progress"
+	defaultTrackerAgentDoneLabel    = "yolo-agent-completed"
+	defaultTrackerAgentBlockedLabel = "yolo-agent-blocked"
+	defaultTrackerAgentFailedLabel  = "yolo-agent-failed"
 )
 
 type profileSelectionInput struct {
@@ -36,6 +45,7 @@ type trackerProfilesModel struct {
 	DefaultProfile string                       `yaml:"default_profile"`
 	Profiles       map[string]trackerProfileDef `yaml:"profiles"`
 	Agent          yoloAgentConfigModel         `yaml:"agent,omitempty"`
+	TrackerAgent   trackerAgentConfigModel      `yaml:"tracker_agent,omitempty"`
 	Tracker        trackerModel                 `yaml:"tracker,omitempty"`
 }
 
@@ -100,6 +110,26 @@ type yoloAgentConfigModel struct {
 	WatchdogTimeout  string `yaml:"watchdog_timeout,omitempty"`
 	WatchdogInterval string `yaml:"watchdog_interval,omitempty"`
 	RetryBudget      *int   `yaml:"retry_budget,omitempty"`
+}
+
+type trackerAgentConfigModel struct {
+	PollInterval string                       `yaml:"poll_interval,omitempty"`
+	LockPath     string                       `yaml:"lock_path,omitempty"`
+	Labels       trackerAgentLabelNamesConfig `yaml:"labels,omitempty"`
+}
+
+type trackerAgentLabelNamesConfig struct {
+	Ready      string `yaml:"ready,omitempty"`
+	InProgress string `yaml:"in_progress,omitempty"`
+	Completed  string `yaml:"completed,omitempty"`
+	Blocked    string `yaml:"blocked,omitempty"`
+	Failed     string `yaml:"failed,omitempty"`
+}
+
+type trackerAgentConfig struct {
+	PollInterval time.Duration
+	LockPath     string
+	Labels       trackerAgentLabelNamesConfig
 }
 
 type resolvedTrackerProfile struct {
@@ -451,6 +481,63 @@ func defaultTrackerProfilesModel() trackerProfilesModel {
 			},
 		},
 	}
+}
+
+func resolveTrackerAgentConfig(model trackerAgentConfigModel, repoRoot string) (trackerAgentConfig, error) {
+	cfg := defaultTrackerAgentConfig()
+
+	if rawPollInterval := strings.TrimSpace(model.PollInterval); rawPollInterval != "" {
+		pollInterval, err := time.ParseDuration(rawPollInterval)
+		if err != nil {
+			return trackerAgentConfig{}, fmt.Errorf("tracker_agent.poll_interval in %s must be a valid duration: %w", trackerConfigRelPath, err)
+		}
+		if pollInterval <= 0 {
+			return trackerAgentConfig{}, fmt.Errorf("tracker_agent.poll_interval in %s must be greater than 0", trackerConfigRelPath)
+		}
+		cfg.PollInterval = pollInterval
+	}
+
+	if lockPath := strings.TrimSpace(model.LockPath); lockPath != "" {
+		cfg.LockPath = lockPath
+	}
+	cfg.LockPath = resolveTrackerAgentLockPath(repoRoot, cfg.LockPath)
+
+	cfg.Labels.Ready = resolveTrackerAgentLabel(model.Labels.Ready, cfg.Labels.Ready)
+	cfg.Labels.InProgress = resolveTrackerAgentLabel(model.Labels.InProgress, cfg.Labels.InProgress)
+	cfg.Labels.Completed = resolveTrackerAgentLabel(model.Labels.Completed, cfg.Labels.Completed)
+	cfg.Labels.Blocked = resolveTrackerAgentLabel(model.Labels.Blocked, cfg.Labels.Blocked)
+	cfg.Labels.Failed = resolveTrackerAgentLabel(model.Labels.Failed, cfg.Labels.Failed)
+
+	return cfg, nil
+}
+
+func defaultTrackerAgentConfig() trackerAgentConfig {
+	return trackerAgentConfig{
+		PollInterval: defaultTrackerAgentPollInterval,
+		LockPath:     defaultTrackerAgentLockPath,
+		Labels: trackerAgentLabelNamesConfig{
+			Ready:      defaultTrackerAgentReadyLabel,
+			InProgress: defaultTrackerAgentRunningLabel,
+			Completed:  defaultTrackerAgentDoneLabel,
+			Blocked:    defaultTrackerAgentBlockedLabel,
+			Failed:     defaultTrackerAgentFailedLabel,
+		},
+	}
+}
+
+func resolveTrackerAgentLockPath(repoRoot string, lockPath string) string {
+	cleaned := filepath.Clean(strings.TrimSpace(lockPath))
+	if filepath.IsAbs(cleaned) || strings.TrimSpace(repoRoot) == "" {
+		return cleaned
+	}
+	return filepath.Join(repoRoot, cleaned)
+}
+
+func resolveTrackerAgentLabel(raw string, fallback string) string {
+	if label := strings.TrimSpace(raw); label != "" {
+		return label
+	}
+	return fallback
 }
 
 func validateTrackerModel(profileName string, model trackerModel, rootID string, getenv func(string) string) (trackerModel, error) {
