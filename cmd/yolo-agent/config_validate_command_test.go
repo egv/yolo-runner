@@ -124,6 +124,83 @@ agent:
 	}
 }
 
+func TestRunConfigValidateCommandValidatesTrackerAgentConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    string
+		wantField string
+		wantCause string
+	}{
+		{
+			name: "non positive poll interval",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+tracker_agent:
+  poll_interval: 0s
+`,
+			wantField: "tracker_agent.poll_interval",
+			wantCause: "must be greater than 0",
+		},
+		{
+			name: "empty lock path",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+tracker_agent:
+  lock_path: ""
+`,
+			wantField: "tracker_agent.lock_path",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "empty label",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+tracker_agent:
+  labels:
+    ready: ""
+`,
+			wantField: "tracker_agent.labels.ready",
+			wantCause: "must not be empty",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeTrackerConfigYAML(t, repoRoot, tc.config)
+
+			stdoutText, stderrText := captureOutput(t, func() {
+				code := runConfigValidateCommand([]string{"--repo", repoRoot})
+				if code != 1 {
+					t.Fatalf("expected exit code 1, got %d", code)
+				}
+			})
+
+			if stdoutText != "" {
+				t.Fatalf("expected no stdout output for invalid config, got %q", stdoutText)
+			}
+			if !strings.Contains(stderrText, "field: "+tc.wantField) {
+				t.Fatalf("expected field %s in output, got %q", tc.wantField, stderrText)
+			}
+			if !strings.Contains(stderrText, "reason: "+tc.wantCause) {
+				t.Fatalf("expected reason to contain %q, got %q", tc.wantCause, stderrText)
+			}
+			if !strings.Contains(stderrText, "remediation:") {
+				t.Fatalf("expected remediation guidance in output, got %q", stderrText)
+			}
+		})
+	}
+}
+
 func TestRunConfigValidateCommandValidConfigJSONOutputUsesStableSchema(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
