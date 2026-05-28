@@ -328,6 +328,116 @@ profiles:
 	}
 }
 
+func TestResolveTrackerProfileValidatesStartrekQueues(t *testing.T) {
+	t.Run("accepts one or more queues with existing roots", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		arcRoot := filepath.Join(repoRoot, "arcadia")
+		queueARoot := filepath.Join(arcRoot, "queue-a")
+		queueBRoot := filepath.Join(arcRoot, "queue-b")
+		for _, root := range []string{queueARoot, queueBRoot} {
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatalf("mkdir arcadia root: %v", err)
+			}
+		}
+		writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+profiles:
+  default:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.example.test
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: QUEUEA
+            root: %s
+          - key: QUEUEB
+            root: %s
+`, queueARoot, queueBRoot))
+
+		got, err := resolveTrackerProfile(repoRoot, "", "root-1", func(name string) string {
+			if name == "STARTREK_TOKEN" {
+				return "token"
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatalf("expected startrek profile to validate, got %v", err)
+		}
+		if got.Tracker.Type != trackerTypeStartrek {
+			t.Fatalf("expected tracker type %q, got %q", trackerTypeStartrek, got.Tracker.Type)
+		}
+		if got.Tracker.Startrek == nil {
+			t.Fatalf("expected startrek settings to be preserved")
+		}
+		if got.Tracker.Startrek.Endpoint != "https://st-api.example.test" {
+			t.Fatalf("expected endpoint to be normalized, got %q", got.Tracker.Startrek.Endpoint)
+		}
+		if got.Tracker.Startrek.TokenEnv != "STARTREK_TOKEN" {
+			t.Fatalf("expected token_env to be normalized, got %q", got.Tracker.Startrek.TokenEnv)
+		}
+		if len(got.Tracker.Startrek.Queues) != 2 {
+			t.Fatalf("expected two queue mappings, got %#v", got.Tracker.Startrek.Queues)
+		}
+		if got.Tracker.Startrek.Queues[0].Key != "QUEUEA" || got.Tracker.Startrek.Queues[0].Root != queueARoot {
+			t.Fatalf("expected first queue mapping to be normalized, got %#v", got.Tracker.Startrek.Queues[0])
+		}
+	})
+
+	t.Run("rejects missing token env", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		queueRoot := filepath.Join(repoRoot, "arcadia", "queue-a")
+		if err := os.MkdirAll(queueRoot, 0o755); err != nil {
+			t.Fatalf("mkdir arcadia root: %v", err)
+		}
+		writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+profiles:
+  default:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.example.test
+        queues:
+          - key: QUEUEA
+            root: %s
+`, queueRoot))
+
+		_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+		if err == nil {
+			t.Fatalf("expected missing startrek token env to fail")
+		}
+		if !strings.Contains(err.Error(), `startrek.token_env`) {
+			t.Fatalf("expected token_env validation error, got %q", err.Error())
+		}
+	})
+
+	t.Run("rejects missing queue key", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		queueRoot := filepath.Join(repoRoot, "arcadia", "queue-a")
+		if err := os.MkdirAll(queueRoot, 0o755); err != nil {
+			t.Fatalf("mkdir arcadia root: %v", err)
+		}
+		writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+profiles:
+  default:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.example.test
+        token_env: STARTREK_TOKEN
+        queues:
+          - root: %s
+`, queueRoot))
+
+		_, err := resolveTrackerProfile(repoRoot, "", "root-1", func(string) string { return "token" })
+		if err == nil {
+			t.Fatalf("expected missing startrek queue key to fail")
+		}
+		if !strings.Contains(err.Error(), `startrek.queues[0].key`) {
+			t.Fatalf("expected queue key validation error, got %q", err.Error())
+		}
+	})
+}
+
 func TestBuildTaskManagerForTrackerSupportsTK(t *testing.T) {
 	manager, err := buildTaskManagerForTracker(t.TempDir(), resolvedTrackerProfile{
 		Name: "default",
