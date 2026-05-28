@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const configValidateSchemaVersion = "v1"
@@ -68,6 +71,9 @@ func defaultRunConfigValidateCommand(args []string) int {
 	if _, err := resolveYoloAgentConfigDefaults(model.Agent, catalog); err != nil {
 		return reportInvalidConfig(err, format)
 	}
+	if err := validateTrackerAgentConfigDefaults(*repo, model.TrackerAgent); err != nil {
+		return reportInvalidConfig(err, format)
+	}
 
 	profileName := resolveProfileSelectionPolicy(profileSelectionInput{
 		FlagValue: *profile,
@@ -109,6 +115,120 @@ func defaultRunConfigValidateCommand(args []string) int {
 
 	fmt.Fprintln(os.Stdout, "config is valid")
 	return 0
+}
+
+func validateTrackerAgentConfigDefaults(repoRoot string, model trackerAgentConfigModel) error {
+	if err := validateExplicitTrackerAgentConfigValues(repoRoot); err != nil {
+		return err
+	}
+
+	cfg, err := resolveTrackerAgentConfig(model, repoRoot)
+	if err != nil {
+		return err
+	}
+	return validateResolvedTrackerAgentConfigDefaults(cfg)
+}
+
+func validateResolvedTrackerAgentConfigDefaults(cfg trackerAgentConfig) error {
+	if cfg.PollInterval <= 0 {
+		return fmt.Errorf("tracker_agent.poll_interval in %s must be greater than 0", trackerConfigRelPath)
+	}
+	if strings.TrimSpace(cfg.LockPath) == "" {
+		return fmt.Errorf("tracker_agent.lock_path in %s must not be empty", trackerConfigRelPath)
+	}
+
+	labels := []struct {
+		field string
+		value string
+	}{
+		{field: "tracker_agent.labels.ready", value: cfg.Labels.Ready},
+		{field: "tracker_agent.labels.in_progress", value: cfg.Labels.InProgress},
+		{field: "tracker_agent.labels.completed", value: cfg.Labels.Completed},
+		{field: "tracker_agent.labels.blocked", value: cfg.Labels.Blocked},
+		{field: "tracker_agent.labels.failed", value: cfg.Labels.Failed},
+	}
+	for _, label := range labels {
+		if strings.TrimSpace(label.value) == "" {
+			return fmt.Errorf("%s in %s must not be empty", label.field, trackerConfigRelPath)
+		}
+	}
+	return nil
+}
+
+func validateExplicitTrackerAgentConfigValues(repoRoot string) error {
+	content, err := os.ReadFile(filepath.Join(repoRoot, trackerConfigRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot read config file at %s: %w", trackerConfigRelPath, err)
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return fmt.Errorf("cannot parse config file at %s: %w", trackerConfigRelPath, err)
+	}
+	root := configValidationYAMLDocumentRoot(&doc)
+	if root == nil {
+		return nil
+	}
+
+	trackerAgentNode := configValidationYAMLMappingValue(root, "tracker_agent")
+	if trackerAgentNode == nil || configValidationYAMLIsNull(trackerAgentNode) {
+		return nil
+	}
+	if trackerAgentNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("tracker_agent in %s must be a mapping", trackerConfigRelPath)
+	}
+
+	if node := configValidationYAMLMappingValue(trackerAgentNode, "poll_interval"); node != nil && strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("tracker_agent.poll_interval in %s must not be empty", trackerConfigRelPath)
+	}
+	if node := configValidationYAMLMappingValue(trackerAgentNode, "lock_path"); node != nil && strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("tracker_agent.lock_path in %s must not be empty", trackerConfigRelPath)
+	}
+
+	labelsNode := configValidationYAMLMappingValue(trackerAgentNode, "labels")
+	if labelsNode == nil || configValidationYAMLIsNull(labelsNode) {
+		return nil
+	}
+	if labelsNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("tracker_agent.labels in %s must be a mapping", trackerConfigRelPath)
+	}
+
+	for _, labelField := range []string{"ready", "in_progress", "completed", "blocked", "failed"} {
+		if node := configValidationYAMLMappingValue(labelsNode, labelField); node != nil && strings.TrimSpace(node.Value) == "" {
+			return fmt.Errorf("tracker_agent.labels.%s in %s must not be empty", labelField, trackerConfigRelPath)
+		}
+	}
+	return nil
+}
+
+func configValidationYAMLDocumentRoot(doc *yaml.Node) *yaml.Node {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+	return root
+}
+
+func configValidationYAMLMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func configValidationYAMLIsNull(node *yaml.Node) bool {
+	return node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!null"
 }
 
 func parseConfigValidateOutputFormat(raw string) (configValidateOutputFormat, error) {
@@ -166,6 +286,13 @@ func inferConfigField(message string) string {
 		"agent.runner_timeout",
 		"agent.watchdog_timeout",
 		"agent.watchdog_interval",
+		"tracker_agent.poll_interval",
+		"tracker_agent.lock_path",
+		"tracker_agent.labels.ready",
+		"tracker_agent.labels.in_progress",
+		"tracker_agent.labels.completed",
+		"tracker_agent.labels.blocked",
+		"tracker_agent.labels.failed",
 		"tracker.type",
 		"linear.scope.workspace",
 		linearTokenEnvVarLabel,
@@ -252,6 +379,20 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set agent.watchdog_timeout to a valid duration greater than 0 in .yolo-runner/config.yaml."
 	case "agent.watchdog_interval":
 		return "Set agent.watchdog_interval to a valid duration greater than 0 in .yolo-runner/config.yaml."
+	case "tracker_agent.poll_interval":
+		return "Set tracker_agent.poll_interval to a valid duration greater than 0, or omit it to use the default."
+	case "tracker_agent.lock_path":
+		return "Set tracker_agent.lock_path to a non-empty file path, or omit it to use the default."
+	case "tracker_agent.labels.ready":
+		return "Set tracker_agent.labels.ready to a non-empty label name, or omit it to use the default."
+	case "tracker_agent.labels.in_progress":
+		return "Set tracker_agent.labels.in_progress to a non-empty label name, or omit it to use the default."
+	case "tracker_agent.labels.completed":
+		return "Set tracker_agent.labels.completed to a non-empty label name, or omit it to use the default."
+	case "tracker_agent.labels.blocked":
+		return "Set tracker_agent.labels.blocked to a non-empty label name, or omit it to use the default."
+	case "tracker_agent.labels.failed":
+		return "Set tracker_agent.labels.failed to a non-empty label name, or omit it to use the default."
 	case "tracker.type":
 		return "Set tracker.type to a supported tracker (tk, linear, github) in .yolo-runner/config.yaml."
 	case "linear.scope.workspace":
