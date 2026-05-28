@@ -2516,10 +2516,50 @@ func isRecoverableModelFailureResult(result contracts.RunnerResult, currentModel
 
 func autoLandingCommitMessage(task contracts.Task) string {
 	taskID := strings.TrimSpace(task.ID)
+	subject := "chore(task): auto-commit before landing"
 	if taskID == "" {
-		return "chore(task): auto-commit before landing"
+		return subject
 	}
-	return fmt.Sprintf("chore(task): auto-commit before landing %s", taskID)
+	subject = fmt.Sprintf("%s %s", subject, taskID)
+
+	parentID := strings.TrimSpace(task.ParentID)
+	lineage := commitMessageLineage(parentID, taskID)
+	if len(lineage) == 0 {
+		return subject
+	}
+	return subject + "\n\n" + strings.Join(lineage, "\n")
+}
+
+func commitMessageLineage(parentID string, subtaskID string) []string {
+	var lines []string
+	if parentID != "" {
+		lines = append(lines, "Parent: "+parentID)
+	}
+	if subtaskID != "" {
+		lines = append(lines, "Subtask: "+subtaskID)
+	}
+	relates := uniqueNonEmpty(parentID, subtaskID)
+	if len(relates) > 0 {
+		lines = append(lines, "Relates: "+strings.Join(relates, ", "))
+	}
+	return lines
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func buildReviewVerdictPrompt(task contracts.Task) string {
