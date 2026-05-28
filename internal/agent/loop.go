@@ -98,6 +98,8 @@ type Loop struct {
 	cloneManager    CloneManager
 	schedulerState  *schedulerStateStore
 	parentFinalizer *parentFinalizer
+	eventMetadataMu sync.Mutex
+	eventMetadata   map[string]map[string]string
 	workerStartHook func(workerID int)
 }
 
@@ -303,7 +305,8 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 	if err != nil {
 		return summary, err
 	}
-	metadata := taskMonitoringMetadata(task)
+	metadata := taskMonitoringMetadata(task, l.options.RepoRoot)
+	l.rememberTaskEventMetadata(task.ID, metadata)
 	_ = l.emit(ctx, contracts.Event{
 		Type:      contracts.EventTypeTaskStarted,
 		TaskID:    task.ID,
@@ -1037,19 +1040,87 @@ func eventTypeForRunnerProgress(progressType string) contracts.EventType {
 	}
 }
 
-func taskMonitoringMetadata(task contracts.Task) map[string]string {
+func taskMonitoringMetadata(task contracts.Task, arcRoot string) map[string]string {
 	metadata := cloneStringMap(task.Metadata)
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
+	taskID := strings.TrimSpace(task.ID)
 	parentID := strings.TrimSpace(task.ParentID)
 	if parentID != "" {
 		metadata["parent_id"] = parentID
 	}
+	if strings.TrimSpace(metadata["subtask_id"]) == "" && parentID != "" && taskID != "" {
+		metadata["subtask_id"] = taskID
+	}
+	if strings.TrimSpace(metadata["split_id"]) == "" {
+		switch {
+		case strings.TrimSpace(metadata[parentSplitSubtaskIDsMetadataKey]) != "" && taskID != "":
+			metadata["split_id"] = taskID
+		case parentID != "":
+			metadata["split_id"] = parentID
+		}
+	}
+	if strings.TrimSpace(metadata["queue"]) == "" {
+		if queue := firstNonEmptyString(
+			taskDescriptionField(task.Description, "Queue"),
+			queueKeyFromTaskID(taskID),
+			queueKeyFromTaskID(parentID),
+		); queue != "" {
+			metadata["queue"] = queue
+		}
+	}
+	if strings.TrimSpace(metadata["arc_root"]) == "" {
+		if arcRoot = strings.TrimSpace(arcRoot); arcRoot != "" {
+			metadata["arc_root"] = arcRoot
+		}
+	}
+	if strings.TrimSpace(metadata["pr_url"]) == "" {
+		if prURL := strings.TrimSpace(metadata[parentPRURLMetadataKey]); prURL != "" {
+			metadata["pr_url"] = prURL
+		}
+	}
 	if dependencies := strings.TrimSpace(metadata["dependencies"]); dependencies != "" {
 		metadata["dependencies"] = dependencies
 	}
-	return metadata
+	return compactMetadata(metadata)
+}
+
+func taskDescriptionField(description string, field string) string {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return ""
+	}
+	prefix := field + ":"
+	for _, line := range strings.Split(description, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func queueKeyFromTaskID(taskID string) string {
+	prefix, _, ok := strings.Cut(strings.TrimSpace(taskID), "-")
+	if !ok || prefix == "" {
+		return ""
+	}
+	for _, r := range prefix {
+		if r < 'A' || r > 'Z' {
+			return ""
+		}
+	}
+	return prefix
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func cloneStringMap(input map[string]string) map[string]string {
@@ -1063,11 +1134,113 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return out
 }
 
+func (l *Loop) rememberTaskEventMetadata(taskID string, metadata map[string]string) {
+	taskID = strings.TrimSpace(taskID)
+	metadata = compactMetadata(metadata)
+	if l == nil || taskID == "" || len(metadata) == 0 {
+		return
+	}
+	l.eventMetadataMu.Lock()
+	defer l.eventMetadataMu.Unlock()
+	if l.eventMetadata == nil {
+		l.eventMetadata = map[string]map[string]string{}
+	}
+	l.eventMetadata[taskID] = cloneStringMap(metadata)
+}
+
+func (l *Loop) taskEventMetadata(taskID string) map[string]string {
+	taskID = strings.TrimSpace(taskID)
+	if l == nil || taskID == "" {
+		return nil
+	}
+	l.eventMetadataMu.Lock()
+	defer l.eventMetadataMu.Unlock()
+	return cloneStringMap(l.eventMetadata[taskID])
+}
+
+func (l *Loop) enrichEventMetadata(event contracts.Event) contracts.Event {
+	base := l.taskEventMetadata(event.TaskID)
+	if len(base) == 0 && len(event.Metadata) == 0 {
+		return event
+	}
+	merged := map[string]string{}
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range event.Metadata {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		merged[key] = value
+	}
+	if strings.TrimSpace(merged["pr_url"]) == "" {
+		if prURL := strings.TrimSpace(merged[parentPRURLMetadataKey]); prURL != "" {
+			merged["pr_url"] = prURL
+		}
+	}
+	event.Metadata = compactMetadata(merged)
+	return event
+}
+
 func (l *Loop) emit(ctx context.Context, event contracts.Event) error {
 	if l.events == nil {
 		return nil
 	}
+	event = l.enrichEventMetadata(event)
 	return l.events.Emit(ctx, event)
+}
+
+func (l *Loop) parentPRURLSnapshot(ctx context.Context) map[string]string {
+	if l == nil || l.parentFinalizer == nil || l.tasks == nil {
+		return nil
+	}
+	parentIDs, err := l.parentFinalizer.finalizationParentIDs(ctx, l.options.ParentID)
+	if err != nil {
+		return nil
+	}
+	snapshot := map[string]string{}
+	for _, parentID := range parentIDs {
+		parent, err := l.tasks.GetTask(ctx, parentID)
+		if err != nil {
+			continue
+		}
+		snapshot[parentID] = strings.TrimSpace(parent.Metadata[parentPRURLMetadataKey])
+	}
+	return snapshot
+}
+
+func (l *Loop) emitParentPRCreatedEvents(ctx context.Context, before map[string]string) {
+	if l == nil || l.parentFinalizer == nil || l.tasks == nil {
+		return
+	}
+	parentIDs, err := l.parentFinalizer.finalizationParentIDs(ctx, l.options.ParentID)
+	if err != nil {
+		return
+	}
+	for _, parentID := range parentIDs {
+		parent, err := l.tasks.GetTask(ctx, parentID)
+		if err != nil {
+			continue
+		}
+		prURL := strings.TrimSpace(parent.Metadata[parentPRURLMetadataKey])
+		if prURL == "" || before[parentID] == prURL {
+			continue
+		}
+		metadata := taskMonitoringMetadata(parent, l.options.RepoRoot)
+		metadata[parentPRCreatedMetadataKey] = "true"
+		metadata[parentPRURLMetadataKey] = prURL
+		metadata["pr_url"] = prURL
+		metadata = compactMetadata(metadata)
+		l.rememberTaskEventMetadata(parent.ID, metadata)
+		_ = l.emit(ctx, contracts.Event{
+			Type:      contracts.EventTypeTaskDataUpdated,
+			TaskID:    parent.ID,
+			TaskTitle: parent.Title,
+			Message:   "parent_pr_created",
+			Metadata:  metadata,
+			Timestamp: time.Now().UTC(),
+		})
+	}
 }
 
 func (l *Loop) runRunnerWithMonitoring(ctx context.Context, request contracts.RunnerRequest, taskID string, taskTitle string, worker string, clonePath string, queuePos int) (contracts.RunnerResult, error) {

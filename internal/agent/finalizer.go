@@ -46,8 +46,15 @@ func (l *Loop) finalizeParentIfReady(ctx context.Context) error {
 	if l == nil || l.parentFinalizer == nil {
 		return nil
 	}
-	_, err := l.parentFinalizer.FinalizeIfReady(ctx, l.options.ParentID, l.vcsForRepo(l.options.RepoRoot))
-	return err
+	before := l.parentPRURLSnapshot(ctx)
+	created, err := l.parentFinalizer.FinalizeIfReady(ctx, l.options.ParentID, l.vcsForRepo(l.options.RepoRoot))
+	if err != nil {
+		return err
+	}
+	if created {
+		l.emitParentPRCreatedEvents(ctx, before)
+	}
+	return nil
 }
 
 func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, vcs contracts.VCS) (bool, error) {
