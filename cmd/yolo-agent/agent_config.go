@@ -30,6 +30,14 @@ func loadYoloAgentConfigDefaults(repoRoot string) (yoloAgentConfigDefaults, erro
 	return resolveYoloAgentConfigDefaults(model.Agent, catalog)
 }
 
+func (s trackerConfigService) ResolveLandingConfig(repoRoot string) (landingConfig, error) {
+	model, err := s.LoadModel(repoRoot)
+	if err != nil {
+		return landingConfig{}, err
+	}
+	return resolveLandingConfig(model.Landing)
+}
+
 func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel, catalog codingagents.Catalog) (yoloAgentConfigDefaults, error) {
 	backend, err := normalizeAndValidateAgentBackend(model.Backend, catalog)
 	if err != nil {
@@ -94,6 +102,17 @@ func resolveYoloAgentConfigDefaults(model yoloAgentConfigModel, catalog codingag
 	return defaults, nil
 }
 
+func resolveLandingConfig(model landingConfigModel) (landingConfig, error) {
+	landingType, err := normalizeAndValidateLandingType(model.Type)
+	if err != nil {
+		return landingConfig{}, err
+	}
+	return landingConfig{
+		Type:          landingType,
+		TitleTemplate: strings.TrimSpace(model.TitleTemplate),
+	}, nil
+}
+
 func catalogBackendDefaultModel(catalog codingagents.Catalog, backend string) string {
 	definition, ok := catalog.Backend(backend)
 	if !ok {
@@ -125,6 +144,18 @@ func normalizeAndValidateAgentMode(raw string, field string) (string, error) {
 		return value, nil
 	}
 	return "", fmt.Errorf("%s in %s must be one of: %s, %s", field, trackerConfigRelPath, agentModeStream, agentModeUI)
+}
+
+func normalizeAndValidateLandingType(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return landingTypeGit, nil
+	}
+	switch value {
+	case landingTypeGit, landingTypeArcPR:
+		return value, nil
+	}
+	return "", fmt.Errorf("landing.type in %s must be one of: %s, %s", trackerConfigRelPath, landingTypeGit, landingTypeArcPR)
 }
 
 func parseAgentDuration(field string, raw string) (*time.Duration, error) {

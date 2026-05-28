@@ -22,6 +22,9 @@ const (
 	trackerTypeGitHub = "github"
 	trackerTypeBeads  = "beads"
 
+	landingTypeGit   = "git"
+	landingTypeArcPR = "arc-pr"
+
 	defaultProfileName     = "default"
 	trackerConfigRelPath   = ".yolo-runner/config.yaml"
 	linearTokenEnvVarLabel = "linear.auth.token_env"
@@ -46,6 +49,7 @@ type trackerProfilesModel struct {
 	Profiles       map[string]trackerProfileDef `yaml:"profiles"`
 	Agent          yoloAgentConfigModel         `yaml:"agent,omitempty"`
 	TrackerAgent   trackerAgentConfigModel      `yaml:"tracker_agent,omitempty"`
+	Landing        landingConfigModel           `yaml:"landing,omitempty"`
 	Tracker        trackerModel                 `yaml:"tracker,omitempty"`
 }
 
@@ -130,6 +134,16 @@ type trackerAgentConfig struct {
 	PollInterval time.Duration
 	LockPath     string
 	Labels       trackerAgentLabelNamesConfig
+}
+
+type landingConfigModel struct {
+	Type          string `yaml:"type,omitempty"`
+	TitleTemplate string `yaml:"title_template,omitempty"`
+}
+
+type landingConfig struct {
+	Type          string
+	TitleTemplate string
 }
 
 type resolvedTrackerProfile struct {

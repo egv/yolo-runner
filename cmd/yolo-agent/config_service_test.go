@@ -209,6 +209,74 @@ profiles:
 	}
 }
 
+func TestTrackerConfigServiceResolveLandingConfigDefaultsToGitWhenOmitted(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveLandingConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected default landing config to resolve, got %v", err)
+	}
+	if cfg.Type != "git" {
+		t.Fatalf("expected default landing type git, got %q", cfg.Type)
+	}
+	if cfg.TitleTemplate != "" {
+		t.Fatalf("expected empty default title template, got %q", cfg.TitleTemplate)
+	}
+}
+
+func TestTrackerConfigServiceResolveLandingConfigAcceptsArcPRAndTitleTemplate(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+landing:
+  type: arc-pr
+  title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveLandingConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected arc-pr landing config to resolve, got %v", err)
+	}
+	if cfg.Type != "arc-pr" {
+		t.Fatalf("expected landing type arc-pr, got %q", cfg.Type)
+	}
+	if cfg.TitleTemplate != "Land {{ .TaskID }}: {{ .TaskTitle }}" {
+		t.Fatalf("expected title template to parse, got %q", cfg.TitleTemplate)
+	}
+}
+
+func TestTrackerConfigServiceResolveLandingConfigRejectsUnsupportedType(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+landing:
+  type: merge-queue
+`)
+
+	svc := newTrackerConfigService()
+	_, err := svc.ResolveLandingConfig(repoRoot)
+	if err == nil {
+		t.Fatalf("expected unsupported landing type to fail")
+	}
+	if !strings.Contains(err.Error(), "landing.type") {
+		t.Fatalf("expected landing type validation error, got %q", err.Error())
+	}
+}
+
 func TestTrackerConfigServiceResolveTrackerProfileRejectsMissingAuthToken(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
