@@ -513,6 +513,10 @@ If a run is interrupted, reset state before restarting:
 3. Remove stale clone directories under `.yolo-runner/clones/<task-id>`.
 4. Remove stale `in_flight` entries from `.yolo-runner/scheduler-state.json`.
 
+### Tracker agent PoC runbook
+
+Operator steps for the Startrek tracker-agent PoC, including the beads-profile epic command, Arc PR landing config, labels, dry-run checks, and reset procedure, are documented in `docs/tracker-agent-poc.md`.
+
 ### `--runner-timeout` profiles (`yolo-agent`)
 
 Use `--runner-timeout` to cap each task execution. Start with these defaults and tune for your repo/task size.
