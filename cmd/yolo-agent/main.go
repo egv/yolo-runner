@@ -460,10 +460,6 @@ func trackerWatchCommand(args []string) int {
 	return 0
 }
 
-func defaultRunTrackerWatch(context.Context, trackerWatchConfig) error {
-	return nil
-}
-
 func parseQualityGateTools(raw string) []string {
 	parts := strings.FieldsFunc(strings.TrimSpace(raw), func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
