@@ -656,7 +656,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
 
 					if !autoCommitDone {
-						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task))
+						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task, l.options.ParentID))
 						if err != nil {
 							landingReason = err.Error()
 							_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
@@ -2514,7 +2514,7 @@ func isRecoverableModelFailureResult(result contracts.RunnerResult, currentModel
 	return isRecoverableModelFailureReason(result.Reason) && strings.TrimSpace(currentModel) != "" && strings.TrimSpace(fallbackModel) != "" && !strings.EqualFold(strings.TrimSpace(currentModel), strings.TrimSpace(fallbackModel))
 }
 
-func autoLandingCommitMessage(task contracts.Task) string {
+func autoLandingCommitMessage(task contracts.Task, fallbackParentID string) string {
 	taskID := strings.TrimSpace(task.ID)
 	subject := "chore(task): auto-commit before landing"
 	if taskID == "" {
@@ -2523,6 +2523,9 @@ func autoLandingCommitMessage(task contracts.Task) string {
 	subject = fmt.Sprintf("%s %s", subject, taskID)
 
 	parentID := strings.TrimSpace(task.ParentID)
+	if parentID == "" {
+		parentID = strings.TrimSpace(fallbackParentID)
+	}
 	lineage := commitMessageLineage(parentID, taskID)
 	if len(lineage) == 0 {
 		return subject

@@ -2708,11 +2708,36 @@ func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
 	}
 }
 
+func TestLoopAutoCommitMessageFallsBackToConfiguredParentID(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	vcs := &fakeVCS{}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completed summary, got %#v", summary)
+	}
+
+	commitCall := callWithPrefix(vcs.calls, "commit_all:")
+	for _, want := range []string{"Parent: root", "Subtask: t-1", "Relates: root, t-1"} {
+		if !strings.Contains(commitCall, want) {
+			t.Fatalf("expected commit message to contain %q, got %q", want, commitCall)
+		}
+	}
+}
+
 func TestAutoLandingCommitMessageIncludesParentSubtaskAndRelates(t *testing.T) {
 	message := autoLandingCommitMessage(contracts.Task{
 		ID:       "VAY-43",
 		ParentID: "VAY-42",
-	})
+	}, "")
 	want := strings.Join([]string{
 		"chore(task): auto-commit before landing VAY-43",
 		"",
