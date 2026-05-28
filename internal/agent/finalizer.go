@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -30,6 +31,10 @@ type parentSplitSubtaskStatusReader interface {
 	ParentSplitSubtaskStatuses(ctx context.Context, parentID string, subtaskIDs []string) (map[string]contracts.TaskStatus, bool, error)
 }
 
+type parentSplitParentIDReader interface {
+	ParentSplitParentIDs(ctx context.Context, rootID string) ([]string, error)
+}
+
 func newParentFinalizer(tasks contracts.TaskManager) *parentFinalizer {
 	return &parentFinalizer{
 		tasks:     tasks,
@@ -55,6 +60,34 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 		return false, nil
 	}
 
+	parentIDs, err := f.finalizationParentIDs(ctx, parentID)
+	if err != nil {
+		return false, err
+	}
+	createdAny := false
+	for _, candidateParentID := range parentIDs {
+		created, err := f.finalizeOneIfReady(ctx, candidateParentID, prCreator)
+		if err != nil {
+			return createdAny || created, err
+		}
+		createdAny = createdAny || created
+	}
+	return createdAny, nil
+}
+
+func (f *parentFinalizer) finalizationParentIDs(ctx context.Context, parentID string) ([]string, error) {
+	parentIDs := []string{parentID}
+	if reader, ok := f.tasks.(parentSplitParentIDReader); ok {
+		splitParentIDs, err := reader.ParentSplitParentIDs(ctx, parentID)
+		if err != nil {
+			return nil, err
+		}
+		parentIDs = append(parentIDs, splitParentIDs...)
+	}
+	return uniqueNonEmptyIDs(parentIDs), nil
+}
+
+func (f *parentFinalizer) finalizeOneIfReady(ctx context.Context, parentID string, prCreator pullRequestCreator) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -100,6 +133,23 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 		return true, err
 	}
 	return true, nil
+}
+
+func uniqueNonEmptyIDs(ids []string) []string {
+	unique := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func (f *parentFinalizer) allSplitSubtasksClosed(ctx context.Context, parentID string, subtaskIDs []string) (bool, error) {
@@ -186,6 +236,42 @@ func (m *storageEngineTaskManager) ParentSplitSubtaskStatuses(_ context.Context,
 		statuses[subtaskID] = node.Status
 	}
 	return statuses, true, nil
+}
+
+func (m *storageEngineTaskManager) ParentSplitParentIDs(ctx context.Context, rootID string) ([]string, error) {
+	if m == nil {
+		return nil, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rootID, err := m.resolveRootID(rootID)
+	if err != nil {
+		return nil, err
+	}
+	if m.graph == nil || strings.TrimSpace(m.graph.RootID) != rootID {
+		if m.storage == nil || m.engine == nil {
+			return nil, nil
+		}
+		if err := m.refreshGraphLocked(ctx, rootID); err != nil {
+			return nil, err
+		}
+	}
+	if m.graph == nil || len(m.graph.Nodes) == 0 {
+		return nil, nil
+	}
+
+	parentIDs := make([]string, 0)
+	for taskID, node := range m.graph.Nodes {
+		taskID = strings.TrimSpace(taskID)
+		if taskID == "" || taskID == rootID || node == nil || len(node.Children) == 0 {
+			continue
+		}
+		parentIDs = append(parentIDs, taskID)
+	}
+	sort.Strings(parentIDs)
+	return parentIDs, nil
 }
 
 func parentPRAlreadyCreated(metadata map[string]string) bool {

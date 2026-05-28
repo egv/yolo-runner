@@ -169,6 +169,78 @@ func TestLoopCreatesParentPRFromStorageEngineGraphAfterFinalStartrekSubtaskClose
 	}
 }
 
+func TestLoopCreatesOriginalParentPRFromQueueRootGraphAfterFinalSplitSubtaskCloses(t *testing.T) {
+	ctx := context.Background()
+	storage := &startrekStyleSplitMarkerStorage{
+		commentBackedSplitMarkerStorage: &commentBackedSplitMarkerStorage{
+			spyStorageBackend: newSpyStorageBackend([]contracts.Task{
+				{ID: "VAY", Title: "VAY", Status: contracts.TaskStatusOpen},
+				{ID: "VAY-42", Title: "Original tracker issue", Description: "Parent work.", Status: contracts.TaskStatusOpen, ParentID: "VAY"},
+				{ID: "VAY-43", Title: "Task 1", Status: contracts.TaskStatusClosed, ParentID: "VAY-42"},
+				{ID: "VAY-44", Title: "Task 2", Status: contracts.TaskStatusOpen, ParentID: "VAY-42"},
+			}, []contracts.TaskRelation{
+				{FromID: "VAY", ToID: "VAY-42", Type: contracts.RelationParent},
+				{FromID: "VAY-42", ToID: "VAY-43", Type: contracts.RelationParent},
+				{FromID: "VAY-42", ToID: "VAY-44", Type: contracts.RelationParent},
+			}),
+		},
+	}
+	store := startrek.SplitMarkerStore{
+		Tracker:      storage,
+		SplitVersion: "strict-v1",
+	}
+	if err := store.Write(ctx, "VAY-42", startrek.SplitMarker{
+		Version:    "strict-v1",
+		SubtaskIDs: []string{"VAY-43", "VAY-44"},
+	}); err != nil {
+		t.Fatalf("write split marker: %v", err)
+	}
+
+	vcs := &fakeArcPRVCS{}
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	loop := NewLoopWithTaskEngine(storage, enginepkg.NewTaskEngine(), run, nil, LoopOptions{
+		ParentID:    "VAY",
+		MaxRetries:  0,
+		Concurrency: 1,
+		VCS:         vcs,
+	})
+
+	summary, err := loop.Run(ctx)
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected the final split subtask to complete, got %#v", summary)
+	}
+	if storage.statusSetCount("VAY-44", contracts.TaskStatusClosed) != 1 {
+		t.Fatalf("expected final split subtask close to be recorded")
+	}
+
+	createPRCalls := 0
+	for _, call := range vcs.calls {
+		if strings.HasPrefix(call, "create_pr:") {
+			createPRCalls++
+			if !strings.Contains(call, "create_pr:Original tracker issue\nParent: VAY-42") {
+				t.Fatalf("parent PR was not created for original tracker issue: %q", call)
+			}
+			if !strings.Contains(call, "- VAY-43") || !strings.Contains(call, "- VAY-44") {
+				t.Fatalf("parent PR body did not include split subtasks: %q", call)
+			}
+		}
+	}
+	if createPRCalls != 1 {
+		t.Fatalf("expected exactly one parent CreatePR call, got %d calls in %v", createPRCalls, vcs.calls)
+	}
+
+	parent, err := storage.GetTask(ctx, "VAY-42")
+	if err != nil {
+		t.Fatalf("get original parent task: %v", err)
+	}
+	if got := parent.Metadata["parent_pr_url"]; got != "https://arc.example.test/review/123" {
+		t.Fatalf("expected parent PR URL to be persisted on original issue, got %q", got)
+	}
+}
+
 type commentBackedSplitMarkerStorage struct {
 	*spyStorageBackend
 	commentsByIssue map[string][]startrek.IssueComment
