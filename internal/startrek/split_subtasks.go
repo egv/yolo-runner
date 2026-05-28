@@ -59,7 +59,7 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 		return SplitSubtasksResult{}, errors.New("startrek queue key is required")
 	}
 
-	tasks, err := orderedSplitSubtasks(input.Output.Tasks)
+	tasks, err := orderedSplitSubtasks(splitSubtasksWithOrderDependencies(input.Output.Tasks, input.Output.Order))
 	if err != nil {
 		return SplitSubtasksResult{}, err
 	}
@@ -201,6 +201,51 @@ func orderedSplitSubtasks(tasks []splitter.Task) ([]splitter.Task, error) {
 		}
 	}
 	return ordered, nil
+}
+
+func splitSubtasksWithOrderDependencies(tasks []splitter.Task, order []splitter.Dependency) []splitter.Task {
+	if len(tasks) == 0 || len(order) == 0 {
+		return tasks
+	}
+
+	withDependencies := append([]splitter.Task(nil), tasks...)
+	taskIndexByID := make(map[string]int, len(withDependencies))
+	for i, task := range withDependencies {
+		withDependencies[i].DependsOn = append([]string(nil), task.DependsOn...)
+		if id := trimSplitRef(task.ID); id != "" {
+			taskIndexByID[id] = i
+		}
+	}
+
+	for _, dependency := range order {
+		fromID := trimSplitRef(dependency.From)
+		toID := trimSplitRef(dependency.To)
+		if fromID == "" || toID == "" || isSplitNone(fromID) || isSplitNone(toID) {
+			continue
+		}
+		toIndex, ok := taskIndexByID[toID]
+		if !ok {
+			continue
+		}
+		if _, ok := taskIndexByID[fromID]; !ok {
+			continue
+		}
+		withDependencies[toIndex].DependsOn = appendSplitDependency(withDependencies[toIndex].DependsOn, fromID)
+	}
+	return withDependencies
+}
+
+func appendSplitDependency(dependencies []string, dependencyID string) []string {
+	dependencyID = trimSplitRef(dependencyID)
+	if dependencyID == "" || isSplitNone(dependencyID) {
+		return dependencies
+	}
+	for _, existing := range dependencies {
+		if trimSplitRef(existing) == dependencyID {
+			return dependencies
+		}
+	}
+	return append(dependencies, dependencyID)
 }
 
 func splitSubtaskTitle(task splitter.Task) string {
