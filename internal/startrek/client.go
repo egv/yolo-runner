@@ -210,6 +210,71 @@ func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]IssueC
 	return comments, nil
 }
 
+func (c *Client) AddLabel(ctx context.Context, issueID string, label string) error {
+	return c.mutateIssueLabel(ctx, issueID, label, "add", []string{
+		"already present",
+		"already exists",
+		"exists already",
+	})
+}
+
+func (c *Client) RemoveLabel(ctx context.Context, issueID string, label string) error {
+	return c.mutateIssueLabel(ctx, issueID, label, "remove", []string{
+		"already absent",
+		"not present",
+		"not found",
+		"does not exist",
+		"doesn't exist",
+		"does not contain",
+	})
+}
+
+func (c *Client) mutateIssueLabel(ctx context.Context, issueID string, label string, operation string, idempotentPhrases []string) error {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return err
+	}
+
+	normalizedLabel := strings.TrimSpace(label)
+	if normalizedLabel == "" {
+		return errors.New("startrek label is required")
+	}
+
+	requestBody := map[string]map[string][]string{
+		"tags": {
+			operation: {normalizedLabel},
+		},
+	}
+	if err := c.DoJSON(ctx, http.MethodPatch, requestPath, requestBody, nil); err != nil {
+		if isIdempotentLabelMutationError(err, normalizedLabel, idempotentPhrases) {
+			return nil
+		}
+		return fmt.Errorf("%s startrek label %q on issue %q: %w", operation, normalizedLabel, strings.TrimSpace(issueID), err)
+	}
+	return nil
+}
+
+func isIdempotentLabelMutationError(err error, label string, phrases []string) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	matchesPhrase := false
+	for _, phrase := range phrases {
+		if strings.Contains(message, strings.ToLower(phrase)) {
+			matchesPhrase = true
+			break
+		}
+	}
+	if !matchesPhrase {
+		return false
+	}
+
+	normalizedLabel := strings.ToLower(strings.TrimSpace(label))
+	return normalizedLabel == "" || strings.Contains(message, normalizedLabel)
+}
+
 func (c *Client) doJSON(ctx context.Context, method string, requestPath string, requestBody any, responseBody any) (http.Header, error) {
 	if c == nil {
 		return nil, errors.New("startrek client is nil")

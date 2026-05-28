@@ -322,6 +322,97 @@ func TestClientGetIssueAndCommentsMapsDiscussionContext(t *testing.T) {
 	}
 }
 
+func TestClientIssueLabelMutations(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name          string
+		call          func(*Client) error
+		wantOperation string
+		statusCode    int
+		responseBody  string
+	}{
+		{
+			name: "add",
+			call: func(client *Client) error {
+				return client.AddLabel(ctx, " VAY-42 ", " ready-for-yolo ")
+			},
+			wantOperation: "add",
+			statusCode:    http.StatusOK,
+			responseBody:  `{}`,
+		},
+		{
+			name: "remove",
+			call: func(client *Client) error {
+				return client.RemoveLabel(ctx, " VAY-42 ", " ready-for-yolo ")
+			},
+			wantOperation: "remove",
+			statusCode:    http.StatusOK,
+			responseBody:  `{}`,
+		},
+		{
+			name: "already-present",
+			call: func(client *Client) error {
+				return client.AddLabel(ctx, " VAY-42 ", " ready-for-yolo ")
+			},
+			wantOperation: "add",
+			statusCode:    http.StatusConflict,
+			responseBody:  `{"message":"label \"ready-for-yolo\" is already present"}`,
+		},
+		{
+			name: "already-absent",
+			call: func(client *Client) error {
+				return client.RemoveLabel(ctx, " VAY-42 ", " ready-for-yolo ")
+			},
+			wantOperation: "remove",
+			statusCode:    http.StatusConflict,
+			responseBody:  `{"message":"label \"ready-for-yolo\" is not present"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedRequest *http.Request
+			var capturedBody map[string]map[string][]string
+			httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+				capturedRequest = req
+				if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+				return jsonResponse(tc.statusCode, tc.responseBody), nil
+			})
+
+			client, err := NewClient(Config{
+				Endpoint:   "https://api.tracker.yandex.net/v3",
+				Token:      "tracker-token",
+				HTTPClient: httpClient,
+			})
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+
+			if err := tc.call(client); err != nil {
+				t.Fatalf("mutate label: %v", err)
+			}
+
+			if capturedRequest == nil {
+				t.Fatalf("expected request to be sent")
+			}
+			if got := capturedRequest.Method; got != http.MethodPatch {
+				t.Fatalf("expected PATCH method, got %s", got)
+			}
+			if got := capturedRequest.URL.String(); got != "https://api.tracker.yandex.net/v3/issues/VAY-42" {
+				t.Fatalf("expected issue URL, got %q", got)
+			}
+			tags := capturedBody["tags"]
+			if len(tags) != 1 {
+				t.Fatalf("expected one tags operation, got %#v", tags)
+			}
+			values := tags[tc.wantOperation]
+			if len(values) != 1 || values[0] != "ready-for-yolo" {
+				t.Fatalf("expected %s label ready-for-yolo, got %#v", tc.wantOperation, values)
+			}
+		})
+	}
+}
+
 type fakeHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f fakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
