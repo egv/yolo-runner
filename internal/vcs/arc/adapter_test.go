@@ -159,6 +159,23 @@ func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
 	}
 }
 
+func TestCreatePRRunsArcPRCreateAndReturnsURL(t *testing.T) {
+	runner := &fakeRunner{
+		output: "Arcanum PR is successfully created\nplease visit Arcanum: https://a.yandex-team.ru/review/123456\n",
+	}
+	adapter := New(runner)
+
+	url, err := adapter.CreatePR(context.Background(), "Parent task complete", "Implemented all children.")
+	if err != nil {
+		t.Fatalf("expected create PR to succeed, got %v", err)
+	}
+	if url != "https://a.yandex-team.ru/review/123456" {
+		t.Fatalf("expected PR URL, got %q", url)
+	}
+
+	assertCalls(t, runner.calls, call{name: "arc", args: []string{"pr", "create", "-m", "Parent task complete\n\nImplemented all children.", "--json", "--no-edit"}})
+}
+
 func TestArcCommandAdapterRoutesFlatCommandRunnerCalls(t *testing.T) {
 	runner := &flatRunner{output: " M ya.make\n"}
 	adapter := New(NewArcCommandAdapter(runner))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -31,6 +32,8 @@ func (a *ArcCommandAdapter) Run(name string, args ...string) (string, error) {
 type Adapter struct {
 	runner Runner
 }
+
+var prURLPattern = regexp.MustCompile(`https?://[^\s"']*/review/[^\s"']+`)
 
 func New(runner Runner) *Adapter {
 	return &Adapter{runner: runner}
@@ -74,6 +77,27 @@ func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+func (a *Adapter) CreatePR(_ context.Context, title string, body string) (string, error) {
+	message := strings.TrimSpace(title)
+	if trimmedBody := strings.TrimSpace(body); trimmedBody != "" {
+		message += "\n\n" + trimmedBody
+	}
+
+	output, err := a.runArc("pr", "create", "-m", message, "--json", "--no-edit")
+	if err != nil {
+		return "", err
+	}
+	return parsePRURL(output)
+}
+
+func parsePRURL(output string) (string, error) {
+	match := prURLPattern.FindString(strings.TrimSpace(output))
+	if match == "" {
+		return "", fmt.Errorf("arc pr create output did not contain Arcanum PR URL")
+	}
+	return match, nil
 }
 
 func (a *Adapter) runArc(args ...string) (string, error) {
