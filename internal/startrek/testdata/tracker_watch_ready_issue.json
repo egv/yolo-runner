@@ -1,0 +1,12 @@
+{
+  "id": "64200b5f7b5b7c0011223344",
+  "key": "VAY-42",
+  "summary": "Clarify watcher needs-info flow",
+  "description": "Run preflight before executing this task.",
+  "tags": ["yolo-agent-ready"],
+  "createdBy": {
+    "id": "author-1",
+    "display": "Ada Lovelace"
+  },
+  "updatedAt": "2026-05-28T01:02:03.000+0000"
+}
