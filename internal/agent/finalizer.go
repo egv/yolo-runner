@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/startrek"
 )
 
 const (
@@ -19,6 +20,10 @@ type parentFinalizer struct {
 	mu        sync.Mutex
 	tasks     contracts.TaskManager
 	finalized map[string]struct{}
+}
+
+type parentSplitSubtaskIDReader interface {
+	ParentSplitSubtaskIDs(ctx context.Context, parentID string) ([]string, bool, error)
 }
 
 func newParentFinalizer(tasks contracts.TaskManager) *parentFinalizer {
@@ -62,7 +67,10 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 		return false, nil
 	}
 
-	subtaskIDs := splitSubtaskIDsFromMetadata(parent.Metadata)
+	subtaskIDs, err := f.splitSubtaskIDs(ctx, parentID, parent.Metadata)
+	if err != nil {
+		return false, err
+	}
 	if len(subtaskIDs) == 0 {
 		return false, nil
 	}
@@ -90,6 +98,38 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 		return true, err
 	}
 	return true, nil
+}
+
+func (f *parentFinalizer) splitSubtaskIDs(ctx context.Context, parentID string, metadata map[string]string) ([]string, error) {
+	if subtaskIDs := splitSubtaskIDsFromMetadata(metadata); len(subtaskIDs) > 0 {
+		return subtaskIDs, nil
+	}
+	reader, ok := f.tasks.(parentSplitSubtaskIDReader)
+	if !ok {
+		return nil, nil
+	}
+	subtaskIDs, ok, err := reader.ParentSplitSubtaskIDs(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return subtaskIDs, nil
+}
+
+func (m *storageEngineTaskManager) ParentSplitSubtaskIDs(ctx context.Context, parentID string) ([]string, bool, error) {
+	if m == nil || m.storage == nil {
+		return nil, false, nil
+	}
+	marker, ok, err := (startrek.SplitMarkerStore{Tracker: m.storage}).Read(ctx, parentID)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]string(nil), marker.SubtaskIDs...), true, nil
 }
 
 func parentPRAlreadyCreated(metadata map[string]string) bool {
