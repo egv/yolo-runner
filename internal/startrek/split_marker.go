@@ -2,6 +2,7 @@ package startrek
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,6 +16,8 @@ const (
 
 	splitMarkerVersionKey    = "split_version"
 	splitMarkerSubtaskIDsKey = "split_subtask_ids"
+	splitMarkerCommentMarker = "split-marker"
+	splitMarkerCommentPrefix = "<!-- yolo-runner:" + splitMarkerCommentMarker + " -->"
 )
 
 type SplitMarker struct {
@@ -25,6 +28,16 @@ type SplitMarker struct {
 type SplitMarkerTracker interface {
 	GetTask(ctx context.Context, taskID string) (*contracts.Task, error)
 	SetTaskData(ctx context.Context, taskID string, data map[string]string) error
+}
+
+type splitMarkerCommentTracker interface {
+	GetIssueComments(ctx context.Context, issueID string) ([]IssueComment, error)
+	CreateIssueComment(ctx context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error)
+}
+
+type splitMarkerCommentPayload struct {
+	Version    string   `json:"version"`
+	SubtaskIDs []string `json:"subtask_ids"`
 }
 
 type SplitMarkerStore struct {
@@ -43,6 +56,18 @@ func (s SplitMarkerStore) Read(ctx context.Context, parentID string) (SplitMarke
 	parentID = strings.TrimSpace(parentID)
 	if parentID == "" {
 		return SplitMarker{}, false, errors.New("startrek parent issue id is required")
+	}
+
+	if commentTracker, ok := s.Tracker.(splitMarkerCommentTracker); ok {
+		comments, err := commentTracker.GetIssueComments(ctx, parentID)
+		if err != nil {
+			return SplitMarker{}, false, fmt.Errorf("read startrek split marker comments on issue %q: %w", parentID, err)
+		}
+		if marker, ok, err := splitMarkerFromComments(parentID, comments); err != nil {
+			return SplitMarker{}, false, err
+		} else if ok {
+			return marker, true, nil
+		}
 	}
 
 	task, err := s.Tracker.GetTask(ctx, parentID)
@@ -90,6 +115,24 @@ func (s SplitMarkerStore) Write(ctx context.Context, parentID string, marker Spl
 		return errors.New("startrek split marker subtask ids are required")
 	}
 
+	marker = SplitMarker{
+		Version:    version,
+		SubtaskIDs: subtaskIDs,
+	}
+	if commentTracker, ok := s.Tracker.(splitMarkerCommentTracker); ok {
+		body, err := splitMarkerCommentBody(marker)
+		if err != nil {
+			return err
+		}
+		if _, err := commentTracker.CreateIssueComment(ctx, parentID, IssueCommentCreateOptions{
+			Body:   body,
+			Marker: splitMarkerCommentMarker,
+		}); err != nil {
+			return fmt.Errorf("write startrek split marker comment on issue %q: %w", parentID, err)
+		}
+		return nil
+	}
+
 	task, err := s.Tracker.GetTask(ctx, parentID)
 	if err != nil {
 		return fmt.Errorf("read startrek task data before writing split marker on issue %q: %w", parentID, err)
@@ -111,6 +154,13 @@ func (s SplitMarkerStore) Write(ctx context.Context, parentID string, marker Spl
 
 func (s SplitMarkerStore) effectiveSplitVersion() string {
 	return fallbackText(s.SplitVersion, defaultSplitMarkerVersion)
+}
+
+func (b *StorageBackend) GetIssueComments(ctx context.Context, issueID string) ([]IssueComment, error) {
+	if b == nil || b.client == nil {
+		return nil, errors.New("startrek storage backend is not initialized")
+	}
+	return b.client.GetIssueComments(ctx, issueID)
 }
 
 type IdempotentSplitSubtaskCreationTracker interface {
@@ -220,6 +270,59 @@ func splitMarkerSubtaskIDsFromResult(tasks []splitter.Task, issueIDsBySplitTaskI
 
 func splitMarkerSubtaskIDs(raw string) []string {
 	return normalizedSplitMarkerSubtaskIDs(strings.Split(raw, ","))
+}
+
+func splitMarkerFromComments(parentID string, comments []IssueComment) (SplitMarker, bool, error) {
+	for i := len(comments) - 1; i >= 0; i-- {
+		marker, ok, err := splitMarkerFromComment(parentID, comments[i])
+		if err != nil {
+			return SplitMarker{}, false, err
+		}
+		if ok {
+			return marker, true, nil
+		}
+	}
+	return SplitMarker{}, false, nil
+}
+
+func splitMarkerFromComment(parentID string, comment IssueComment) (SplitMarker, bool, error) {
+	body := strings.TrimSpace(comment.Body)
+	if !strings.HasPrefix(body, splitMarkerCommentPrefix) {
+		return SplitMarker{}, false, nil
+	}
+
+	rawPayload := strings.TrimSpace(strings.TrimPrefix(body, splitMarkerCommentPrefix))
+	if rawPayload == "" {
+		return SplitMarker{}, false, fmt.Errorf("startrek split marker comment on issue %q is empty", parentID)
+	}
+
+	var payload splitMarkerCommentPayload
+	if err := json.Unmarshal([]byte(rawPayload), &payload); err != nil {
+		return SplitMarker{}, false, fmt.Errorf("decode startrek split marker comment on issue %q: %w", parentID, err)
+	}
+
+	marker := SplitMarker{
+		Version:    strings.TrimSpace(payload.Version),
+		SubtaskIDs: normalizedSplitMarkerSubtaskIDs(payload.SubtaskIDs),
+	}
+	if marker.Version == "" {
+		return SplitMarker{}, false, fmt.Errorf("startrek split marker on issue %q is missing version", parentID)
+	}
+	if len(marker.SubtaskIDs) == 0 {
+		return SplitMarker{}, false, fmt.Errorf("startrek split marker on issue %q has no subtask ids", parentID)
+	}
+	return marker, true, nil
+}
+
+func splitMarkerCommentBody(marker SplitMarker) (string, error) {
+	raw, err := json.Marshal(splitMarkerCommentPayload{
+		Version:    strings.TrimSpace(marker.Version),
+		SubtaskIDs: normalizedSplitMarkerSubtaskIDs(marker.SubtaskIDs),
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode startrek split marker comment: %w", err)
+	}
+	return string(raw), nil
 }
 
 func normalizedSplitMarkerSubtaskIDs(raw []string) []string {
