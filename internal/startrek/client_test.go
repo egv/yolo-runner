@@ -199,6 +199,129 @@ func TestClientSearchIssuesMapsReadyQueueCandidates(t *testing.T) {
 	}
 }
 
+func TestClientGetIssueAndCommentsMapsDiscussionContext(t *testing.T) {
+	var capturedRequests []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		capturedRequests = append(capturedRequests, req.Method+" "+req.URL.String())
+
+		switch req.URL.Path {
+		case "/v3/issues/VAY-42":
+			return jsonResponse(http.StatusOK, `{
+				"id": "64200b5f7b5b7c0011223344",
+				"key": "VAY-42",
+				"summary": "Add Startrek issue fetch",
+				"description": "  Include description in agent context.  ",
+				"tags": ["ready-for-yolo", "backend"],
+				"createdBy": {
+					"id": "112233",
+					"display": "Ada Lovelace"
+				},
+				"updatedAt": "2026-05-28T02:03:04.000+0000"
+			}`), nil
+		case "/v3/issues/VAY-42/comments":
+			return jsonResponse(http.StatusOK, `[
+				{
+					"id": "comment-new",
+					"text": "Newest comment",
+					"createdBy": {
+						"id": "445566",
+						"display": "Grace Hopper"
+					},
+					"createdAt": "2026-05-28T04:00:00.000+0000",
+					"updatedAt": "2026-05-28T04:10:00.000+0000"
+				},
+				{
+					"id": "comment-empty",
+					"text": "   ",
+					"createdBy": {
+						"id": "778899",
+						"display": "Ignored Author"
+					},
+					"createdAt": "2026-05-28T02:00:00.000+0000"
+				},
+				{
+					"id": "comment-old",
+					"text": "Oldest comment",
+					"createdBy": {
+						"id": "112233",
+						"display": "Ada Lovelace"
+					},
+					"createdAt": "2026-05-28T01:00:00.000+0000",
+					"updatedAt": "2026-05-28T01:05:00.000+0000"
+				},
+				{
+					"id": "comment-middle",
+					"text": "Middle comment",
+					"createdBy": {
+						"id": "445566",
+						"display": "Grace Hopper"
+					},
+					"createdAt": "2026-05-28T03:00:00.000+0000"
+				}
+			]`), nil
+		default:
+			t.Fatalf("unexpected request path %s", req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	issue, err := client.GetIssue(context.Background(), " VAY-42 ")
+	if err != nil {
+		t.Fatalf("get issue: %v", err)
+	}
+	comments, err := client.GetIssueComments(context.Background(), "VAY-42")
+	if err != nil {
+		t.Fatalf("get issue comments: %v", err)
+	}
+
+	wantRequests := []string{
+		"GET https://api.tracker.yandex.net/v3/issues/VAY-42",
+		"GET https://api.tracker.yandex.net/v3/issues/VAY-42/comments",
+	}
+	if strings.Join(capturedRequests, "\n") != strings.Join(wantRequests, "\n") {
+		t.Fatalf("unexpected requests:\n%s", strings.Join(capturedRequests, "\n"))
+	}
+
+	if issue.ID != "VAY-42" {
+		t.Fatalf("expected issue ID VAY-42, got %q", issue.ID)
+	}
+	if issue.Title != "Add Startrek issue fetch" {
+		t.Fatalf("expected mapped title, got %q", issue.Title)
+	}
+	if issue.Description != "Include description in agent context." {
+		t.Fatalf("expected trimmed description, got %q", issue.Description)
+	}
+
+	if len(comments) != 3 {
+		t.Fatalf("expected 3 non-empty comments, got %d: %#v", len(comments), comments)
+	}
+	if got := comments[0].Body; got != "Oldest comment" {
+		t.Fatalf("expected oldest comment first, got %q", got)
+	}
+	if got := comments[1].Body; got != "Middle comment" {
+		t.Fatalf("expected middle comment second, got %q", got)
+	}
+	if got := comments[2].Body; got != "Newest comment" {
+		t.Fatalf("expected newest comment last, got %q", got)
+	}
+	if comments[0].Author.ID != "112233" || comments[0].Author.Display != "Ada Lovelace" {
+		t.Fatalf("expected mapped oldest comment author, got %#v", comments[0].Author)
+	}
+	wantCreatedAt := time.Date(2026, 5, 28, 1, 0, 0, 0, time.UTC)
+	if !comments[0].CreatedAt.Equal(wantCreatedAt) {
+		t.Fatalf("expected oldest comment timestamp %s, got %s", wantCreatedAt, comments[0].CreatedAt)
+	}
+}
+
 type fakeHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f fakeHTTPClient) Do(req *http.Request) (*http.Response, error) {
