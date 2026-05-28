@@ -26,6 +26,10 @@ type parentSplitSubtaskIDReader interface {
 	ParentSplitSubtaskIDs(ctx context.Context, parentID string) ([]string, bool, error)
 }
 
+type parentSplitSubtaskStatusReader interface {
+	ParentSplitSubtaskStatuses(ctx context.Context, parentID string, subtaskIDs []string) (map[string]contracts.TaskStatus, bool, error)
+}
+
 func newParentFinalizer(tasks contracts.TaskManager) *parentFinalizer {
 	return &parentFinalizer{
 		tasks:     tasks,
@@ -74,14 +78,12 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 	if len(subtaskIDs) == 0 {
 		return false, nil
 	}
-	for _, subtaskID := range subtaskIDs {
-		subtask, err := f.tasks.GetTask(ctx, subtaskID)
-		if err != nil {
-			return false, err
-		}
-		if subtask.Status != contracts.TaskStatusClosed {
-			return false, nil
-		}
+	closed, err := f.allSplitSubtasksClosed(ctx, parentID, subtaskIDs)
+	if err != nil {
+		return false, err
+	}
+	if !closed {
+		return false, nil
 	}
 
 	prURL, err := prCreator.CreatePR(ctx, parentPRTitle(parent), parentPRBody(parent, subtaskIDs))
@@ -96,6 +98,34 @@ func (f *parentFinalizer) FinalizeIfReady(ctx context.Context, parentID string, 
 	}
 	if err := f.tasks.SetTaskData(ctx, parentID, data); err != nil {
 		return true, err
+	}
+	return true, nil
+}
+
+func (f *parentFinalizer) allSplitSubtasksClosed(ctx context.Context, parentID string, subtaskIDs []string) (bool, error) {
+	if reader, ok := f.tasks.(parentSplitSubtaskStatusReader); ok {
+		statuses, ok, err := reader.ParentSplitSubtaskStatuses(ctx, parentID, subtaskIDs)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			for _, subtaskID := range subtaskIDs {
+				if statuses[strings.TrimSpace(subtaskID)] != contracts.TaskStatusClosed {
+					return false, nil
+				}
+			}
+			return true, nil
+		}
+	}
+
+	for _, subtaskID := range subtaskIDs {
+		subtask, err := f.tasks.GetTask(ctx, subtaskID)
+		if err != nil {
+			return false, err
+		}
+		if subtask.Status != contracts.TaskStatusClosed {
+			return false, nil
+		}
 	}
 	return true, nil
 }
@@ -130,6 +160,32 @@ func (m *storageEngineTaskManager) ParentSplitSubtaskIDs(ctx context.Context, pa
 		return nil, false, nil
 	}
 	return append([]string(nil), marker.SubtaskIDs...), true, nil
+}
+
+func (m *storageEngineTaskManager) ParentSplitSubtaskStatuses(_ context.Context, _ string, subtaskIDs []string) (map[string]contracts.TaskStatus, bool, error) {
+	if m == nil || len(subtaskIDs) == 0 {
+		return nil, false, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.graph == nil || len(m.graph.Nodes) == 0 {
+		return nil, false, nil
+	}
+
+	statuses := make(map[string]contracts.TaskStatus, len(subtaskIDs))
+	for _, subtaskID := range subtaskIDs {
+		subtaskID = strings.TrimSpace(subtaskID)
+		if subtaskID == "" {
+			continue
+		}
+		node := m.graph.Nodes[subtaskID]
+		if node == nil {
+			return nil, false, nil
+		}
+		statuses[subtaskID] = node.Status
+	}
+	return statuses, true, nil
 }
 
 func parentPRAlreadyCreated(metadata map[string]string) bool {
