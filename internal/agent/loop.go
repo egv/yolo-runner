@@ -656,7 +656,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
 
 					if !autoCommitDone {
-						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task))
+						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task, l.options.ParentID))
 						if err != nil {
 							landingReason = err.Error()
 							_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
@@ -2514,12 +2514,55 @@ func isRecoverableModelFailureResult(result contracts.RunnerResult, currentModel
 	return isRecoverableModelFailureReason(result.Reason) && strings.TrimSpace(currentModel) != "" && strings.TrimSpace(fallbackModel) != "" && !strings.EqualFold(strings.TrimSpace(currentModel), strings.TrimSpace(fallbackModel))
 }
 
-func autoLandingCommitMessage(task contracts.Task) string {
+func autoLandingCommitMessage(task contracts.Task, fallbackParentID string) string {
 	taskID := strings.TrimSpace(task.ID)
+	subject := "chore(task): auto-commit before landing"
 	if taskID == "" {
-		return "chore(task): auto-commit before landing"
+		return subject
 	}
-	return fmt.Sprintf("chore(task): auto-commit before landing %s", taskID)
+	subject = fmt.Sprintf("%s %s", subject, taskID)
+
+	parentID := strings.TrimSpace(task.ParentID)
+	if parentID == "" {
+		parentID = strings.TrimSpace(fallbackParentID)
+	}
+	lineage := commitMessageLineage(parentID, taskID)
+	if len(lineage) == 0 {
+		return subject
+	}
+	return subject + "\n\n" + strings.Join(lineage, "\n")
+}
+
+func commitMessageLineage(parentID string, subtaskID string) []string {
+	var lines []string
+	if parentID != "" {
+		lines = append(lines, "Parent: "+parentID)
+	}
+	if subtaskID != "" {
+		lines = append(lines, "Subtask: "+subtaskID)
+	}
+	relates := uniqueNonEmpty(parentID, subtaskID)
+	if len(relates) > 0 {
+		lines = append(lines, "Relates: "+strings.Join(relates, ", "))
+	}
+	return lines
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func buildReviewVerdictPrompt(task contracts.Task) string {

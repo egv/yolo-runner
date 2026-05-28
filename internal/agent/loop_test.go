@@ -2671,7 +2671,7 @@ func TestLoopMarksFailedWhenReviewRetryBudgetExhausted(t *testing.T) {
 }
 
 func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
-	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen, ParentID: "root"})
 	run := &fakeRunner{results: []contracts.RunnerResult{
 		{Status: contracts.RunnerResultCompleted},
 		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
@@ -2695,8 +2695,59 @@ func TestLoopMergesAndPushesAfterSuccessfulReview(t *testing.T) {
 	if !containsCallPrefix(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1") {
 		t.Fatalf("expected auto-commit call before landing, got %v", vcs.calls)
 	}
-	if callIndex(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1") > callIndex(vcs.calls, "merge_to_main:task/t-1") {
+	commitIndex := callIndexPrefix(vcs.calls, "commit_all:chore(task): auto-commit before landing t-1")
+	mergeIndex := callIndex(vcs.calls, "merge_to_main:task/t-1")
+	if commitIndex == -1 || mergeIndex == -1 || commitIndex > mergeIndex {
 		t.Fatalf("expected auto-commit before merge, got %v", vcs.calls)
+	}
+	commitCall := callWithPrefix(vcs.calls, "commit_all:")
+	for _, want := range []string{"Parent: root", "Subtask: t-1", "Relates: root, t-1"} {
+		if !strings.Contains(commitCall, want) {
+			t.Fatalf("expected commit message to contain %q, got %q", want, commitCall)
+		}
+	}
+}
+
+func TestLoopAutoCommitMessageFallsBackToConfiguredParentID(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	vcs := &fakeVCS{}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completed summary, got %#v", summary)
+	}
+
+	commitCall := callWithPrefix(vcs.calls, "commit_all:")
+	for _, want := range []string{"Parent: root", "Subtask: t-1", "Relates: root, t-1"} {
+		if !strings.Contains(commitCall, want) {
+			t.Fatalf("expected commit message to contain %q, got %q", want, commitCall)
+		}
+	}
+}
+
+func TestAutoLandingCommitMessageIncludesParentSubtaskAndRelates(t *testing.T) {
+	message := autoLandingCommitMessage(contracts.Task{
+		ID:       "VAY-43",
+		ParentID: "VAY-42",
+	}, "")
+	want := strings.Join([]string{
+		"chore(task): auto-commit before landing VAY-43",
+		"",
+		"Parent: VAY-42",
+		"Subtask: VAY-43",
+		"Relates: VAY-42, VAY-43",
+	}, "\n")
+
+	if message != want {
+		t.Fatalf("unexpected commit message:\ngot:\n%s\nwant:\n%s", message, want)
 	}
 }
 
@@ -2751,9 +2802,27 @@ func containsCallPrefix(calls []string, wantPrefix string) bool {
 	return false
 }
 
+func callWithPrefix(calls []string, wantPrefix string) string {
+	for _, call := range calls {
+		if strings.HasPrefix(call, wantPrefix) {
+			return call
+		}
+	}
+	return ""
+}
+
 func callIndex(calls []string, want string) int {
 	for i, call := range calls {
 		if call == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func callIndexPrefix(calls []string, wantPrefix string) int {
+	for i, call := range calls {
+		if strings.HasPrefix(call, wantPrefix) {
 			return i
 		}
 	}

@@ -107,6 +107,58 @@ func TestCheckoutRunsArcCheckout(t *testing.T) {
 	assertCalls(t, runner.calls, call{name: "arc", args: []string{"checkout", "task/TASK-123"}})
 }
 
+func TestCommitAllRunsArcAddCommitAndReturnsHead(t *testing.T) {
+	runner := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "", err: nil},
+		{output: "abc123\n", err: nil},
+	}}
+	adapter := New(runner)
+
+	sha, err := adapter.CommitAll(context.Background(), "feat: test")
+	if err != nil {
+		t.Fatalf("expected commit all to succeed, got %v", err)
+	}
+	if sha != "abc123" {
+		t.Fatalf("expected sha abc123, got %q", sha)
+	}
+
+	want := []call{
+		{name: "arc", args: []string{"add", "."}},
+		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"rev-parse", "HEAD"}},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
+}
+
+func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
+	runner := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "On branch task/TASK-123\nnothing to commit, working tree clean", err: errors.New("exit status 1")},
+		{output: "abc123\n", err: nil},
+	}}
+	adapter := New(runner)
+
+	sha, err := adapter.CommitAll(context.Background(), "feat: test")
+	if err != nil {
+		t.Fatalf("expected no-change commit to succeed, got %v", err)
+	}
+	if sha != "abc123" {
+		t.Fatalf("expected sha abc123, got %q", sha)
+	}
+
+	want := []call{
+		{name: "arc", args: []string{"add", "."}},
+		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"rev-parse", "HEAD"}},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
+}
+
 func TestArcCommandAdapterRoutesFlatCommandRunnerCalls(t *testing.T) {
 	runner := &flatRunner{output: " M ya.make\n"}
 	adapter := New(NewArcCommandAdapter(runner))
@@ -145,6 +197,26 @@ func (r *branchExistsRunner) Run(name string, args ...string) (string, error) {
 		return "", errors.New("branch already exists")
 	}
 	return "", nil
+}
+
+type sequenceResponse struct {
+	output string
+	err    error
+}
+
+type sequenceRunner struct {
+	responses []sequenceResponse
+	calls     []call
+}
+
+func (r *sequenceRunner) Run(name string, args ...string) (string, error) {
+	r.calls = append(r.calls, call{name: name, args: append([]string{}, args...)})
+	if len(r.responses) == 0 {
+		return "", nil
+	}
+	response := r.responses[0]
+	r.responses = r.responses[1:]
+	return response.output, response.err
 }
 
 type flatRunner struct {
