@@ -226,6 +226,48 @@ func TestRunMainRoutesConfigInitSubcommand(t *testing.T) {
 	}
 }
 
+func TestRunMainRoutesTrackerWatchSubcommandAndParsesFlags(t *testing.T) {
+	originalRun := runTrackerWatch
+	t.Cleanup(func() {
+		runTrackerWatch = originalRun
+	})
+
+	called := false
+	var got trackerWatchConfig
+	runTrackerWatch = func(_ context.Context, cfg trackerWatchConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	runCalled := false
+	code := RunMain([]string{"tracker-watch", "--repo", "/repo", "--profile", "linear-dev", "--once", "--dry-run"}, func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("expected tracker-watch exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected tracker-watch handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("expected legacy run function not to be called for tracker-watch")
+	}
+	if got.repoRoot != "/repo" {
+		t.Fatalf("expected repo=/repo, got %q", got.repoRoot)
+	}
+	if got.profile != "linear-dev" {
+		t.Fatalf("expected profile=linear-dev, got %q", got.profile)
+	}
+	if !got.once {
+		t.Fatalf("expected once=true")
+	}
+	if !got.dryRun {
+		t.Fatalf("expected dry-run=true")
+	}
+}
+
 func TestRunMainConfigCommandRequiresSubcommand(t *testing.T) {
 	errText := captureStderr(t, func() {
 		code := RunMain([]string{"config"}, func(context.Context, runConfig) error { return nil })
