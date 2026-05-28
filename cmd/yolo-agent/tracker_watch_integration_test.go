@@ -8,10 +8,20 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	agentpkg "github.com/egv/yolo-runner/v2/internal/agent"
+	"github.com/egv/yolo-runner/v2/internal/agent/preflight"
+	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
+	enginepkg "github.com/egv/yolo-runner/v2/internal/engine"
+	"github.com/egv/yolo-runner/v2/internal/startrek"
+	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 )
 
 func TestTrackerWatchStartrekNeedsInfoPostsQuestionsAndDoesNotReselectBeforeAuthorReply(t *testing.T) {
@@ -101,6 +111,477 @@ tracker_agent:
 	if comments := startrek.commentTexts(); len(comments) != 1 {
 		t.Fatalf("expected no duplicate needs-info comments before author reply, got %d", len(comments))
 	}
+}
+
+func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	runner := &trackerWatchSplitPRRunner{}
+	storage := newTrackerWatchSplitPRStorage()
+
+	parent, err := storage.GetTask(ctx, "VAY-42")
+	if err != nil {
+		t.Fatalf("get parent task: %v", err)
+	}
+	preflightResult, err := preflight.NewRunner(runner).Run(ctx, preflight.RunInput{
+		Task:      *parent,
+		QueueRoot: contracts.Task{ID: "VAY", Title: "VAY", Status: contracts.TaskStatusOpen},
+		Model:     "fake-codex",
+		RepoRoot:  repoRoot,
+		Metadata: map[string]string{
+			"phase":   "preflight",
+			"tracker": trackerTypeStartrek,
+		},
+	})
+	if err != nil {
+		t.Fatalf("run ready preflight: %v", err)
+	}
+	if preflightResult.Decision != preflight.DecisionReady {
+		t.Fatalf("expected ready preflight decision, got %#v", preflightResult)
+	}
+
+	splitOutput, err := splitter.NewRunner(runner).Run(ctx, splitter.RunInput{
+		Task:      *parent,
+		QueueRoot: contracts.Task{ID: "VAY", Title: "VAY", Status: contracts.TaskStatusOpen},
+		Model:     "fake-codex",
+		RepoRoot:  repoRoot,
+		Metadata: map[string]string{
+			"phase":   "split",
+			"tracker": trackerTypeStartrek,
+		},
+	})
+	if err != nil {
+		t.Fatalf("run strict splitter: %v", err)
+	}
+	if got, want := splitTaskIDs(splitOutput.Tasks), []string{"T36.1", "T36.2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected split task IDs: got %v want %v", got, want)
+	}
+
+	splitResult, err := (startrek.IdempotentSplitSubtaskCreationService{
+		Tracker:      storage,
+		ReadyLabel:   "yolo-agent-ready",
+		SubtaskLabel: "agent:subtask",
+		SplitVersion: "strict-v1",
+	}).Create(ctx, startrek.SplitSubtasksInput{
+		QueueKey: "VAY",
+		ParentID: "VAY-42",
+		Output:   splitOutput,
+	})
+	if err != nil {
+		t.Fatalf("create split subtasks: %v", err)
+	}
+	if got, want := splitIssueIDs(splitResult.Issues), []string{"VAY-43", "VAY-44"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected generated subtask IDs: got %v want %v", got, want)
+	}
+	if err := startrek.PostSplitCreatedComment(ctx, storage, "VAY-42", splitIssueIDs(splitResult.Issues)); err != nil {
+		t.Fatalf("post split-created comment: %v", err)
+	}
+
+	arcRunner := &trackerWatchRecordingArcRunner{}
+	loop := agentpkg.NewLoopWithTaskEngine(storage, enginepkg.NewTaskEngine(), runner, nil, agentpkg.LoopOptions{
+		ParentID:       "VAY",
+		MaxRetries:     0,
+		Concurrency:    1,
+		RepoRoot:       repoRoot,
+		Backend:        "fake-codex",
+		Model:          "fake-codex",
+		VCS:            arcvcs.New(arcRunner),
+		RequireReview:  true,
+		MergeOnSuccess: true,
+	})
+	summary, err := loop.Run(ctx)
+	if err != nil {
+		t.Fatalf("run split subtasks: %v", err)
+	}
+	if summary.Completed != 2 {
+		t.Fatalf("expected both generated subtasks to complete, got %#v", summary)
+	}
+	for _, subtaskID := range []string{"VAY-43", "VAY-44"} {
+		task, err := storage.GetTask(ctx, subtaskID)
+		if err != nil {
+			t.Fatalf("get subtask %s: %v", subtaskID, err)
+		}
+		if task.Status != contracts.TaskStatusClosed {
+			t.Fatalf("expected generated subtask %s closed, got %s", subtaskID, task.Status)
+		}
+	}
+
+	if got := arcRunner.count("commit"); got != 2 {
+		t.Fatalf("expected one Arc commit per generated subtask, got %d calls: %#v", got, arcRunner.calls)
+	}
+	if got := arcRunner.count("pr create"); got != 1 {
+		t.Fatalf("expected exactly one parent Arc PR, got %d calls: %#v", got, arcRunner.calls)
+	}
+	parentComments := storage.commentTexts("VAY-42")
+	prURLComments := matchingComments(parentComments, "https://a.yandex-team.ru/review/123456")
+	if len(prURLComments) != 1 {
+		t.Fatalf("expected exactly one parent PR URL comment, got %d comments:\n%s", len(prURLComments), strings.Join(parentComments, "\n---\n"))
+	}
+	if !strings.Contains(prURLComments[0], "<!-- yolo-runner:parent-pr-created -->") {
+		t.Fatalf("expected parent PR comment marker, got:\n%s", prURLComments[0])
+	}
+}
+
+type trackerWatchSplitPRRunner struct {
+	mu       sync.Mutex
+	requests []contracts.RunnerRequest
+}
+
+func (r *trackerWatchSplitPRRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, contracts.RunnerRequest{
+		TaskID:   request.TaskID,
+		ParentID: request.ParentID,
+		Prompt:   request.Prompt,
+		Mode:     request.Mode,
+		Model:    request.Model,
+		RepoRoot: request.RepoRoot,
+		Metadata: cloneStringMapForTrackerWatchTest(request.Metadata),
+	})
+	r.mu.Unlock()
+
+	switch {
+	case strings.Contains(request.Prompt, "evaluating whether a queued task is actionable"):
+		emitTrackerWatchRunnerOutput(request, `{"decision":"ready","confidence":0.95,"summary":"Ready to split.","questions":[]}`)
+	case strings.Contains(request.Prompt, "Run the bundled strict task splitter"):
+		emitTrackerWatchRunnerOutput(request, trackerWatchStrictSplitOutput())
+	case request.Mode == contracts.RunnerModeReview:
+		emitTrackerWatchRunnerOutput(request, "REVIEW_VERDICT: pass")
+		return contracts.RunnerResult{Status: contracts.RunnerResultCompleted, ReviewReady: true}, nil
+	case request.Mode == contracts.RunnerModeImplement:
+		emitTrackerWatchRunnerOutput(request, "implementation complete")
+	default:
+		return contracts.RunnerResult{}, fmt.Errorf("unexpected fake runner request mode %q", request.Mode)
+	}
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+func emitTrackerWatchRunnerOutput(request contracts.RunnerRequest, message string) {
+	if request.OnProgress == nil {
+		return
+	}
+	request.OnProgress(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeRunnerOutput),
+		Message:   message,
+		Metadata:  map[string]string{"source": "stdout"},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+func trackerWatchStrictSplitOutput() string {
+	return strings.Join([]string{
+		"## Epics",
+		"- Split-to-PR integration: Prove split subtasks land into one parent PR.",
+		"",
+		"## Tasks",
+		"- T36.1: Implement first generated subtask",
+		"- T36.2: Implement dependent generated subtask",
+		"",
+		"## Order",
+		"- T36.1 -> T36.2",
+		"",
+		"## Risk notes",
+		"- Fake-backed integration must still exercise runner and VCS seams.",
+		"",
+		trackerWatchStrictTask("T36.1", "Implement first generated subtask", "Close the first leaf generated by strict split.", []string{"none"}, []string{"T36.2"}),
+		trackerWatchStrictTask("T36.2", "Implement dependent generated subtask", "Close the second leaf only after the first subtask lands.", []string{"T36.1"}, []string{"none"}),
+	}, "\n")
+}
+
+func trackerWatchStrictTask(id string, title string, why string, dependsOn []string, unlocks []string) string {
+	return strings.Join([]string{
+		"### Task: " + id + " " + title,
+		"",
+		"Why:",
+		"- " + why,
+		"",
+		"In scope:",
+		"- Exercise one generated subtask.",
+		"- Seam: split-to-PR integration harness",
+		"",
+		"Out of scope:",
+		"- Operator docs.",
+		"",
+		"Strict TDD:",
+		"1. Add or update one targeted failing test first",
+		"2. Run the targeted test and confirm it fails for the intended reason",
+		"3. Implement the minimum production change needed to make it pass",
+		"4. Re-run the targeted test",
+		"5. Run one narrow follow-up verification command",
+		"",
+		"Done when:",
+		"- The generated subtask closes.",
+		"",
+		"Expected files:",
+		"- cmd/yolo-agent/tracker_watch_integration_test.go",
+		"",
+		"Depends on:",
+		"- " + strings.Join(dependsOn, ", "),
+		"",
+		"Unlocks:",
+		"- " + strings.Join(unlocks, ", "),
+		"",
+	}, "\n")
+}
+
+type trackerWatchSplitPRStorage struct {
+	mu             sync.Mutex
+	tasks          map[string]contracts.Task
+	relations      []contracts.TaskRelation
+	comments       map[string][]startrek.IssueComment
+	nextIssueIndex int
+}
+
+func newTrackerWatchSplitPRStorage() *trackerWatchSplitPRStorage {
+	return &trackerWatchSplitPRStorage{
+		tasks: map[string]contracts.Task{
+			"VAY": {
+				ID:     "VAY",
+				Title:  "VAY",
+				Status: contracts.TaskStatusOpen,
+			},
+			"VAY-42": {
+				ID:          "VAY-42",
+				Title:       "Parent issue ready for splitting",
+				Description: "Create generated subtasks and land them through Arc PR finalization.",
+				Status:      contracts.TaskStatusOpen,
+				ParentID:    "VAY",
+				Metadata:    map[string]string{},
+			},
+		},
+		relations: []contracts.TaskRelation{
+			{FromID: "VAY", ToID: "VAY-42", Type: contracts.RelationParent},
+		},
+		comments:       map[string][]startrek.IssueComment{},
+		nextIssueIndex: 43,
+	}
+}
+
+func (s *trackerWatchSplitPRStorage) GetTaskTree(_ context.Context, rootID string) (*contracts.TaskTree, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tasks := make(map[string]contracts.Task, len(s.tasks))
+	for id, task := range s.tasks {
+		tasks[id] = cloneTrackerWatchTask(task)
+	}
+	root, ok := tasks[strings.TrimSpace(rootID)]
+	if !ok {
+		return nil, fmt.Errorf("missing root task %q", rootID)
+	}
+	return &contracts.TaskTree{
+		Root:      root,
+		Tasks:     tasks,
+		Relations: append([]contracts.TaskRelation(nil), s.relations...),
+	}, nil
+}
+
+func (s *trackerWatchSplitPRStorage) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[strings.TrimSpace(taskID)]
+	if !ok {
+		return nil, fmt.Errorf("missing task %q", taskID)
+	}
+	cloned := cloneTrackerWatchTask(task)
+	return &cloned, nil
+}
+
+func (s *trackerWatchSplitPRStorage) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[strings.TrimSpace(taskID)]
+	if !ok {
+		return fmt.Errorf("missing task %q", taskID)
+	}
+	task.Status = status
+	s.tasks[task.ID] = task
+	return nil
+}
+
+func (s *trackerWatchSplitPRStorage) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[strings.TrimSpace(taskID)]
+	if !ok {
+		return fmt.Errorf("missing task %q", taskID)
+	}
+	if task.Metadata == nil {
+		task.Metadata = map[string]string{}
+	}
+	for key, value := range data {
+		task.Metadata[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	s.tasks[task.ID] = task
+	return nil
+}
+
+func (s *trackerWatchSplitPRStorage) CreateIssue(_ context.Context, opts startrek.IssueCreateOptions) (startrek.Issue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issueID := fmt.Sprintf("VAY-%d", s.nextIssueIndex)
+	s.nextIssueIndex++
+	dependencies := trackerWatchDependencyIDsFromLabels(opts.Labels)
+	metadata := map[string]string{}
+	if len(dependencies) > 0 {
+		metadata["dependencies"] = strings.Join(dependencies, ",")
+	}
+	task := contracts.Task{
+		ID:          issueID,
+		Title:       strings.TrimSpace(opts.Title),
+		Description: strings.TrimSpace(opts.Description),
+		Status:      contracts.TaskStatusOpen,
+		ParentID:    strings.TrimSpace(opts.ParentID),
+		Metadata:    metadata,
+	}
+	s.tasks[issueID] = task
+	s.relations = append(s.relations, contracts.TaskRelation{
+		FromID: task.ParentID,
+		ToID:   issueID,
+		Type:   contracts.RelationParent,
+	})
+	for _, dependencyID := range dependencies {
+		s.relations = append(s.relations,
+			contracts.TaskRelation{FromID: issueID, ToID: dependencyID, Type: contracts.RelationDependsOn},
+			contracts.TaskRelation{FromID: dependencyID, ToID: issueID, Type: contracts.RelationBlocks},
+		)
+	}
+	return startrek.Issue{
+		ID:          issueID,
+		Title:       task.Title,
+		Description: task.Description,
+		Labels:      append([]string(nil), opts.Labels...),
+		ParentID:    task.ParentID,
+	}, nil
+}
+
+func (s *trackerWatchSplitPRStorage) GetIssueComments(_ context.Context, issueID string) ([]startrek.IssueComment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]startrek.IssueComment(nil), s.comments[strings.TrimSpace(issueID)]...), nil
+}
+
+func (s *trackerWatchSplitPRStorage) CreateIssueComment(_ context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	issueID = strings.TrimSpace(issueID)
+	body := strings.TrimSpace(opts.Body)
+	if marker := strings.TrimSpace(opts.Marker); marker != "" {
+		body = "<!-- yolo-runner:" + marker + " -->\n\n" + body
+	}
+	comment := startrek.IssueComment{
+		ID:        fmt.Sprintf("comment-%d", len(s.comments[issueID])+1),
+		Body:      body,
+		Author:    startrek.IssueAuthor{ID: "runner", Display: "YOLO Runner"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	s.comments[issueID] = append(s.comments[issueID], comment)
+	return comment, nil
+}
+
+func (s *trackerWatchSplitPRStorage) commentTexts(issueID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	comments := s.comments[strings.TrimSpace(issueID)]
+	out := make([]string, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, strings.TrimSpace(comment.Body))
+	}
+	return out
+}
+
+type trackerWatchRecordingArcRunner struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *trackerWatchRecordingArcRunner) Run(name string, args ...string) (string, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, strings.TrimSpace(name+" "+strings.Join(args, " ")))
+	r.mu.Unlock()
+
+	if name != "arc" || len(args) == 0 {
+		return "", fmt.Errorf("unexpected Arc command %s %v", name, args)
+	}
+	switch args[0] {
+	case "checkout", "add", "commit", "status":
+		return "", nil
+	case "rev-parse":
+		return "abc123\n", nil
+	case "pr":
+		if len(args) >= 2 && args[1] == "create" {
+			return `{"url":"https://a.yandex-team.ru/review/123456"}` + "\n", nil
+		}
+	}
+	return "", fmt.Errorf("unexpected Arc command arc %s", strings.Join(args, " "))
+}
+
+func (r *trackerWatchRecordingArcRunner) count(commandPrefix string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	prefix := strings.TrimSpace("arc " + commandPrefix)
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, prefix) {
+			count++
+		}
+	}
+	return count
+}
+
+func splitTaskIDs(tasks []splitter.Task) []string {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, strings.TrimSpace(task.ID))
+	}
+	return ids
+}
+
+func splitIssueIDs(issues []startrek.Issue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		ids = append(ids, strings.TrimSpace(issue.ID))
+	}
+	return ids
+}
+
+func matchingComments(comments []string, needle string) []string {
+	matches := make([]string, 0)
+	for _, comment := range comments {
+		if strings.Contains(comment, needle) {
+			matches = append(matches, comment)
+		}
+	}
+	return matches
+}
+
+func trackerWatchDependencyIDsFromLabels(labels []string) []string {
+	ids := make([]string, 0)
+	for _, label := range labels {
+		dependencyID, ok := strings.CutPrefix(strings.TrimSpace(label), "depends-on:")
+		if ok && strings.TrimSpace(dependencyID) != "" {
+			ids = append(ids, strings.TrimSpace(dependencyID))
+		}
+	}
+	return ids
+}
+
+func cloneTrackerWatchTask(task contracts.Task) contracts.Task {
+	task.Metadata = cloneStringMapForTrackerWatchTest(task.Metadata)
+	return task
+}
+
+func cloneStringMapForTrackerWatchTest(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 type fakeTrackerWatchStartrek struct {
