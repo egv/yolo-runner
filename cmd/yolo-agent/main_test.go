@@ -22,6 +22,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/github"
 	"github.com/egv/yolo-runner/v2/internal/linear"
 	"github.com/egv/yolo-runner/v2/internal/opencode"
+	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 )
 
 type runnerTransportRequest struct {
@@ -2335,6 +2336,54 @@ landing:
 	}
 	if _, err := os.Stat(filepath.Join(repoRoot, ".yolo-runner", "clones")); !os.IsNotExist(err) {
 		t.Fatalf("expected clone directory not to be created, got stat error %v", err)
+	}
+}
+
+func TestCloneScopedVCSFactorySelectsLandingAdapter(t *testing.T) {
+	tests := []struct {
+		name       string
+		configYAML string
+		wantType   string
+	}{
+		{
+			name:     "git default",
+			wantType: "*git.VCSAdapter",
+		},
+		{
+			name: "arc-pr",
+			configYAML: `
+profiles:
+  default:
+    tracker:
+      type: tk
+landing:
+  type: arc-pr
+`,
+			wantType: "*arc.Adapter",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			if strings.TrimSpace(tt.configYAML) != "" {
+				writeTrackerConfigYAML(t, repoRoot, tt.configYAML)
+			}
+
+			rootVCS := gitvcs.NewVCSAdapter(localGitRunner{dir: repoRoot})
+			factory := cloneScopedVCSFactory(runConfig{repoRoot: repoRoot}, rootVCS)
+			if factory == nil {
+				t.Fatalf("expected VCS factory")
+			}
+
+			got := factory("")
+			if got == nil {
+				t.Fatalf("expected scoped VCS")
+			}
+			if gotType := reflect.TypeOf(got).String(); gotType != tt.wantType {
+				t.Fatalf("expected scoped VCS type %s, got %s", tt.wantType, gotType)
+			}
+		})
 	}
 }
 

@@ -39,6 +39,10 @@ func New(runner Runner) *Adapter {
 	return &Adapter{runner: runner}
 }
 
+func (a *Adapter) EnsureMain(context.Context) error {
+	return nil
+}
+
 func (a *Adapter) IsDirty(context.Context) (bool, error) {
 	output, err := a.runner.Run("arc", "status", "--short")
 	if err != nil {
@@ -90,6 +94,18 @@ func (a *Adapter) CreatePR(_ context.Context, title string, body string) (string
 		return "", err
 	}
 	return parsePRURL(output)
+}
+
+func (a *Adapter) MergeToMain(context.Context, string) error {
+	return nil
+}
+
+func (a *Adapter) PushBranch(context.Context, string) error {
+	return nil
+}
+
+func (a *Adapter) PushMain(context.Context) error {
+	return nil
 }
 
 func parsePRURL(output string) (string, error) {

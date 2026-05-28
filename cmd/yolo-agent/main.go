@@ -23,6 +23,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/kimi"
 	"github.com/egv/yolo-runner/v2/internal/opencode"
+	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 	"github.com/egv/yolo-runner/v2/internal/version"
 )
@@ -1353,14 +1354,22 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 }
 
 func runCloneManager(cfg runConfig) (agent.CloneManager, error) {
-	landingCfg, err := newTrackerConfigService().ResolveLandingConfig(cfg.repoRoot)
+	landingMode, err := resolveLandingMode(cfg.repoRoot)
 	if err != nil {
 		return nil, err
 	}
-	if landingCfg.Type == landingTypeArcPR {
+	if landingMode == landingTypeArcPR {
 		return nil, nil
 	}
 	return agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")), nil
+}
+
+func resolveLandingMode(repoRoot string) (string, error) {
+	landingCfg, err := newTrackerConfigService().ResolveLandingConfig(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	return landingCfg.Type, nil
 }
 
 func monitorEventSink(cfg runConfig) contracts.EventSink {
@@ -1421,10 +1430,17 @@ func cloneScopedVCSFactory(cfg runConfig, vcs contracts.VCS) agent.VCSFactory {
 	if _, ok := vcs.(*gitvcs.VCSAdapter); !ok {
 		return nil
 	}
+	landingMode, err := resolveLandingMode(cfg.repoRoot)
+	if err != nil {
+		return nil
+	}
 	return func(repoRoot string) contracts.VCS {
 		targetRoot := repoRoot
 		if targetRoot == "" {
 			targetRoot = cfg.repoRoot
+		}
+		if landingMode == landingTypeArcPR {
+			return arcvcs.New(localGitRunner{dir: targetRoot})
 		}
 		return gitvcs.NewVCSAdapter(localGitRunner{dir: targetRoot})
 	}
