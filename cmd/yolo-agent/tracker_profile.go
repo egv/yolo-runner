@@ -17,18 +17,20 @@ import (
 )
 
 const (
-	trackerTypeTK     = "tk"
-	trackerTypeLinear = "linear"
-	trackerTypeGitHub = "github"
-	trackerTypeBeads  = "beads"
+	trackerTypeTK       = "tk"
+	trackerTypeLinear   = "linear"
+	trackerTypeGitHub   = "github"
+	trackerTypeBeads    = "beads"
+	trackerTypeStartrek = "startrek"
 
 	landingTypeGit   = "git"
 	landingTypeArcPR = "arc-pr"
 
-	defaultProfileName     = "default"
-	trackerConfigRelPath   = ".yolo-runner/config.yaml"
-	linearTokenEnvVarLabel = "linear.auth.token_env"
-	githubTokenEnvVarLabel = "github.auth.token_env"
+	defaultProfileName       = "default"
+	trackerConfigRelPath     = ".yolo-runner/config.yaml"
+	linearTokenEnvVarLabel   = "linear.auth.token_env"
+	githubTokenEnvVarLabel   = "github.auth.token_env"
+	startrekTokenEnvVarLabel = "startrek.token_env"
 
 	defaultTrackerAgentPollInterval = 30 * time.Second
 	defaultTrackerAgentLockPath     = ".yolo-runner/tracker-agent.lock"
@@ -58,11 +60,12 @@ type trackerProfileDef struct {
 }
 
 type trackerModel struct {
-	Type   string              `yaml:"type"`
-	TK     *tkTrackerModel     `yaml:"tk,omitempty"`
-	Linear *linearTrackerModel `yaml:"linear,omitempty"`
-	GitHub *githubTrackerModel `yaml:"github,omitempty"`
-	Beads  *beadsTrackerModel  `yaml:"beads,omitempty"`
+	Type     string                `yaml:"type"`
+	TK       *tkTrackerModel       `yaml:"tk,omitempty"`
+	Linear   *linearTrackerModel   `yaml:"linear,omitempty"`
+	GitHub   *githubTrackerModel   `yaml:"github,omitempty"`
+	Beads    *beadsTrackerModel    `yaml:"beads,omitempty"`
+	Startrek *startrekTrackerModel `yaml:"startrek,omitempty"`
 }
 
 type tkTrackerModel struct {
@@ -103,6 +106,17 @@ type githubAuthModel struct {
 type beadsTrackerModel struct {
 	// beads_rust doesn't require additional configuration
 	// It auto-discovers the .beads directory
+}
+
+type startrekTrackerModel struct {
+	Endpoint string               `yaml:"endpoint"`
+	TokenEnv string               `yaml:"token_env"`
+	Queues   []startrekQueueModel `yaml:"queues"`
+}
+
+type startrekQueueModel struct {
+	Key  string `yaml:"key"`
+	Root string `yaml:"root"`
 }
 
 type yoloAgentConfigModel struct {
@@ -624,6 +638,48 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 		return model, nil
 	case trackerTypeBeads:
 		// beads_rust auto-discovers the .beads directory, no additional validation needed
+		return model, nil
+	case trackerTypeStartrek:
+		if model.Startrek == nil {
+			return trackerModel{}, fmt.Errorf("tracker.startrek settings are required for profile %q", profileName)
+		}
+		endpoint := strings.TrimSpace(model.Startrek.Endpoint)
+		if endpoint == "" {
+			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to your Startrek API endpoint", "startrek.endpoint", profileName, trackerConfigRelPath)
+		}
+		tokenEnv := strings.TrimSpace(model.Startrek.TokenEnv)
+		if tokenEnv == "" {
+			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to the env var that stores your Startrek API token", startrekTokenEnvVarLabel, profileName, trackerConfigRelPath)
+		}
+		if getenv != nil && strings.TrimSpace(getenv(tokenEnv)) == "" {
+			return trackerModel{}, fmt.Errorf("missing auth token from %s for profile %q configured in %s; set it in your shell (for example: export %s=<startrek-api-token>)", tokenEnv, profileName, trackerConfigRelPath, tokenEnv)
+		}
+		if len(model.Startrek.Queues) == 0 {
+			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; configure at least one Startrek queue to Arcadia root mapping", "startrek.queues", profileName, trackerConfigRelPath)
+		}
+
+		for i := range model.Startrek.Queues {
+			key := strings.TrimSpace(model.Startrek.Queues[i].Key)
+			if key == "" {
+				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s", fmt.Sprintf("startrek.queues[%d].key", i), profileName, trackerConfigRelPath)
+			}
+			root := strings.TrimSpace(model.Startrek.Queues[i].Root)
+			if root == "" {
+				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
+			}
+			cleanRoot := filepath.Clean(root)
+			info, err := os.Stat(cleanRoot)
+			if err != nil {
+				return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root path for profile %q in %s: %w", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, err)
+			}
+			if !info.IsDir() {
+				return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root directory for profile %q in %s; got %q", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, cleanRoot)
+			}
+			model.Startrek.Queues[i].Key = key
+			model.Startrek.Queues[i].Root = cleanRoot
+		}
+		model.Startrek.Endpoint = endpoint
+		model.Startrek.TokenEnv = tokenEnv
 		return model, nil
 	default:
 		return trackerModel{}, fmt.Errorf("unsupported tracker type %q for profile %q", model.Type, profileName)
