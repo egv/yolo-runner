@@ -2,10 +2,82 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
+	t.Run("once runs exactly one iteration without waiting", func(t *testing.T) {
+		calls := 0
+		waits := 0
+
+		err := runTrackerWatchPollLoop(
+			context.Background(),
+			true,
+			time.Hour,
+			func(context.Context) error {
+				calls++
+				return nil
+			},
+			func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("expected once loop to succeed, got %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("expected one iteration, got %d", calls)
+		}
+		if waits != 0 {
+			t.Fatalf("expected once loop not to wait, got %d waits", waits)
+		}
+	})
+
+	t.Run("interval mode repeats on poll interval and stops on context cancel", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		const wantInterval = 25 * time.Millisecond
+		calls := 0
+		var waits []time.Duration
+
+		err := runTrackerWatchPollLoop(
+			ctx,
+			false,
+			wantInterval,
+			func(context.Context) error {
+				calls++
+				if calls == 3 {
+					cancel()
+				}
+				return nil
+			},
+			func(_ context.Context, interval time.Duration) error {
+				waits = append(waits, interval)
+				return nil
+			},
+		)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+		if calls != 3 {
+			t.Fatalf("expected three iterations before cancellation, got %d", calls)
+		}
+		if len(waits) != 2 {
+			t.Fatalf("expected two interval waits, got %d", len(waits))
+		}
+		for _, got := range waits {
+			if got != wantInterval {
+				t.Fatalf("expected wait interval %s, got %s", wantInterval, got)
+			}
+		}
+	})
+}
 
 func TestDefaultRunTrackerWatchRejectsHeldLock(t *testing.T) {
 	repoRoot := t.TempDir()
