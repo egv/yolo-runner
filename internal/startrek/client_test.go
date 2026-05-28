@@ -322,6 +322,78 @@ func TestClientGetIssueAndCommentsMapsDiscussionContext(t *testing.T) {
 	}
 }
 
+func TestClientCreateIssueCommentPostsMarkedBodyAndReturnsID(t *testing.T) {
+	var capturedRequest *http.Request
+	var capturedBody struct {
+		Text       string   `json:"text"`
+		Summonees  []string `json:"summonees"`
+		MarkupType string   `json:"markupType"`
+	}
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		capturedRequest = req
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+
+		return jsonResponse(http.StatusCreated, `{
+			"id": 626,
+			"text": "Runner update ready.",
+			"createdBy": {
+				"id": "runner",
+				"display": "YOLO Runner"
+			},
+			"createdAt": "2026-05-28T05:00:00.000+0000",
+			"updatedAt": "2026-05-28T05:00:00.000+0000"
+		}`), nil
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	comment, err := client.CreateIssueComment(context.Background(), " VAY-42 ", IssueCommentCreateOptions{
+		Body:     " Runner update ready. ",
+		AuthorID: " 112233 ",
+		Marker:   " split-summary ",
+	})
+	if err != nil {
+		t.Fatalf("create issue comment: %v", err)
+	}
+
+	if capturedRequest == nil {
+		t.Fatalf("expected request to be sent")
+	}
+	if got := capturedRequest.Method; got != http.MethodPost {
+		t.Fatalf("expected POST method, got %s", got)
+	}
+	if got := capturedRequest.URL.String(); got != "https://api.tracker.yandex.net/v3/issues/VAY-42/comments" {
+		t.Fatalf("expected comments URL, got %q", got)
+	}
+
+	wantText := strings.Join([]string{
+		"<!-- yolo-runner:split-summary -->",
+		"",
+		"Runner update ready.",
+	}, "\n")
+	if capturedBody.Text != wantText {
+		t.Fatalf("expected marked comment text %q, got %q", wantText, capturedBody.Text)
+	}
+	if got := strings.Join(capturedBody.Summonees, ","); got != "112233" {
+		t.Fatalf("expected author summonee 112233, got %q", got)
+	}
+	if capturedBody.MarkupType != "md" {
+		t.Fatalf("expected markdown markup type for marker support, got %q", capturedBody.MarkupType)
+	}
+	if comment.ID != "626" {
+		t.Fatalf("expected returned comment ID 626, got %q", comment.ID)
+	}
+}
+
 func TestClientIssueLabelMutations(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {

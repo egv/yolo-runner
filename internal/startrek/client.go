@@ -77,6 +77,12 @@ type IssueComment struct {
 	UpdatedAt time.Time
 }
 
+type IssueCommentCreateOptions struct {
+	Body     string
+	AuthorID string
+	Marker   string
+}
+
 func NewClient(cfg Config) (*Client, error) {
 	endpoint, err := normalizeEndpoint(cfg.Endpoint)
 	if err != nil {
@@ -208,6 +214,39 @@ func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]IssueC
 		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
 	})
 	return comments, nil
+}
+
+func (c *Client) CreateIssueComment(ctx context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error) {
+	requestPath, err := issueCommentsPath(issueID)
+	if err != nil {
+		return IssueComment{}, err
+	}
+
+	text, marked, err := issueCommentCreateText(opts.Body, opts.Marker)
+	if err != nil {
+		return IssueComment{}, err
+	}
+
+	requestBody := startrekIssueCommentCreateRequest{
+		Text: text,
+	}
+	if marked {
+		requestBody.MarkupType = "md"
+	}
+	if authorID := strings.TrimSpace(opts.AuthorID); authorID != "" {
+		requestBody.Summonees = []string{authorID}
+	}
+
+	var rawComment startrekIssueComment
+	if err := c.DoJSON(ctx, http.MethodPost, requestPath, requestBody, &rawComment); err != nil {
+		return IssueComment{}, fmt.Errorf("create startrek comment on issue %q: %w", strings.TrimSpace(issueID), err)
+	}
+
+	comment, err := mapCreatedIssueComment(rawComment)
+	if err != nil {
+		return IssueComment{}, err
+	}
+	return comment, nil
 }
 
 func (c *Client) AddLabel(ctx context.Context, issueID string, label string) error {
@@ -397,12 +436,47 @@ type startrekIssueAuthor struct {
 	Display string `json:"display"`
 }
 
+type startrekIssueCommentCreateRequest struct {
+	Text       string   `json:"text"`
+	Summonees  []string `json:"summonees,omitempty"`
+	MarkupType string   `json:"markupType,omitempty"`
+}
+
 type startrekIssueComment struct {
-	ID        string              `json:"id"`
+	ID        startrekCommentID   `json:"id"`
 	Text      string              `json:"text"`
 	CreatedBy startrekIssueAuthor `json:"createdBy"`
 	CreatedAt string              `json:"createdAt"`
 	UpdatedAt string              `json:"updatedAt"`
+}
+
+type startrekCommentID string
+
+func (id startrekCommentID) String() string {
+	return strings.TrimSpace(string(id))
+}
+
+func (id *startrekCommentID) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*id = ""
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		*id = startrekCommentID(strings.TrimSpace(text))
+		return nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var number json.Number
+	if err := decoder.Decode(&number); err != nil {
+		return fmt.Errorf("decode startrek comment id: %w", err)
+	}
+	*id = startrekCommentID(number.String())
+	return nil
 }
 
 func issueSearchPath(page int, perPage int) string {
@@ -452,20 +526,51 @@ func mapIssueComment(raw startrekIssueComment) (IssueComment, bool, error) {
 
 	createdAt, err := parseStartrekTime(raw.CreatedAt)
 	if err != nil {
-		return IssueComment{}, false, fmt.Errorf("parse createdAt for comment %q: %w", strings.TrimSpace(raw.ID), err)
+		return IssueComment{}, false, fmt.Errorf("parse createdAt for comment %q: %w", raw.ID.String(), err)
 	}
 	updatedAt, err := parseStartrekTime(raw.UpdatedAt)
 	if err != nil {
-		return IssueComment{}, false, fmt.Errorf("parse updatedAt for comment %q: %w", strings.TrimSpace(raw.ID), err)
+		return IssueComment{}, false, fmt.Errorf("parse updatedAt for comment %q: %w", raw.ID.String(), err)
 	}
 
 	return IssueComment{
-		ID:        strings.TrimSpace(raw.ID),
+		ID:        raw.ID.String(),
 		Body:      text,
 		Author:    mapIssueAuthor(raw.CreatedBy),
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
 	}, true, nil
+}
+
+func mapCreatedIssueComment(raw startrekIssueComment) (IssueComment, error) {
+	comment, ok, err := mapIssueComment(raw)
+	if err != nil {
+		return IssueComment{}, err
+	}
+	if ok {
+		return comment, nil
+	}
+	return IssueComment{
+		ID:     raw.ID.String(),
+		Author: mapIssueAuthor(raw.CreatedBy),
+	}, nil
+}
+
+func issueCommentCreateText(body string, marker string) (string, bool, error) {
+	text := strings.TrimSpace(body)
+	if text == "" {
+		return "", false, errors.New("startrek comment body is required")
+	}
+
+	marker = strings.TrimSpace(marker)
+	if marker == "" {
+		return text, false, nil
+	}
+	if strings.ContainsAny(marker, "\r\n") || strings.Contains(marker, "-->") {
+		return "", false, errors.New("startrek comment marker must be a single safe line")
+	}
+
+	return "<!-- yolo-runner:" + marker + " -->\n\n" + text, true, nil
 }
 
 func mapIssueAuthor(raw startrekIssueAuthor) IssueAuthor {
