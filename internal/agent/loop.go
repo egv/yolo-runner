@@ -55,6 +55,10 @@ type CloneManager interface {
 
 type VCSFactory func(repoRoot string) contracts.VCS
 
+type pullRequestCreator interface {
+	CreatePR(ctx context.Context, title string, body string) (string, error)
+}
+
 type LoopOptions struct {
 	ParentID             string
 	MaxRetries           int
@@ -671,6 +675,16 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 						}
 					}
 
+					if isDeferredPRLandingVCS(taskVCS) {
+						_ = landingState.Apply(scheduler.LandingEventSucceeded)
+						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
+						emitMergeQueueEvent(contracts.EventTypeMergeLanded, appendDecisionMetadata(map[string]string{
+							"landing_status":  string(landingState.State()),
+							"landing_attempt": fmt.Sprintf("%d", attempt),
+						}, "landed", landingReason))
+						break
+					}
+
 					if err := taskVCS.MergeToMain(ctx, taskBranch); err != nil {
 						landingReason = err.Error()
 						_ = landingState.Apply(scheduler.LandingEventFailedRetryable)
@@ -988,6 +1002,14 @@ func (l *Loop) vcsForRepo(repoRoot string) contracts.VCS {
 		}
 	}
 	return l.options.VCS
+}
+
+func isDeferredPRLandingVCS(vcs contracts.VCS) bool {
+	if vcs == nil {
+		return false
+	}
+	_, ok := vcs.(pullRequestCreator)
+	return ok
 }
 
 func eventTypeForRunnerProgress(progressType string) contracts.EventType {

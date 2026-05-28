@@ -2424,6 +2424,15 @@ func (f *fakeVCS) PushMain(context.Context) error {
 	return f.pushErr
 }
 
+type fakeArcPRVCS struct {
+	fakeVCS
+}
+
+func (f *fakeArcPRVCS) CreatePR(_ context.Context, title string, body string) (string, error) {
+	f.calls = append(f.calls, "create_pr:"+title+"\n"+body)
+	return "https://arc.example.test/review/123", nil
+}
+
 func TestLoopRunsReviewAfterImplementationSuccess(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{
@@ -2667,6 +2676,46 @@ func TestLoopMarksFailedWhenReviewRetryBudgetExhausted(t *testing.T) {
 	}
 	if got := mgr.dataByID["t-1"]["review_retry_count"]; got != "1" {
 		t.Fatalf("expected review_retry_count to remain 1 after one retry, got %q", got)
+	}
+}
+
+func TestLoopArcPRSubtaskLandingCommitsOnceAndDoesNotCreatePR(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen, ParentID: "root"})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true},
+	}}
+	vcs := &fakeArcPRVCS{}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", MaxRetries: 0, RequireReview: true, MergeOnSuccess: true, VCS: vcs})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completed summary, got %#v", summary)
+	}
+	if mgr.statusByID["t-1"] != contracts.TaskStatusClosed {
+		t.Fatalf("expected closed task status, got %s", mgr.statusByID["t-1"])
+	}
+
+	commitCount := 0
+	for _, call := range vcs.calls {
+		if strings.HasPrefix(call, "commit_all:") {
+			commitCount++
+		}
+	}
+	if commitCount != 1 {
+		t.Fatalf("expected exactly one commit_all call, got %d calls in %v", commitCount, vcs.calls)
+	}
+	if containsCallPrefix(vcs.calls, "create_pr:") {
+		t.Fatalf("did not expect CreatePR call for subtask completion, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "merge_to_main:task/t-1") {
+		t.Fatalf("did not expect merge_to_main during arc-pr subtask completion, got %v", vcs.calls)
+	}
+	if containsCall(vcs.calls, "push_main") {
+		t.Fatalf("did not expect push_main during arc-pr subtask completion, got %v", vcs.calls)
 	}
 }
 
