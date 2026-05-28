@@ -97,6 +97,7 @@ type Loop struct {
 	landingLock     landingLock
 	cloneManager    CloneManager
 	schedulerState  *schedulerStateStore
+	parentFinalizer *parentFinalizer
 	workerStartHook func(workerID int)
 }
 
@@ -110,14 +111,15 @@ type taskCompletionChecker interface {
 
 func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
 	return &Loop{
-		tasks:          tasks,
-		runner:         runner,
-		events:         events,
-		options:        options,
-		taskLock:       scheduler.NewTaskLock(),
-		landingLock:    scheduler.NewLandingLock(),
-		cloneManager:   options.CloneManager,
-		schedulerState: newSchedulerStateStore(options.SchedulerStatePath, options.ParentID),
+		tasks:           tasks,
+		runner:          runner,
+		events:          events,
+		options:         options,
+		taskLock:        scheduler.NewTaskLock(),
+		landingLock:     scheduler.NewLandingLock(),
+		cloneManager:    options.CloneManager,
+		schedulerState:  newSchedulerStateStore(options.SchedulerStatePath, options.ParentID),
+		parentFinalizer: newParentFinalizer(tasks),
 	}
 }
 
@@ -270,6 +272,9 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 					return summary, fmt.Errorf("task graph incomplete/stalled: no tasks in flight and no tasks available for parent %q", strings.TrimSpace(l.options.ParentID))
 				}
 			}
+			if err := l.finalizeParentIfReady(ctx); err != nil {
+				return summary, err
+			}
 			return summary, nil
 		}
 
@@ -282,6 +287,11 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 		summary.Blocked += result.summary.Blocked
 		summary.Failed += result.summary.Failed
 		summary.Skipped += result.summary.Skipped
+		if result.summary.Completed > 0 {
+			if err := l.finalizeParentIfReady(ctx); err != nil {
+				return summary, err
+			}
+		}
 	}
 }
 
