@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,16 +56,25 @@ type IssueSearchPage struct {
 }
 
 type Issue struct {
-	ID        string
-	Title     string
-	Labels    []string
-	Author    IssueAuthor
-	UpdatedAt time.Time
+	ID          string
+	Title       string
+	Description string
+	Labels      []string
+	Author      IssueAuthor
+	UpdatedAt   time.Time
 }
 
 type IssueAuthor struct {
 	ID      string
 	Display string
+}
+
+type IssueComment struct {
+	ID        string
+	Body      string
+	Author    IssueAuthor
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 func NewClient(cfg Config) (*Client, error) {
@@ -158,6 +168,46 @@ func (c *Client) SearchIssues(ctx context.Context, opts IssueSearchOptions) (Iss
 		TotalCount: totalCount,
 		TotalPages: totalPages,
 	}, nil
+}
+
+func (c *Client) GetIssue(ctx context.Context, issueID string) (Issue, error) {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return Issue{}, err
+	}
+
+	var rawIssue startrekIssueSearchItem
+	if err := c.DoJSON(ctx, http.MethodGet, requestPath, nil, &rawIssue); err != nil {
+		return Issue{}, err
+	}
+	return mapIssue(rawIssue)
+}
+
+func (c *Client) GetIssueComments(ctx context.Context, issueID string) ([]IssueComment, error) {
+	requestPath, err := issueCommentsPath(issueID)
+	if err != nil {
+		return nil, err
+	}
+
+	var rawComments []startrekIssueComment
+	if err := c.DoJSON(ctx, http.MethodGet, requestPath, nil, &rawComments); err != nil {
+		return nil, err
+	}
+
+	comments := make([]IssueComment, 0, len(rawComments))
+	for _, raw := range rawComments {
+		comment, ok, err := mapIssueComment(raw)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			comments = append(comments, comment)
+		}
+	}
+	sort.SliceStable(comments, func(i, j int) bool {
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
+	return comments, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method string, requestPath string, requestBody any, responseBody any) (http.Header, error) {
@@ -268,17 +318,26 @@ func (c *Client) buildURL(requestPath string) (string, error) {
 }
 
 type startrekIssueSearchItem struct {
-	ID        string              `json:"id"`
-	Key       string              `json:"key"`
-	Summary   string              `json:"summary"`
-	Tags      []string            `json:"tags"`
-	CreatedBy startrekIssueAuthor `json:"createdBy"`
-	UpdatedAt string              `json:"updatedAt"`
+	ID          string              `json:"id"`
+	Key         string              `json:"key"`
+	Summary     string              `json:"summary"`
+	Description string              `json:"description"`
+	Tags        []string            `json:"tags"`
+	CreatedBy   startrekIssueAuthor `json:"createdBy"`
+	UpdatedAt   string              `json:"updatedAt"`
 }
 
 type startrekIssueAuthor struct {
 	ID      string `json:"id"`
 	Display string `json:"display"`
+}
+
+type startrekIssueComment struct {
+	ID        string              `json:"id"`
+	Text      string              `json:"text"`
+	CreatedBy startrekIssueAuthor `json:"createdBy"`
+	CreatedAt string              `json:"createdAt"`
+	UpdatedAt string              `json:"updatedAt"`
 }
 
 func issueSearchPath(page int, perPage int) string {
@@ -288,6 +347,22 @@ func issueSearchPath(page int, perPage int) string {
 	return "issues/_search?" + query.Encode()
 }
 
+func issuePath(issueID string) (string, error) {
+	id := strings.TrimSpace(issueID)
+	if id == "" {
+		return "", errors.New("startrek issue id is required")
+	}
+	return "issues/" + url.PathEscape(id), nil
+}
+
+func issueCommentsPath(issueID string) (string, error) {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return "", err
+	}
+	return requestPath + "/comments", nil
+}
+
 func mapIssue(raw startrekIssueSearchItem) (Issue, error) {
 	updatedAt, err := parseStartrekTime(raw.UpdatedAt)
 	if err != nil {
@@ -295,12 +370,41 @@ func mapIssue(raw startrekIssueSearchItem) (Issue, error) {
 	}
 
 	return Issue{
-		ID:        issueID(raw),
-		Title:     strings.TrimSpace(raw.Summary),
-		Labels:    normalizedLabels(raw.Tags),
-		Author:    IssueAuthor{ID: strings.TrimSpace(raw.CreatedBy.ID), Display: strings.TrimSpace(raw.CreatedBy.Display)},
-		UpdatedAt: updatedAt,
+		ID:          issueID(raw),
+		Title:       strings.TrimSpace(raw.Summary),
+		Description: strings.TrimSpace(raw.Description),
+		Labels:      normalizedLabels(raw.Tags),
+		Author:      mapIssueAuthor(raw.CreatedBy),
+		UpdatedAt:   updatedAt,
 	}, nil
+}
+
+func mapIssueComment(raw startrekIssueComment) (IssueComment, bool, error) {
+	text := strings.TrimSpace(raw.Text)
+	if text == "" {
+		return IssueComment{}, false, nil
+	}
+
+	createdAt, err := parseStartrekTime(raw.CreatedAt)
+	if err != nil {
+		return IssueComment{}, false, fmt.Errorf("parse createdAt for comment %q: %w", strings.TrimSpace(raw.ID), err)
+	}
+	updatedAt, err := parseStartrekTime(raw.UpdatedAt)
+	if err != nil {
+		return IssueComment{}, false, fmt.Errorf("parse updatedAt for comment %q: %w", strings.TrimSpace(raw.ID), err)
+	}
+
+	return IssueComment{
+		ID:        strings.TrimSpace(raw.ID),
+		Body:      text,
+		Author:    mapIssueAuthor(raw.CreatedBy),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}, true, nil
+}
+
+func mapIssueAuthor(raw startrekIssueAuthor) IssueAuthor {
+	return IssueAuthor{ID: strings.TrimSpace(raw.ID), Display: strings.TrimSpace(raw.Display)}
 }
 
 func issueID(raw startrekIssueSearchItem) string {
