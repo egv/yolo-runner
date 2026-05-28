@@ -37,6 +37,7 @@ type Config struct {
 	Token            string
 	HTTPClient       HTTPClient
 	MaxResponseBytes int64
+	ReadyLabel       string
 }
 
 type Client struct {

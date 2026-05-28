@@ -27,7 +27,7 @@ func NewStorageBackend(cfg Config) (*StorageBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StorageBackend{client: client}, nil
+	return &StorageBackend{client: client, readyLabel: strings.TrimSpace(cfg.ReadyLabel)}, nil
 }
 
 func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*contracts.TaskTree, error) {
