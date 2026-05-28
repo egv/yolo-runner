@@ -2306,6 +2306,38 @@ func TestRunWithComponentsStreamWritesNDJSONToStdout(t *testing.T) {
 	_ = filepath.Join
 }
 
+func TestRunWithComponentsArcPRLandingUsesConfiguredRepoRootWithoutClone(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+landing:
+  type: arc-pr
+`)
+
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	runner := &serviceTrackingRunner{result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted, ReviewReady: true}}
+	cfg := runConfig{repoRoot: repoRoot, rootID: "root"}
+
+	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
+	if runErr != nil {
+		t.Fatalf("runWithComponents failed: %v", runErr)
+	}
+
+	req, ok := runner.lastRequest()
+	if !ok {
+		t.Fatalf("expected runner request")
+	}
+	if req.RepoRoot != repoRoot {
+		t.Fatalf("expected runner repo root %q, got %q", repoRoot, req.RepoRoot)
+	}
+	if _, err := os.Stat(filepath.Join(repoRoot, ".yolo-runner", "clones")); !os.IsNotExist(err) {
+		t.Fatalf("expected clone directory not to be created, got stat error %v", err)
+	}
+}
+
 func TestRunWithComponentsStreamEmitsRunStartedWithParameters(t *testing.T) {
 	originalStdout := os.Stdout
 	r, w, err := os.Pipe()
