@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
@@ -16,7 +17,10 @@ type trackerWatchLock struct {
 	file *os.File
 }
 
-func defaultRunTrackerWatch(_ context.Context, cfg trackerWatchConfig) error {
+type trackerWatchPollIteration func(context.Context) error
+type trackerWatchPollWait func(context.Context, time.Duration) error
+
+func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	trackerAgentConfig, err := newTrackerConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
 		return err
@@ -28,7 +32,59 @@ func defaultRunTrackerWatch(_ context.Context, cfg trackerWatchConfig) error {
 	defer func() {
 		_ = lock.Release()
 	}()
+	return runTrackerWatchPollLoop(ctx, cfg.once, trackerAgentConfig.PollInterval, func(ctx context.Context) error {
+		return runTrackerWatchPollIteration(ctx, cfg, trackerAgentConfig)
+	}, waitTrackerWatchPollInterval)
+}
+
+func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, wait trackerWatchPollWait) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if iterate == nil {
+		return errors.New("tracker-watch poll iteration is required")
+	}
+	if wait == nil {
+		return errors.New("tracker-watch poll wait is required")
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := iterate(ctx); err != nil {
+			return err
+		}
+		if once {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := wait(ctx, pollInterval); err != nil {
+			return err
+		}
+	}
+}
+
+func runTrackerWatchPollIteration(_ context.Context, _ trackerWatchConfig, _ trackerAgentConfig) error {
 	return nil
+}
+
+func waitTrackerWatchPollInterval(ctx context.Context, interval time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func acquireTrackerWatchLock(lockPath string) (*trackerWatchLock, error) {
