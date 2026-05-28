@@ -1203,6 +1203,10 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	cloneManager, err := runCloneManager(cfg)
+	if err != nil {
+		return err
+	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
@@ -1225,7 +1229,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		VCS:                  vcs,
 		RequireReview:        true,
 		MergeOnSuccess:       true,
-		CloneManager:         agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
+		CloneManager:         cloneManager,
 		VCSFactory:           vcsFactory,
 	})
 	if eventSink != nil {
@@ -1296,6 +1300,10 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	cloneManager, err := runCloneManager(cfg)
+	if err != nil {
+		return err
+	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoopWithTaskEngine(storage, taskEngine, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
@@ -1318,7 +1326,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		VCS:                  vcs,
 		RequireReview:        true,
 		MergeOnSuccess:       true,
-		CloneManager:         agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")),
+		CloneManager:         cloneManager,
 		VCSFactory:           vcsFactory,
 	})
 	if eventSink != nil {
@@ -1342,6 +1350,17 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		})
 	}
 	return err
+}
+
+func runCloneManager(cfg runConfig) (agent.CloneManager, error) {
+	landingCfg, err := newTrackerConfigService().ResolveLandingConfig(cfg.repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if landingCfg.Type == landingTypeArcPR {
+		return nil, nil
+	}
+	return agent.NewGitCloneManager(filepath.Join(cfg.repoRoot, ".yolo-runner", "clones")), nil
 }
 
 func monitorEventSink(cfg runConfig) contracts.EventSink {
