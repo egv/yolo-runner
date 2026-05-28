@@ -3,11 +3,13 @@ package startrek
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	enginepkg "github.com/egv/yolo-runner/v2/internal/engine"
 )
@@ -218,6 +220,157 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 
 	if got, want := startrekSummaryIDs(taskEngine.GetNextAvailable(graph)), []string{"VAY-43"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected only unblocked leaf subtask runnable, got %v want %v", got, want)
+	}
+}
+
+func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing.T) {
+	type createdIssue struct {
+		Key         string
+		Summary     string
+		Description string
+		Tags        []string
+		Parent      string
+	}
+
+	createdIssues := make([]createdIssue, 0, 2)
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch req.Method + " " + req.URL.Path {
+		case "POST /v3/issues/":
+			var body startrekIssueCreateRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create request body: %v", err)
+			}
+
+			key := fmt.Sprintf("VAY-%d", 43+len(createdIssues))
+			createdIssues = append(createdIssues, createdIssue{
+				Key:         key,
+				Summary:     body.Summary,
+				Description: body.Description,
+				Tags:        append([]string(nil), body.Tags...),
+				Parent:      body.Parent,
+			})
+
+			raw, err := json.Marshal(map[string]any{
+				"key":         key,
+				"summary":     body.Summary,
+				"description": body.Description,
+				"tags":        body.Tags,
+				"parent": map[string]any{
+					"key": body.Parent,
+				},
+				"createdBy": map[string]any{
+					"id":      "112233",
+					"display": "Ada Lovelace",
+				},
+				"updatedAt": fmt.Sprintf("2026-05-28T01:%02d:00.000+0000", 2+len(createdIssues)),
+			})
+			if err != nil {
+				t.Fatalf("marshal create response: %v", err)
+			}
+			return jsonResponse(http.StatusOK, string(raw)), nil
+		case "POST /v3/issues/_search":
+			payload := []map[string]any{
+				{
+					"id":          "64200b5f7b5b7c0011223344",
+					"key":         "VAY-42",
+					"summary":     "Split parent issue",
+					"description": "Parent issue already split into subtasks.",
+					"tags":        []string{"yolo-agent-ready"},
+					"createdBy": map[string]any{
+						"id":      "112233",
+						"display": "Ada Lovelace",
+					},
+					"updatedAt": "2026-05-28T01:02:03.000+0000",
+				},
+			}
+			for i, issue := range createdIssues {
+				payload = append(payload, map[string]any{
+					"key":         issue.Key,
+					"summary":     issue.Summary,
+					"description": issue.Description,
+					"tags":        issue.Tags,
+					"parent": map[string]any{
+						"key": issue.Parent,
+					},
+					"createdBy": map[string]any{
+						"id":      "112233",
+						"display": "Ada Lovelace",
+					},
+					"updatedAt": fmt.Sprintf("2026-05-28T01:%02d:00.000+0000", 3+i),
+				})
+			}
+
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal search response: %v", err)
+			}
+			return jsonResponseWithHeaders(http.StatusOK, string(raw), http.Header{
+				"X-Total-Count": []string{fmt.Sprint(len(payload))},
+				"X-Total-Pages": []string{"1"},
+			}), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	_, err = (SplitSubtaskCreationService{Tracker: backend}).Create(context.Background(), SplitSubtasksInput{
+		QueueKey: "VAY",
+		ParentID: "VAY-42",
+		Output: splitter.StrictOutput{
+			Tasks: []splitter.Task{
+				{
+					ID:            "T20",
+					Title:         "Implement first slice",
+					Why:           []string{"First generated subtask."},
+					InScope:       []string{"Implement the first slice."},
+					OutOfScope:    []string{"Later slices."},
+					StrictTDD:     []string{"Add targeted test", "Confirm it fails", "Make it pass"},
+					DoneWhen:      []string{"First slice passes."},
+					ExpectedFiles: []string{"internal/startrek/split_subtasks.go"},
+				},
+				{
+					ID:            "T21",
+					Title:         "Implement dependent slice",
+					Why:           []string{"Second generated subtask."},
+					InScope:       []string{"Implement the dependent slice."},
+					OutOfScope:    []string{"Arc execution."},
+					StrictTDD:     []string{"Add targeted test", "Confirm it fails", "Make it pass"},
+					DoneWhen:      []string{"Dependent slice passes."},
+					ExpectedFiles: []string{"internal/startrek/split_subtasks.go"},
+				},
+			},
+			Order: []splitter.Dependency{
+				{From: "T20", To: "T21"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	tree, err := backend.GetTaskTree(context.Background(), "VAY")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+
+	taskEngine := enginepkg.NewTaskEngine()
+	graph, err := taskEngine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph returned error: %v", err)
+	}
+
+	if got, want := startrekSummaryIDs(taskEngine.GetNextAvailable(graph)), []string{"VAY-43"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected only first split subtask runnable, got %v want %v", got, want)
 	}
 }
 
