@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,11 @@ const defaultMaxResponseBytes int64 = 1 << 20
 const (
 	defaultIssueSearchPage    = 1
 	defaultIssueSearchPerPage = 50
+)
+
+var (
+	startrekDependencyDirectivePattern = regexp.MustCompile(`(?i)\b(?:depends[-_ ]?on|blocked[-_ ]?by|deps?)\s*:\s*(.+)$`)
+	startrekIssueKeyPattern            = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*-\d+\b`)
 )
 
 type HTTPClient interface {
@@ -56,12 +62,14 @@ type IssueSearchPage struct {
 }
 
 type Issue struct {
-	ID          string
-	Title       string
-	Description string
-	Labels      []string
-	Author      IssueAuthor
-	UpdatedAt   time.Time
+	ID            string
+	Title         string
+	Description   string
+	Labels        []string
+	ParentID      string
+	DependencyIDs []string
+	Author        IssueAuthor
+	UpdatedAt     time.Time
 }
 
 type IssueAuthor struct {
@@ -422,13 +430,75 @@ func (c *Client) buildURL(requestPath string) (string, error) {
 }
 
 type startrekIssueSearchItem struct {
-	ID          string              `json:"id"`
-	Key         string              `json:"key"`
-	Summary     string              `json:"summary"`
-	Description string              `json:"description"`
-	Tags        []string            `json:"tags"`
-	CreatedBy   startrekIssueAuthor `json:"createdBy"`
-	UpdatedAt   string              `json:"updatedAt"`
+	ID           string              `json:"id"`
+	Key          string              `json:"key"`
+	Summary      string              `json:"summary"`
+	Description  string              `json:"description"`
+	Tags         []string            `json:"tags"`
+	Parent       startrekIssueRef    `json:"parent"`
+	Dependencies startrekIssueRefs   `json:"dependencies"`
+	DependsOn    startrekIssueRefs   `json:"dependsOn"`
+	BlockedBy    startrekIssueRefs   `json:"blockedBy"`
+	CreatedBy    startrekIssueAuthor `json:"createdBy"`
+	UpdatedAt    string              `json:"updatedAt"`
+}
+
+type startrekIssueRef struct {
+	ID      string `json:"id"`
+	Key     string `json:"key"`
+	Display string `json:"display"`
+}
+
+func (ref *startrekIssueRef) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*ref = startrekIssueRef{}
+		return nil
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		*ref = startrekIssueRef{Key: strings.TrimSpace(text)}
+		return nil
+	}
+
+	type issueRefAlias startrekIssueRef
+	var decoded issueRefAlias
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return fmt.Errorf("decode startrek issue ref: %w", err)
+	}
+	*ref = startrekIssueRef{
+		ID:      strings.TrimSpace(decoded.ID),
+		Key:     strings.TrimSpace(decoded.Key),
+		Display: strings.TrimSpace(decoded.Display),
+	}
+	return nil
+}
+
+type startrekIssueRefs []startrekIssueRef
+
+func (refs *startrekIssueRefs) UnmarshalJSON(raw []byte) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*refs = nil
+		return nil
+	}
+
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var decoded []startrekIssueRef
+		if err := json.Unmarshal(trimmed, &decoded); err != nil {
+			return fmt.Errorf("decode startrek issue refs: %w", err)
+		}
+		*refs = decoded
+		return nil
+	}
+
+	var decoded startrekIssueRef
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return fmt.Errorf("decode startrek issue ref: %w", err)
+	}
+	*refs = []startrekIssueRef{decoded}
+	return nil
 }
 
 type startrekIssueAuthor struct {
@@ -509,12 +579,14 @@ func mapIssue(raw startrekIssueSearchItem) (Issue, error) {
 	}
 
 	return Issue{
-		ID:          issueID(raw),
-		Title:       strings.TrimSpace(raw.Summary),
-		Description: strings.TrimSpace(raw.Description),
-		Labels:      normalizedLabels(raw.Tags),
-		Author:      mapIssueAuthor(raw.CreatedBy),
-		UpdatedAt:   updatedAt,
+		ID:            issueID(raw),
+		Title:         strings.TrimSpace(raw.Summary),
+		Description:   strings.TrimSpace(raw.Description),
+		Labels:        normalizedLabels(raw.Tags),
+		ParentID:      issueRefTaskID(raw.Parent),
+		DependencyIDs: startrekDependencyIDs(raw),
+		Author:        mapIssueAuthor(raw.CreatedBy),
+		UpdatedAt:     updatedAt,
 	}, nil
 }
 
@@ -582,6 +654,70 @@ func issueID(raw startrekIssueSearchItem) string {
 		return key
 	}
 	return strings.TrimSpace(raw.ID)
+}
+
+func issueRefTaskID(ref startrekIssueRef) string {
+	if key := strings.TrimSpace(ref.Key); key != "" {
+		return key
+	}
+	if display := strings.TrimSpace(ref.Display); display != "" {
+		if matches := startrekIssueKeyPattern.FindAllString(display, -1); len(matches) > 0 {
+			return strings.TrimSpace(matches[0])
+		}
+	}
+	return strings.TrimSpace(ref.ID)
+}
+
+func startrekDependencyIDs(raw startrekIssueSearchItem) []string {
+	ids := make([]string, 0, len(raw.Dependencies)+len(raw.DependsOn)+len(raw.BlockedBy))
+	for _, ref := range raw.Dependencies {
+		ids = append(ids, issueRefTaskID(ref))
+	}
+	for _, ref := range raw.DependsOn {
+		ids = append(ids, issueRefTaskID(ref))
+	}
+	for _, ref := range raw.BlockedBy {
+		ids = append(ids, issueRefTaskID(ref))
+	}
+	ids = append(ids, parseStartrekDependencyDirectives(raw.Tags)...)
+	ids = append(ids, parseStartrekDependencyDirectives([]string{raw.Description})...)
+	return normalizedIssueIDs(ids)
+}
+
+func parseStartrekDependencyDirectives(values []string) []string {
+	ids := make([]string, 0)
+	for _, value := range values {
+		for _, line := range strings.Split(value, "\n") {
+			matches := startrekDependencyDirectivePattern.FindStringSubmatch(line)
+			if len(matches) != 2 {
+				continue
+			}
+			ids = append(ids, startrekIssueKeyPattern.FindAllString(matches[1], -1)...)
+		}
+	}
+	return ids
+}
+
+func normalizedIssueIDs(raw []string) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	unique := map[string]struct{}{}
+	for _, id := range raw {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			unique[id] = struct{}{}
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(unique))
+	for id := range unique {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func normalizedLabels(raw []string) []string {
