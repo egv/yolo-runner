@@ -91,6 +91,13 @@ type runConfig struct {
 	distributedEventBus             distributed.Bus
 }
 
+type trackerWatchConfig struct {
+	repoRoot string
+	profile  string
+	once     bool
+	dryRun   bool
+}
+
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch backend {
 	case distributedBusRedis:
@@ -124,6 +131,7 @@ var launchYoloTUI = func() (io.WriteCloser, func() error, error) {
 }
 
 var runConfigInitCommand = defaultRunConfigInitCommand
+var runTrackerWatch = defaultRunTrackerWatch
 
 func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if version.IsVersionRequest(args) {
@@ -133,6 +141,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 
 	if len(args) > 0 && args[0] == "config" {
 		return runConfigCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "tracker-watch" {
+		return trackerWatchCommand(args[1:])
 	}
 
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
@@ -418,6 +429,39 @@ func runConfigCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: yolo-agent config <validate|init> [flags]")
 		return 1
 	}
+}
+
+func trackerWatchCommand(args []string) int {
+	fs := flag.NewFlagSet("yolo-agent tracker-watch", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "Repository root")
+	profile := fs.String("profile", "", "Tracker profile name from .yolo-runner/config.yaml")
+	once := fs.Bool("once", false, "Run one tracker watch iteration and exit")
+	dryRun := fs.Bool("dry-run", false, "Dry run tracker watch without making changes")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected tracker-watch argument: %s\n", fs.Arg(0))
+		return 1
+	}
+	handler := runTrackerWatch
+	if handler == nil {
+		handler = defaultRunTrackerWatch
+	}
+	if err := handler(context.Background(), trackerWatchConfig{
+		repoRoot: *repo,
+		profile:  *profile,
+		once:     *once,
+		dryRun:   *dryRun,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
+		return 1
+	}
+	return 0
+}
+
+func defaultRunTrackerWatch(context.Context, trackerWatchConfig) error {
+	return nil
 }
 
 func parseQualityGateTools(raw string) []string {
