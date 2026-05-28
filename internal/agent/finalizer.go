@@ -35,6 +35,14 @@ type parentSplitParentIDReader interface {
 	ParentSplitParentIDs(ctx context.Context, rootID string) ([]string, error)
 }
 
+type parentPRCreatedCommenter interface {
+	PostParentPRCreated(ctx context.Context, parentID string, prURL string, subtaskIDs []string) error
+}
+
+type startrekIssueCommentCreator interface {
+	CreateIssueComment(ctx context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error)
+}
+
 func newParentFinalizer(tasks contracts.TaskManager) *parentFinalizer {
 	return &parentFinalizer{
 		tasks:     tasks,
@@ -139,6 +147,11 @@ func (f *parentFinalizer) finalizeOneIfReady(ctx context.Context, parentID strin
 	if err := f.tasks.SetTaskData(ctx, parentID, data); err != nil {
 		return true, err
 	}
+	if commenter, ok := f.tasks.(parentPRCreatedCommenter); ok && strings.TrimSpace(prURL) != "" {
+		if err := commenter.PostParentPRCreated(ctx, parentID, prURL, subtaskIDs); err != nil {
+			return true, err
+		}
+	}
 	return true, nil
 }
 
@@ -217,6 +230,17 @@ func (m *storageEngineTaskManager) ParentSplitSubtaskIDs(ctx context.Context, pa
 		return nil, false, nil
 	}
 	return append([]string(nil), marker.SubtaskIDs...), true, nil
+}
+
+func (m *storageEngineTaskManager) PostParentPRCreated(ctx context.Context, parentID string, prURL string, subtaskIDs []string) error {
+	if m == nil || m.storage == nil {
+		return nil
+	}
+	commenter, ok := m.storage.(startrekIssueCommentCreator)
+	if !ok || commenter == nil {
+		return nil
+	}
+	return startrek.PostParentPRCreatedComment(ctx, commenter, parentID, prURL, subtaskIDs)
 }
 
 func (m *storageEngineTaskManager) ParentSplitSubtaskStatuses(_ context.Context, _ string, subtaskIDs []string) (map[string]contracts.TaskStatus, bool, error) {
