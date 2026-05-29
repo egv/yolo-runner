@@ -15,11 +15,32 @@ profiles:
           repo: yolo-runner
         auth:
           token_env: GITHUB_TOKEN
+  startrek-poc:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.yandex-team.ru
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            root: /home/genaevstratov/arcadia
 agent:
-  backend: claude
-  model: claude-sonnet-4-6
-  concurrency: 3
+  backend: codex
+  model: gpt-5.5
+  concurrency: 1
   runner_timeout: 20m
   watchdog_timeout: 10m
   watchdog_interval: 5s
   retry_budget: 5
+tracker_agent:
+  poll_interval: 30s
+  lock_path: .yolo-runner/tracker-agent.lock
+  labels:
+    ready: yolo-agent-ready
+    in_progress: yolo-agent-in-progress
+    completed: yolo-agent-completed
+    blocked: yolo-agent-blocked
+    failed: yolo-agent-failed
+landing:
+  type: arc-pr
+  title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
