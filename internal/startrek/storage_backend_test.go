@@ -15,7 +15,7 @@ import (
 )
 
 func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t *testing.T) {
-	var capturedBody map[string]any
+	var capturedLabels []string
 	var capturedRequests []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		capturedRequests = append(capturedRequests, req.Method+" "+req.URL.String())
@@ -23,9 +23,18 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 		if req.URL.Path != "/v3/issues/_search" {
 			t.Fatalf("unexpected request path %s", req.URL.Path)
 		}
+		var capturedBody map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
 			t.Fatalf("decode request body: %v", err)
 		}
+		filter, ok := capturedBody["filter"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected search filter object, got %#v", capturedBody["filter"])
+		}
+		if got := filter["queue"]; got != "VAY" {
+			t.Fatalf("expected queue filter VAY, got %#v", got)
+		}
+		capturedLabels = append(capturedLabels, strings.TrimSpace(fmt.Sprint(filter["tags"])))
 
 		return jsonResponseWithHeaders(http.StatusOK, `[
 			{
@@ -90,22 +99,77 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 		Type:   contracts.RelationParent,
 	})
 
-	filter, ok := capturedBody["filter"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected search filter object, got %#v", capturedBody["filter"])
+	wantLabels := []string{
+		"yolo-agent-ready",
+		"yolo-agent-in-progress",
+		"yolo-agent-completed",
+		"yolo-agent-blocked",
+		"yolo-agent-failed",
 	}
-	if got := filter["queue"]; got != "VAY" {
-		t.Fatalf("expected queue filter VAY, got %#v", got)
-	}
-	if got := filter["tags"]; got != "yolo-agent-ready" {
-		t.Fatalf("expected ready label filter yolo-agent-ready, got %#v", got)
+	if !reflect.DeepEqual(capturedLabels, wantLabels) {
+		t.Fatalf("unexpected status label searches:\n got %#v\nwant %#v", capturedLabels, wantLabels)
 	}
 
 	wantRequests := []string{
 		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
+		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
+		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
+		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
+		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
 	}
 	if strings.Join(capturedRequests, "\n") != strings.Join(wantRequests, "\n") {
 		t.Fatalf("unexpected requests:\n%s", strings.Join(capturedRequests, "\n"))
+	}
+}
+
+func TestStorageBackendSetTaskStatusMapsStatusToLabels(t *testing.T) {
+	var operations []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPatch || req.URL.Path != "/v3/issues/VAY-42" {
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+		}
+		var body struct {
+			Tags map[string][]string `json:"tags"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode label patch: %v", err)
+		}
+		for _, label := range body.Tags["remove"] {
+			operations = append(operations, "remove "+label)
+		}
+		for _, label := range body.Tags["add"] {
+			operations = append(operations, "add "+label)
+		}
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:        "https://api.tracker.yandex.net/v3",
+		Token:           "tracker-token",
+		HTTPClient:      httpClient,
+		ReadyLabel:      "ready",
+		InProgressLabel: "running",
+		CompletedLabel:  "done",
+		BlockedLabel:    "blocked",
+		FailedLabel:     "failed",
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	if err := backend.SetTaskStatus(context.Background(), " VAY-42 ", contracts.TaskStatusClosed); err != nil {
+		t.Fatalf("SetTaskStatus returned error: %v", err)
+	}
+
+	want := []string{
+		"remove ready",
+		"remove running",
+		"remove blocked",
+		"remove failed",
+		"add done",
+	}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("unexpected label operations:\n got %#v\nwant %#v", operations, want)
 	}
 }
 

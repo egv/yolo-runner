@@ -38,6 +38,10 @@ type Config struct {
 	HTTPClient       HTTPClient
 	MaxResponseBytes int64
 	ReadyLabel       string
+	InProgressLabel  string
+	CompletedLabel   string
+	BlockedLabel     string
+	FailedLabel      string
 }
 
 type Client struct {

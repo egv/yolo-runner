@@ -9,10 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/agent"
 	"github.com/egv/yolo-runner/v2/internal/agent/preflight"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/startrek"
+	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
+	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 )
 
 var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
@@ -95,10 +98,11 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 	if err != nil {
 		return err
 	}
-	preflightRunner, preflightModel, preflightTimeout, err := buildTrackerWatchPreflightRunner(cfg.repoRoot)
+	runner, runnerDefaults, err := buildTrackerWatchRunner(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
+	preflightRunner := preflight.NewRunner(runner)
 
 	taskEngine := engine.NewTaskEngine()
 	for _, queue := range profile.Tracker.Startrek.Queues {
@@ -114,18 +118,28 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 		if err != nil {
 			return err
 		}
+		hasReadyTask := false
 		for _, summary := range taskEngine.GetNextAvailable(graph) {
 			if strings.TrimSpace(summary.ID) == strings.TrimSpace(tree.Root.ID) {
 				continue
 			}
-			if err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
+			ready, err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
 				TaskSummary:      summary,
 				QueueRoot:        tree.Root,
 				QueueRootPath:    queue.Root,
-				Model:            preflightModel,
-				Timeout:          preflightTimeout,
+				Model:            runnerDefaults.Config.Model,
+				Timeout:          runnerDefaults.RunnerTimeoutValue(),
 				TrackerAgentConf: trackerAgentConfig,
-			}); err != nil {
+			})
+			if err != nil {
+				return err
+			}
+			if ready {
+				hasReadyTask = true
+			}
+		}
+		if hasReadyTask {
+			if err := runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, trackerAgentConfig); err != nil {
 				return err
 			}
 		}
@@ -152,9 +166,13 @@ func buildTrackerWatchStartrekBackend(profile resolvedTrackerProfile, trackerAge
 		token = os.Getenv(tokenEnv)
 	}
 	backend, err := startrek.NewStorageBackend(startrek.Config{
-		Endpoint:   profile.Tracker.Startrek.Endpoint,
-		Token:      token,
-		ReadyLabel: trackerAgentConfig.Labels.Ready,
+		Endpoint:        profile.Tracker.Startrek.Endpoint,
+		Token:           token,
+		ReadyLabel:      trackerAgentConfig.Labels.Ready,
+		InProgressLabel: trackerAgentConfig.Labels.InProgress,
+		CompletedLabel:  trackerAgentConfig.Labels.Completed,
+		BlockedLabel:    trackerAgentConfig.Labels.Blocked,
+		FailedLabel:     trackerAgentConfig.Labels.Failed,
 	})
 	if err != nil {
 		return nil, err
@@ -162,36 +180,72 @@ func buildTrackerWatchStartrekBackend(profile resolvedTrackerProfile, trackerAge
 	return backend, nil
 }
 
-func buildTrackerWatchPreflightRunner(repoRoot string) (*preflight.Runner, string, time.Duration, error) {
+func buildTrackerWatchRunner(repoRoot string) (contracts.AgentRunner, trackerWatchRunnerDefaults, error) {
 	defaults, err := loadYoloAgentConfigDefaults(repoRoot)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, trackerWatchRunnerDefaults{}, err
 	}
 	catalog, err := loadCodingAgentsCatalog(repoRoot)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, trackerWatchRunnerDefaults{}, err
 	}
-	timeout := time.Duration(0)
-	if defaults.RunnerTimeout != nil {
-		timeout = *defaults.RunnerTimeout
-	}
+	resolved := trackerWatchRunnerDefaults{Config: defaults}
 	runner, err := buildRunnerAdapter(runConfig{
 		repoRoot:      repoRoot,
 		backend:       defaults.Backend,
 		model:         defaults.Model,
-		runnerTimeout: timeout,
+		runnerTimeout: resolved.RunnerTimeoutValue(),
 		codingAgents:  catalog,
 	})
 	if err != nil {
-		return nil, "", 0, err
+		return nil, trackerWatchRunnerDefaults{}, err
 	}
-	return preflight.NewRunner(runner), defaults.Model, timeout, nil
+	return runner, resolved, nil
 }
 
-func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.StorageBackend, preflightRunner *preflight.Runner, input trackerWatchStartrekPreflightInput) error {
+type trackerWatchRunnerDefaults struct {
+	Config yoloAgentConfigDefaults
+}
+
+func (d trackerWatchRunnerDefaults) RunnerTimeoutValue() time.Duration {
+	if d.Config.RunnerTimeout != nil {
+		return *d.Config.RunnerTimeout
+	}
+	return 0
+}
+
+func (d trackerWatchRunnerDefaults) WatchdogTimeoutValue() time.Duration {
+	if d.Config.WatchdogTimeout != nil {
+		return *d.Config.WatchdogTimeout
+	}
+	return 10 * time.Minute
+}
+
+func (d trackerWatchRunnerDefaults) WatchdogIntervalValue() time.Duration {
+	if d.Config.WatchdogInterval != nil {
+		return *d.Config.WatchdogInterval
+	}
+	return 5 * time.Second
+}
+
+func (d trackerWatchRunnerDefaults) RetryBudgetValue() int {
+	if d.Config.RetryBudget != nil {
+		return *d.Config.RetryBudget
+	}
+	return 5
+}
+
+func (d trackerWatchRunnerDefaults) ConcurrencyValue() int {
+	if d.Config.Concurrency != nil {
+		return *d.Config.Concurrency
+	}
+	return 1
+}
+
+func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.StorageBackend, preflightRunner *preflight.Runner, input trackerWatchStartrekPreflightInput) (bool, error) {
 	taskID := strings.TrimSpace(input.TaskSummary.ID)
 	if taskID == "" {
-		return nil
+		return false, nil
 	}
 	readyLabel := strings.TrimSpace(input.TrackerAgentConf.Labels.Ready)
 	inProgressLabel := strings.TrimSpace(input.TrackerAgentConf.Labels.InProgress)
@@ -203,15 +257,15 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 	}
 
 	if err := backend.RemoveLabel(ctx, taskID, readyLabel); err != nil {
-		return err
+		return false, err
 	}
 	if err := backend.AddLabel(ctx, taskID, inProgressLabel); err != nil {
-		return err
+		return false, err
 	}
 
 	task, err := backend.GetTask(ctx, taskID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	result, err := preflightRunner.Run(ctx, preflight.RunInput{
 		Task:      *task,
@@ -225,7 +279,7 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 		},
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if result.Decision == preflight.DecisionNeedsInfo {
@@ -238,13 +292,78 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 			Questions:  result.Questions,
 			SummoneeID: startrekSummoneeID(*task),
 		})
-		return err
+		if err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 
 	if err := backend.RemoveLabel(ctx, taskID, inProgressLabel); err != nil {
+		return false, err
+	}
+	if err := backend.AddLabel(ctx, taskID, readyLabel); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, _ trackerAgentConfig) error {
+	queueKey := strings.TrimSpace(queue.Key)
+	if queueKey == "" {
+		return nil
+	}
+	repoRoot := strings.TrimSpace(queue.Root)
+	if repoRoot == "" {
+		repoRoot = strings.TrimSpace(cfg.repoRoot)
+	}
+	vcs, err := trackerWatchVCS(cfg.repoRoot, repoRoot)
+	if err != nil {
 		return err
 	}
-	return backend.AddLabel(ctx, taskID, readyLabel)
+	loop := agentLoopForTrackerWatch(backend, runner, vcs, trackerWatchLoopOptions{
+		ConfigRepoRoot: cfg.repoRoot,
+		TaskRepoRoot:   repoRoot,
+		QueueKey:       queueKey,
+		Defaults:       defaults,
+	})
+	_, err = loop.Run(ctx)
+	return err
+}
+
+type trackerWatchLoopOptions struct {
+	ConfigRepoRoot string
+	TaskRepoRoot   string
+	QueueKey       string
+	Defaults       trackerWatchRunnerDefaults
+}
+
+func agentLoopForTrackerWatch(backend contracts.StorageBackend, runner contracts.AgentRunner, vcs contracts.VCS, opts trackerWatchLoopOptions) *agent.Loop {
+	return agent.NewLoopWithTaskEngine(backend, engine.NewTaskEngine(), runner, nil, agent.LoopOptions{
+		ParentID:           strings.TrimSpace(opts.QueueKey),
+		MaxRetries:         opts.Defaults.RetryBudgetValue(),
+		Concurrency:        opts.Defaults.ConcurrencyValue(),
+		SchedulerStatePath: filepath.Join(strings.TrimSpace(opts.ConfigRepoRoot), ".yolo-runner", "scheduler-state.json"),
+		RepoRoot:           strings.TrimSpace(opts.TaskRepoRoot),
+		Backend:            opts.Defaults.Config.Backend,
+		Model:              opts.Defaults.Config.Model,
+		RunnerTimeout:      opts.Defaults.RunnerTimeoutValue(),
+		WatchdogTimeout:    opts.Defaults.WatchdogTimeoutValue(),
+		WatchdogInterval:   opts.Defaults.WatchdogIntervalValue(),
+		VCS:                vcs,
+		RequireReview:      true,
+		MergeOnSuccess:     true,
+	})
+}
+
+func trackerWatchVCS(configRepoRoot string, taskRepoRoot string) (contracts.VCS, error) {
+	landingMode, err := resolveLandingMode(configRepoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if landingMode == landingTypeArcPR {
+		return arcvcs.New(localGitRunner{dir: taskRepoRoot}), nil
+	}
+	return gitvcs.NewVCSAdapter(localGitRunner{dir: taskRepoRoot}), nil
 }
 
 func startrekSummoneeID(task contracts.Task) string {

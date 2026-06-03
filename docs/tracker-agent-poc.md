@@ -85,7 +85,7 @@ Before either run, commit and push the task/config changes that task clones must
 
 ## Labels
 
-The watcher searches each configured Startrek queue for issues with `yolo-agent-ready`. During preflight it removes `yolo-agent-ready`, adds `yolo-agent-in-progress`, then either restores `yolo-agent-ready` or applies the needs-info transition.
+The watcher searches each configured Startrek queue for issues with `yolo-agent-ready`. During preflight it removes `yolo-agent-ready`, adds `yolo-agent-in-progress`, then either restores `yolo-agent-ready` or applies the needs-info transition. If at least one task passes preflight, the watcher runs the normal implementation loop for that queue root and persists task status through the configured Startrek labels.
 
 Default labels:
 
@@ -123,7 +123,6 @@ If `.yolo-runner/scheduler-state.json` exists and contains a stale `in_flight` e
 
 ## Known Limitations
 
-- `tracker-watch` currently performs Startrek preflight and label transitions; it does not execute the implementation task itself.
 - Arc PR landing requires a working local `arc` CLI and a valid Arcadia root per Startrek queue.
 - Startrek status updates are label-driven in this PoC, so manual label edits can make a task eligible or hidden from the watcher.
 - The watcher lock is local to the repo checkout. Multiple checkouts can still run competing watchers if operators start them independently.

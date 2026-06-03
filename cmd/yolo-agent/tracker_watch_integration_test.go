@@ -222,6 +222,50 @@ func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T)
 	}
 }
 
+func TestAgentLoopForTrackerWatchImplementsReadyStartrekTask(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	storage := newTrackerWatchSplitPRStorage()
+	runner := &trackerWatchSplitPRRunner{}
+	vcs := &trackerWatchFakeVCS{}
+
+	loop := agentLoopForTrackerWatch(storage, runner, vcs, trackerWatchLoopOptions{
+		ConfigRepoRoot: repoRoot,
+		TaskRepoRoot:   repoRoot,
+		QueueKey:       "VAY",
+		Defaults: trackerWatchRunnerDefaults{Config: yoloAgentConfigDefaults{
+			Backend: "fake-codex",
+			Model:   "fake-codex",
+		}},
+	})
+	summary, err := loop.Run(ctx)
+	if err != nil {
+		t.Fatalf("run tracker-watch implementation loop: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected one completed Startrek task, got %#v", summary)
+	}
+
+	task, err := storage.GetTask(ctx, "VAY-42")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if task.Status != contracts.TaskStatusClosed {
+		t.Fatalf("expected Startrek task closed after implementation, got %s", task.Status)
+	}
+
+	requests := runner.requestSnapshots()
+	if got, want := trackerWatchRequestModes(requests), []contracts.RunnerMode{contracts.RunnerModeImplement, contracts.RunnerModeReview}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected runner modes: got %v want %v", got, want)
+	}
+	if got := requests[0].RepoRoot; got != repoRoot {
+		t.Fatalf("expected implementation repo root %q, got %q", repoRoot, got)
+	}
+	if !trackerWatchContainsVCSCall(vcs.calls, "merge_to_main:task/VAY-42") {
+		t.Fatalf("expected landing merge for Startrek task, got calls %#v", vcs.calls)
+	}
+}
+
 type trackerWatchSplitPRRunner struct {
 	mu       sync.Mutex
 	requests []contracts.RunnerRequest
@@ -254,6 +298,68 @@ func (r *trackerWatchSplitPRRunner) Run(_ context.Context, request contracts.Run
 		return contracts.RunnerResult{}, fmt.Errorf("unexpected fake runner request mode %q", request.Mode)
 	}
 	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+func (r *trackerWatchSplitPRRunner) requestSnapshots() []contracts.RunnerRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]contracts.RunnerRequest(nil), r.requests...)
+}
+
+type trackerWatchFakeVCS struct {
+	calls []string
+}
+
+func (v *trackerWatchFakeVCS) EnsureMain(context.Context) error {
+	v.calls = append(v.calls, "ensure_main")
+	return nil
+}
+
+func (v *trackerWatchFakeVCS) CreateTaskBranch(_ context.Context, taskID string) (string, error) {
+	v.calls = append(v.calls, "create_branch:"+taskID)
+	return "task/" + taskID, nil
+}
+
+func (v *trackerWatchFakeVCS) Checkout(_ context.Context, ref string) error {
+	v.calls = append(v.calls, "checkout:"+ref)
+	return nil
+}
+
+func (v *trackerWatchFakeVCS) CommitAll(_ context.Context, message string) (string, error) {
+	v.calls = append(v.calls, "commit_all:"+message)
+	return "abc123", nil
+}
+
+func (v *trackerWatchFakeVCS) MergeToMain(_ context.Context, branch string) error {
+	v.calls = append(v.calls, "merge_to_main:"+branch)
+	return nil
+}
+
+func (v *trackerWatchFakeVCS) PushBranch(_ context.Context, branch string) error {
+	v.calls = append(v.calls, "push_branch:"+branch)
+	return nil
+}
+
+func (v *trackerWatchFakeVCS) PushMain(context.Context) error {
+	v.calls = append(v.calls, "push_main")
+	return nil
+}
+
+func trackerWatchRequestModes(requests []contracts.RunnerRequest) []contracts.RunnerMode {
+	modes := make([]contracts.RunnerMode, 0, len(requests))
+	for _, request := range requests {
+		modes = append(modes, request.Mode)
+	}
+	return modes
+}
+
+func trackerWatchContainsVCSCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
 
 func emitTrackerWatchRunnerOutput(request contracts.RunnerRequest, message string) {

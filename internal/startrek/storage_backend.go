@@ -11,13 +11,26 @@ import (
 )
 
 const defaultStorageReadyLabel = "yolo-agent-ready"
+const defaultStorageInProgressLabel = "yolo-agent-in-progress"
+const defaultStorageCompletedLabel = "yolo-agent-completed"
+const defaultStorageBlockedLabel = "yolo-agent-blocked"
+const defaultStorageFailedLabel = "yolo-agent-failed"
 const startrekSubtaskLabel = "agent:subtask"
 
 // StorageBackend adapts Startrek issues to the storage-only contracts.StorageBackend API.
 type StorageBackend struct {
 	client        *Client
 	readyLabel    string
+	statusLabels  statusLabelNames
 	searchPerPage int
+}
+
+type statusLabelNames struct {
+	Ready      string
+	InProgress string
+	Completed  string
+	Blocked    string
+	Failed     string
 }
 
 var _ contracts.StorageBackend = (*StorageBackend)(nil)
@@ -27,7 +40,17 @@ func NewStorageBackend(cfg Config) (*StorageBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StorageBackend{client: client, readyLabel: strings.TrimSpace(cfg.ReadyLabel)}, nil
+	return &StorageBackend{
+		client:     client,
+		readyLabel: strings.TrimSpace(cfg.ReadyLabel),
+		statusLabels: statusLabelNames{
+			Ready:      strings.TrimSpace(cfg.ReadyLabel),
+			InProgress: strings.TrimSpace(cfg.InProgressLabel),
+			Completed:  strings.TrimSpace(cfg.CompletedLabel),
+			Blocked:    strings.TrimSpace(cfg.BlockedLabel),
+			Failed:     strings.TrimSpace(cfg.FailedLabel),
+		},
+	}, nil
 }
 
 func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*contracts.TaskTree, error) {
@@ -57,24 +80,42 @@ func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*con
 		perPage = defaultIssueSearchPerPage
 	}
 
-	issues := make([]Issue, 0)
-	for {
-		result, err := b.client.SearchIssues(ctx, IssueSearchOptions{
-			QueueKey:   queueKey,
-			ReadyLabel: b.effectiveReadyLabel(),
-			Page:       page,
-			PerPage:    perPage,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("search startrek queue %q: %w", queueKey, err)
-		}
+	issuesBySearchID := map[string]Issue{}
+	for _, label := range b.searchStatusLabels() {
+		page = defaultIssueSearchPage
+		for {
+			result, err := b.client.SearchIssues(ctx, IssueSearchOptions{
+				QueueKey:   queueKey,
+				ReadyLabel: label,
+				Page:       page,
+				PerPage:    perPage,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("search startrek queue %q: %w", queueKey, err)
+			}
 
-		issues = append(issues, result.Issues...)
+			for _, issue := range result.Issues {
+				issueID := strings.TrimSpace(issue.ID)
+				if issueID == "" {
+					continue
+				}
+				issuesBySearchID[issueID] = issue
+			}
 
-		if result.TotalPages <= page || result.TotalPages <= 0 {
-			break
+			if result.TotalPages <= page || result.TotalPages <= 0 {
+				break
+			}
+			page++
 		}
-		page++
+	}
+	issueKeys := make([]string, 0, len(issuesBySearchID))
+	for issueID := range issuesBySearchID {
+		issueKeys = append(issueKeys, issueID)
+	}
+	sort.Strings(issueKeys)
+	issues := make([]Issue, 0, len(issueKeys))
+	for _, issueID := range issueKeys {
+		issues = append(issues, issuesBySearchID[issueID])
 	}
 
 	issueIDs := make(map[string]struct{}, len(issues))
@@ -94,6 +135,7 @@ func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*con
 		if task.ID == "" {
 			continue
 		}
+		task.Status = b.taskStatusFromLabels(issue.Labels)
 
 		task.ParentID = startrekTreeParentID(issue, root.ID, issueIDs)
 		tasks[task.ID] = task
@@ -173,12 +215,31 @@ func (b *StorageBackend) GetTask(ctx context.Context, taskID string) (*contracts
 		QueueKey: queueKey,
 		RootID:   queueKey,
 	})
+	task.Status = b.taskStatusFromLabels(issue.Labels)
 	return &task, nil
 }
 
-func (b *StorageBackend) SetTaskStatus(context.Context, string, contracts.TaskStatus) error {
+func (b *StorageBackend) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
 	if b == nil || b.client == nil {
 		return errors.New("startrek storage backend is not initialized")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return errors.New("startrek task ID is required")
+	}
+	addLabel, removeLabels, err := b.statusLabelTransition(status)
+	if err != nil {
+		return err
+	}
+	for _, label := range removeLabels {
+		if err := b.client.RemoveLabel(ctx, taskID, label); err != nil {
+			return fmt.Errorf("remove startrek status label %q from issue %q: %w", label, taskID, err)
+		}
+	}
+	if addLabel != "" {
+		if err := b.client.AddLabel(ctx, taskID, addLabel); err != nil {
+			return fmt.Errorf("add startrek status label %q to issue %q: %w", addLabel, taskID, err)
+		}
 	}
 	return nil
 }
@@ -195,6 +256,102 @@ func (b *StorageBackend) effectiveReadyLabel() string {
 		return defaultStorageReadyLabel
 	}
 	return fallbackText(b.readyLabel, defaultStorageReadyLabel)
+}
+
+func (b *StorageBackend) effectiveStatusLabels() statusLabelNames {
+	if b == nil {
+		return statusLabelNames{
+			Ready:      defaultStorageReadyLabel,
+			InProgress: defaultStorageInProgressLabel,
+			Completed:  defaultStorageCompletedLabel,
+			Blocked:    defaultStorageBlockedLabel,
+			Failed:     defaultStorageFailedLabel,
+		}
+	}
+	return statusLabelNames{
+		Ready:      fallbackText(b.statusLabels.Ready, defaultStorageReadyLabel),
+		InProgress: fallbackText(b.statusLabels.InProgress, defaultStorageInProgressLabel),
+		Completed:  fallbackText(b.statusLabels.Completed, defaultStorageCompletedLabel),
+		Blocked:    fallbackText(b.statusLabels.Blocked, defaultStorageBlockedLabel),
+		Failed:     fallbackText(b.statusLabels.Failed, defaultStorageFailedLabel),
+	}
+}
+
+func (b *StorageBackend) searchStatusLabels() []string {
+	labels := b.effectiveStatusLabels()
+	return uniqueLabels([]string{labels.Ready, labels.InProgress, labels.Completed, labels.Blocked, labels.Failed})
+}
+
+func uniqueLabels(labels []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		key := strings.ToLower(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, label)
+	}
+	return out
+}
+
+func (b *StorageBackend) taskStatusFromLabels(issueLabels []string) contracts.TaskStatus {
+	labels := b.effectiveStatusLabels()
+	switch {
+	case hasStartrekLabel(issueLabels, labels.Failed):
+		return contracts.TaskStatusFailed
+	case hasStartrekLabel(issueLabels, labels.Blocked):
+		return contracts.TaskStatusBlocked
+	case hasStartrekLabel(issueLabels, labels.Completed):
+		return contracts.TaskStatusClosed
+	case hasStartrekLabel(issueLabels, labels.InProgress):
+		return contracts.TaskStatusInProgress
+	default:
+		return contracts.TaskStatusOpen
+	}
+}
+
+func (b *StorageBackend) statusLabelTransition(status contracts.TaskStatus) (string, []string, error) {
+	labels := b.effectiveStatusLabels()
+	all := []string{labels.Ready, labels.InProgress, labels.Completed, labels.Blocked, labels.Failed}
+	switch status {
+	case contracts.TaskStatusOpen:
+		return labels.Ready, labelsExcept(all, labels.Ready), nil
+	case contracts.TaskStatusInProgress:
+		return labels.InProgress, labelsExcept(all, labels.InProgress), nil
+	case contracts.TaskStatusClosed:
+		return labels.Completed, labelsExcept(all, labels.Completed), nil
+	case contracts.TaskStatusBlocked:
+		return labels.Blocked, labelsExcept(all, labels.Blocked), nil
+	case contracts.TaskStatusFailed:
+		return labels.Failed, labelsExcept(all, labels.Failed), nil
+	default:
+		return "", nil, fmt.Errorf("unsupported startrek task status %q", status)
+	}
+}
+
+func labelsExcept(labels []string, keep string) []string {
+	keep = strings.TrimSpace(keep)
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label == "" || label == keep {
+			continue
+		}
+		key := strings.ToLower(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 func startrekTreeParentID(issue Issue, rootID string, issueIDs map[string]struct{}) string {
