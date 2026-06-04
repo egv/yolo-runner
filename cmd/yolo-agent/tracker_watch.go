@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -118,33 +119,50 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 		if err != nil {
 			return err
 		}
-		hasReadyTask := false
-		for _, summary := range taskEngine.GetNextAvailable(graph) {
-			if strings.TrimSpace(summary.ID) == strings.TrimSpace(tree.Root.ID) {
-				continue
-			}
-			ready, err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
-				TaskSummary:      summary,
-				QueueRoot:        tree.Root,
-				QueueRootPath:    queue.Root,
-				Model:            runnerDefaults.Config.Model,
-				Timeout:          runnerDefaults.RunnerTimeoutValue(),
-				TrackerAgentConf: trackerAgentConfig,
-			})
-			if err != nil {
-				return err
-			}
-			if ready {
-				hasReadyTask = true
-			}
+		available := taskEngine.GetNextAvailable(graph)
+		if len(available) == 0 {
+			continue
 		}
-		if hasReadyTask {
-			if err := runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, trackerAgentConfig); err != nil {
-				return err
-			}
+		queueRootPath, cleanupWorkspace, err := prepareTrackerWatchQueueWorkspace(ctx, cfg, queue)
+		if err != nil {
+			return err
+		}
+		queueErr := runTrackerWatchStartrekQueue(ctx, cfg, backend, runner, preflightRunner, runnerDefaults, queue, tree.Root, available, queueRootPath, trackerAgentConfig)
+		if cleanupWorkspace != nil {
+			cleanupWorkspace()
+		}
+		if queueErr != nil {
+			return queueErr
 		}
 	}
 	return nil
+}
+
+func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend *startrek.StorageBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
+	hasReadyTask := false
+	for _, summary := range available {
+		if strings.TrimSpace(summary.ID) == strings.TrimSpace(queueRoot.ID) {
+			continue
+		}
+		ready, err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
+			TaskSummary:      summary,
+			QueueRoot:        queueRoot,
+			QueueRootPath:    queueRootPath,
+			Model:            runnerDefaults.Config.Model,
+			Timeout:          runnerDefaults.RunnerTimeoutValue(),
+			TrackerAgentConf: trackerAgentConfig,
+		})
+		if err != nil {
+			return err
+		}
+		if ready {
+			hasReadyTask = true
+		}
+	}
+	if !hasReadyTask {
+		return nil
+	}
+	return runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, queueRootPath, trackerAgentConfig)
 }
 
 type trackerWatchStartrekPreflightInput struct {
@@ -307,12 +325,12 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 	return true, nil
 }
 
-func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, _ trackerAgentConfig) error {
+func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, repoRoot string, _ trackerAgentConfig) error {
 	queueKey := strings.TrimSpace(queue.Key)
 	if queueKey == "" {
 		return nil
 	}
-	repoRoot := strings.TrimSpace(queue.Root)
+	repoRoot = strings.TrimSpace(repoRoot)
 	if repoRoot == "" {
 		repoRoot = strings.TrimSpace(cfg.repoRoot)
 	}
@@ -328,6 +346,165 @@ func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatch
 	})
 	_, err = loop.Run(ctx)
 	return err
+}
+
+func prepareTrackerWatchQueueWorkspace(ctx context.Context, cfg trackerWatchConfig, queue startrekQueueModel) (string, func(), error) {
+	root := strings.TrimSpace(queue.Root)
+	if queue.ArcMount == nil || !queue.ArcMount.Enabled {
+		if root == "" {
+			root = strings.TrimSpace(cfg.repoRoot)
+		}
+		return root, nil, nil
+	}
+
+	runner := localRunner{dir: cfg.repoRoot}
+	mountPath := trackerWatchArcMountPath(cfg.repoRoot, queue)
+	storePath := trackerWatchArcStorePath(cfg.repoRoot, queue)
+	objectStorePath := trackerWatchArcObjectStorePath(cfg.repoRoot, queue)
+
+	if mounted, err := trackerWatchArcMountIsMounted(ctx, runner, mountPath); err != nil {
+		return "", nil, err
+	} else if mounted {
+		return mountPath, nil, nil
+	}
+
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create arc mount path %s: %w", mountPath, err)
+	}
+	if err := os.MkdirAll(filepath.Join(storePath, ".overlay_v2"), 0o755); err != nil {
+		return "", nil, fmt.Errorf("create arc store path %s: %w", storePath, err)
+	}
+	if err := os.MkdirAll(objectStorePath, 0o755); err != nil {
+		return "", nil, fmt.Errorf("create arc object store path %s: %w", objectStorePath, err)
+	}
+
+	args := trackerWatchArcMountArgs(mountPath, storePath, objectStorePath, *queue.ArcMount)
+	if out, err := runner.Run(args...); err != nil {
+		details := strings.TrimSpace(out)
+		if details == "" {
+			return "", nil, fmt.Errorf("arc mount %s failed: %w", mountPath, err)
+		}
+		return "", nil, fmt.Errorf("arc mount %s failed: %s: %w", mountPath, details, err)
+	}
+
+	cleanup := func() {
+		out, err := runner.Run("arc", "unmount", "--forget", mountPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: arc unmount --forget %s failed: %s: %v\n", mountPath, strings.TrimSpace(out), err)
+		}
+	}
+	return mountPath, cleanup, nil
+}
+
+type trackerWatchArcMountEntry struct {
+	Status string `json:"status"`
+	Mount  string `json:"mount"`
+}
+
+func trackerWatchArcMountIsMounted(_ context.Context, runner localRunner, mountPath string) (bool, error) {
+	out, err := runner.Run("arc", "mount", "-l", "--json")
+	if err != nil {
+		return false, fmt.Errorf("list arc mounts: %s: %w", strings.TrimSpace(out), err)
+	}
+	var entries []trackerWatchArcMountEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		return false, fmt.Errorf("parse arc mount list: %w", err)
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Status) == "mounted" && filepath.Clean(strings.TrimSpace(entry.Mount)) == filepath.Clean(mountPath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func trackerWatchArcMountPath(repoRoot string, queue startrekQueueModel) string {
+	if value := strings.TrimSpace(queue.ArcMount.Mount); value != "" {
+		return absTrackerWatchPath(repoRoot, value)
+	}
+	if value := strings.TrimSpace(queue.Root); value != "" {
+		return absTrackerWatchPath(repoRoot, value)
+	}
+	return filepath.Join(repoRoot, ".yolo-runner", "arc-mounts", trackerWatchQueueSlug(queue.Key))
+}
+
+func trackerWatchArcStorePath(repoRoot string, queue startrekQueueModel) string {
+	if value := strings.TrimSpace(queue.ArcMount.Store); value != "" {
+		return absTrackerWatchPath(repoRoot, value)
+	}
+	return filepath.Join(repoRoot, ".yolo-runner", "arc-stores", trackerWatchQueueSlug(queue.Key), "store")
+}
+
+func trackerWatchArcObjectStorePath(repoRoot string, queue startrekQueueModel) string {
+	if value := strings.TrimSpace(queue.ArcMount.ObjectStore); value != "" {
+		return absTrackerWatchPath(repoRoot, value)
+	}
+	return filepath.Join(repoRoot, ".yolo-runner", "arc-stores", "shared-store")
+}
+
+func absTrackerWatchPath(repoRoot string, value string) string {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(repoRoot, value)
+}
+
+func trackerWatchQueueSlug(queueKey string) string {
+	queueKey = strings.TrimSpace(strings.ToLower(queueKey))
+	if queueKey == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range queueKey {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
+
+func trackerWatchArcMountArgs(mountPath string, storePath string, objectStorePath string, cfg startrekArcMount) []string {
+	args := []string{
+		"arc", "mount",
+		"-m", mountPath,
+		"-S", storePath,
+		"--object-store", objectStorePath,
+	}
+	if boolDefault(cfg.SSHTokens, true) {
+		args = append(args, "--ssh-tokens")
+	}
+	if boolDefault(cfg.AllowOther, true) {
+		args = append(args, "--allow-other")
+	}
+	if boolDefault(cfg.NoHardlinks, false) {
+		args = append(args, "--no-hardlinks")
+	}
+	if cfg.InodeCacheSize != nil {
+		args = append(args, "--inode-cache-size", fmt.Sprint(*cfg.InodeCacheSize))
+	} else {
+		args = append(args, "--inode-cache-size", "100000")
+	}
+	if cfg.CacheSize != nil {
+		args = append(args, "--cache-size", fmt.Sprint(*cfg.CacheSize))
+	} else {
+		args = append(args, "--cache-size", "134217728")
+	}
+	if cfg.OverrideLazyCheckout != nil {
+		args = append(args, "--override-lazy-checkout="+fmt.Sprint(*cfg.OverrideLazyCheckout))
+	}
+	if boolDefault(cfg.NoAutoRehash, false) {
+		args = append(args, "--no-auto-rehash")
+	}
+	return args
+}
+
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 type trackerWatchLoopOptions struct {

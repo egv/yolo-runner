@@ -107,3 +107,85 @@ tracker_agent:
 		t.Fatalf("expected lock path %q in error, got %q", lockPath, err.Error())
 	}
 }
+
+func TestTrackerWatchArcMountArgsUseSharedObjectStoreAndSafeDefaults(t *testing.T) {
+	args := trackerWatchArcMountArgs(
+		"/repo/.yolo-runner/arc-mounts/vay",
+		"/repo/.yolo-runner/arc-stores/vay/store",
+		"/repo/.yolo-runner/arc-stores/shared-store",
+		startrekArcMount{},
+	)
+
+	want := []string{
+		"arc", "mount",
+		"-m", "/repo/.yolo-runner/arc-mounts/vay",
+		"-S", "/repo/.yolo-runner/arc-stores/vay/store",
+		"--object-store", "/repo/.yolo-runner/arc-stores/shared-store",
+		"--ssh-tokens",
+		"--allow-other",
+		"--inode-cache-size", "100000",
+		"--cache-size", "134217728",
+	}
+	if strings.Join(args, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected arc mount args:\n got %#v\nwant %#v", args, want)
+	}
+}
+
+func TestTrackerWatchArcMountArgsAllowMacSpecificOptIns(t *testing.T) {
+	noHardlinks := true
+	noAutoRehash := true
+	overrideLazyCheckout := 0
+	inodeCacheSize := 200000
+	cacheSize := 268435456
+
+	args := trackerWatchArcMountArgs(
+		"/mnt/vay",
+		"/store/vay",
+		"/store/shared",
+		startrekArcMount{
+			NoHardlinks:          &noHardlinks,
+			NoAutoRehash:         &noAutoRehash,
+			OverrideLazyCheckout: &overrideLazyCheckout,
+			InodeCacheSize:       &inodeCacheSize,
+			CacheSize:            &cacheSize,
+		},
+	)
+
+	for _, want := range []string{
+		"--no-hardlinks",
+		"--override-lazy-checkout=0",
+		"--no-auto-rehash",
+		"200000",
+		"268435456",
+	} {
+		if !containsTrackerWatchArg(args, want) {
+			t.Fatalf("expected arc mount args to contain %q, got %#v", want, args)
+		}
+	}
+}
+
+func TestTrackerWatchArcMountPathFallsBackToQueueRoot(t *testing.T) {
+	repoRoot := t.TempDir()
+	queue := startrekQueueModel{
+		Key:  "VAY",
+		Root: "arcadia/vay",
+		ArcMount: &startrekArcMount{
+			Enabled: true,
+		},
+	}
+
+	got := trackerWatchArcMountPath(repoRoot, queue)
+	want := filepath.Join(repoRoot, "arcadia", "vay")
+	if got != want {
+		t.Fatalf("expected queue root to be used as mount path, got %q want %q", got, want)
+	}
+}
+
+func containsTrackerWatchArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}

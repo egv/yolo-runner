@@ -20,7 +20,15 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
-            root: /path/to/arcadia/project
+            root: .yolo-runner/arc-mounts/vay
+            arc_mount:
+              enabled: true
+              store: .yolo-runner/arc-stores/vay/store
+              object_store: .yolo-runner/arc-stores/shared-store
+              allow_other: true
+              ssh_tokens: true
+              inode_cache_size: 100000
+              cache_size: 134217728
 agent:
   backend: codex
   model: openai/gpt-5.3-codex
@@ -44,6 +52,8 @@ landing:
 ```
 
 `startrek-poc` is the watcher profile. The `beads` profile is the local task-management profile used by the PoC epic run.
+
+When `arc_mount.enabled` is true, `root` is the Arc mount path. If `root` is omitted, the watcher uses `.yolo-runner/arc-mounts/<queue-key>`. Before preflight/implementation, the watcher creates the mount with `arc mount`, using the per-queue `store` and shared `object_store`. If it created the mount during the poll, it runs `arc unmount --forget <mount>` when the queue attempt finishes. If the mount already existed, the watcher reuses it and leaves it mounted.
 
 ## Environment
 
@@ -123,7 +133,7 @@ If `.yolo-runner/scheduler-state.json` exists and contains a stale `in_flight` e
 
 ## Known Limitations
 
-- Arc PR landing requires a working local `arc` CLI and a valid Arcadia root per Startrek queue.
+- Arc PR landing requires a working local `arc` CLI. With `arc_mount.enabled`, the watcher creates the Arcadia root before running preflight and implementation; without it, `root` must point to an existing Arcadia checkout/mount.
 - Startrek status updates are label-driven in this PoC, so manual label edits can make a task eligible or hidden from the watcher.
 - The watcher lock is local to the repo checkout. Multiple checkouts can still run competing watchers if operators start them independently.
 - Dry-run mode validates command wiring but intentionally skips Startrek mutations.

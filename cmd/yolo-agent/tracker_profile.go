@@ -115,8 +115,23 @@ type startrekTrackerModel struct {
 }
 
 type startrekQueueModel struct {
-	Key  string `yaml:"key"`
-	Root string `yaml:"root"`
+	Key      string            `yaml:"key"`
+	Root     string            `yaml:"root"`
+	ArcMount *startrekArcMount `yaml:"arc_mount,omitempty"`
+}
+
+type startrekArcMount struct {
+	Enabled              bool   `yaml:"enabled,omitempty"`
+	Mount                string `yaml:"mount,omitempty"`
+	Store                string `yaml:"store,omitempty"`
+	ObjectStore          string `yaml:"object_store,omitempty"`
+	AllowOther           *bool  `yaml:"allow_other,omitempty"`
+	SSHTokens            *bool  `yaml:"ssh_tokens,omitempty"`
+	NoHardlinks          *bool  `yaml:"no_hardlinks,omitempty"`
+	NoAutoRehash         *bool  `yaml:"no_auto_rehash,omitempty"`
+	InodeCacheSize       *int   `yaml:"inode_cache_size,omitempty"`
+	CacheSize            *int   `yaml:"cache_size,omitempty"`
+	OverrideLazyCheckout *int   `yaml:"override_lazy_checkout,omitempty"`
 }
 
 type yoloAgentConfigModel struct {
@@ -663,17 +678,24 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 			if key == "" {
 				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s", fmt.Sprintf("startrek.queues[%d].key", i), profileName, trackerConfigRelPath)
 			}
+			arcMountEnabled := model.Startrek.Queues[i].ArcMount != nil && model.Startrek.Queues[i].ArcMount.Enabled
 			root := strings.TrimSpace(model.Startrek.Queues[i].Root)
 			if root == "" {
-				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
+				if !arcMountEnabled {
+					return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
+				}
+				model.Startrek.Queues[i].Key = key
+				continue
 			}
 			cleanRoot := filepath.Clean(root)
-			info, err := os.Stat(cleanRoot)
-			if err != nil {
-				return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root path for profile %q in %s: %w", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, err)
-			}
-			if !info.IsDir() {
-				return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root directory for profile %q in %s; got %q", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, cleanRoot)
+			if !arcMountEnabled {
+				info, err := os.Stat(cleanRoot)
+				if err != nil {
+					return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root path for profile %q in %s: %w", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, err)
+				}
+				if !info.IsDir() {
+					return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root directory for profile %q in %s; got %q", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, cleanRoot)
+				}
 			}
 			model.Startrek.Queues[i].Key = key
 			model.Startrek.Queues[i].Root = cleanRoot

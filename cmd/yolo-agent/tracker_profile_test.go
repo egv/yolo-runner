@@ -436,6 +436,43 @@ profiles:
 			t.Fatalf("expected queue key validation error, got %q", err.Error())
 		}
 	})
+
+	t.Run("accepts arc mount queue without existing root", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.example.test
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            arc_mount:
+              enabled: true
+              mount: .yolo-runner/arc-mounts/vay
+              store: .yolo-runner/arc-stores/vay/store
+              object_store: .yolo-runner/arc-stores/shared-store
+`)
+
+		got, err := resolveTrackerProfile(repoRoot, "", "root-1", func(name string) string {
+			if name == "STARTREK_TOKEN" {
+				return "token"
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatalf("expected arc-mounted startrek profile to validate, got %v", err)
+		}
+		queue := got.Tracker.Startrek.Queues[0]
+		if queue.Root != "" {
+			t.Fatalf("expected root to remain optional for arc mount, got %q", queue.Root)
+		}
+		if queue.ArcMount == nil || !queue.ArcMount.Enabled {
+			t.Fatalf("expected arc mount config to be preserved, got %#v", queue.ArcMount)
+		}
+	})
 }
 
 func TestBuildTaskManagerForTrackerSupportsTK(t *testing.T) {
