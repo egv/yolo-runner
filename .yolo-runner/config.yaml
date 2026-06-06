@@ -24,6 +24,16 @@ profiles:
         queues:
           - key: VAY
             root: /home/genaevstratov/arcadia
+          - key: LUMI
+            root: .yolo-runner/arc-mounts/lumi
+            arc_mount:
+              enabled: true
+              store: .yolo-runner/arc-stores/lumi/store
+              object_store: .yolo-runner/arc-stores/shared-store
+              allow_other: true
+              ssh_tokens: true
+              inode_cache_size: 100000
+              cache_size: 134217728
 agent:
   backend: codex
   model: gpt-5.5
