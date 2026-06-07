@@ -21,6 +21,7 @@ type RunInput struct {
 	Timeout    time.Duration
 	MaxRetries int
 	Metadata   map[string]string
+	OnProgress func(contracts.RunnerProgress)
 }
 
 type Runner struct {
@@ -52,6 +53,9 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (Result, error) {
 		MaxRetries: input.MaxRetries,
 		Metadata:   cloneMetadata(input.Metadata),
 		OnProgress: func(progress contracts.RunnerProgress) {
+			if input.OnProgress != nil {
+				input.OnProgress(progress)
+			}
 			if progress.Type != string(contracts.EventTypeRunnerOutput) {
 				return
 			}

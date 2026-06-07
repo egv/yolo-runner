@@ -30,6 +30,11 @@ type trackerWatchPollIteration func(context.Context) error
 type trackerWatchPollWait func(context.Context, time.Duration) error
 
 func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
+	cfg.eventsPath = resolveTrackerWatchEventsPath(cfg)
+	eventSink, closeEventSink := trackerWatchEventSink(cfg)
+	defer closeEventSink()
+	cfg.eventSink = eventSink
+
 	trackerAgentConfig, err := newTrackerConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
 		return err
@@ -44,6 +49,46 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	return runTrackerWatchPollLoop(ctx, cfg.once, trackerAgentConfig.PollInterval, func(ctx context.Context) error {
 		return runTrackerWatchPollIteration(ctx, cfg, trackerAgentConfig)
 	}, waitTrackerWatchPollInterval)
+}
+
+func resolveTrackerWatchEventsPath(cfg trackerWatchConfig) string {
+	if strings.TrimSpace(cfg.eventsPath) != "" {
+		return cfg.eventsPath
+	}
+	if cfg.stream {
+		return ""
+	}
+	return filepath.Join(cfg.repoRoot, "runner-logs", "agent.events.jsonl")
+}
+
+func trackerWatchEventSink(cfg trackerWatchConfig) (contracts.EventSink, func()) {
+	sinks := []contracts.EventSink{}
+	closers := []func(){}
+	if cfg.stream {
+		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
+	}
+	if strings.TrimSpace(cfg.eventsPath) != "" {
+		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
+		if cfg.stream {
+			mirror := newMirrorEventSink(fileSink, 64)
+			closers = append(closers, mirror.Close)
+			sinks = append(sinks, mirror)
+		} else {
+			sinks = append(sinks, fileSink)
+		}
+	}
+	closeFn := func() {
+		for _, closer := range closers {
+			closer()
+		}
+	}
+	if len(sinks) == 0 {
+		return nil, closeFn
+	}
+	if len(sinks) == 1 {
+		return sinks[0], closeFn
+	}
+	return contracts.NewFanoutEventSink(sinks...), closeFn
 }
 
 func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, wait trackerWatchPollWait) error {
@@ -147,10 +192,13 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		ready, err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
 			TaskSummary:      summary,
 			QueueRoot:        queueRoot,
+			ConfigRepoRoot:   cfg.repoRoot,
 			QueueRootPath:    queueRootPath,
+			Backend:          runnerDefaults.Config.Backend,
 			Model:            runnerDefaults.Config.Model,
 			Timeout:          runnerDefaults.RunnerTimeoutValue(),
 			TrackerAgentConf: trackerAgentConfig,
+			EventSink:        cfg.eventSink,
 		})
 		if err != nil {
 			return err
@@ -168,10 +216,105 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 type trackerWatchStartrekPreflightInput struct {
 	TaskSummary      contracts.TaskSummary
 	QueueRoot        contracts.Task
+	ConfigRepoRoot   string
 	QueueRootPath    string
+	Backend          string
 	Model            string
 	Timeout          time.Duration
 	TrackerAgentConf trackerAgentConfig
+	EventSink        contracts.EventSink
+}
+
+func trackerWatchPreflightLogPath(configRepoRoot string, backend string, taskID string) string {
+	configRepoRoot = strings.TrimSpace(configRepoRoot)
+	taskID = strings.TrimSpace(taskID)
+	if configRepoRoot == "" || taskID == "" {
+		return ""
+	}
+	backendDir := strings.ToLower(strings.TrimSpace(backend))
+	if backendDir == "" {
+		backendDir = "opencode"
+	}
+	return filepath.Join(configRepoRoot, "runner-logs", backendDir, taskID+".preflight.jsonl")
+}
+
+func trackerWatchPreflightRunnerMetadata(backend string, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend == "" {
+		backend = "opencode"
+	}
+	return compactTrackerWatchMetadata(map[string]string{
+		"backend":    backend,
+		"mode":       string(contracts.RunnerModeReview),
+		"phase":      "preflight",
+		"started_at": startedAt.Format(time.RFC3339),
+		"clone_path": strings.TrimSpace(clonePath),
+		"log_path":   strings.TrimSpace(logPath),
+		"model":      strings.TrimSpace(model),
+	})
+}
+
+func trackerWatchPreflightProgressEmitter(ctx context.Context, sink contracts.EventSink, task contracts.Task, clonePath string) func(contracts.RunnerProgress) {
+	return func(progress contracts.RunnerProgress) {
+		eventTime := progress.Timestamp
+		if eventTime.IsZero() {
+			eventTime = time.Now().UTC()
+		}
+		metadata := copyStringMap(progress.Metadata)
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		if strings.TrimSpace(metadata["phase"]) == "" {
+			metadata["phase"] = "preflight"
+		}
+		emitTrackerWatchEvent(ctx, sink, contracts.Event{
+			Type:      trackerWatchEventTypeForRunnerProgress(progress.Type),
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			ClonePath: strings.TrimSpace(clonePath),
+			Message:   progress.Message,
+			Metadata:  compactTrackerWatchMetadata(metadata),
+			Timestamp: eventTime,
+		})
+	}
+}
+
+func trackerWatchEventTypeForRunnerProgress(progressType string) contracts.EventType {
+	switch strings.TrimSpace(progressType) {
+	case string(contracts.EventTypeRunnerCommandStarted):
+		return contracts.EventTypeRunnerCommandStarted
+	case string(contracts.EventTypeRunnerCommandFinished):
+		return contracts.EventTypeRunnerCommandFinished
+	case string(contracts.EventTypeRunnerOutput):
+		return contracts.EventTypeRunnerOutput
+	case string(contracts.EventTypeRunnerWarning):
+		return contracts.EventTypeRunnerWarning
+	default:
+		return contracts.EventTypeRunnerProgress
+	}
+}
+
+func emitTrackerWatchEvent(ctx context.Context, sink contracts.EventSink, event contracts.Event) {
+	if sink == nil {
+		return
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	_ = sink.Emit(ctx, event)
+}
+
+func compactTrackerWatchMetadata(metadata map[string]string) map[string]string {
+	out := copyStringMap(metadata)
+	for key, value := range out {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func buildTrackerWatchStartrekBackend(profile resolvedTrackerProfile, trackerAgentConfig trackerAgentConfig) (*startrek.StorageBackend, error) {
@@ -285,6 +428,18 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 	if err != nil {
 		return false, err
 	}
+	preflightLogPath := trackerWatchPreflightLogPath(input.ConfigRepoRoot, input.Backend, taskID)
+	startedAt := time.Now().UTC()
+	startMetadata := trackerWatchPreflightRunnerMetadata(input.Backend, input.Model, input.QueueRootPath, preflightLogPath, startedAt)
+	emitTrackerWatchEvent(ctx, input.EventSink, contracts.Event{
+		Type:      contracts.EventTypeRunnerStarted,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		ClonePath: input.QueueRootPath,
+		Message:   string(contracts.RunnerModeReview),
+		Metadata:  startMetadata,
+		Timestamp: startedAt,
+	})
 	result, err := preflightRunner.Run(ctx, preflight.RunInput{
 		Task:      *task,
 		QueueRoot: input.QueueRoot,
@@ -292,9 +447,31 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 		RepoRoot:  strings.TrimSpace(input.QueueRootPath),
 		Timeout:   input.Timeout,
 		Metadata: map[string]string{
-			"phase":   "preflight",
-			"tracker": trackerTypeStartrek,
+			"phase":    "preflight",
+			"tracker":  trackerTypeStartrek,
+			"log_path": preflightLogPath,
 		},
+		OnProgress: trackerWatchPreflightProgressEmitter(ctx, input.EventSink, *task, input.QueueRootPath),
+	})
+	finishedAt := time.Now().UTC()
+	finishMetadata := copyStringMap(startMetadata)
+	finishMetadata["finished_at"] = finishedAt.Format(time.RFC3339)
+	if err != nil {
+		finishMetadata["status"] = string(contracts.RunnerResultFailed)
+		finishMetadata["error"] = strings.TrimSpace(err.Error())
+	} else {
+		finishMetadata["status"] = string(contracts.RunnerResultCompleted)
+		finishMetadata["decision"] = string(result.Decision)
+		finishMetadata["summary"] = strings.TrimSpace(result.Summary)
+	}
+	emitTrackerWatchEvent(ctx, input.EventSink, contracts.Event{
+		Type:      contracts.EventTypeRunnerFinished,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		ClonePath: input.QueueRootPath,
+		Message:   string(contracts.RunnerModeReview),
+		Metadata:  finishMetadata,
+		Timestamp: finishedAt,
 	})
 	if err != nil {
 		return false, err
@@ -347,6 +524,7 @@ func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatch
 		TaskRepoRoot:   repoRoot,
 		QueueKey:       queueKey,
 		Defaults:       defaults,
+		EventSink:      cfg.eventSink,
 	})
 	_, err = loop.Run(ctx)
 	return err
@@ -516,10 +694,11 @@ type trackerWatchLoopOptions struct {
 	TaskRepoRoot   string
 	QueueKey       string
 	Defaults       trackerWatchRunnerDefaults
+	EventSink      contracts.EventSink
 }
 
 func agentLoopForTrackerWatch(backend contracts.StorageBackend, runner contracts.AgentRunner, vcs contracts.VCS, opts trackerWatchLoopOptions) *agent.Loop {
-	return agent.NewLoopWithTaskEngine(backend, engine.NewTaskEngine(), runner, nil, agent.LoopOptions{
+	return agent.NewLoopWithTaskEngine(backend, engine.NewTaskEngine(), runner, opts.EventSink, agent.LoopOptions{
 		ParentID:           strings.TrimSpace(opts.QueueKey),
 		MaxRetries:         opts.Defaults.RetryBudgetValue(),
 		Concurrency:        opts.Defaults.ConcurrencyValue(),

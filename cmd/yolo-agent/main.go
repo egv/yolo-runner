@@ -93,10 +93,13 @@ type runConfig struct {
 }
 
 type trackerWatchConfig struct {
-	repoRoot string
-	profile  string
-	once     bool
-	dryRun   bool
+	repoRoot   string
+	profile    string
+	once       bool
+	dryRun     bool
+	stream     bool
+	eventsPath string
+	eventSink  contracts.EventSink
 }
 
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
@@ -438,6 +441,8 @@ func trackerWatchCommand(args []string) int {
 	profile := fs.String("profile", "", "Tracker profile name from .yolo-runner/config.yaml")
 	once := fs.Bool("once", false, "Run one tracker watch iteration and exit")
 	dryRun := fs.Bool("dry-run", false, "Dry run tracker watch without making changes")
+	stream := fs.Bool("stream", false, "Emit NDJSON events to stdout for piping into yolo-tui")
+	events := fs.String("events", "", "Path to JSONL events log")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -450,10 +455,12 @@ func trackerWatchCommand(args []string) int {
 		handler = defaultRunTrackerWatch
 	}
 	if err := handler(context.Background(), trackerWatchConfig{
-		repoRoot: *repo,
-		profile:  *profile,
-		once:     *once,
-		dryRun:   *dryRun,
+		repoRoot:   *repo,
+		profile:    *profile,
+		once:       *once,
+		dryRun:     *dryRun,
+		stream:     *stream,
+		eventsPath: *events,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1

@@ -70,6 +70,21 @@ tracker_agent:
 	if got := fakeCodexCallCount(t, callsPath); got != 1 {
 		t.Fatalf("expected one fake Codex preflight call, got %d", got)
 	}
+	eventsRaw, err := os.ReadFile(filepath.Join(repoRoot, "runner-logs", "agent.events.jsonl"))
+	if err != nil {
+		t.Fatalf("read tracker-watch events log: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"runner_started"`,
+		`"type":"runner_finished"`,
+		`"task_id":"VAY-42"`,
+		`"phase":"preflight"`,
+		`"log_path":`,
+	} {
+		if !strings.Contains(string(eventsRaw), want) {
+			t.Fatalf("expected tracker-watch events log to contain %q, got:\n%s", want, string(eventsRaw))
+		}
+	}
 	comments := startrek.commentTexts()
 	if len(comments) != 1 {
 		t.Fatalf("expected one needs-info comment, got %d", len(comments))
