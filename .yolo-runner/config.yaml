@@ -19,7 +19,7 @@ profiles:
     tracker:
       type: startrek
       startrek:
-        endpoint: https://st-api.yandex-team.ru
+        endpoint: https://st-api.yandex-team.ru/v3
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY

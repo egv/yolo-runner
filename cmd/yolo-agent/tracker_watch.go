@@ -301,13 +301,17 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 	}
 
 	if result.Decision == preflight.DecisionNeedsInfo {
+		questions := result.Questions
+		if len(questions) == 0 {
+			questions = []string{"Please clarify the missing implementation details needed for yolo-runner to proceed."}
+		}
 		_, err := (startrek.NeedsInfoTransitionService{
 			Tracker:         backend,
 			ProcessingLabel: inProgressLabel,
 		}).Apply(ctx, startrek.NeedsInfoTransitionInput{
 			IssueID:    taskID,
 			Summary:    result.Summary,
-			Questions:  result.Questions,
+			Questions:  questions,
 			SummoneeID: startrekSummoneeID(*task),
 		})
 		if err != nil {
