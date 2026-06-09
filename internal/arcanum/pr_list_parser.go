@@ -60,7 +60,7 @@ func parsePRSummary(raw json.RawMessage) (PRSummary, error) {
 		Title:     firstScalar(item, "title", "summary", "name"),
 		Author:    firstPerson(item, "author", "created_by", "createdBy"),
 		Reviewers: firstPeopleList(item, "reviewers", "reviewer_logins"),
-		Branch:    firstScalar(item, "branch", "source_branch", "sourceBranch", "from_branch", "fromBranch"),
+		Branch:    firstScalar(item, "target_branch", "targetBranch", "to_branch", "toBranch", "base_branch", "baseBranch", "branch"),
 		Status:    firstScalar(item, "status", "state"),
 	}, nil
 }
