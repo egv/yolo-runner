@@ -23,6 +23,8 @@ type arcReviewDiscoveredPR struct {
 	Revision  string
 }
 
+var discoverArcReviewPRs = defaultDiscoverArcReviewPRs
+
 func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -97,10 +99,31 @@ func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval time
 }
 
 func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
-	if !cfg.dryRun {
+	reviewWatchConfig, err := newTrackerConfigService().ResolveArcReviewWatchConfig(cfg.repoRoot)
+	if err != nil {
+		return err
+	}
+	prs, err := discoverArcReviewPRs(cfg, reviewWatchConfig)
+	if err != nil {
+		return err
+	}
+	if cfg.dryRun {
 		return nil
 	}
-	return nil
+
+	store, err := arcreviewstate.Open(reviewWatchConfig.StatePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+	_, err = reconcileArcReviewSessions(store, prs)
+	return err
+}
+
+func defaultDiscoverArcReviewPRs(arcReviewWatchCommandConfig, arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+	return nil, nil
 }
 
 func reconcileArcReviewSessions(store *arcreviewstate.Store, prs []arcReviewDiscoveredPR) ([]arcreviewstate.Session, error) {
