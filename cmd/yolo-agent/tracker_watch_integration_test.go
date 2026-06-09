@@ -254,6 +254,109 @@ func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T)
 	}
 }
 
+func TestRunTrackerWatchStartrekQueueSplitsReadyTopLevelTaskBeforeImplementation(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	storage := newTrackerWatchSplitPRStorage()
+	runner := &trackerWatchSplitPRRunner{}
+	engine := enginepkg.NewTaskEngine()
+
+	tree, err := storage.GetTaskTree(ctx, "VAY")
+	if err != nil {
+		t.Fatalf("get task tree: %v", err)
+	}
+	graph, err := engine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+	available := engine.GetNextAvailable(graph)
+
+	err = runTrackerWatchStartrekQueue(ctx, trackerWatchConfig{repoRoot: repoRoot}, storage, runner, preflight.NewRunner(runner), trackerWatchRunnerDefaults{
+		Config: yoloAgentConfigDefaults{
+			Backend: "fake-codex",
+			Model:   "fake-codex",
+		},
+	}, startrekQueueModel{Key: "VAY"}, tree.Root, available, tree.Tasks, repoRoot, trackerAgentConfig{
+		Labels: trackerAgentLabelNamesConfig{
+			Ready:      "yolo-agent-ready",
+			InProgress: "yolo-agent-in-progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run tracker-watch queue: %v", err)
+	}
+
+	requests := runner.requestSnapshots()
+	if got := len(requests); got != 2 {
+		t.Fatalf("expected preflight and split requests only, got %d requests: %#v", got, requests)
+	}
+	if !strings.Contains(requests[0].Prompt, "evaluating whether a queued task is actionable") {
+		t.Fatalf("expected first request to be preflight, got:\n%s", requests[0].Prompt)
+	}
+	if !strings.Contains(requests[1].Prompt, "Run the bundled strict task splitter") {
+		t.Fatalf("expected second request to split, got:\n%s", requests[1].Prompt)
+	}
+
+	for _, subtaskID := range []string{"VAY-43", "VAY-44"} {
+		if _, err := storage.GetTask(ctx, subtaskID); err != nil {
+			t.Fatalf("expected split subtask %s to be created: %v", subtaskID, err)
+		}
+	}
+	parent, err := storage.GetTask(ctx, "VAY-42")
+	if err != nil {
+		t.Fatalf("get parent task: %v", err)
+	}
+	if parent.Status != contracts.TaskStatusOpen {
+		t.Fatalf("expected split parent to stay open as a container, got %s", parent.Status)
+	}
+	parentComments := storage.commentTexts("VAY-42")
+	if got := matchingComments(parentComments, "<!-- yolo-runner:split-created -->"); len(got) != 1 {
+		t.Fatalf("expected one split-created parent comment, got %d comments:\n%s", len(got), strings.Join(parentComments, "\n---\n"))
+	}
+}
+
+func TestPlanTrackerWatchStartrekTaskCycle(t *testing.T) {
+	queueRoot := contracts.Task{ID: "VAY"}
+	tests := []struct {
+		name           string
+		task           contracts.Task
+		preflightReady bool
+		want           trackerWatchStartrekTaskCycleAction
+	}{
+		{
+			name:           "unready task waits",
+			task:           contracts.Task{ID: "VAY-42", ParentID: "VAY"},
+			preflightReady: false,
+			want:           trackerWatchStartrekTaskCycleWait,
+		},
+		{
+			name:           "queue root waits",
+			task:           contracts.Task{ID: "VAY"},
+			preflightReady: true,
+			want:           trackerWatchStartrekTaskCycleWait,
+		},
+		{
+			name:           "ready top level task splits",
+			task:           contracts.Task{ID: "VAY-42", ParentID: "VAY"},
+			preflightReady: true,
+			want:           trackerWatchStartrekTaskCycleSplit,
+		},
+		{
+			name:           "ready split leaf implements",
+			task:           contracts.Task{ID: "VAY-43", ParentID: "VAY-42"},
+			preflightReady: true,
+			want:           trackerWatchStartrekTaskCycleImplement,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := planTrackerWatchStartrekTaskCycle(queueRoot, tt.task, tt.preflightReady); got != tt.want {
+				t.Fatalf("planTrackerWatchStartrekTaskCycle() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAgentLoopForTrackerWatchImplementsReadyStartrekTask(t *testing.T) {
 	ctx := context.Background()
 	repoRoot := t.TempDir()
@@ -552,6 +655,51 @@ func (s *trackerWatchSplitPRStorage) SetTaskData(_ context.Context, taskID strin
 	}
 	s.tasks[task.ID] = task
 	return nil
+}
+
+func (s *trackerWatchSplitPRStorage) RemoveLabel(_ context.Context, taskID string, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[strings.TrimSpace(taskID)]
+	if !ok {
+		return fmt.Errorf("missing task %q", taskID)
+	}
+	if status, ok := trackerWatchTestStatusForLabel(label); ok && task.Status == status {
+		task.Status = contracts.TaskStatusOpen
+		s.tasks[task.ID] = task
+	}
+	return nil
+}
+
+func (s *trackerWatchSplitPRStorage) AddLabel(_ context.Context, taskID string, label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.tasks[strings.TrimSpace(taskID)]
+	if !ok {
+		return fmt.Errorf("missing task %q", taskID)
+	}
+	if status, ok := trackerWatchTestStatusForLabel(label); ok {
+		task.Status = status
+		s.tasks[task.ID] = task
+	}
+	return nil
+}
+
+func trackerWatchTestStatusForLabel(label string) (contracts.TaskStatus, bool) {
+	switch strings.TrimSpace(label) {
+	case "yolo-agent-ready":
+		return contracts.TaskStatusOpen, true
+	case "yolo-agent-in-progress":
+		return contracts.TaskStatusInProgress, true
+	case "yolo-agent-completed":
+		return contracts.TaskStatusClosed, true
+	case "yolo-agent-blocked":
+		return contracts.TaskStatusBlocked, true
+	case "yolo-agent-failed":
+		return contracts.TaskStatusFailed, true
+	default:
+		return "", false
+	}
 }
 
 func (s *trackerWatchSplitPRStorage) CreateIssue(_ context.Context, opts startrek.IssueCreateOptions) (startrek.Issue, error) {

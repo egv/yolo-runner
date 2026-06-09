@@ -12,6 +12,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
 	"github.com/egv/yolo-runner/v2/internal/agent/preflight"
+	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/startrek"
@@ -178,7 +179,7 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 		if err != nil {
 			return err
 		}
-		queueErr := runTrackerWatchStartrekQueue(ctx, cfg, backend, runner, preflightRunner, runnerDefaults, queue, tree.Root, available, queueRootPath, trackerAgentConfig)
+		queueErr := runTrackerWatchStartrekQueue(ctx, cfg, backend, runner, preflightRunner, runnerDefaults, queue, tree.Root, available, tree.Tasks, queueRootPath, trackerAgentConfig)
 		if cleanupWorkspace != nil {
 			cleanupWorkspace()
 		}
@@ -189,7 +190,25 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 	return nil
 }
 
-func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend *startrek.StorageBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
+type trackerWatchStartrekBackend interface {
+	contracts.StorageBackend
+	RemoveLabel(ctx context.Context, issueID string, label string) error
+	AddLabel(ctx context.Context, issueID string, label string) error
+	CreateIssue(ctx context.Context, opts startrek.IssueCreateOptions) (startrek.Issue, error)
+	GetIssueComments(ctx context.Context, issueID string) ([]startrek.IssueComment, error)
+	CreateIssueComment(ctx context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error)
+}
+
+type trackerWatchStartrekTaskCycleAction string
+
+const (
+	trackerWatchStartrekTaskCycleWait      trackerWatchStartrekTaskCycleAction = "wait"
+	trackerWatchStartrekTaskCycleSplit     trackerWatchStartrekTaskCycleAction = "split"
+	trackerWatchStartrekTaskCycleImplement trackerWatchStartrekTaskCycleAction = "implement"
+	trackerWatchStartrekSplitVersion                                           = "strict-v1"
+)
+
+func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend trackerWatchStartrekBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, tasks map[string]contracts.Task, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
 	hasReadyTask := false
 	for _, summary := range available {
 		if strings.TrimSpace(summary.ID) == strings.TrimSpace(queueRoot.ID) {
@@ -209,7 +228,24 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		if err != nil {
 			return err
 		}
-		if ready {
+		task := trackerWatchStartrekTaskFromTree(summary, tasks)
+		switch planTrackerWatchStartrekTaskCycle(queueRoot, task, ready) {
+		case trackerWatchStartrekTaskCycleSplit:
+			if err := runTrackerWatchStartrekSplit(ctx, backend, runner, trackerWatchStartrekSplitInput{
+				TaskSummary:      summary,
+				QueueRoot:        queueRoot,
+				ConfigRepoRoot:   cfg.repoRoot,
+				QueueRootPath:    queueRootPath,
+				Backend:          runnerDefaults.Config.Backend,
+				Model:            runnerDefaults.Config.Model,
+				Timeout:          runnerDefaults.RunnerTimeoutValue(),
+				TrackerAgentConf: trackerAgentConfig,
+				EventSink:        cfg.eventSink,
+				Queue:            queue,
+			}); err != nil {
+				return err
+			}
+		case trackerWatchStartrekTaskCycleImplement:
 			hasReadyTask = true
 		}
 	}
@@ -217,6 +253,210 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		return nil
 	}
 	return runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, queueRootPath, trackerAgentConfig)
+}
+
+func trackerWatchStartrekTaskFromTree(summary contracts.TaskSummary, tasks map[string]contracts.Task) contracts.Task {
+	taskID := strings.TrimSpace(summary.ID)
+	if taskID != "" {
+		if task, ok := tasks[taskID]; ok {
+			return task
+		}
+	}
+	return contracts.Task{
+		ID:     taskID,
+		Title:  strings.TrimSpace(summary.Title),
+		Status: contracts.TaskStatusOpen,
+	}
+}
+
+func planTrackerWatchStartrekTaskCycle(queueRoot contracts.Task, task contracts.Task, preflightReady bool) trackerWatchStartrekTaskCycleAction {
+	if !preflightReady {
+		return trackerWatchStartrekTaskCycleWait
+	}
+	taskID := strings.TrimSpace(task.ID)
+	if taskID == "" || strings.EqualFold(taskID, strings.TrimSpace(queueRoot.ID)) {
+		return trackerWatchStartrekTaskCycleWait
+	}
+	parentID := strings.TrimSpace(task.ParentID)
+	if parentID == "" || strings.EqualFold(parentID, strings.TrimSpace(queueRoot.ID)) {
+		return trackerWatchStartrekTaskCycleSplit
+	}
+	return trackerWatchStartrekTaskCycleImplement
+}
+
+type trackerWatchStartrekSplitInput struct {
+	TaskSummary      contracts.TaskSummary
+	QueueRoot        contracts.Task
+	ConfigRepoRoot   string
+	QueueRootPath    string
+	Backend          string
+	Model            string
+	Timeout          time.Duration
+	TrackerAgentConf trackerAgentConfig
+	EventSink        contracts.EventSink
+	Queue            startrekQueueModel
+}
+
+func runTrackerWatchStartrekSplit(ctx context.Context, backend trackerWatchStartrekBackend, runner contracts.AgentRunner, input trackerWatchStartrekSplitInput) error {
+	taskID := strings.TrimSpace(input.TaskSummary.ID)
+	if taskID == "" {
+		return nil
+	}
+	task, err := backend.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if task == nil {
+		return fmt.Errorf("startrek task %q not found before split", taskID)
+	}
+
+	logPath := trackerWatchSplitLogPath(input.ConfigRepoRoot, input.Backend, taskID)
+	startedAt := time.Now().UTC()
+	startMetadata := trackerWatchSplitRunnerMetadata(input.Backend, input.Model, input.QueueRootPath, logPath, startedAt)
+	emitTrackerWatchEvent(ctx, input.EventSink, contracts.Event{
+		Type:      contracts.EventTypeRunnerStarted,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		ClonePath: input.QueueRootPath,
+		Message:   string(contracts.RunnerModeReview),
+		Metadata:  startMetadata,
+		Timestamp: startedAt,
+	})
+
+	markerExisted := false
+	if _, ok, err := (startrek.SplitMarkerStore{
+		Tracker:      backend,
+		SplitVersion: trackerWatchStartrekSplitVersion,
+	}).Read(ctx, taskID); err != nil {
+		return err
+	} else {
+		markerExisted = ok
+	}
+
+	splitOutput, err := splitter.NewRunner(runner).Run(ctx, splitter.RunInput{
+		Task:      *task,
+		QueueRoot: input.QueueRoot,
+		Model:     input.Model,
+		RepoRoot:  strings.TrimSpace(input.QueueRootPath),
+		Timeout:   input.Timeout,
+		Metadata: map[string]string{
+			"phase":    "split",
+			"tracker":  trackerTypeStartrek,
+			"log_path": logPath,
+		},
+		OnProgress: trackerWatchSplitProgressEmitter(ctx, input.EventSink, *task, input.QueueRootPath),
+	})
+
+	finishedAt := time.Now().UTC()
+	finishMetadata := copyStringMap(startMetadata)
+	finishMetadata["finished_at"] = finishedAt.Format(time.RFC3339)
+	if err != nil {
+		finishMetadata["status"] = string(contracts.RunnerResultFailed)
+		finishMetadata["error"] = strings.TrimSpace(err.Error())
+	} else {
+		finishMetadata["status"] = string(contracts.RunnerResultCompleted)
+		finishMetadata["subtasks"] = fmt.Sprint(len(splitOutput.Tasks))
+	}
+	emitTrackerWatchEvent(ctx, input.EventSink, contracts.Event{
+		Type:      contracts.EventTypeRunnerFinished,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		ClonePath: input.QueueRootPath,
+		Message:   string(contracts.RunnerModeReview),
+		Metadata:  finishMetadata,
+		Timestamp: finishedAt,
+	})
+	if err != nil {
+		return err
+	}
+
+	readyLabel := strings.TrimSpace(input.TrackerAgentConf.Labels.Ready)
+	if readyLabel == "" {
+		readyLabel = defaultTrackerAgentReadyLabel
+	}
+	splitResult, err := (startrek.IdempotentSplitSubtaskCreationService{
+		Tracker:      backend,
+		ReadyLabel:   readyLabel,
+		SubtaskLabel: "agent:subtask",
+		SplitVersion: trackerWatchStartrekSplitVersion,
+	}).Create(ctx, startrek.SplitSubtasksInput{
+		QueueKey: strings.TrimSpace(input.Queue.Key),
+		ParentID: taskID,
+		Output:   splitOutput,
+	})
+	if err != nil {
+		return err
+	}
+	if !markerExisted {
+		if err := startrek.PostSplitCreatedComment(ctx, backend, taskID, trackerWatchStartrekSplitIssueIDs(splitResult.Issues)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func trackerWatchSplitLogPath(configRepoRoot string, backend string, taskID string) string {
+	configRepoRoot = strings.TrimSpace(configRepoRoot)
+	taskID = strings.TrimSpace(taskID)
+	if configRepoRoot == "" || taskID == "" {
+		return ""
+	}
+	backendDir := strings.ToLower(strings.TrimSpace(backend))
+	if backendDir == "" {
+		backendDir = "opencode"
+	}
+	return filepath.Join(configRepoRoot, "runner-logs", backendDir, taskID+".split.jsonl")
+}
+
+func trackerWatchSplitRunnerMetadata(backend string, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend == "" {
+		backend = "opencode"
+	}
+	return compactTrackerWatchMetadata(map[string]string{
+		"backend":    backend,
+		"mode":       string(contracts.RunnerModeReview),
+		"phase":      "split",
+		"started_at": startedAt.Format(time.RFC3339),
+		"clone_path": strings.TrimSpace(clonePath),
+		"log_path":   strings.TrimSpace(logPath),
+		"model":      strings.TrimSpace(model),
+	})
+}
+
+func trackerWatchSplitProgressEmitter(ctx context.Context, sink contracts.EventSink, task contracts.Task, clonePath string) func(contracts.RunnerProgress) {
+	return func(progress contracts.RunnerProgress) {
+		eventTime := progress.Timestamp
+		if eventTime.IsZero() {
+			eventTime = time.Now().UTC()
+		}
+		metadata := copyStringMap(progress.Metadata)
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		if strings.TrimSpace(metadata["phase"]) == "" {
+			metadata["phase"] = "split"
+		}
+		emitTrackerWatchEvent(ctx, sink, contracts.Event{
+			Type:      trackerWatchEventTypeForRunnerProgress(progress.Type),
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			ClonePath: strings.TrimSpace(clonePath),
+			Message:   progress.Message,
+			Metadata:  compactTrackerWatchMetadata(metadata),
+			Timestamp: eventTime,
+		})
+	}
+}
+
+func trackerWatchStartrekSplitIssueIDs(issues []startrek.Issue) []string {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if id := strings.TrimSpace(issue.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 type trackerWatchStartrekPreflightInput struct {
@@ -409,7 +649,7 @@ func (d trackerWatchRunnerDefaults) ConcurrencyValue() int {
 	return 1
 }
 
-func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.StorageBackend, preflightRunner *preflight.Runner, input trackerWatchStartrekPreflightInput) (bool, error) {
+func runTrackerWatchStartrekPreflight(ctx context.Context, backend trackerWatchStartrekBackend, preflightRunner *preflight.Runner, input trackerWatchStartrekPreflightInput) (bool, error) {
 	taskID := strings.TrimSpace(input.TaskSummary.ID)
 	if taskID == "" {
 		return false, nil
