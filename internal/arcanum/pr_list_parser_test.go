@@ -25,6 +25,7 @@ func TestParsePRListJSONNormalizesSummaries(t *testing.T) {
       "created_by": "dave",
       "reviewers": ["erin"],
       "source_branch": "users/dave/arw-02",
+      "target_branch": "trunk",
       "state": "merged"
     }
   ]
@@ -49,7 +50,7 @@ func TestParsePRListJSONNormalizesSummaries(t *testing.T) {
 			Title:     "ARW-02 Handle comments",
 			Author:    "dave",
 			Reviewers: []string{"erin"},
-			Branch:    "users/dave/arw-02",
+			Branch:    "trunk",
 			Status:    "merged",
 		},
 	}
