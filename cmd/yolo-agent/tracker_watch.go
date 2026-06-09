@@ -156,6 +156,12 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 		if queueKey == "" {
 			continue
 		}
+		if _, err := backend.ResumeNeedsInfoTasks(ctx, startrek.NeedsInfoResumeInput{
+			QueueKey:   queueKey,
+			ReadyLabel: trackerAgentConfig.Labels.Ready,
+		}); err != nil {
+			return err
+		}
 		tree, err := backend.GetTaskTree(ctx, queueKey)
 		if err != nil {
 			return err

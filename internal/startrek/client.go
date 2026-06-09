@@ -74,6 +74,7 @@ type Issue struct {
 	ParentID      string
 	DependencyIDs []string
 	Author        IssueAuthor
+	Assignee      IssueAuthor
 	UpdatedAt     time.Time
 }
 
@@ -445,6 +446,7 @@ type startrekIssueSearchItem struct {
 	DependsOn    startrekIssueRefs   `json:"dependsOn"`
 	BlockedBy    startrekIssueRefs   `json:"blockedBy"`
 	CreatedBy    startrekIssueAuthor `json:"createdBy"`
+	Assignee     startrekIssueAuthor `json:"assignee"`
 	UpdatedAt    string              `json:"updatedAt"`
 }
 
@@ -591,6 +593,7 @@ func mapIssue(raw startrekIssueSearchItem) (Issue, error) {
 		ParentID:      issueRefTaskID(raw.Parent),
 		DependencyIDs: startrekDependencyIDs(raw),
 		Author:        mapIssueAuthor(raw.CreatedBy),
+		Assignee:      mapIssueAuthor(raw.Assignee),
 		UpdatedAt:     updatedAt,
 	}, nil
 }

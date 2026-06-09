@@ -126,6 +126,23 @@ tracker_agent:
 	if comments := startrek.commentTexts(); len(comments) != 1 {
 		t.Fatalf("expected no duplicate needs-info comments before author reply, got %d", len(comments))
 	}
+
+	startrek.addComment("author-1", "The package owner is adapta/messenger; use secret sec-123.")
+	err = defaultRunTrackerWatch(context.Background(), trackerWatchConfig{
+		repoRoot: repoRoot,
+		profile:  "startrek-demo",
+		once:     true,
+	})
+	if err != nil {
+		t.Fatalf("third tracker-watch iteration after author reply failed: %v", err)
+	}
+
+	if got := fakeCodexCallCount(t, callsPath); got != 2 {
+		t.Fatalf("expected task to be reselected after author reply; fake Codex calls=%d", got)
+	}
+	if got := countNeedsInfoComments(startrek.commentTexts()); got != 2 {
+		t.Fatalf("expected a second needs-info preflight comment after author reply, got %d", got)
+	}
 }
 
 func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T) {
@@ -814,6 +831,8 @@ func (f *fakeTrackerWatchStartrek) handleCreateComment(w http.ResponseWriter, r 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		f.t.Fatalf("decode Startrek create comment: %v", err)
 	}
+	f.mu.Lock()
+	createdAt := fmt.Sprintf("2026-05-28T05:%02d:00.000+0000", len(f.comments))
 	comment := map[string]any{
 		"id":   len(f.comments) + 1,
 		"text": payload.Text,
@@ -821,11 +840,10 @@ func (f *fakeTrackerWatchStartrek) handleCreateComment(w http.ResponseWriter, r 
 			"id":      "runner",
 			"display": "YOLO Runner",
 		},
-		"createdAt": "2026-05-28T05:00:00.000+0000",
-		"updatedAt": "2026-05-28T05:00:00.000+0000",
+		"createdAt": createdAt,
+		"updatedAt": createdAt,
 	}
 
-	f.mu.Lock()
 	f.comments = append(f.comments, comment)
 	f.mu.Unlock()
 	f.writeJSON(w, http.StatusCreated, comment)
@@ -866,12 +884,38 @@ func (f *fakeTrackerWatchStartrek) commentTexts() []string {
 	return out
 }
 
+func (f *fakeTrackerWatchStartrek) addComment(authorID string, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	createdAt := fmt.Sprintf("2026-05-28T05:%02d:00.000+0000", len(f.comments))
+	f.comments = append(f.comments, map[string]any{
+		"id":   len(f.comments) + 1,
+		"text": text,
+		"createdBy": map[string]any{
+			"id":      authorID,
+			"display": authorID,
+		},
+		"createdAt": createdAt,
+		"updatedAt": createdAt,
+	})
+}
+
 func (f *fakeTrackerWatchStartrek) writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		f.t.Fatalf("encode Startrek response: %v", err)
 	}
+}
+
+func countNeedsInfoComments(comments []string) int {
+	count := 0
+	for _, comment := range comments {
+		if strings.Contains(comment, "<!-- yolo-runner:needs-info -->") {
+			count++
+		}
+	}
+	return count
 }
 
 func writeTrackerWatchFakeCodex(t *testing.T, repoRoot string) string {
