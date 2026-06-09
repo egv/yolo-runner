@@ -173,6 +173,71 @@ func TestStorageBackendSetTaskStatusMapsStatusToLabels(t *testing.T) {
 	}
 }
 
+func TestStorageBackendGetTaskTreeIncludesLocalStatusOverrideWhenSearchLags(t *testing.T) {
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch req.Method + " " + req.URL.Path {
+		case "PATCH /v3/issues/VAY-42":
+			return jsonResponse(http.StatusOK, `{}`), nil
+		case "POST /v3/issues/_search":
+			return jsonResponseWithHeaders(http.StatusOK, `[]`, http.Header{
+				"X-Total-Count": []string{"0"},
+				"X-Total-Pages": []string{"1"},
+			}), nil
+		case "GET /v3/issues/VAY-42":
+			return jsonResponse(http.StatusOK, `{
+				"id": "64200b5f7b5b7c0011223344",
+				"key": "VAY-42",
+				"summary": "Ready issue with lagged search index",
+				"description": "Implement the issue.",
+				"tags": ["yolo-agent-in-progress"],
+				"createdBy": {
+					"id": "112233",
+					"display": "Ada Lovelace"
+				},
+				"updatedAt": "2026-05-28T01:02:03.000+0000"
+			}`), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	if err := backend.AddLabel(context.Background(), "VAY-42", "yolo-agent-ready"); err != nil {
+		t.Fatalf("AddLabel returned error: %v", err)
+	}
+
+	tree, err := backend.GetTaskTree(context.Background(), "VAY")
+	if err != nil {
+		t.Fatalf("GetTaskTree returned error: %v", err)
+	}
+
+	task, ok := tree.Tasks["VAY-42"]
+	if !ok {
+		t.Fatalf("expected override issue VAY-42 in task tree, got tasks %#v", tree.Tasks)
+	}
+	if task.Status != contracts.TaskStatusOpen {
+		t.Fatalf("expected local ready override to make VAY-42 open, got %q", task.Status)
+	}
+
+	taskEngine := enginepkg.NewTaskEngine()
+	graph, err := taskEngine.BuildGraph(tree)
+	if err != nil {
+		t.Fatalf("BuildGraph returned error: %v", err)
+	}
+	if got, want := startrekSummaryIDs(taskEngine.GetNextAvailable(graph)), []string{"VAY-42"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected locally ready issue runnable, got %v want %v", got, want)
+	}
+}
+
 func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *testing.T) {
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path != "/v3/issues/_search" {
