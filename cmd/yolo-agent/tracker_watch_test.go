@@ -200,6 +200,21 @@ func TestFallbackTrackerWatchPreflightQuestionsUseSummary(t *testing.T) {
 	}
 }
 
+func TestFallbackTrackerWatchPreflightQuestionsUseTaskLanguage(t *testing.T) {
+	questions := fallbackTrackerWatchPreflightQuestions(contracts.Task{
+		ID:          "ADAPTABOT-1",
+		Title:       "Перенести бот в Messenger",
+		Description: "Нужно уточнить секреты.",
+	}, preflight.Result{})
+
+	if len(questions) != 1 {
+		t.Fatalf("expected one fallback question, got %#v", questions)
+	}
+	if !strings.Contains(questions[0], "Добавьте в задачу недостающие детали") {
+		t.Fatalf("expected Russian fallback question, got %q", questions[0])
+	}
+}
+
 func containsTrackerWatchArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {

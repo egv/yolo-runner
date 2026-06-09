@@ -94,6 +94,7 @@ Schema rules:
 - decision must be "needs_info" when scope, expected behavior, ownership, or acceptance criteria are unclear.
 - confidence must be a number from 0 to 1. Use ready only when confidence is at least 0.80.
 - questions must be empty for ready and contain concrete questions for needs_info.
+- Write summary and questions in the same natural language as the task description and recent human comments. If languages differ, prefer the most recent human comment language.
 
 Question: Is this task actionable for an implementation agent?`
 }

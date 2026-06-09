@@ -508,7 +508,11 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 
 func fallbackTrackerWatchPreflightQuestions(task contracts.Task, result preflight.Result) []string {
 	summary := strings.TrimSpace(result.Summary)
+	russian := trackerWatchTaskLooksRussian(task)
 	if summary != "" {
+		if russian {
+			return []string{fmt.Sprintf("Предварительная проверка не может продолжить: %s Уточните этот блокер.", summary)}
+		}
 		return []string{fmt.Sprintf("Preflight could not proceed because: %s Please clarify this blocker.", summary)}
 	}
 	taskTitle := strings.TrimSpace(task.Title)
@@ -516,9 +520,28 @@ func fallbackTrackerWatchPreflightQuestions(task contracts.Task, result prefligh
 		taskTitle = strings.TrimSpace(task.ID)
 	}
 	if taskTitle != "" {
+		if russian {
+			return []string{fmt.Sprintf("Предварительная проверка пометила задачу %q как требующую уточнений, но не сформулировала конкретный вопрос. Добавьте в задачу недостающие детали для реализации.", taskTitle)}
+		}
 		return []string{fmt.Sprintf("Preflight marked %q as needing clarification but did not provide a concrete question. Please update the task with the specific missing implementation details.", taskTitle)}
 	}
+	if russian {
+		return []string{"Предварительная проверка пометила задачу как требующую уточнений, но не сформулировала конкретный вопрос. Добавьте в задачу недостающие детали для реализации."}
+	}
 	return []string{"Preflight marked this task as needing clarification but did not provide a concrete question. Please update the task with the specific missing implementation details."}
+}
+
+func trackerWatchTaskLooksRussian(task contracts.Task) bool {
+	return trackerWatchContainsCyrillic(task.Title) || trackerWatchContainsCyrillic(task.Description)
+}
+
+func trackerWatchContainsCyrillic(value string) bool {
+	for _, r := range value {
+		if r >= '\u0400' && r <= '\u04FF' {
+			return true
+		}
+	}
+	return false
 }
 
 func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, repoRoot string, _ trackerAgentConfig) error {

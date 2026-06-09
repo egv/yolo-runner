@@ -123,6 +123,10 @@ func normalizedNeedsInfoQuestions(questions []string) []string {
 }
 
 func buildNeedsInfoCommentBody(summary string, questions []string) string {
+	if needsInfoTextLooksRussian(summary, questions) {
+		return buildRussianNeedsInfoCommentBody(summary, questions)
+	}
+
 	lines := []string{"Needs more information before yolo-runner can run this task."}
 
 	if summary = strings.TrimSpace(summary); summary != "" {
@@ -134,6 +138,41 @@ func buildNeedsInfoCommentBody(summary string, questions []string) string {
 		lines = append(lines, strconv.Itoa(i+1)+". "+question)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func buildRussianNeedsInfoCommentBody(summary string, questions []string) string {
+	lines := []string{"Перед запуском yolo-runner нужно уточнить детали."}
+
+	if summary = strings.TrimSpace(summary); summary != "" {
+		lines = append(lines, "", "Кратко:", summary)
+	}
+
+	lines = append(lines, "", "Вопросы:")
+	for i, question := range questions {
+		lines = append(lines, strconv.Itoa(i+1)+". "+question)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func needsInfoTextLooksRussian(summary string, questions []string) bool {
+	if containsCyrillic(summary) {
+		return true
+	}
+	for _, question := range questions {
+		if containsCyrillic(question) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCyrillic(value string) bool {
+	for _, r := range value {
+		if r >= '\u0400' && r <= '\u04FF' {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *StorageBackend) RemoveLabel(ctx context.Context, issueID string, label string) error {

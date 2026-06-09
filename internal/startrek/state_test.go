@@ -71,6 +71,35 @@ func TestNeedsInfoTransitionServiceAppliesLabelsCommentAndMarkerData(t *testing.
 	}
 }
 
+func TestNeedsInfoTransitionServiceUsesRussianBodyForRussianQuestions(t *testing.T) {
+	tracker := &fakeNeedsInfoTransitionTracker{
+		comment: IssueComment{ID: "comment-ru"},
+	}
+	service := NeedsInfoTransitionService{Tracker: tracker}
+
+	_, err := service.Apply(context.Background(), NeedsInfoTransitionInput{
+		IssueID:   "ADAPTABOT-1",
+		Summary:   "Не указан секрет с токеном Messenger.",
+		Questions: []string{"В каком секрете и под каким ключом хранится токен?"},
+	})
+	if err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+
+	wantBody := strings.Join([]string{
+		"Перед запуском yolo-runner нужно уточнить детали.",
+		"",
+		"Кратко:",
+		"Не указан секрет с токеном Messenger.",
+		"",
+		"Вопросы:",
+		"1. В каком секрете и под каким ключом хранится токен?",
+	}, "\n")
+	if tracker.commentOptions.Body != wantBody {
+		t.Fatalf("unexpected Russian comment body:\n%s", tracker.commentOptions.Body)
+	}
+}
+
 type fakeNeedsInfoTransitionTracker struct {
 	ops            []string
 	commentOptions IssueCommentCreateOptions

@@ -109,7 +109,11 @@ func TestParseRunnerOutputCompactsStreamedJSONTokens(t *testing.T) {
 		`,"`,
 		`summary`,
 		`":"`,
-		`Task is actionable.`,
+		`Task`,
+		` `,
+		`is`,
+		` `,
+		`actionable.`,
 		`","`,
 		`questions`,
 		`":`,
@@ -128,14 +132,67 @@ func TestParseRunnerOutputCompactsStreamedJSONTokens(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesStreamedWhitespaceTokens(t *testing.T) {
+	agent := &fakeAgentRunner{outputChunks: []string{
+		`{"decision":"needs_info","confidence":0.73,"summary":"The`,
+		` `,
+		`task`,
+		` `,
+		`is`,
+		` `,
+		`unclear.","questions":["Which`,
+		` `,
+		`package`,
+		` `,
+		`owns`,
+		` `,
+		`this?"]}`,
+	}}
+	runner := NewRunner(agent)
+
+	got, err := runner.Run(context.Background(), RunInput{
+		Task: contracts.Task{
+			ID:          "task-123",
+			Title:       "Add retry guard",
+			Description: "Wire the retry guard into the agent loop.",
+			Status:      contracts.TaskStatusOpen,
+			ParentID:    "epic-1",
+		},
+		QueueRoot: contracts.Task{ID: "epic-1"},
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	want := Result{
+		Decision:   DecisionNeedsInfo,
+		Confidence: 0.73,
+		Summary:    "The task is unclear.",
+		Questions:  []string{"Which package owns this?"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Run() = %#v, want %#v", got, want)
+	}
+}
+
 type fakeAgentRunner struct {
-	output   string
-	requests []contracts.RunnerRequest
+	output       string
+	outputChunks []string
+	requests     []contracts.RunnerRequest
 }
 
 func (f *fakeAgentRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
 	f.requests = append(f.requests, request)
 	if request.OnProgress != nil {
+		if len(f.outputChunks) > 0 {
+			for _, chunk := range f.outputChunks {
+				request.OnProgress(contracts.RunnerProgress{
+					Type:    string(contracts.EventTypeRunnerOutput),
+					Message: chunk,
+				})
+			}
+			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+		}
 		request.OnProgress(contracts.RunnerProgress{
 			Type:    string(contracts.EventTypeRunnerOutput),
 			Message: f.output,

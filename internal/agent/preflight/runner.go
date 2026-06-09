@@ -62,15 +62,12 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (Result, error) {
 			if progress.Metadata != nil && strings.EqualFold(strings.TrimSpace(progress.Metadata["source"]), "stderr") {
 				return
 			}
-			message := strings.TrimSpace(progress.Message)
+			message := progress.Message
 			if message == "" {
 				return
 			}
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			if output.Len() > 0 {
-				output.WriteByte('\n')
-			}
 			output.WriteString(message)
 		},
 	}
@@ -116,7 +113,7 @@ func compactLineDelimitedJSONTokens(output string) string {
 	lines := strings.Split(output, "\n")
 	var compacted strings.Builder
 	for _, line := range lines {
-		compacted.WriteString(strings.TrimSpace(line))
+		compacted.WriteString(strings.TrimSuffix(line, "\r"))
 	}
 	return compacted.String()
 }
