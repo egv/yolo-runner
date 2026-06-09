@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -82,6 +83,13 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 	beat_at TEXT NOT NULL,
 	metadata TEXT NOT NULL DEFAULT '{}',
 	FOREIGN KEY (session_id) REFERENCES pr_sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS answered_comments (
+	pr_id TEXT NOT NULL,
+	comment_id TEXT NOT NULL,
+	answered_at TEXT NOT NULL,
+	PRIMARY KEY (pr_id, comment_id)
 );`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -353,6 +361,72 @@ func (s *Store) GetHeartbeat(sessionID string) (time.Time, error) {
 	return parsed, nil
 }
 
+func (s *Store) StoreAnsweredCommentIDs(ctx context.Context, prID string, commentIDs []string) error {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return fmt.Errorf("PR ID is required")
+	}
+	normalizedIDs, err := normalizeAnsweredCommentIDs(commentIDs)
+	if err != nil {
+		return err
+	}
+	if len(normalizedIDs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin answered comment store for PR %q: %w", prID, err)
+	}
+	defer tx.Rollback()
+
+	answeredAt := formatTime(time.Now().UTC())
+	for _, commentID := range normalizedIDs {
+		if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO answered_comments (pr_id, comment_id, answered_at)
+VALUES (?, ?, ?)`,
+			prID,
+			commentID,
+			answeredAt,
+		); err != nil {
+			return fmt.Errorf("store answered comment %q for PR %q: %w", commentID, prID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit answered comment store for PR %q: %w", prID, err)
+	}
+	return nil
+}
+
+func (s *Store) ListAnsweredCommentIDs(ctx context.Context, prID string) ([]string, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return nil, fmt.Errorf("PR ID is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT comment_id
+FROM answered_comments
+WHERE pr_id = ?
+ORDER BY comment_id`, prID)
+	if err != nil {
+		return nil, fmt.Errorf("list answered comments for PR %q: %w", prID, err)
+	}
+	defer rows.Close()
+
+	var commentIDs []string
+	for rows.Next() {
+		var commentID string
+		if err := rows.Scan(&commentID); err != nil {
+			return nil, fmt.Errorf("scan answered comment for PR %q: %w", prID, err)
+		}
+		commentIDs = append(commentIDs, commentID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read answered comments for PR %q: %w", prID, err)
+	}
+	return commentIDs, nil
+}
+
 type sessionScanner interface {
 	Scan(dest ...any) error
 }
@@ -397,6 +471,23 @@ func validateSession(session Session) error {
 		return fmt.Errorf("session status is required")
 	}
 	return nil
+}
+
+func normalizeAnsweredCommentIDs(commentIDs []string) ([]string, error) {
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(commentIDs))
+	for _, commentID := range commentIDs {
+		commentID = strings.TrimSpace(commentID)
+		if commentID == "" {
+			return nil, fmt.Errorf("answered comment ID is required")
+		}
+		if seen[commentID] {
+			continue
+		}
+		seen[commentID] = true
+		normalized = append(normalized, commentID)
+	}
+	return normalized, nil
 }
 
 func formatTime(value time.Time) string {
