@@ -3,6 +3,8 @@ package state
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +16,9 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	if err := ensureStateParentDir(path); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open arc review state db: %w", err)
@@ -25,6 +30,21 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func ensureStateParentDir(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create arc review state directory %q: %w", dir, err)
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -229,6 +249,31 @@ func (s *Store) ListSessions() ([]Session, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read PR sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+func (s *Store) ListSessionsByPRID(prID string) ([]Session, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return nil, fmt.Errorf("PR ID is required")
+	}
+	rows, err := s.db.Query(sessionSelectSQL()+" WHERE pr_id = ? ORDER BY id", prID)
+	if err != nil {
+		return nil, fmt.Errorf("list PR sessions for %q: %w", prID, err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan PR session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read PR sessions for %q: %w", prID, err)
 	}
 	return sessions, nil
 }
