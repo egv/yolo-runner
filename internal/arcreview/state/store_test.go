@@ -143,6 +143,62 @@ func TestStoreSessionCRUDPersistsAcrossReopen(t *testing.T) {
 	assertSessionEqual(t, persisted, updated)
 }
 
+func TestStoreHeartbeatPersistsAndClassifiesFreshness(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	beatAt := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	checkedAt := beatAt.Add(30 * time.Second)
+	staleCheckedAt := beatAt.Add(2 * time.Minute)
+	maxAge := time.Minute
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if _, err := store.CreateSession(Session{
+		ID:     "session-1",
+		PRID:   "ARCADIA-42",
+		Status: "running",
+	}); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	if err := store.UpdateHeartbeat("session-1", beatAt); err != nil {
+		t.Fatalf("UpdateHeartbeat() error = %v", err)
+	}
+	heartbeat, err := store.GetHeartbeat("session-1")
+	if err != nil {
+		t.Fatalf("GetHeartbeat() error = %v", err)
+	}
+	if !heartbeat.Equal(beatAt) {
+		t.Fatalf("GetHeartbeat() = %v, want %v", heartbeat, beatAt)
+	}
+	assertHeartbeatFreshness(t, HeartbeatFreshness(heartbeat, checkedAt, maxAge), true, false)
+	assertHeartbeatFreshness(t, HeartbeatFreshness(heartbeat, staleCheckedAt, maxAge), false, true)
+	assertHeartbeatFreshness(t, HeartbeatFreshness(time.Time{}, checkedAt, maxAge), false, true)
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	persisted, err := reopened.GetHeartbeat("session-1")
+	if err != nil {
+		t.Fatalf("reopened GetHeartbeat() error = %v", err)
+	}
+	if !persisted.Equal(beatAt) {
+		t.Fatalf("reopened GetHeartbeat() = %v, want %v", persisted, beatAt)
+	}
+}
+
 func assertTablesExist(t *testing.T, db *sql.DB, tableNames ...string) {
 	t.Helper()
 
@@ -155,6 +211,14 @@ func assertTablesExist(t *testing.T, db *sql.DB, tableNames ...string) {
 		if err != nil {
 			t.Fatalf("table %q was not created: %v", tableName, err)
 		}
+	}
+}
+
+func assertHeartbeatFreshness(t *testing.T, got HeartbeatStatus, wantFresh bool, wantStale bool) {
+	t.Helper()
+
+	if got.Fresh != wantFresh || got.Stale != wantStale {
+		t.Fatalf("HeartbeatFreshness() = %#v, want fresh=%v stale=%v", got, wantFresh, wantStale)
 	}
 }
 

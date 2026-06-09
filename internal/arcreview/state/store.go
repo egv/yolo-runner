@@ -278,6 +278,81 @@ func (s *Store) ListSessionsByPRID(prID string) ([]Session, error) {
 	return sessions, nil
 }
 
+func (s *Store) UpdateHeartbeat(sessionID string, heartbeatAt time.Time) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	if heartbeatAt.IsZero() {
+		return fmt.Errorf("heartbeat timestamp is required")
+	}
+
+	formattedHeartbeat := formatTime(heartbeatAt)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin heartbeat update for session %q: %w", sessionID, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`
+UPDATE pr_sessions
+SET heartbeat_at = ?,
+	updated_at = ?
+WHERE id = ?`,
+		formattedHeartbeat,
+		formatTime(time.Now().UTC()),
+		sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update session heartbeat %q: %w", sessionID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update session heartbeat %q rows affected: %w", sessionID, err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+
+	if _, err := tx.Exec(`
+INSERT INTO heartbeats (session_id, beat_at, metadata)
+VALUES (?, ?, '{}')
+ON CONFLICT(session_id) DO UPDATE SET beat_at = excluded.beat_at`,
+		sessionID,
+		formattedHeartbeat,
+	); err != nil {
+		return fmt.Errorf("upsert heartbeat %q: %w", sessionID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit heartbeat update for session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+func (s *Store) GetHeartbeat(sessionID string) (time.Time, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return time.Time{}, fmt.Errorf("session ID is required")
+	}
+
+	var heartbeat string
+	err := s.db.QueryRow("SELECT beat_at FROM heartbeats WHERE session_id = ?", sessionID).Scan(&heartbeat)
+	if err == sql.ErrNoRows {
+		err = s.db.QueryRow("SELECT heartbeat_at FROM pr_sessions WHERE id = ?", sessionID).Scan(&heartbeat)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return time.Time{}, err
+		}
+		return time.Time{}, fmt.Errorf("get heartbeat %q: %w", sessionID, err)
+	}
+	parsed, err := parseTime(heartbeat)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed, nil
+}
+
 type sessionScanner interface {
 	Scan(dest ...any) error
 }
