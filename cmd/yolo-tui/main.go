@@ -346,7 +346,9 @@ func (m fullscreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rawKey := typed.String()
 		normalizedKey := strings.ToLower(strings.TrimSpace(rawKey))
 		switch rawKey {
-		case "ctrl+c", "q", "Q", "ctrl+q":
+		case "q", "Q", "ctrl+q":
+			return m, tea.Quit
+		case "ctrl+c":
 			if m.streamDone {
 				return m, tea.Quit
 			}

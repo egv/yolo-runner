@@ -153,13 +153,16 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 
 	if strings.HasSuffix(method, "/delta") {
 		event.Type = contracts.TaskSessionEventTypeOutput
-		event.Message = coalesceMessage(
-			lookupString(params, "delta", "text", "message"),
-			extractText(lookupMap(params, "delta")),
-		)
-		if strings.TrimSpace(event.Message) == "" {
+		if raw, ok := lookupRawString(params, "delta", "text", "message"); ok {
+			event.Message = raw
+		} else {
+			event.Message = extractText(lookupMap(params, "delta"))
+		}
+		if event.Message == "" || (strings.TrimSpace(event.Message) == "" && !hasRawString(params, "delta", "text", "message")) {
 			return contracts.TaskSessionEvent{}, nil, false
 		}
+		metadata = setMetadataValue(metadata, "preserve_whitespace", "true")
+		event.Metadata = metadata
 		return event, nil, true
 	}
 
@@ -290,6 +293,30 @@ func lookupString(data map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func lookupRawString(data map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := data[key]; ok {
+			switch typed := value.(type) {
+			case string:
+				if typed != "" {
+					return typed, true
+				}
+			case fmt.Stringer:
+				text := typed.String()
+				if text != "" {
+					return text, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+func hasRawString(data map[string]any, keys ...string) bool {
+	_, ok := lookupRawString(data, keys...)
+	return ok
 }
 
 func setMetadataValue(dst map[string]string, key string, value string) map[string]string {

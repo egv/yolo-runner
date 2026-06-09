@@ -13,6 +13,8 @@ const (
 	defaultNeedsInfoProcessingLabel = "processing"
 	defaultNeedsInfoLabel           = "needs-info"
 	defaultNeedsInfoMarker          = "needs-info"
+	englishNeedsInfoProxyNotice     = "This comment was posted by yolo-runner by proxy on behalf of the automation."
+	russianNeedsInfoProxyNotice     = "Комментарий опубликован yolo-runner через прокси от имени автоматизации."
 
 	needsInfoMarkerKey          = "needs_info_marker"
 	needsInfoMarkerCommentIDKey = "needs_info_marker_comment_id"
@@ -127,7 +129,10 @@ func buildNeedsInfoCommentBody(summary string, questions []string) string {
 		return buildRussianNeedsInfoCommentBody(summary, questions)
 	}
 
-	lines := []string{"Needs more information before yolo-runner can run this task."}
+	lines := []string{
+		"Needs more information before yolo-runner can run this task.",
+		englishNeedsInfoProxyNotice,
+	}
 
 	if summary = strings.TrimSpace(summary); summary != "" {
 		lines = append(lines, "", "Summary:", summary)
@@ -141,7 +146,10 @@ func buildNeedsInfoCommentBody(summary string, questions []string) string {
 }
 
 func buildRussianNeedsInfoCommentBody(summary string, questions []string) string {
-	lines := []string{"Перед запуском yolo-runner нужно уточнить детали."}
+	lines := []string{
+		"Перед запуском yolo-runner нужно уточнить детали.",
+		russianNeedsInfoProxyNotice,
+	}
 
 	if summary = strings.TrimSpace(summary); summary != "" {
 		lines = append(lines, "", "Кратко:", summary)

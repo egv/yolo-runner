@@ -281,6 +281,19 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 		t.Fatalf("expected runner_output, got %q", output.Type)
 	}
 
+	whitespaceOutput, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeOutput,
+		Message:   " token",
+		Timestamp: timestamp,
+		Metadata:  map[string]string{"preserve_whitespace": "true"},
+	})
+	if !ok {
+		t.Fatalf("expected whitespace-sensitive output event to normalize")
+	}
+	if whitespaceOutput.Message != " token" {
+		t.Fatalf("expected leading whitespace to be preserved, got %q", whitespaceOutput.Message)
+	}
+
 	warning, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
 		Type:      TaskSessionEventTypeApprovalRequired,
 		Message:   "approval needed",

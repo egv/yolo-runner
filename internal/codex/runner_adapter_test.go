@@ -214,6 +214,37 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 	}
 }
 
+func TestRunnerProgressFromAppServerNotificationPreservesDeltaWhitespace(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		delta string
+	}{
+		{name: "leading space", delta: " task"},
+		{name: "space token", delta: " "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			progress, _, ok := RunnerProgressFromAppServerNotification(contracts.JSONRPCMessage{
+				Method: "item/agentMessage/delta",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+					"itemId":   "item-3",
+					"delta":    tc.delta,
+				},
+			}, contracts.RunnerModeReview)
+			if !ok {
+				t.Fatalf("expected delta notification to normalize")
+			}
+			if progress.Message != tc.delta {
+				t.Fatalf("expected whitespace to be preserved, got %q", progress.Message)
+			}
+			if progress.Metadata["preserve_whitespace"] != "true" {
+				t.Fatalf("expected preserve_whitespace metadata, got %#v", progress.Metadata)
+			}
+		})
+	}
+}
+
 func TestAppServerTaskSessionRuntimeStartInitializesSessionWithoutStartingTurn(t *testing.T) {
 	repoRoot := t.TempDir()
 	harness := contracts.NewFakeStdioJSONRPCHarness()

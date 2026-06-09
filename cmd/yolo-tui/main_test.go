@@ -402,6 +402,23 @@ func TestFullscreenModelStaysOpenAfterStreamDoneUntilQuitKey(t *testing.T) {
 	_ = updated
 }
 
+func TestFullscreenModelQuitsOnQWhileStreamActive(t *testing.T) {
+	stream := make(chan streamMsg)
+	m := newFullscreenModel(stream, nil, false)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatalf("expected quit command on q while stream is active")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", cmd())
+	}
+	next := updated.(fullscreenModel)
+	if next.stopping {
+		t.Fatalf("expected q to quit immediately without entering stopping state")
+	}
+}
+
 func TestFullscreenModelSupportsAdditionalQuitShortcuts(t *testing.T) {
 	stream := make(chan streamMsg)
 	close(stream)

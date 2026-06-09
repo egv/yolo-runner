@@ -40,6 +40,7 @@ func TestNeedsInfoTransitionServiceAppliesLabelsCommentAndMarkerData(t *testing.
 
 	wantBody := strings.Join([]string{
 		"Needs more information before yolo-runner can run this task.",
+		englishNeedsInfoProxyNotice,
 		"",
 		"Summary:",
 		"Ownership is unclear.",
@@ -88,6 +89,7 @@ func TestNeedsInfoTransitionServiceUsesRussianBodyForRussianQuestions(t *testing
 
 	wantBody := strings.Join([]string{
 		"Перед запуском yolo-runner нужно уточнить детали.",
+		russianNeedsInfoProxyNotice,
 		"",
 		"Кратко:",
 		"Не указан секрет с токеном Messenger.",

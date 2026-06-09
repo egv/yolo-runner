@@ -298,12 +298,24 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 		}
 	}
 
+	message := strings.TrimSpace(event.Message)
+	if shouldPreserveEventMessageWhitespace(event.Type, metadata) {
+		message = event.Message
+	}
+
 	return RunnerProgress{
 		Type:      string(progressType),
-		Message:   strings.TrimSpace(event.Message),
+		Message:   message,
 		Metadata:  metadata,
 		Timestamp: timestamp,
 	}, true
+}
+
+func shouldPreserveEventMessageWhitespace(eventType TaskSessionEventType, metadata map[string]string) bool {
+	if eventType != TaskSessionEventTypeOutput && eventType != TaskSessionEventTypeLog {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["preserve_whitespace"]), "true")
 }
 
 func setMetadataValue(dst map[string]string, key string, value string) map[string]string {
