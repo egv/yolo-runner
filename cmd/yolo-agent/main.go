@@ -163,6 +163,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if len(args) > 0 && args[0] == "arc-review-watch" {
 		return arcReviewWatchCommand(args[1:])
 	}
+	if len(args) > 0 && args[0] == arcPRReviewRunnerBinary {
+		return arcPRReviewRunnerCommand(args[1:])
+	}
 
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "Repository root")
@@ -531,7 +534,11 @@ func parseQualityGateTools(raw string) []string {
 }
 
 func main() {
-	os.Exit(RunMain(os.Args[1:], nil))
+	args := os.Args[1:]
+	if filepath.Base(os.Args[0]) == arcPRReviewRunnerBinary {
+		args = append([]string{arcPRReviewRunnerBinary}, args...)
+	}
+	os.Exit(RunMain(args, nil))
 }
 
 func defaultRun(ctx context.Context, cfg runConfig) error {

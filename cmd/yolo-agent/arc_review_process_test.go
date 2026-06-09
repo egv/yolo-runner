@@ -27,14 +27,14 @@ func TestBuildArcReviewProcessSpecBuildsStableCommandEnvAndLogPath(t *testing.T)
 		"--pr-id", "42",
 		"--state-path", statePath,
 		"--events", eventsPath,
+		"--once",
 	}
 	if !reflect.DeepEqual(spec.Argv, wantArgv) {
 		t.Fatalf("unexpected argv:\n got %#v\nwant %#v", spec.Argv, wantArgv)
 	}
 
-	wantEnv := []string{"YOLO_ARC_REVIEW_SESSION_ID=pr-42"}
-	if !reflect.DeepEqual(spec.Env, wantEnv) {
-		t.Fatalf("unexpected env:\n got %#v\nwant %#v", spec.Env, wantEnv)
+	if len(spec.Env) != 0 {
+		t.Fatalf("unexpected env: %#v", spec.Env)
 	}
 
 	wantLogPath := filepath.Join(repoRoot, "runner-logs", "arc-pr-review-pr-42.log")

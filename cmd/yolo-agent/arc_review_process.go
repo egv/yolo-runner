@@ -52,10 +52,9 @@ func buildArcReviewProcessSpec(cfg arcReviewProcessConfig) arcReviewProcessSpec 
 			"--pr-id", strings.TrimSpace(cfg.PRID),
 			"--state-path", strings.TrimSpace(cfg.StatePath),
 			"--events", strings.TrimSpace(cfg.EventsPath),
+			"--once",
 		},
-		Env: []string{
-			"YOLO_ARC_REVIEW_SESSION_ID=" + sessionID,
-		},
+		Env:     nil,
 		LogPath: filepath.Join(repoRoot, "runner-logs", "arc-pr-review-"+sanitizeArcReviewSessionID(sessionID)+".log"),
 	}
 }
