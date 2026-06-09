@@ -44,6 +44,14 @@ func (s trackerConfigService) ResolveTrackerAgentConfig(repoRoot string) (tracke
 	return resolveTrackerAgentConfig(model.TrackerAgent, repoRoot)
 }
 
+func (s trackerConfigService) ResolveArcReviewWatchConfig(repoRoot string) (arcReviewWatchConfig, error) {
+	model, err := s.LoadModel(repoRoot)
+	if err != nil {
+		return arcReviewWatchConfig{}, err
+	}
+	return resolveArcReviewWatchConfig(model.ArcReviewWatch, repoRoot)
+}
+
 func (s trackerConfigService) ResolveTrackerProfile(repoRoot string, selectedProfile string, rootID string, getenv func(string) string) (resolvedTrackerProfile, error) {
 	model, err := s.LoadModel(repoRoot)
 	if err != nil {
