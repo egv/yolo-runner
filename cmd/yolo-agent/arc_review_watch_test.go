@@ -372,3 +372,84 @@ func TestRestartStaleArcReviewSessionsMarksCrashedAndStartsReplacement(t *testin
 		t.Fatalf("second restartStaleArcReviewSessions() = %d, want 0", restartedAgain)
 	}
 }
+
+func TestRestartStaleArcReviewSessionsCreatesReplacementBeforeStartAndTargetsSession(t *testing.T) {
+	store, err := arcreviewstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 9, 16, 0, 0, 0, time.UTC)
+	workspace := "/repo/workspaces/pr-401"
+	for _, session := range []arcreviewstate.Session{
+		{
+			ID:        "pr-arcadia-401",
+			PRID:      "ARCADIA-401",
+			Workspace: workspace,
+			Branch:    "trunk",
+			Status:    "crashed",
+			Revision:  "r-old",
+		},
+		{
+			ID:        "pr-arcadia-401-2",
+			PRID:      "ARCADIA-401",
+			Workspace: workspace,
+			Branch:    "trunk",
+			Status:    "running",
+			PID:       401,
+			Revision:  "r-stale",
+			Heartbeat: now.Add(-10 * time.Minute),
+		},
+	} {
+		if _, err := store.CreateSession(session); err != nil {
+			t.Fatalf("CreateSession(%s) error = %v", session.ID, err)
+		}
+	}
+
+	restarted, err := restartStaleArcReviewSessions(store, arcReviewWatchCommandConfig{repoRoot: "/repo/yolo"}, arcReviewWatchConfig{
+		StatePath:    "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+		PollInterval: 5 * time.Minute,
+	}, now, arcReviewPIDLivenessFunc(func(int) bool {
+		return true
+	}), arcReviewProcessStarterFunc(func(spec arcReviewProcessSpec) (arcReviewStartedProcess, error) {
+		replacement, err := store.GetSession("pr-arcadia-401-3")
+		if err != nil {
+			t.Fatalf("replacement session should exist before process start: %v", err)
+		}
+		if replacement.Status != "running" || replacement.PID != 0 || replacement.Workspace != workspace {
+			t.Fatalf("replacement before start mismatch: %#v", replacement)
+		}
+		if !containsOrderedArgs(spec.Argv, "--session-id", "pr-arcadia-401-3") {
+			t.Fatalf("started argv does not target replacement session: %#v", spec.Argv)
+		}
+		return arcReviewStartedProcess{PID: 9401}, nil
+	}))
+	if err != nil {
+		t.Fatalf("restartStaleArcReviewSessions() error = %v", err)
+	}
+	if restarted != 1 {
+		t.Fatalf("restartStaleArcReviewSessions() = %d, want 1", restarted)
+	}
+
+	replacement, err := store.GetSession("pr-arcadia-401-3")
+	if err != nil {
+		t.Fatalf("GetSession(replacement) error = %v", err)
+	}
+	if replacement.Status != "running" || replacement.PID != 9401 || replacement.Workspace != workspace {
+		t.Fatalf("replacement after start mismatch: %#v", replacement)
+	}
+}
+
+func containsOrderedArgs(args []string, key string, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}

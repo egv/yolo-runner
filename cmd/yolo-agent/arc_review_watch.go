@@ -253,12 +253,19 @@ func restartStaleArcReviewSessions(
 			EventsPath: resolveArcReviewWatchEventsPath(commandCfg),
 		})
 		replacement.LogPath = spec.LogPath
+		if _, err := store.CreateSession(replacement); err != nil {
+			return restarted, err
+		}
 		started, err := starter.StartArcReviewProcess(spec)
 		if err != nil {
+			replacement.Status = "crashed"
+			if _, updateErr := store.UpdateSession(replacement); updateErr != nil {
+				return restarted, fmt.Errorf("%w; also failed to mark replacement session crashed: %v", err, updateErr)
+			}
 			return restarted, err
 		}
 		replacement.PID = started.PID
-		if _, err := store.CreateSession(replacement); err != nil {
+		if _, err := store.UpdateSession(replacement); err != nil {
 			return restarted, err
 		}
 		restarted++

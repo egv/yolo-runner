@@ -15,6 +15,7 @@ type arcPRReviewRunnerCommandConfig struct {
 	repoRoot   string
 	workspace  string
 	prID       string
+	sessionID  string
 	statePath  string
 	eventsPath string
 	once       bool
@@ -28,6 +29,8 @@ func arcPRReviewRunnerCommand(args []string) int {
 	workspace := fs.String("workspace", "", "Arc PR workspace")
 	pr := fs.String("pr", "", "Arc PR ID")
 	prIDAlias := fs.String("pr-id", "", "Arc PR ID")
+	session := fs.String("session", "", "Arc review session ID")
+	sessionIDAlias := fs.String("session-id", "", "Arc review session ID")
 	state := fs.String("state", "", "Arc review state DB path")
 	statePathAlias := fs.String("state-path", "", "Arc review state DB path")
 	events := fs.String("events", "", "Path to JSONL events log")
@@ -48,11 +51,16 @@ func arcPRReviewRunnerCommand(args []string) int {
 	if statePath == "" {
 		statePath = strings.TrimSpace(*statePathAlias)
 	}
+	sessionID := strings.TrimSpace(*session)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(*sessionIDAlias)
+	}
 
 	if err := runArcPRReviewRunner(context.Background(), arcPRReviewRunnerCommandConfig{
 		repoRoot:   strings.TrimSpace(*repo),
 		workspace:  strings.TrimSpace(*workspace),
 		prID:       prID,
+		sessionID:  sessionID,
 		statePath:  statePath,
 		eventsPath: strings.TrimSpace(*events),
 		once:       *once,
@@ -86,7 +94,7 @@ func defaultRunArcPRReviewRunner(_ context.Context, cfg arcPRReviewRunnerCommand
 	}
 	defer store.Close()
 
-	session, err := resolveArcPRReviewRunnerSession(store, cfg.prID, cfg.workspace)
+	session, err := resolveArcPRReviewRunnerSession(store, cfg.prID, cfg.workspace, cfg.sessionID)
 	if err != nil {
 		return err
 	}
@@ -96,12 +104,28 @@ func defaultRunArcPRReviewRunner(_ context.Context, cfg arcPRReviewRunnerCommand
 	return nil
 }
 
-func resolveArcPRReviewRunnerSession(store *arcreviewstate.Store, prID string, workspace string) (arcreviewstate.Session, error) {
+func resolveArcPRReviewRunnerSession(store *arcreviewstate.Store, prID string, workspace string, sessionID string) (arcreviewstate.Session, error) {
+	prID = strings.TrimSpace(prID)
+	workspace = strings.TrimSpace(workspace)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID != "" {
+		session, err := store.GetSession(sessionID)
+		if err != nil {
+			return arcreviewstate.Session{}, fmt.Errorf("get PR review session %q: %w", sessionID, err)
+		}
+		if strings.TrimSpace(session.PRID) != prID {
+			return arcreviewstate.Session{}, fmt.Errorf("PR review session %q belongs to pr %q, not %q", sessionID, strings.TrimSpace(session.PRID), prID)
+		}
+		if strings.TrimSpace(session.Workspace) != workspace {
+			return arcreviewstate.Session{}, fmt.Errorf("PR review session %q uses workspace %q, not %q", sessionID, strings.TrimSpace(session.Workspace), workspace)
+		}
+		return session, nil
+	}
+
 	sessions, err := store.ListSessionsByPRID(prID)
 	if err != nil {
 		return arcreviewstate.Session{}, err
 	}
-	workspace = strings.TrimSpace(workspace)
 	var matches []arcreviewstate.Session
 	for _, session := range sessions {
 		if strings.TrimSpace(session.Workspace) == workspace {
@@ -111,8 +135,17 @@ func resolveArcPRReviewRunnerSession(store *arcreviewstate.Store, prID string, w
 	if len(matches) == 1 {
 		return matches[0], nil
 	}
-	if len(matches) == 0 {
-		return arcreviewstate.Session{}, fmt.Errorf("no PR review session found for pr %q workspace %q", strings.TrimSpace(prID), workspace)
+	var running []arcreviewstate.Session
+	for _, session := range matches {
+		if strings.EqualFold(strings.TrimSpace(session.Status), "running") {
+			running = append(running, session)
+		}
 	}
-	return arcreviewstate.Session{}, fmt.Errorf("multiple PR review sessions found for pr %q workspace %q", strings.TrimSpace(prID), workspace)
+	if len(running) == 1 {
+		return running[0], nil
+	}
+	if len(matches) == 0 {
+		return arcreviewstate.Session{}, fmt.Errorf("no PR review session found for pr %q workspace %q", prID, workspace)
+	}
+	return arcreviewstate.Session{}, fmt.Errorf("multiple PR review sessions found for pr %q workspace %q", prID, workspace)
 }

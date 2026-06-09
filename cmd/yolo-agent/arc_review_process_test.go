@@ -25,6 +25,7 @@ func TestBuildArcReviewProcessSpecBuildsStableCommandEnvAndLogPath(t *testing.T)
 		"--repo", repoRoot,
 		"--workspace", filepath.Join(repoRoot, "workspaces", "pr-42"),
 		"--pr-id", "42",
+		"--session-id", "pr-42",
 		"--state-path", statePath,
 		"--events", eventsPath,
 		"--once",
