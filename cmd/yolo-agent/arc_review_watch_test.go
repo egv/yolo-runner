@@ -2,8 +2,10 @@ package main
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 )
@@ -23,8 +25,13 @@ arc_review_watch:
 `)
 
 	originalDiscover := discoverArcReviewPRs
+	originalLiveness := defaultArcReviewPIDLiveness
 	t.Cleanup(func() {
 		discoverArcReviewPRs = originalDiscover
+		defaultArcReviewPIDLiveness = originalLiveness
+	})
+	defaultArcReviewPIDLiveness = arcReviewPIDLivenessFunc(func(int) bool {
+		return true
 	})
 	discoverCalls := 0
 	discoverArcReviewPRs = func(_ arcReviewWatchCommandConfig, cfg arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
@@ -69,6 +76,7 @@ arc_review_watch:
 		Status:       "running",
 		PID:          4242,
 		Revision:     "rev-202",
+		Heartbeat:    time.Now().UTC(),
 		FailureCount: 1,
 		LogPath:      "/tmp/pr-202.log",
 	}
@@ -204,5 +212,163 @@ func TestReconcileArcReviewSessionsCreatesMissingPendingSessionsAndKeepsExisting
 	}
 	if unchanged != existing {
 		t.Fatalf("existing session changed\ngot:  %#v\nwant: %#v", unchanged, existing)
+	}
+}
+
+func TestRestartStaleArcReviewSessionsMarksCrashedAndStartsReplacement(t *testing.T) {
+	store, err := arcreviewstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 9, 15, 0, 0, 0, time.UTC)
+	fresh := arcreviewstate.Session{
+		ID:           "session-fresh",
+		PRID:         "ARCADIA-301",
+		Workspace:    "/repo/workspaces/pr-301",
+		Branch:       "trunk",
+		Status:       "running",
+		PID:          301,
+		Revision:     "r-fresh",
+		Heartbeat:    now.Add(-1 * time.Minute),
+		FailureCount: 1,
+		LogPath:      "/tmp/pr-301.log",
+	}
+	stale := arcreviewstate.Session{
+		ID:           "session-stale",
+		PRID:         "ARCADIA-302",
+		Workspace:    "/repo/workspaces/pr-302",
+		Branch:       "trunk",
+		Status:       "running",
+		PID:          302,
+		Revision:     "r-stale",
+		Heartbeat:    now.Add(-10 * time.Minute),
+		FailureCount: 2,
+		LogPath:      "/tmp/pr-302.log",
+	}
+	dead := arcreviewstate.Session{
+		ID:           "session-dead",
+		PRID:         "ARCADIA-303",
+		Workspace:    "/repo/workspaces/pr-303",
+		Branch:       "trunk",
+		Status:       "running",
+		PID:          303,
+		Revision:     "r-dead",
+		Heartbeat:    now.Add(-1 * time.Minute),
+		FailureCount: 3,
+		LogPath:      "/tmp/pr-303.log",
+	}
+	for _, session := range []arcreviewstate.Session{fresh, stale, dead} {
+		if _, err := store.CreateSession(session); err != nil {
+			t.Fatalf("CreateSession(%s) error = %v", session.ID, err)
+		}
+	}
+
+	started := []arcReviewProcessSpec{}
+	restarted, err := restartStaleArcReviewSessions(store, arcReviewWatchCommandConfig{repoRoot: "/repo/yolo"}, arcReviewWatchConfig{
+		StatePath:    "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+		PollInterval: 5 * time.Minute,
+	}, now, arcReviewPIDLivenessFunc(func(pid int) bool {
+		return pid != 303
+	}), arcReviewProcessStarterFunc(func(spec arcReviewProcessSpec) (arcReviewStartedProcess, error) {
+		started = append(started, spec)
+		return arcReviewStartedProcess{PID: 9000 + len(started)}, nil
+	}))
+	if err != nil {
+		t.Fatalf("restartStaleArcReviewSessions() error = %v", err)
+	}
+	if restarted != 2 {
+		t.Fatalf("restartStaleArcReviewSessions() = %d, want 2", restarted)
+	}
+
+	gotFresh, err := store.GetSession("session-fresh")
+	if err != nil {
+		t.Fatalf("GetSession(fresh) error = %v", err)
+	}
+	if gotFresh != fresh {
+		t.Fatalf("fresh session changed\ngot:  %#v\nwant: %#v", gotFresh, fresh)
+	}
+
+	gotStale, err := store.GetSession("session-stale")
+	if err != nil {
+		t.Fatalf("GetSession(stale) error = %v", err)
+	}
+	if gotStale.Status != "crashed" || gotStale.PID != 0 || gotStale.FailureCount != stale.FailureCount+1 {
+		t.Fatalf("stale crashed session mismatch: %#v", gotStale)
+	}
+	gotDead, err := store.GetSession("session-dead")
+	if err != nil {
+		t.Fatalf("GetSession(dead) error = %v", err)
+	}
+	if gotDead.Status != "crashed" || gotDead.PID != 0 || gotDead.FailureCount != dead.FailureCount+1 {
+		t.Fatalf("dead crashed session mismatch: %#v", gotDead)
+	}
+
+	gotReplacementStale, err := store.GetSession("pr-arcadia-302-2")
+	if err != nil {
+		t.Fatalf("GetSession(stale replacement) error = %v", err)
+	}
+	if gotReplacementStale.Status != "running" ||
+		gotReplacementStale.PID != 9002 ||
+		gotReplacementStale.FailureCount != gotStale.FailureCount ||
+		gotReplacementStale.Workspace != stale.Workspace ||
+		gotReplacementStale.Branch != stale.Branch ||
+		gotReplacementStale.Revision != stale.Revision {
+		t.Fatalf("stale replacement mismatch: %#v", gotReplacementStale)
+	}
+	gotReplacementDead, err := store.GetSession("pr-arcadia-303-2")
+	if err != nil {
+		t.Fatalf("GetSession(dead replacement) error = %v", err)
+	}
+	if gotReplacementDead.Status != "running" ||
+		gotReplacementDead.PID != 9001 ||
+		gotReplacementDead.FailureCount != gotDead.FailureCount ||
+		gotReplacementDead.Workspace != dead.Workspace ||
+		gotReplacementDead.Branch != dead.Branch ||
+		gotReplacementDead.Revision != dead.Revision {
+		t.Fatalf("dead replacement mismatch: %#v", gotReplacementDead)
+	}
+
+	wantStarted := []arcReviewProcessSpec{
+		buildArcReviewProcessSpec(arcReviewProcessConfig{
+			RepoRoot:   "/repo/yolo",
+			Workspace:  dead.Workspace,
+			PRID:       dead.PRID,
+			SessionID:  "pr-arcadia-303-2",
+			StatePath:  "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+			EventsPath: filepath.Join("/repo/yolo", "runner-logs", "arc-review-watch.events.jsonl"),
+		}),
+		buildArcReviewProcessSpec(arcReviewProcessConfig{
+			RepoRoot:   "/repo/yolo",
+			Workspace:  stale.Workspace,
+			PRID:       stale.PRID,
+			SessionID:  "pr-arcadia-302-2",
+			StatePath:  "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+			EventsPath: filepath.Join("/repo/yolo", "runner-logs", "arc-review-watch.events.jsonl"),
+		}),
+	}
+	if !reflect.DeepEqual(started, wantStarted) {
+		t.Fatalf("started specs mismatch\ngot:  %#v\nwant: %#v", started, wantStarted)
+	}
+
+	restartedAgain, err := restartStaleArcReviewSessions(store, arcReviewWatchCommandConfig{repoRoot: "/repo/yolo"}, arcReviewWatchConfig{
+		StatePath:    "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+		PollInterval: 5 * time.Minute,
+	}, now, arcReviewPIDLivenessFunc(func(pid int) bool {
+		return true
+	}), arcReviewProcessStarterFunc(func(spec arcReviewProcessSpec) (arcReviewStartedProcess, error) {
+		t.Fatalf("unexpected second start: %#v", spec)
+		return arcReviewStartedProcess{}, nil
+	}))
+	if err != nil {
+		t.Fatalf("second restartStaleArcReviewSessions() error = %v", err)
+	}
+	if restartedAgain != 0 {
+		t.Fatalf("second restartStaleArcReviewSessions() = %d, want 0", restartedAgain)
 	}
 }
