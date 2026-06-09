@@ -94,6 +94,40 @@ func TestRunnerReturnsReadyAndNeedsInfoFromRunnerOutput(t *testing.T) {
 	}
 }
 
+func TestParseRunnerOutputCompactsStreamedJSONTokens(t *testing.T) {
+	output := strings.Join([]string{
+		`{"`,
+		`decision`,
+		`":"`,
+		`ready`,
+		`","`,
+		`confidence`,
+		`":`,
+		`0`,
+		`.`,
+		`84`,
+		`,"`,
+		`summary`,
+		`":"`,
+		`Task is actionable.`,
+		`","`,
+		`questions`,
+		`":`,
+		`[]}`,
+	}, "\n")
+
+	got := parseRunnerOutput(output)
+	want := Result{
+		Decision:   DecisionReady,
+		Confidence: 0.84,
+		Summary:    "Task is actionable.",
+		Questions:  []string{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseRunnerOutput() = %#v, want %#v", got, want)
+	}
+}
+
 type fakeAgentRunner struct {
 	output   string
 	requests []contracts.RunnerRequest

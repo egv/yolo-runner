@@ -103,10 +103,22 @@ func parseRunnerOutput(output string) Result {
 	if json.Valid([]byte(output)) {
 		return ParseResult(output)
 	}
+	if compacted := compactLineDelimitedJSONTokens(output); json.Valid([]byte(compacted)) {
+		return ParseResult(compacted)
+	}
 	if candidate, ok := lastJSONObject(output); ok {
 		return ParseResult(candidate)
 	}
 	return ParseResult(output)
+}
+
+func compactLineDelimitedJSONTokens(output string) string {
+	lines := strings.Split(output, "\n")
+	var compacted strings.Builder
+	for _, line := range lines {
+		compacted.WriteString(strings.TrimSpace(line))
+	}
+	return compacted.String()
 }
 
 func lastJSONObject(output string) (string, bool) {

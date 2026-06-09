@@ -480,7 +480,7 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 	if result.Decision == preflight.DecisionNeedsInfo {
 		questions := result.Questions
 		if len(questions) == 0 {
-			questions = []string{"Please clarify the missing implementation details needed for yolo-runner to proceed."}
+			questions = fallbackTrackerWatchPreflightQuestions(*task, result)
 		}
 		_, err := (startrek.NeedsInfoTransitionService{
 			Tracker:         backend,
@@ -504,6 +504,21 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend *startrek.Sto
 		return false, err
 	}
 	return true, nil
+}
+
+func fallbackTrackerWatchPreflightQuestions(task contracts.Task, result preflight.Result) []string {
+	summary := strings.TrimSpace(result.Summary)
+	if summary != "" {
+		return []string{fmt.Sprintf("Preflight could not proceed because: %s Please clarify this blocker.", summary)}
+	}
+	taskTitle := strings.TrimSpace(task.Title)
+	if taskTitle == "" {
+		taskTitle = strings.TrimSpace(task.ID)
+	}
+	if taskTitle != "" {
+		return []string{fmt.Sprintf("Preflight marked %q as needing clarification but did not provide a concrete question. Please update the task with the specific missing implementation details.", taskTitle)}
+	}
+	return []string{"Preflight marked this task as needing clarification but did not provide a concrete question. Please update the task with the specific missing implementation details."}
 }
 
 func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, repoRoot string, _ trackerAgentConfig) error {

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/agent/preflight"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
@@ -178,6 +181,22 @@ func TestTrackerWatchArcMountPathFallsBackToQueueRoot(t *testing.T) {
 	want := filepath.Join(repoRoot, "arcadia", "vay")
 	if got != want {
 		t.Fatalf("expected queue root to be used as mount path, got %q want %q", got, want)
+	}
+}
+
+func TestFallbackTrackerWatchPreflightQuestionsUseSummary(t *testing.T) {
+	questions := fallbackTrackerWatchPreflightQuestions(contracts.Task{
+		ID:    "ADAPTABOT-1",
+		Title: "Move bot to Messenger",
+	}, preflight.Result{
+		Summary: "Acceptance criteria are unclear.",
+	})
+
+	if len(questions) != 1 {
+		t.Fatalf("expected one fallback question, got %#v", questions)
+	}
+	if !strings.Contains(questions[0], "Acceptance criteria are unclear.") {
+		t.Fatalf("expected fallback question to cite preflight summary, got %q", questions[0])
 	}
 }
 
