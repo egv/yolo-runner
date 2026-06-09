@@ -517,6 +517,10 @@ If a run is interrupted, reset state before restarting:
 
 Operator steps for the Startrek tracker-agent PoC, including the beads-profile epic command, Arc PR landing config, labels, dry-run checks, and reset procedure, are documented in `docs/tracker-agent-poc.md`.
 
+### Arc review watch runbook
+
+Operator steps for `yolo-agent arc-review-watch`, including safe dry-run startup, event/TUI usage, SQLite reset, stale process recovery, and first-run `allow_ship: false` guidance, are documented in `docs/arc-review-watch.md`.
+
 ### `--runner-timeout` profiles (`yolo-agent`)
 
 Use `--runner-timeout` to cap each task execution. Start with these defaults and tune for your repo/task size.
