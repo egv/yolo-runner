@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
@@ -24,6 +25,17 @@ type arcReviewDiscoveredPR struct {
 }
 
 var discoverArcReviewPRs = defaultDiscoverArcReviewPRs
+var defaultArcReviewPIDLiveness arcReviewPIDLivenessChecker = arcReviewPIDLivenessFunc(isArcReviewPIDAlive)
+
+type arcReviewPIDLivenessChecker interface {
+	IsArcReviewPIDAlive(pid int) bool
+}
+
+type arcReviewPIDLivenessFunc func(pid int) bool
+
+func (f arcReviewPIDLivenessFunc) IsArcReviewPIDAlive(pid int) bool {
+	return f(pid)
+}
 
 func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConfig) error {
 	if ctx == nil {
@@ -119,6 +131,10 @@ func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
 		_ = store.Close()
 	}()
 	_, err = reconcileArcReviewSessions(store, prs)
+	if err != nil {
+		return err
+	}
+	_, err = restartStaleArcReviewSessions(store, cfg, reviewWatchConfig, time.Now().UTC(), defaultArcReviewPIDLiveness, defaultArcReviewProcessStarter)
 	return err
 }
 
@@ -172,11 +188,104 @@ func hasNonTerminalArcReviewSession(sessions []arcreviewstate.Session) bool {
 
 func isTerminalArcReviewSessionStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "failed", "cancelled", "canceled":
+	case "completed", "failed", "crashed", "cancelled", "canceled":
 		return true
 	default:
 		return false
 	}
+}
+
+func restartStaleArcReviewSessions(
+	store *arcreviewstate.Store,
+	commandCfg arcReviewWatchCommandConfig,
+	watchCfg arcReviewWatchConfig,
+	checkedAt time.Time,
+	liveness arcReviewPIDLivenessChecker,
+	starter arcReviewProcessStarter,
+) (int, error) {
+	if store == nil {
+		return 0, errors.New("arc review state store is required")
+	}
+	if liveness == nil {
+		liveness = defaultArcReviewPIDLiveness
+	}
+	if starter == nil {
+		starter = defaultArcReviewProcessStarter
+	}
+	sessions, err := store.ListSessions()
+	if err != nil {
+		return 0, err
+	}
+
+	restarted := 0
+	for _, session := range sessions {
+		if !shouldRestartArcReviewSession(session, checkedAt, watchCfg.PollInterval, liveness) {
+			continue
+		}
+		failed := session
+		failed.Status = "crashed"
+		failed.PID = 0
+		failed.FailureCount++
+		if _, err := store.UpdateSession(failed); err != nil {
+			return restarted, err
+		}
+
+		allForPR, err := store.ListSessionsByPRID(failed.PRID)
+		if err != nil {
+			return restarted, err
+		}
+		replacement := arcreviewstate.Session{
+			ID:           arcReviewSessionID(failed.PRID, allForPR),
+			PRID:         failed.PRID,
+			Workspace:    failed.Workspace,
+			Branch:       failed.Branch,
+			Status:       "running",
+			Revision:     failed.Revision,
+			Heartbeat:    checkedAt,
+			FailureCount: failed.FailureCount,
+		}
+		spec := buildArcReviewProcessSpec(arcReviewProcessConfig{
+			RepoRoot:   commandCfg.repoRoot,
+			Workspace:  replacement.Workspace,
+			PRID:       replacement.PRID,
+			SessionID:  replacement.ID,
+			StatePath:  watchCfg.StatePath,
+			EventsPath: resolveArcReviewWatchEventsPath(commandCfg),
+		})
+		replacement.LogPath = spec.LogPath
+		started, err := starter.StartArcReviewProcess(spec)
+		if err != nil {
+			return restarted, err
+		}
+		replacement.PID = started.PID
+		if _, err := store.CreateSession(replacement); err != nil {
+			return restarted, err
+		}
+		restarted++
+	}
+	return restarted, nil
+}
+
+func shouldRestartArcReviewSession(session arcreviewstate.Session, checkedAt time.Time, maxHeartbeatAge time.Duration, liveness arcReviewPIDLivenessChecker) bool {
+	if strings.ToLower(strings.TrimSpace(session.Status)) != "running" {
+		return false
+	}
+	if arcreviewstate.HeartbeatFreshness(session.Heartbeat, checkedAt, maxHeartbeatAge).Stale {
+		return true
+	}
+	return session.PID <= 0 || !liveness.IsArcReviewPIDAlive(session.PID)
+}
+
+func isArcReviewPIDAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil || process == nil {
+		return false
+	}
+	err = process.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func arcReviewSessionID(prID string, existing []arcreviewstate.Session) string {
