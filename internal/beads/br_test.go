@@ -23,6 +23,17 @@ func TestRustAdapterUsesNoDaemonForUpdateStatus(t *testing.T) {
 	assertCall(t, runner.calls, []string{"br", "--no-daemon", "update", "task-1", "--status", "open"})
 }
 
+func TestRustAdapterUsesCloseCommandForClosedStatus(t *testing.T) {
+	runner := &fakeRunner{}
+	adapter := NewRustAdapter(runner)
+
+	if err := adapter.UpdateStatus("task-1", "closed"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	assertCall(t, runner.calls, []string{"br", "--no-daemon", "close", "task-1"})
+}
+
 func TestRustAdapterUsesNoDaemonForSync(t *testing.T) {
 	runner := &fakeRunner{}
 	adapter := NewRustAdapter(runner)

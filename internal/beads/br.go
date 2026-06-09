@@ -169,6 +169,9 @@ func (a *RustAdapter) Show(id string) (Bead, error) {
 
 // UpdateStatus updates the status of an issue
 func (a *RustAdapter) UpdateStatus(id string, status string) error {
+	if status == "closed" {
+		return a.Close(id)
+	}
 	_, err := a.run("update", id, "--status", status)
 	return err
 }
