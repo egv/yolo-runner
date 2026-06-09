@@ -269,6 +269,106 @@ func TestRunMainRoutesTrackerWatchSubcommandAndParsesFlags(t *testing.T) {
 	}
 }
 
+func TestRunMainRoutesArcReviewWatchSubcommandAndParsesFlags(t *testing.T) {
+	originalRun := runArcReviewWatch
+	t.Cleanup(func() {
+		runArcReviewWatch = originalRun
+	})
+
+	called := false
+	var got arcReviewWatchCommandConfig
+	runArcReviewWatch = func(_ context.Context, cfg arcReviewWatchCommandConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	runCalled := false
+	code := RunMain([]string{"arc-review-watch", "--repo", "/repo", "--profile", "arc-dev", "--once", "--dry-run", "--events", "/tmp/events.jsonl", "--stream"}, func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("expected arc-review-watch exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected arc-review-watch handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("expected legacy run function not to be called for arc-review-watch")
+	}
+	if got.repoRoot != "/repo" {
+		t.Fatalf("expected repo=/repo, got %q", got.repoRoot)
+	}
+	if got.profile != "arc-dev" {
+		t.Fatalf("expected profile=arc-dev, got %q", got.profile)
+	}
+	if !got.once {
+		t.Fatalf("expected once=true")
+	}
+	if !got.dryRun {
+		t.Fatalf("expected dry-run=true")
+	}
+	if got.eventsPath != "/tmp/events.jsonl" {
+		t.Fatalf("expected events path to be parsed, got %q", got.eventsPath)
+	}
+	if !got.stream {
+		t.Fatalf("expected stream=true")
+	}
+}
+
+func TestDefaultRunArcReviewWatchDryRunOnceEmitsStartAndFinishEvents(t *testing.T) {
+	repoRoot := t.TempDir()
+	eventsPath := filepath.Join(repoRoot, "events.jsonl")
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  poll_interval: 1s
+`)
+
+	err := defaultRunArcReviewWatch(context.Background(), arcReviewWatchCommandConfig{
+		repoRoot:   repoRoot,
+		profile:    "default",
+		once:       true,
+		dryRun:     true,
+		eventsPath: eventsPath,
+	})
+	if err != nil {
+		t.Fatalf("defaultRunArcReviewWatch failed: %v", err)
+	}
+
+	file, err := os.Open(eventsPath)
+	if err != nil {
+		t.Fatalf("open events log: %v", err)
+	}
+	defer file.Close()
+
+	decoder := contracts.NewEventDecoder(file)
+	first, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode first event: %v", err)
+	}
+	second, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode second event: %v", err)
+	}
+	if first.Type != contracts.EventTypeRunStarted {
+		t.Fatalf("expected first event run_started, got %q", first.Type)
+	}
+	if second.Type != contracts.EventTypeRunFinished {
+		t.Fatalf("expected second event run_finished, got %q", second.Type)
+	}
+	if first.Metadata["command"] != "arc-review-watch" {
+		t.Fatalf("expected command metadata, got %#v", first.Metadata)
+	}
+	if second.Metadata["dry_run"] != "true" {
+		t.Fatalf("expected dry_run metadata, got %#v", second.Metadata)
+	}
+}
+
 func TestRunMainConfigCommandRequiresSubcommand(t *testing.T) {
 	errText := captureStderr(t, func() {
 		code := RunMain([]string{"config"}, func(context.Context, runConfig) error { return nil })

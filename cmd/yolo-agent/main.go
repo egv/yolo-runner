@@ -102,6 +102,16 @@ type trackerWatchConfig struct {
 	eventSink  contracts.EventSink
 }
 
+type arcReviewWatchCommandConfig struct {
+	repoRoot   string
+	profile    string
+	once       bool
+	dryRun     bool
+	stream     bool
+	eventsPath string
+	eventSink  contracts.EventSink
+}
+
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch backend {
 	case distributedBusRedis:
@@ -136,6 +146,7 @@ var launchYoloTUI = func() (io.WriteCloser, func() error, error) {
 
 var runConfigInitCommand = defaultRunConfigInitCommand
 var runTrackerWatch = defaultRunTrackerWatch
+var runArcReviewWatch = defaultRunArcReviewWatch
 
 func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if version.IsVersionRequest(args) {
@@ -148,6 +159,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	}
 	if len(args) > 0 && args[0] == "tracker-watch" {
 		return trackerWatchCommand(args[1:])
+	}
+	if len(args) > 0 && args[0] == "arc-review-watch" {
+		return arcReviewWatchCommand(args[1:])
 	}
 
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
@@ -455,6 +469,39 @@ func trackerWatchCommand(args []string) int {
 		handler = defaultRunTrackerWatch
 	}
 	if err := handler(context.Background(), trackerWatchConfig{
+		repoRoot:   *repo,
+		profile:    *profile,
+		once:       *once,
+		dryRun:     *dryRun,
+		stream:     *stream,
+		eventsPath: *events,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
+		return 1
+	}
+	return 0
+}
+
+func arcReviewWatchCommand(args []string) int {
+	fs := flag.NewFlagSet("yolo-agent arc-review-watch", flag.ContinueOnError)
+	repo := fs.String("repo", ".", "Repository root")
+	profile := fs.String("profile", "", "Tracker profile name from .yolo-runner/config.yaml")
+	once := fs.Bool("once", false, "Run one arc review watch iteration and exit")
+	dryRun := fs.Bool("dry-run", false, "Dry run arc review watch without making changes")
+	stream := fs.Bool("stream", false, "Emit NDJSON events to stdout for piping into yolo-tui")
+	events := fs.String("events", "", "Path to JSONL events log")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected arc-review-watch argument: %s\n", fs.Arg(0))
+		return 1
+	}
+	handler := runArcReviewWatch
+	if handler == nil {
+		handler = defaultRunArcReviewWatch
+	}
+	if err := handler(context.Background(), arcReviewWatchCommandConfig{
 		repoRoot:   *repo,
 		profile:    *profile,
 		once:       *once,
