@@ -63,8 +63,9 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 		t.Fatalf("expected metadata to be forwarded, got %#v", request.Metadata)
 	}
 	for _, want := range []string{
-		"split-tasks-strict",
-		"task-splitting",
+		"using only the instructions in this prompt",
+		"Do not run shell commands, inspect files, or search the filesystem",
+		"Required task template for each task",
 		"Return only the strict splitter markdown",
 		"ID: parent-123",
 		"Title: Implement broad tracker automation",
@@ -72,6 +73,15 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 	} {
 		if !strings.Contains(request.Prompt, want) {
 			t.Fatalf("expected splitter prompt to contain %q, got:\n%s", want, request.Prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"split-tasks-strict",
+		"task-splitting",
+		"SKILL.md",
+	} {
+		if strings.Contains(request.Prompt, forbidden) {
+			t.Fatalf("splitter prompt must not trigger external discovery via %q, got:\n%s", forbidden, request.Prompt)
 		}
 	}
 
@@ -90,8 +100,53 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 	}
 }
 
+func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
+	taskT20 := strictTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"})
+	taskT21 := strictTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"})
+	taskT22 := strictTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"})
+	output := strictOutputFixture(
+		taskT20,
+		taskT21,
+		taskT22,
+	)
+	chunks := []string{
+		"Introductory prose should be ignored.\n\n#",
+		"# Epics\n- Tracker task generation",
+		": Generate strict Tracker subtasks from a broad task.\n\n## Tas",
+		"ks\n- T20: Invoke strict splitter\n- T21: Parse strict splitter output\n- T22: Create Tracker subtasks\n\n## Order\n- T20 -> T21 -> T22\n\n## Risk notes\n- Model output may include stray prose before the first heading.\n\n",
+		taskT20,
+		taskT21,
+		taskT22,
+	}
+	progress := make([]contracts.RunnerProgress, 0, len(chunks))
+	for _, chunk := range chunks {
+		progress = append(progress, contracts.RunnerProgress{
+			Type:     string(contracts.EventTypeRunnerOutput),
+			Message:  chunk,
+			Metadata: map[string]string{"preserve_whitespace": "true"},
+		})
+	}
+	agent := &fakeSplitterAgentRunner{progress: progress}
+	runner := NewRunner(agent)
+
+	got, err := runner.Run(context.Background(), RunInput{
+		Task:      contracts.Task{ID: "parent-123", Title: "Implement broad tracker automation", Status: contracts.TaskStatusOpen},
+		QueueRoot: contracts.Task{ID: "root-1", Title: "Tracker automation", Status: contracts.TaskStatusOpen},
+		Model:     "gpt-test",
+		RepoRoot:  "/repo",
+		Timeout:   2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v\nfull output:\n%s", err, output)
+	}
+	if got.TaskByID("T20") == nil {
+		t.Fatalf("expected parsed T20 task, got %#v", got.Tasks)
+	}
+}
+
 type fakeSplitterAgentRunner struct {
 	output   string
+	progress []contracts.RunnerProgress
 	requests []contracts.RunnerRequest
 }
 
@@ -103,6 +158,12 @@ func (f *fakeSplitterAgentRunner) Run(_ context.Context, request contracts.Runne
 			Message:  "debug should be ignored",
 			Metadata: map[string]string{"source": "stderr"},
 		})
+		if len(f.progress) > 0 {
+			for _, progress := range f.progress {
+				request.OnProgress(progress)
+			}
+			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+		}
 		request.OnProgress(contracts.RunnerProgress{
 			Type:    string(contracts.EventTypeRunnerOutput),
 			Message: f.output,

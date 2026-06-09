@@ -60,17 +60,21 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 			if progress.Metadata != nil && strings.EqualFold(strings.TrimSpace(progress.Metadata["source"]), "stderr") {
 				return
 			}
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			if shouldPreserveSplitterOutputWhitespace(progress.Metadata) {
+				output.WriteString(progress.Message)
+				return
+			}
+
 			message := strings.TrimSpace(progress.Message)
 			if message == "" {
 				return
 			}
-
-			outputMu.Lock()
-			defer outputMu.Unlock()
-			if output.Len() > 0 {
+			output.WriteString(message)
+			if !strings.HasSuffix(message, "\n") {
 				output.WriteByte('\n')
 			}
-			output.WriteString(message)
 		},
 	}
 
@@ -100,12 +104,21 @@ func splitterParentID(input RunInput) string {
 	return input.Task.ParentID
 }
 
+func shouldPreserveSplitterOutputWhitespace(metadata map[string]string) bool {
+	if metadata == nil {
+		return false
+	}
+	value := strings.TrimSpace(metadata["preserve_whitespace"])
+	return strings.EqualFold(value, "true") || value == "1"
+}
+
 func buildStrictSplitterPrompt(input RunInput) string {
 	return strings.Join([]string{
-		"Run the bundled strict task splitter.",
-		"Invoke the `split-tasks-strict` command or load the `task-splitting` skill through the configured runner.",
+		"Run the bundled strict task splitter using only the instructions in this prompt.",
+		"No external command, skill, file, or repository context is required. Do not run shell commands, inspect files, or search the filesystem. If context is missing, record the gap in Risk notes instead of looking it up.",
 		"Return only the strict splitter markdown. Do not edit files, create Tracker tasks, update task status, commit, or push.",
 		"Use aggressive micro-splitting: one seam per task, one strict red-green loop per task, explicit dependencies, and only the next intended task ready.",
+		strictSplitterRulesPromptSection(),
 		taskPromptSection(input.Task),
 		queueRootPromptSection(input.QueueRoot),
 		requiredOutputPromptSection(),
@@ -137,6 +150,51 @@ func queueRootPromptSection(root contracts.Task) string {
 	}, "\n")
 }
 
+func strictSplitterRulesPromptSection() string {
+	return strings.Join([]string{
+		"Strict splitter rules:",
+		"- Every task must have exactly one primary seam and exactly one strict red-green loop.",
+		"- Every task must have a narrow stop condition, explicit out-of-scope boundaries, expected files or subsystem touched, and explicit dependencies.",
+		"- Split again if a task mixes implementation, docs, integration wiring, e2e, multiple abstractions, multiple test types, or multiple subsystem boundaries.",
+		"- Prefer helper-first decomposition before wiring, happy-path slices before fallback/teardown/e2e, and 1-3 production files plus 1-2 test files per task.",
+		"- When unsure, split smaller.",
+		"",
+		"Required task template for each task:",
+		"### Task: <task id> <title>",
+		"",
+		"Why:",
+		"- <one sentence>",
+		"",
+		"In scope:",
+		"- <specific behavior>",
+		"- <specific seam>",
+		"",
+		"Out of scope:",
+		"- <explicit exclusions>",
+		"",
+		"Strict TDD:",
+		"1. Add or update one targeted failing test first",
+		"2. Run the targeted test and confirm it fails for the intended reason",
+		"3. Implement the minimum production change needed to make it pass",
+		"4. Re-run the targeted test",
+		"5. Run one narrow follow-up verification command",
+		"",
+		"Done when:",
+		"- <specific test or command passes>",
+		"- <specific behavior is verified>",
+		"",
+		"Expected files:",
+		"- <prod files>",
+		"- <test files>",
+		"",
+		"Depends on:",
+		"- <task IDs or none>",
+		"",
+		"Unlocks:",
+		"- <task IDs or none>",
+	}, "\n")
+}
+
 func requiredOutputPromptSection() string {
 	return strings.Join([]string{
 		"Required output:",
@@ -144,7 +202,7 @@ func requiredOutputPromptSection() string {
 		"- ## Tasks",
 		"- ## Order",
 		"- ## Risk notes",
-		"- One strict task template for every task, using all required sections from the task-splitting skill.",
+		"- One strict task template for every task, using the exact required task template above.",
 	}, "\n")
 }
 
