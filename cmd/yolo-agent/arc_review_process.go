@@ -44,18 +44,23 @@ var defaultArcReviewProcessStarter arcReviewProcessStarter = arcReviewProcessSta
 func buildArcReviewProcessSpec(cfg arcReviewProcessConfig) arcReviewProcessSpec {
 	repoRoot := strings.TrimSpace(cfg.RepoRoot)
 	sessionID := strings.TrimSpace(cfg.SessionID)
+	argv := []string{
+		arcPRReviewRunnerBinary,
+		"--repo", repoRoot,
+		"--workspace", strings.TrimSpace(cfg.Workspace),
+		"--pr-id", strings.TrimSpace(cfg.PRID),
+	}
+	if sessionID != "" {
+		argv = append(argv, "--session-id", sessionID)
+	}
+	argv = append(argv,
+		"--state-path", strings.TrimSpace(cfg.StatePath),
+		"--events", strings.TrimSpace(cfg.EventsPath),
+		"--once",
+	)
 	return arcReviewProcessSpec{
-		Argv: []string{
-			arcPRReviewRunnerBinary,
-			"--repo", repoRoot,
-			"--workspace", strings.TrimSpace(cfg.Workspace),
-			"--pr-id", strings.TrimSpace(cfg.PRID),
-			"--state-path", strings.TrimSpace(cfg.StatePath),
-			"--events", strings.TrimSpace(cfg.EventsPath),
-		},
-		Env: []string{
-			"YOLO_ARC_REVIEW_SESSION_ID=" + sessionID,
-		},
+		Argv:    argv,
+		Env:     nil,
 		LogPath: filepath.Join(repoRoot, "runner-logs", "arc-pr-review-"+sanitizeArcReviewSessionID(sessionID)+".log"),
 	}
 }

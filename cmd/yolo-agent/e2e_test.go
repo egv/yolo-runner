@@ -519,6 +519,12 @@ profiles:
 				"issueUpdate": map[string]any{"success": true},
 			})
 		case strings.Contains(query, "ReadIssue"):
+			if strings.Contains(query, `issue(id: "proj-linear-e2e")`) {
+				writeResponse(t, w, map[string]any{
+					"issue": nil,
+				})
+				return
+			}
 			if !strings.Contains(query, `issue(id: "iss-linear-e2e")`) {
 				t.Fatalf("expected issue query for %q, got %q", issueID, query)
 			}
@@ -759,6 +765,11 @@ profiles:
 			issue := issueState
 			stateMu.Unlock()
 			writeJSON(t, w, http.StatusOK, issuePayload(taskIssueNumber, "Implement GitHub e2e demo", issue))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/egv/yolo-runner/issues/101":
+			stateMu.Lock()
+			root := rootState
+			stateMu.Unlock()
+			writeJSON(t, w, http.StatusOK, issuePayload(rootIssueNumber, "GitHub e2e root", root))
 		case r.Method == http.MethodPatch && r.URL.Path == "/repos/egv/yolo-runner/issues/102":
 			var payload struct {
 				State string `json:"state"`
@@ -1069,6 +1080,12 @@ profiles:
 				"issueUpdate": map[string]any{"success": true},
 			})
 		case strings.Contains(query, "ReadIssue"):
+			if strings.Contains(query, `issue(id: "proj-linear-kimi-e2e")`) {
+				writeResponse(t, w, map[string]any{
+					"issue": nil,
+				})
+				return
+			}
 			if !strings.Contains(query, `issue(id: "iss-linear-kimi-e2e")`) {
 				t.Fatalf("expected issue query for %q, got %q", issueID, query)
 			}
