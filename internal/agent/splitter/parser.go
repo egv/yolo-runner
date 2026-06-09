@@ -1,6 +1,7 @@
 package splitter
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -60,7 +61,13 @@ func ParseStrictOutput(input string) (StrictOutput, error) {
 	}
 	tasks, err := parseTaskSummaries(taskLines)
 	if err != nil {
-		return StrictOutput{}, err
+		if !errors.Is(err, errNoTaskSummaries) {
+			return StrictOutput{}, err
+		}
+		tasks, err = parseTaskSummariesFromTemplates(lines)
+		if err != nil {
+			return StrictOutput{}, err
+		}
 	}
 
 	orderLines, ok := markdownSection(lines, "Order")
@@ -127,6 +134,7 @@ func (o StrictOutput) TaskByID(id string) *Task {
 }
 
 var (
+	errNoTaskSummaries = errors.New("Tasks section must contain at least one task")
 	numberedListItemRE = regexp.MustCompile(`^\d+[.)]\s+(.+)$`)
 	simpleRefRE        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	ambiguousWordRE    = regexp.MustCompile(`(?i)\b(and|or)\b`)
@@ -226,7 +234,7 @@ func parseEpics(lines []string) ([]Epic, error) {
 func parseTaskSummaries(lines []string) ([]Task, error) {
 	items := dropNone(cleanListItems(lines))
 	if len(items) == 0 {
-		return nil, fmt.Errorf("Tasks section must contain at least one task")
+		return nil, errNoTaskSummaries
 	}
 
 	tasks := make([]Task, 0, len(items))
@@ -243,6 +251,42 @@ func parseTaskSummaries(lines []string) ([]Task, error) {
 		tasks = append(tasks, Task{ID: id, Title: title})
 	}
 	return tasks, nil
+}
+
+func parseTaskSummariesFromTemplates(lines []string) ([]Task, error) {
+	var tasks []Task
+	seen := make(map[string]bool)
+	for _, line := range lines {
+		if !isTaskHeading(line) {
+			continue
+		}
+		_, heading, _ := markdownHeading(line)
+		raw := stripTaskHeadingPrefix(heading)
+		id, title, err := splitTaskTemplateHeadingSummary(raw)
+		if err != nil {
+			return nil, err
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("duplicate task %s in task templates", id)
+		}
+		seen[id] = true
+		tasks = append(tasks, Task{ID: id, Title: title})
+	}
+	if len(tasks) == 0 {
+		return nil, errNoTaskSummaries
+	}
+	return tasks, nil
+}
+
+func splitTaskTemplateHeadingSummary(raw string) (string, string, error) {
+	fields := strings.Fields(raw)
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("invalid task template heading %q: expected \"id title\"", raw)
+	}
+	id := strings.TrimSuffix(trimRef(fields[0]), ":")
+	title := strings.TrimSpace(strings.TrimPrefix(raw, fields[0]))
+	title = strings.TrimLeft(title, ":- ")
+	return validateTaskSummary(raw, id, title)
 }
 
 func splitTaskSummary(item string) (string, string, error) {
@@ -332,7 +376,8 @@ func parseStrictTaskTemplates(lines []string, taskTitleByID map[string]string, t
 
 		end := len(lines)
 		for j := i + 1; j < len(lines); j++ {
-			if isTaskHeading(lines[j]) {
+			nextLevel, _, nextOK := markdownHeading(lines[j])
+			if isTaskHeading(lines[j]) || (nextOK && nextLevel <= 2) {
 				end = j
 				break
 			}

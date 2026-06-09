@@ -102,6 +102,36 @@ func TestParseStrictOutputParsesSectionsAndRejectsInvalidOutput(t *testing.T) {
 	}
 }
 
+func TestParseStrictOutputAcceptsTaskTemplatesInsideTasksSection(t *testing.T) {
+	output := strings.Join([]string{
+		"## Epics",
+		"- Messenger platform parity: Add a parallel Yandex Messenger bot.",
+		"",
+		"## Tasks",
+		strictTaskFixture("ADAPTABOT-1.1", "Extract shared inbound message model", "A shared inbound message model creates the first seam.", []string{"none"}, []string{"ADAPTABOT-1.2"}),
+		strictTaskFixture("ADAPTABOT-1.2", "Extract shared outbound response model", "A shared outbound response model separates bot behavior from platform send APIs.", []string{"ADAPTABOT-1.1"}, []string{"none"}),
+		"## Order",
+		"- ADAPTABOT-1.1 -> ADAPTABOT-1.2",
+		"",
+		"## Risk notes",
+		"- Repository structure is unknown because no files were inspected.",
+	}, "\n")
+
+	got, err := ParseStrictOutput(output)
+	if err != nil {
+		t.Fatalf("ParseStrictOutput returned error: %v", err)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("expected two tasks, got %#v", got.Tasks)
+	}
+	if got.Tasks[0].ID != "ADAPTABOT-1.1" || got.Tasks[0].Title != "Extract shared inbound message model" {
+		t.Fatalf("unexpected first task: %#v", got.Tasks[0])
+	}
+	if !reflect.DeepEqual(got.Tasks[1].DependsOn, []string{"ADAPTABOT-1.1"}) {
+		t.Fatalf("second task DependsOn = %#v", got.Tasks[1].DependsOn)
+	}
+}
+
 func strictOutputFixture(tasks ...string) string {
 	sections := []string{
 		"Introductory prose should be ignored.",

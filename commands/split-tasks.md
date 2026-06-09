@@ -26,3 +26,12 @@ Each task should include:
 - Expected files
 - Depends on
 - Unlocks
+
+Output structure:
+- `## Epics`
+- `## Tasks` containing only summary list items in the exact form `- <task id>: <title>`
+- `## Order`
+- `## Risk notes`
+- after `## Risk notes`, one full task section for every task using `### Task: <task id> <title>` headings
+
+Do not place full task sections inside the `## Tasks` summary section.

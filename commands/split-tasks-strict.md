@@ -53,3 +53,12 @@ Depends on:
 
 Unlocks:
 - <task IDs or none>
+
+Required output structure:
+- `## Epics`
+- `## Tasks` containing only summary list items in the exact form `- <task id>: <title>`
+- `## Order`
+- `## Risk notes`
+- after `## Risk notes`, one full strict task template for every task using `### Task: <task id> <title>` headings
+
+Do not place full task templates inside the `## Tasks` summary section.

@@ -199,10 +199,11 @@ func requiredOutputPromptSection() string {
 	return strings.Join([]string{
 		"Required output:",
 		"- ## Epics",
-		"- ## Tasks",
+		"- ## Tasks containing only summary list items in the exact form `- <task id>: <title>`",
 		"- ## Order",
 		"- ## Risk notes",
-		"- One strict task template for every task, using the exact required task template above.",
+		"- After ## Risk notes, one full strict task template for every task, using `### Task: <task id> <title>` headings and the exact required task template above.",
+		"- Do not place full task templates inside the ## Tasks summary section.",
 	}, "\n")
 }
 

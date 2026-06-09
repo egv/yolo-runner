@@ -66,6 +66,8 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 		"using only the instructions in this prompt",
 		"Do not run shell commands, inspect files, or search the filesystem",
 		"Required task template for each task",
+		"## Tasks containing only summary list items",
+		"Do not place full task templates inside the ## Tasks summary section",
 		"Return only the strict splitter markdown",
 		"ID: parent-123",
 		"Title: Implement broad tracker automation",
