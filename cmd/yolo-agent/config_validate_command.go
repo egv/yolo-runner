@@ -59,6 +59,10 @@ func defaultRunConfigValidateCommand(args []string) int {
 		return 1
 	}
 
+	if err := validateExplicitArcReviewWatchConfigValues(*repo); err != nil {
+		return reportInvalidConfig(err, format)
+	}
+
 	service := newTrackerConfigService()
 	model, err := service.LoadModel(*repo)
 	if err != nil {
@@ -72,6 +76,9 @@ func defaultRunConfigValidateCommand(args []string) int {
 		return reportInvalidConfig(err, format)
 	}
 	if err := validateTrackerAgentConfigDefaults(*repo, model.TrackerAgent); err != nil {
+		return reportInvalidConfig(err, format)
+	}
+	if err := validateArcReviewWatchConfigDefaults(*repo, model.ArcReviewWatch); err != nil {
 		return reportInvalidConfig(err, format)
 	}
 
@@ -204,6 +211,117 @@ func validateExplicitTrackerAgentConfigValues(repoRoot string) error {
 	return nil
 }
 
+func validateArcReviewWatchConfigDefaults(repoRoot string, model arcReviewWatchConfigModel) error {
+	if err := validateExplicitArcReviewWatchConfigValues(repoRoot); err != nil {
+		return err
+	}
+
+	cfg, err := resolveArcReviewWatchConfig(model, repoRoot)
+	if err != nil {
+		return err
+	}
+	if cfg.PollInterval <= 0 {
+		return fmt.Errorf("arc_review_watch.poll_interval in %s must be greater than 0", trackerConfigRelPath)
+	}
+	if strings.TrimSpace(cfg.LockPath) == "" {
+		return fmt.Errorf("arc_review_watch.lock_path in %s must not be empty", trackerConfigRelPath)
+	}
+	if strings.TrimSpace(cfg.StatePath) == "" {
+		return fmt.Errorf("arc_review_watch.state_path in %s must not be empty", trackerConfigRelPath)
+	}
+	if cfg.MaxConcurrency <= 0 {
+		return fmt.Errorf("arc_review_watch.max_concurrency in %s must be greater than 0", trackerConfigRelPath)
+	}
+	return nil
+}
+
+func validateExplicitArcReviewWatchConfigValues(repoRoot string) error {
+	content, err := os.ReadFile(filepath.Join(repoRoot, trackerConfigRelPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot read config file at %s: %w", trackerConfigRelPath, err)
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return fmt.Errorf("cannot parse config file at %s: %w", trackerConfigRelPath, err)
+	}
+	root := configValidationYAMLDocumentRoot(&doc)
+	if root == nil {
+		return nil
+	}
+
+	watchNode := configValidationYAMLMappingValue(root, "arc_review_watch")
+	if watchNode == nil || configValidationYAMLIsNull(watchNode) {
+		return nil
+	}
+	if watchNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("arc_review_watch in %s must be a mapping", trackerConfigRelPath)
+	}
+
+	for _, field := range []string{"poll_interval", "lock_path", "state_path"} {
+		if node := configValidationYAMLMappingValue(watchNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
+			return fmt.Errorf("arc_review_watch.%s in %s must not be empty", field, trackerConfigRelPath)
+		}
+	}
+
+	if node := configValidationYAMLMappingValue(watchNode, "max_concurrency"); node != nil && strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("arc_review_watch.max_concurrency in %s must not be empty", trackerConfigRelPath)
+	} else if node != nil && node.Tag != "!!int" {
+		return fmt.Errorf("arc_review_watch.max_concurrency in %s must be an integer", trackerConfigRelPath)
+	}
+	if node := configValidationYAMLMappingValue(watchNode, "allow_ship"); node != nil && strings.TrimSpace(node.Value) == "" {
+		return fmt.Errorf("arc_review_watch.allow_ship in %s must not be empty", trackerConfigRelPath)
+	} else if node != nil && node.Tag != "!!bool" {
+		return fmt.Errorf("arc_review_watch.allow_ship in %s must be true or false", trackerConfigRelPath)
+	}
+
+	for _, field := range []string{"workspaces", "branches"} {
+		node := configValidationYAMLMappingValue(watchNode, field)
+		if node == nil || configValidationYAMLIsNull(node) {
+			continue
+		}
+		if node.Kind != yaml.SequenceNode {
+			return fmt.Errorf("arc_review_watch.%s in %s must be a list", field, trackerConfigRelPath)
+		}
+		for i, item := range node.Content {
+			if strings.TrimSpace(item.Value) == "" {
+				return fmt.Errorf("arc_review_watch.%s[%d] in %s must not be empty", field, i, trackerConfigRelPath)
+			}
+		}
+	}
+
+	arcMountNode := configValidationYAMLMappingValue(watchNode, "arc_mount")
+	if arcMountNode == nil || configValidationYAMLIsNull(arcMountNode) {
+		return nil
+	}
+	if arcMountNode.Kind != yaml.MappingNode {
+		return fmt.Errorf("arc_review_watch.arc_mount in %s must be a mapping", trackerConfigRelPath)
+	}
+	for _, field := range []string{"mount", "store", "object_store"} {
+		if node := configValidationYAMLMappingValue(arcMountNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
+			return fmt.Errorf("arc_review_watch.arc_mount.%s in %s must not be empty", field, trackerConfigRelPath)
+		}
+	}
+	for _, field := range []string{"enabled", "allow_other", "ssh_tokens", "no_hardlinks", "no_auto_rehash"} {
+		if node := configValidationYAMLMappingValue(arcMountNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
+			return fmt.Errorf("arc_review_watch.arc_mount.%s in %s must not be empty", field, trackerConfigRelPath)
+		} else if node != nil && node.Tag != "!!bool" {
+			return fmt.Errorf("arc_review_watch.arc_mount.%s in %s must be true or false", field, trackerConfigRelPath)
+		}
+	}
+	for _, field := range []string{"inode_cache_size", "cache_size", "override_lazy_checkout"} {
+		if node := configValidationYAMLMappingValue(arcMountNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
+			return fmt.Errorf("arc_review_watch.arc_mount.%s in %s must not be empty", field, trackerConfigRelPath)
+		} else if node != nil && node.Tag != "!!int" {
+			return fmt.Errorf("arc_review_watch.arc_mount.%s in %s must be an integer", field, trackerConfigRelPath)
+		}
+	}
+	return nil
+}
+
 func configValidationYAMLDocumentRoot(doc *yaml.Node) *yaml.Node {
 	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil
@@ -293,6 +411,24 @@ func inferConfigField(message string) string {
 		"tracker_agent.labels.completed",
 		"tracker_agent.labels.blocked",
 		"tracker_agent.labels.failed",
+		"arc_review_watch.poll_interval",
+		"arc_review_watch.lock_path",
+		"arc_review_watch.state_path",
+		"arc_review_watch.max_concurrency",
+		"arc_review_watch.allow_ship",
+		"arc_review_watch.workspaces",
+		"arc_review_watch.branches",
+		"arc_review_watch.arc_mount.enabled",
+		"arc_review_watch.arc_mount.mount",
+		"arc_review_watch.arc_mount.store",
+		"arc_review_watch.arc_mount.object_store",
+		"arc_review_watch.arc_mount.allow_other",
+		"arc_review_watch.arc_mount.ssh_tokens",
+		"arc_review_watch.arc_mount.no_hardlinks",
+		"arc_review_watch.arc_mount.no_auto_rehash",
+		"arc_review_watch.arc_mount.inode_cache_size",
+		"arc_review_watch.arc_mount.cache_size",
+		"arc_review_watch.arc_mount.override_lazy_checkout",
 		"tracker.type",
 		"linear.scope.workspace",
 		linearTokenEnvVarLabel,
@@ -356,6 +492,8 @@ func inferConfigReason(message string, field string) string {
 			reason = strings.TrimSpace(strings.TrimPrefix(reason, prefix))
 		}
 	}
+	indexedPrefix := regexp.MustCompile("^" + regexp.QuoteMeta(field) + `\[[0-9]+\] in ` + regexp.QuoteMeta(trackerConfigRelPath) + `\s+`)
+	reason = indexedPrefix.ReplaceAllString(reason, "")
 	if strings.HasPrefix(reason, "is ") {
 		reason = strings.TrimSpace(strings.TrimPrefix(reason, "is "))
 	}
@@ -393,6 +531,42 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set tracker_agent.labels.blocked to a non-empty label name, or omit it to use the default."
 	case "tracker_agent.labels.failed":
 		return "Set tracker_agent.labels.failed to a non-empty label name, or omit it to use the default."
+	case "arc_review_watch.poll_interval":
+		return "Set arc_review_watch.poll_interval to a valid duration greater than 0, or omit it to use the default."
+	case "arc_review_watch.lock_path":
+		return "Set arc_review_watch.lock_path to a non-empty file path, or omit it to use the default."
+	case "arc_review_watch.state_path":
+		return "Set arc_review_watch.state_path to a non-empty file path, or omit it to use the default."
+	case "arc_review_watch.max_concurrency":
+		return "Set arc_review_watch.max_concurrency to an integer greater than 0, or omit it to use the default."
+	case "arc_review_watch.allow_ship":
+		return "Set arc_review_watch.allow_ship to true or false, or omit it to keep shipping disabled."
+	case "arc_review_watch.workspaces":
+		return "Set arc_review_watch.workspaces to a list of non-empty workspace paths, or omit it to watch all configured workspaces."
+	case "arc_review_watch.branches":
+		return "Set arc_review_watch.branches to a list of non-empty branch names, or omit it to watch all configured branches."
+	case "arc_review_watch.arc_mount.enabled":
+		return "Set arc_review_watch.arc_mount.enabled to true or false, or omit it to keep arc mounting disabled."
+	case "arc_review_watch.arc_mount.mount":
+		return "Set arc_review_watch.arc_mount.mount to a non-empty mount path, or omit it to use the default."
+	case "arc_review_watch.arc_mount.store":
+		return "Set arc_review_watch.arc_mount.store to a non-empty store path, or omit it to use the default."
+	case "arc_review_watch.arc_mount.object_store":
+		return "Set arc_review_watch.arc_mount.object_store to a non-empty object store path, or omit it to use the default."
+	case "arc_review_watch.arc_mount.allow_other":
+		return "Set arc_review_watch.arc_mount.allow_other to true or false, or omit it to use the default."
+	case "arc_review_watch.arc_mount.ssh_tokens":
+		return "Set arc_review_watch.arc_mount.ssh_tokens to true or false, or omit it to use the default."
+	case "arc_review_watch.arc_mount.no_hardlinks":
+		return "Set arc_review_watch.arc_mount.no_hardlinks to true or false, or omit it to use the default."
+	case "arc_review_watch.arc_mount.no_auto_rehash":
+		return "Set arc_review_watch.arc_mount.no_auto_rehash to true or false, or omit it to use the default."
+	case "arc_review_watch.arc_mount.inode_cache_size":
+		return "Set arc_review_watch.arc_mount.inode_cache_size to an integer greater than 0, or omit it to use the default."
+	case "arc_review_watch.arc_mount.cache_size":
+		return "Set arc_review_watch.arc_mount.cache_size to an integer greater than 0, or omit it to use the default."
+	case "arc_review_watch.arc_mount.override_lazy_checkout":
+		return "Set arc_review_watch.arc_mount.override_lazy_checkout to an integer greater than or equal to 0, or omit it to use the default."
 	case "tracker.type":
 		return "Set tracker.type to a supported tracker (tk, linear, github) in .yolo-runner/config.yaml."
 	case "linear.scope.workspace":

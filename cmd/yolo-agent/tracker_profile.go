@@ -39,6 +39,11 @@ const (
 	defaultTrackerAgentDoneLabel    = "yolo-agent-completed"
 	defaultTrackerAgentBlockedLabel = "yolo-agent-blocked"
 	defaultTrackerAgentFailedLabel  = "yolo-agent-failed"
+
+	defaultArcReviewWatchPollInterval   = 30 * time.Second
+	defaultArcReviewWatchLockPath       = ".yolo-runner/arc-review-watch.lock"
+	defaultArcReviewWatchStatePath      = ".yolo-runner/arc-review-watch-state.json"
+	defaultArcReviewWatchMaxConcurrency = 1
 )
 
 type profileSelectionInput struct {
@@ -51,6 +56,7 @@ type trackerProfilesModel struct {
 	Profiles       map[string]trackerProfileDef `yaml:"profiles"`
 	Agent          yoloAgentConfigModel         `yaml:"agent,omitempty"`
 	TrackerAgent   trackerAgentConfigModel      `yaml:"tracker_agent,omitempty"`
+	ArcReviewWatch arcReviewWatchConfigModel    `yaml:"arc_review_watch,omitempty"`
 	Landing        landingConfigModel           `yaml:"landing,omitempty"`
 	Tracker        trackerModel                 `yaml:"tracker,omitempty"`
 }
@@ -163,6 +169,28 @@ type trackerAgentConfig struct {
 	PollInterval time.Duration
 	LockPath     string
 	Labels       trackerAgentLabelNamesConfig
+}
+
+type arcReviewWatchConfigModel struct {
+	PollInterval   string            `yaml:"poll_interval,omitempty"`
+	LockPath       string            `yaml:"lock_path,omitempty"`
+	StatePath      string            `yaml:"state_path,omitempty"`
+	MaxConcurrency *int              `yaml:"max_concurrency,omitempty"`
+	AllowShip      bool              `yaml:"allow_ship,omitempty"`
+	Workspaces     []string          `yaml:"workspaces,omitempty"`
+	Branches       []string          `yaml:"branches,omitempty"`
+	ArcMount       *startrekArcMount `yaml:"arc_mount,omitempty"`
+}
+
+type arcReviewWatchConfig struct {
+	PollInterval   time.Duration
+	LockPath       string
+	StatePath      string
+	MaxConcurrency int
+	AllowShip      bool
+	Workspaces     []string
+	Branches       []string
+	ArcMount       *startrekArcMount
 }
 
 type landingConfigModel struct {
@@ -581,6 +609,109 @@ func resolveTrackerAgentLabel(raw string, fallback string) string {
 		return label
 	}
 	return fallback
+}
+
+func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot string) (arcReviewWatchConfig, error) {
+	cfg := defaultArcReviewWatchConfig()
+
+	if rawPollInterval := strings.TrimSpace(model.PollInterval); rawPollInterval != "" {
+		pollInterval, err := time.ParseDuration(rawPollInterval)
+		if err != nil {
+			return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.poll_interval in %s must be a valid duration: %w", trackerConfigRelPath, err)
+		}
+		if pollInterval <= 0 {
+			return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.poll_interval in %s must be greater than 0", trackerConfigRelPath)
+		}
+		cfg.PollInterval = pollInterval
+	}
+
+	if lockPath := strings.TrimSpace(model.LockPath); lockPath != "" {
+		cfg.LockPath = lockPath
+	}
+	cfg.LockPath = resolveRepoLocalPath(repoRoot, cfg.LockPath)
+
+	if statePath := strings.TrimSpace(model.StatePath); statePath != "" {
+		cfg.StatePath = statePath
+	}
+	cfg.StatePath = resolveRepoLocalPath(repoRoot, cfg.StatePath)
+
+	if model.MaxConcurrency != nil {
+		if *model.MaxConcurrency <= 0 {
+			return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.max_concurrency in %s must be greater than 0", trackerConfigRelPath)
+		}
+		cfg.MaxConcurrency = *model.MaxConcurrency
+	}
+
+	cfg.AllowShip = model.AllowShip
+	workspaces, err := normalizeNonEmptyStringList("arc_review_watch.workspaces", model.Workspaces)
+	if err != nil {
+		return arcReviewWatchConfig{}, err
+	}
+	cfg.Workspaces = workspaces
+
+	branches, err := normalizeNonEmptyStringList("arc_review_watch.branches", model.Branches)
+	if err != nil {
+		return arcReviewWatchConfig{}, err
+	}
+	cfg.Branches = branches
+
+	if model.ArcMount != nil {
+		if err := validateArcReviewWatchArcMount(*model.ArcMount); err != nil {
+			return arcReviewWatchConfig{}, err
+		}
+		arcMount := *model.ArcMount
+		arcMount.Mount = strings.TrimSpace(arcMount.Mount)
+		arcMount.Store = strings.TrimSpace(arcMount.Store)
+		arcMount.ObjectStore = strings.TrimSpace(arcMount.ObjectStore)
+		cfg.ArcMount = &arcMount
+	}
+
+	return cfg, nil
+}
+
+func defaultArcReviewWatchConfig() arcReviewWatchConfig {
+	return arcReviewWatchConfig{
+		PollInterval:   defaultArcReviewWatchPollInterval,
+		LockPath:       defaultArcReviewWatchLockPath,
+		StatePath:      defaultArcReviewWatchStatePath,
+		MaxConcurrency: defaultArcReviewWatchMaxConcurrency,
+	}
+}
+
+func resolveRepoLocalPath(repoRoot string, path string) string {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if filepath.IsAbs(cleaned) || strings.TrimSpace(repoRoot) == "" {
+		return cleaned
+	}
+	return filepath.Join(repoRoot, cleaned)
+}
+
+func normalizeNonEmptyStringList(field string, values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(values))
+	for i, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%s[%d] in %s must not be empty", field, i, trackerConfigRelPath)
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized, nil
+}
+
+func validateArcReviewWatchArcMount(cfg startrekArcMount) error {
+	if cfg.InodeCacheSize != nil && *cfg.InodeCacheSize <= 0 {
+		return fmt.Errorf("arc_review_watch.arc_mount.inode_cache_size in %s must be greater than 0", trackerConfigRelPath)
+	}
+	if cfg.CacheSize != nil && *cfg.CacheSize <= 0 {
+		return fmt.Errorf("arc_review_watch.arc_mount.cache_size in %s must be greater than 0", trackerConfigRelPath)
+	}
+	if cfg.OverrideLazyCheckout != nil && *cfg.OverrideLazyCheckout < 0 {
+		return fmt.Errorf("arc_review_watch.arc_mount.override_lazy_checkout in %s must be greater than or equal to 0", trackerConfigRelPath)
+	}
+	return nil
 }
 
 func validateTrackerModel(profileName string, model trackerModel, rootID string, getenv func(string) string) (trackerModel, error) {

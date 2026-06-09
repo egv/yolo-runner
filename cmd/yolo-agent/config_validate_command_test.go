@@ -201,6 +201,150 @@ tracker_agent:
 	}
 }
 
+func TestRunConfigValidateCommandValidatesArcReviewWatchConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    string
+		wantField string
+		wantCause string
+	}{
+		{
+			name: "non positive poll interval",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  poll_interval: 0s
+`,
+			wantField: "arc_review_watch.poll_interval",
+			wantCause: "must be greater than 0",
+		},
+		{
+			name: "empty lock path",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  lock_path: ""
+`,
+			wantField: "arc_review_watch.lock_path",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "empty state path",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  state_path: ""
+`,
+			wantField: "arc_review_watch.state_path",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "non positive max concurrency",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  max_concurrency: 0
+`,
+			wantField: "arc_review_watch.max_concurrency",
+			wantCause: "must be greater than 0",
+		},
+		{
+			name: "invalid allow ship",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  allow_ship: maybe
+`,
+			wantField: "arc_review_watch.allow_ship",
+			wantCause: "must be true or false",
+		},
+		{
+			name: "empty workspace",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  workspaces:
+    - ""
+`,
+			wantField: "arc_review_watch.workspaces",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "empty branch",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  branches:
+    - ""
+`,
+			wantField: "arc_review_watch.branches",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "invalid arc mount cache size",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  arc_mount:
+    cache_size: 0
+`,
+			wantField: "arc_review_watch.arc_mount.cache_size",
+			wantCause: "must be greater than 0",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeTrackerConfigYAML(t, repoRoot, tc.config)
+
+			stdoutText, stderrText := captureOutput(t, func() {
+				code := runConfigValidateCommand([]string{"--repo", repoRoot})
+				if code != 1 {
+					t.Fatalf("expected exit code 1, got %d", code)
+				}
+			})
+
+			if stdoutText != "" {
+				t.Fatalf("expected no stdout output for invalid config, got %q", stdoutText)
+			}
+			if !strings.Contains(stderrText, "field: "+tc.wantField) {
+				t.Fatalf("expected field %s in output, got %q", tc.wantField, stderrText)
+			}
+			if !strings.Contains(stderrText, "reason: "+tc.wantCause) {
+				t.Fatalf("expected reason to contain %q, got %q", tc.wantCause, stderrText)
+			}
+			if !strings.Contains(stderrText, "remediation:") {
+				t.Fatalf("expected remediation guidance in output, got %q", stderrText)
+			}
+		})
+	}
+}
+
 func TestRunConfigValidateCommandValidConfigJSONOutputUsesStableSchema(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
