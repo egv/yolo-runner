@@ -1,20 +1,26 @@
 # Arc Review Watch Operator Runbook
 
-Use this runbook from the yolo-runner repo root when operating `yolo-agent arc-review-watch`.
+Use this runbook from the yolo-runner repo root when operating `yolo-agent arc-review-watch`. Start with shipping disabled, confirm a dry run and event output, then decide whether to run the watcher continuously.
 
-The watcher uses top-level `.yolo-runner/config.yaml` settings under `arc_review_watch`, emits JSONL run events, and records PR review sessions in a SQLite state file. The current default state path is `.yolo-runner/arc-review-watch-state.json`; treat that file as SQLite even though the suffix is `.json`.
-
-The `--profile` flag is accepted for operator metadata and command consistency. The watch settings are resolved from the top-level `arc_review_watch` block.
+The watcher reads the top-level `arc_review_watch` block from `.yolo-runner/config.yaml`, emits JSONL run events, and records PR review sessions in SQLite state. The current default state path is `.yolo-runner/arc-review-watch-state.json`; treat that file as SQLite even though the suffix is `.json`.
 
 ## Configuration
 
-Start with shipping disabled. Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove the review loop without landing anything.
+Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove the review loop without landing anything.
 
 ```yaml
+default_profile: arc-review
 profiles:
-  arc-dev:
+  arc-review:
     tracker:
       type: tk
+agent:
+  backend: codex
+  model: openai/gpt-5.3-codex
+  concurrency: 1
+  runner_timeout: 20m
+  watchdog_timeout: 10m
+  watchdog_interval: 5s
 arc_review_watch:
   poll_interval: 30s
   lock_path: .yolo-runner/arc-review-watch.lock
@@ -22,26 +28,25 @@ arc_review_watch:
   max_concurrency: 1
   allow_ship: false
   workspaces:
-    - /arcadia/users/operator/review-workspace
+    - /arcadia/users/alice/review-1
   branches:
-    - trunk
+    - users/alice/review-1
   arc_mount:
     enabled: true
-    mount: .yolo-runner/arc-mounts/review
-    store: .yolo-runner/arc-stores/review/store
-    object_store: .yolo-runner/arc-stores/shared-store
+    mount: /tmp/arcadia
+    store: /tmp/arc-store
+    object_store: /tmp/arc-objects
     allow_other: true
     ssh_tokens: true
     inode_cache_size: 100000
     cache_size: 134217728
-    override_lazy_checkout: 0
 ```
 
 Important fields:
 
 - `poll_interval`: time between watch iterations when `--once` is omitted.
 - `lock_path`: local single-watcher lock. Remove it only after confirming no watcher is running.
-- `state_path`: SQLite session store for PR sessions, heartbeats, event rows, answered comments, and retry state.
+- `state_path`: SQLite session store for PR sessions, heartbeats, process IDs, event rows, and log paths.
 - `max_concurrency`: upper bound for concurrently managed review sessions.
 - `allow_ship`: final shipping gate. Omitted or `false` keeps shipping disabled.
 - `workspaces` and `branches`: filters used by PR discovery.
@@ -55,97 +60,126 @@ Validate the file before a live run:
 
 ## Dry Run
 
-Run one iteration before starting a long-lived watcher:
+Run one polling iteration before allowing any state changes:
 
 ```bash
-./bin/yolo-agent arc-review-watch --repo . --profile arc-dev --once --dry-run
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run
 ```
 
-Dry-run mode loads `.yolo-runner/config.yaml`, resolves `arc_review_watch`, acquires `.yolo-runner/arc-review-watch.lock`, emits start/finish events, and skips SQLite mutations and process restarts. Use it after every config change.
+Dry-run mode validates config loading, lock acquisition, and PR discovery wiring. It emits start and finish events and intentionally skips SQLite session reconciliation and child process startup.
 
 For a dry run with a saved event log:
 
 ```bash
-./bin/yolo-agent arc-review-watch --repo . --profile arc-dev --once --dry-run --events "runner-logs/arc-review-watch-dry-run.events.jsonl"
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run --events "runner-logs/arc-review-watch-dry-run.events.jsonl"
 ```
 
-## Live Events and TUI
+## Events And TUI
 
-Without `--stream` or `--events`, the watcher writes events to `runner-logs/arc-review-watch.events.jsonl`.
+When `--events` is omitted and `--stream` is not set, the watcher writes `runner-logs/arc-review-watch.events.jsonl`.
 
 For live TUI monitoring while also saving an event log:
 
 ```bash
-./bin/yolo-agent arc-review-watch --repo . --profile arc-dev --events "runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --events "runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
 ```
 
-The `run_started` and `run_finished` event metadata includes `command`, `repo`, `profile`, `dry_run`, `once`, `poll_interval`, `lock_path`, `state_path`, `max_concurrency`, and `allow_ship`. PR review runner process output is written under `runner-logs/arc-pr-review-<session-id>.log`.
+For an operator-visible one-shot validation, keep `--once` and keep `allow_ship: false`:
+
+```bash
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --events "runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
+```
+
+The `run_started` and `run_finished` event metadata includes `command`, `repo`, `profile`, `dry_run`, `once`, `poll_interval`, `lock_path`, `state_path`, `max_concurrency`, and `allow_ship`. Child PR review processes write combined stdout and stderr to `runner-logs/arc-pr-review-<session-id>.log`.
 
 ## Safe Startup
 
 1. Commit and push the config and task definitions needed by any downstream clones.
 2. Run `./bin/yolo-agent config validate --repo .`.
-3. Run `./bin/yolo-agent arc-review-watch --repo . --profile arc-dev --once --dry-run`.
+3. Run `./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run`.
 4. Confirm the event log reports `dry_run=true` and the expected `state_path`.
 5. Start the watcher with `allow_ship: false`.
 6. Inspect the first live cycle in TUI and verify sessions are being discovered as expected.
 
-Long-lived run:
+After the dry run and one-shot validation pass, start the long-lived watcher by omitting `--once`:
 
 ```bash
-./bin/yolo-agent arc-review-watch --repo . --profile arc-dev --events "runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --events "runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
 ```
 
-## SQLite Inspection and Reset
+Keep one watcher per repo checkout. The lock file blocks another watcher in the same checkout, but it does not coordinate with separate clones.
+
+## SQLite Inspection And Reset
 
 Inspect current sessions:
 
 ```bash
-sqlite3 .yolo-runner/arc-review-watch-state.json \
-  "SELECT id, pr_id, workspace, branch, status, pid, heartbeat_at, failure_count, log_path FROM pr_sessions ORDER BY updated_at DESC;"
+STATE=.yolo-runner/arc-review-watch-state.json
+sqlite3 "$STATE" "select id, pr_id, workspace, branch, status, pid, heartbeat_at, failure_count, log_path from pr_sessions order by updated_at desc;"
 ```
 
 Mark a dead running session as crashed so a later iteration can create a replacement:
 
 ```bash
-sqlite3 .yolo-runner/arc-review-watch-state.json \
-  "UPDATE pr_sessions SET status = 'crashed', pid = 0 WHERE id = '<session-id>' AND status = 'running';"
+sqlite3 "$STATE" "update pr_sessions set status = 'crashed', pid = 0 where id = '<session-id>' and status = 'running';"
 ```
 
 Reset a PR completely when the state is wrong and you want fresh discovery:
 
 ```bash
-sqlite3 .yolo-runner/arc-review-watch-state.json \
-  "DELETE FROM pr_sessions WHERE pr_id = '<pr-id>';"
+sqlite3 "$STATE" "delete from pr_sessions where pr_id = '<pr-id>';"
 ```
 
-Use `DELETE` only for sessions that are not running. Keep the event JSONL and process log paths from `log_path` before deleting if you need audit evidence.
+Use `delete` only for sessions that are not running. Keep the event JSONL and process log paths from `log_path` before deleting if you need audit evidence.
+
+Use a full SQLite reset only when the state database is corrupt, points at the wrong repo, or contains sessions that should not be retried:
+
+```bash
+mv .yolo-runner/arc-review-watch-state.json ".yolo-runner/arc-review-watch-state.json.$(date +%Y%m%d_%H%M%S).bak"
+rm -f .yolo-runner/arc-review-watch.lock
+./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run
+```
+
+The next non-dry run recreates the SQLite schema and reconciles currently discovered PRs into fresh pending sessions.
 
 ## Stale Process Recovery
 
-When a watcher or child review runner exits midway:
+Use this when the watcher exits mid-run, the machine reboots, or a PR review child process stops heartbeating.
 
-1. Stop the foreground watcher with Ctrl+C or SIGTERM.
-2. Confirm remaining processes:
+1. Stop the long-lived watcher with Ctrl+C or SIGTERM.
+2. Inspect running sessions and child PIDs:
 
 ```bash
-pgrep -af 'yolo-agent arc-review-watch|arc-pr-review-runner'
+STATE=.yolo-runner/arc-review-watch-state.json
+sqlite3 "$STATE" "select id, pr_id, pid, status, heartbeat_at, log_path from pr_sessions where status = 'running';"
 ```
 
-3. Stop stale child runners only after preserving their logs:
+3. Confirm remaining processes:
+
+```bash
+pgrep -af 'yolo-agent arc-review-watch|arc-pr-review-runner' || true
+```
+
+4. For any live but unwanted child, stop only that process:
+
+```bash
+kill <pid>
+```
+
+5. Stop stale child runners only after preserving their logs:
 
 ```bash
 pkill -f 'arc-pr-review-runner'
 ```
 
-4. Remove a stale lock only after no watcher remains:
+6. Remove the local watcher lock only after no watcher remains:
 
 ```bash
 rm -f .yolo-runner/arc-review-watch.lock
 ```
 
-5. Inspect SQLite state and mark dead `running` sessions as `crashed`.
-6. Restart with `--once --dry-run`; then start the long-lived watcher when config and state look correct.
+7. Mark dead `running` sessions as `crashed` or back up the SQLite state if it is corrupt.
+8. Restart with `--once --dry-run`; then start the long-lived watcher when config and state look correct.
 
 The watcher also detects stale `running` sessions by heartbeat age or dead PID and creates replacement sessions. Manual reset is for cases where the operator needs to clear a stuck lock, terminate old child processes, or force a known-bad session out of `running`.
 
