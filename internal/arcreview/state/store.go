@@ -233,6 +233,31 @@ func (s *Store) ListSessions() ([]Session, error) {
 	return sessions, nil
 }
 
+func (s *Store) ListSessionsByPRID(prID string) ([]Session, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return nil, fmt.Errorf("PR ID is required")
+	}
+	rows, err := s.db.Query(sessionSelectSQL()+" WHERE pr_id = ? ORDER BY id", prID)
+	if err != nil {
+		return nil, fmt.Errorf("list PR sessions for %q: %w", prID, err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan PR session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read PR sessions for %q: %w", prID, err)
+	}
+	return sessions, nil
+}
+
 type sessionScanner interface {
 	Scan(dest ...any) error
 }

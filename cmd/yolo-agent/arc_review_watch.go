@@ -3,14 +3,25 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
+
+const arcReviewPendingSessionStatus = "pending"
+
+type arcReviewDiscoveredPR struct {
+	ID        string
+	Workspace string
+	Branch    string
+	Revision  string
+}
 
 func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConfig) error {
 	if ctx == nil {
@@ -90,6 +101,85 @@ func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
 		return nil
 	}
 	return nil
+}
+
+func reconcileArcReviewSessions(store *arcreviewstate.Store, prs []arcReviewDiscoveredPR) ([]arcreviewstate.Session, error) {
+	if store == nil {
+		return nil, errors.New("arc review state store is required")
+	}
+
+	var created []arcreviewstate.Session
+	for _, pr := range prs {
+		pr.ID = strings.TrimSpace(pr.ID)
+		if pr.ID == "" {
+			return nil, errors.New("PR ID is required")
+		}
+		sessions, err := store.ListSessionsByPRID(pr.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hasNonTerminalArcReviewSession(sessions) {
+			continue
+		}
+
+		session, err := store.CreateSession(arcreviewstate.Session{
+			ID:        arcReviewSessionID(pr.ID, sessions),
+			PRID:      pr.ID,
+			Workspace: strings.TrimSpace(pr.Workspace),
+			Branch:    strings.TrimSpace(pr.Branch),
+			Status:    arcReviewPendingSessionStatus,
+			Revision:  strings.TrimSpace(pr.Revision),
+		})
+		if err != nil {
+			return nil, err
+		}
+		created = append(created, session)
+	}
+	return created, nil
+}
+
+func hasNonTerminalArcReviewSession(sessions []arcreviewstate.Session) bool {
+	for _, session := range sessions {
+		if !isTerminalArcReviewSessionStatus(session.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTerminalArcReviewSessionStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func arcReviewSessionID(prID string, existing []arcreviewstate.Session) string {
+	base := fmt.Sprintf("pr-%s", sanitizeArcReviewSessionID(prID))
+	if len(existing) == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, len(existing)+1)
+}
+
+func sanitizeArcReviewSessionID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastWasDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastWasDash = false
+			continue
+		}
+		if !lastWasDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastWasDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func emitArcReviewWatchStarted(ctx context.Context, cfg arcReviewWatchCommandConfig, reviewWatchConfig arcReviewWatchConfig) {
