@@ -52,5 +52,5 @@ tracker_agent:
     blocked: yolo-agent-blocked
     failed: yolo-agent-failed
 landing:
-  type: arc-pr
+  type: git
   title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
