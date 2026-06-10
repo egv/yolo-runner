@@ -16,6 +16,9 @@ Requirements:
 - include strict TDD acceptance criteria
 - call out any tasks that are still too broad
 - return strict JSON only, with arrays for all repeated fields
+- write generated epic names/goals, task titles, task details, and risk notes
+  in the same human language as the input; preserve product names, identifiers,
+  paths, commands, labels, and API names verbatim
 
 Return only valid JSON. Do not wrap it in markdown or code fences. Use exactly
 these top-level fields:

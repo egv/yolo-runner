@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
@@ -102,6 +103,7 @@ func buildStrictSplitterPrompt(input RunInput) string {
 		"Return only valid JSON matching the required schema. Do not wrap the JSON in markdown or code fences. Do not edit files, create Tracker tasks, update task status, commit, or push.",
 		"Use aggressive micro-splitting: one seam per task, one strict red-green loop per task, explicit dependencies, and only the next intended task ready.",
 		strictSplitterRulesPromptSection(),
+		outputLanguagePromptSection(input.Task),
 		taskPromptSection(input.Task),
 		queueRootPromptSection(input.QueueRoot),
 		requiredOutputPromptSection(),
@@ -147,6 +149,16 @@ func strictSplitterRulesPromptSection() string {
 	}, "\n")
 }
 
+func outputLanguagePromptSection(task contracts.Task) string {
+	return strings.Join([]string{
+		"Output language:",
+		"- Detected parent task language: " + detectedTaskLanguage(task) + ".",
+		"- Write every generated epic name, epic goal, task title, why, in_scope, out_of_scope, strict_tdd, done_when, and risk_notes item in that language.",
+		"- Preserve queue keys, task IDs, product names, API names, code identifiers, file paths, commands, labels, and quoted literals verbatim.",
+		"- If the parent task title and description mix languages, prefer the human language used by the title.",
+	}, "\n")
+}
+
 func requiredOutputPromptSection() string {
 	return strings.Join([]string{
 		"Required JSON response:",
@@ -170,6 +182,36 @@ func cloneRunMetadata(metadata map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+func detectedTaskLanguage(task contracts.Task) string {
+	title := strings.TrimSpace(task.Title)
+	description := strings.TrimSpace(task.Description)
+	if containsCyrillic(title) || (title == "" && containsCyrillic(description)) {
+		return "Russian"
+	}
+	if containsLatin(title) || (title == "" && containsLatin(description)) {
+		return "English"
+	}
+	return "the same human language as the parent task"
+}
+
+func containsCyrillic(value string) bool {
+	for _, r := range value {
+		if unicode.In(r, unicode.Cyrillic) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsLatin(value string) bool {
+	for _, r := range value {
+		if unicode.In(r, unicode.Latin) {
+			return true
+		}
+	}
+	return false
 }
 
 func promptFallback(value string) string {

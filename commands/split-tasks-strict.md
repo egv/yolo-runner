@@ -19,6 +19,9 @@ Constraints:
 - explicit out-of-scope for every task
 - explicit dependency chain so only the next intended task is ready
 - all output arrays must be JSON arrays, never comma-delimited prose
+- write generated epic names/goals, task titles, task details, and risk notes
+  in the same human language as the input; preserve product names, identifiers,
+  paths, commands, labels, and API names verbatim
 
 Return only valid JSON. Do not wrap it in markdown or code fences. Use exactly this
 top-level shape:

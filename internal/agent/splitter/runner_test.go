@@ -67,6 +67,8 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 		"Do not run shell commands, inspect files, or search the filesystem",
 		"Return only valid JSON matching the required schema",
 		"Do not wrap the JSON in markdown or code fences",
+		"Detected parent task language: English.",
+		"Write every generated epic name, epic goal, task title, why, in_scope, out_of_scope, strict_tdd, done_when, and risk_notes item in that language.",
 		`"epics"`,
 		`"depends_on"`,
 		"Do not include markdown headings, task templates, comments, trailing prose, or any field not shown in the schema",
@@ -100,6 +102,44 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Order, []Dependency{{From: "T20", To: "T21"}, {From: "T21", To: "T22"}}) {
 		t.Fatalf("Order = %#v", got.Order)
+	}
+}
+
+func TestRunnerPromptUsesRussianForRussianParentTask(t *testing.T) {
+	agent := &fakeSplitterAgentRunner{output: strictJSONOutputFixture(
+		strictJSONTaskFixture("ADAPTABOT-1-001", "Ввести транспортно-независимую модель входящего сообщения", "Общая модель создает минимальный шов.", []string{"none"}, []string{"none"}),
+	)}
+	runner := NewRunner(agent)
+
+	_, err := runner.Run(context.Background(), RunInput{
+		Task: contracts.Task{
+			ID:          "ADAPTABOT-1",
+			Title:       "Перенести бот в Yandex Messenger",
+			Description: "Нужно реализовать параллельного бота в Yandex Messenger.",
+			Status:      contracts.TaskStatusOpen,
+			ParentID:    "ADAPTABOT",
+		},
+		QueueRoot: contracts.Task{ID: "ADAPTABOT", Title: "ADAPTABOT", Status: contracts.TaskStatusOpen},
+		Model:     "gpt-test",
+		RepoRoot:  "/repo",
+		Timeout:   2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if len(agent.requests) != 1 {
+		t.Fatalf("expected one runner request, got %d", len(agent.requests))
+	}
+	prompt := agent.requests[0].Prompt
+	for _, want := range []string{
+		"Detected parent task language: Russian.",
+		"Write every generated epic name, epic goal, task title, why, in_scope, out_of_scope, strict_tdd, done_when, and risk_notes item in that language.",
+		"Preserve queue keys, task IDs, product names, API names, code identifiers, file paths, commands, labels, and quoted literals verbatim.",
+		"Title: Перенести бот в Yandex Messenger",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected splitter prompt to contain %q, got:\n%s", want, prompt)
+		}
 	}
 }
 
