@@ -411,6 +411,12 @@ func inferConfigField(message string) string {
 		"tracker_agent.labels.completed",
 		"tracker_agent.labels.blocked",
 		"tracker_agent.labels.failed",
+		"tracker_agent.status_transitions.ready",
+		"tracker_agent.status_transitions.in_progress",
+		"tracker_agent.status_transitions.completed",
+		"tracker_agent.status_transitions.blocked",
+		"tracker_agent.status_transitions.failed",
+		"tracker_agent.status_transitions.completed_resolution",
 		"arc_review_watch.poll_interval",
 		"arc_review_watch.lock_path",
 		"arc_review_watch.state_path",
@@ -531,6 +537,18 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set tracker_agent.labels.blocked to a non-empty label name, or omit it to use the default."
 	case "tracker_agent.labels.failed":
 		return "Set tracker_agent.labels.failed to a non-empty label name, or omit it to use the default."
+	case "tracker_agent.status_transitions.ready":
+		return "Set tracker_agent.status_transitions.ready to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
+	case "tracker_agent.status_transitions.in_progress":
+		return "Set tracker_agent.status_transitions.in_progress to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
+	case "tracker_agent.status_transitions.completed":
+		return "Set tracker_agent.status_transitions.completed to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
+	case "tracker_agent.status_transitions.blocked":
+		return "Set tracker_agent.status_transitions.blocked to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
+	case "tracker_agent.status_transitions.failed":
+		return "Set tracker_agent.status_transitions.failed to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
+	case "tracker_agent.status_transitions.completed_resolution":
+		return "Set tracker_agent.status_transitions.completed_resolution to a Tracker resolution key, set it to an empty string to omit resolution, or omit it to use the default."
 	case "arc_review_watch.poll_interval":
 		return "Set arc_review_watch.poll_interval to a valid duration greater than 0, or omit it to use the default."
 	case "arc_review_watch.lock_path":

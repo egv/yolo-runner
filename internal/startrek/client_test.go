@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -482,6 +483,81 @@ func TestClientIssueLabelMutations(t *testing.T) {
 				t.Fatalf("expected %s label ready-for-yolo, got %#v", tc.wantOperation, values)
 			}
 		})
+	}
+}
+
+func TestClientExecuteIssueTransitionUsesExecuteEndpointWithResolution(t *testing.T) {
+	var capturedRequest *http.Request
+	var capturedBody map[string]string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		capturedRequest = req
+		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode transition body: %v", err)
+		}
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if err := client.ExecuteIssueTransition(context.Background(), " VAY-42 ", IssueTransitionOptions{
+		Transition: " closed ",
+		Resolution: " fixed ",
+	}); err != nil {
+		t.Fatalf("ExecuteIssueTransition returned error: %v", err)
+	}
+
+	if capturedRequest == nil {
+		t.Fatalf("expected transition request to be sent")
+	}
+	if got := capturedRequest.Method; got != http.MethodPost {
+		t.Fatalf("expected POST method, got %s", got)
+	}
+	if got := capturedRequest.URL.String(); got != "https://api.tracker.yandex.net/v3/issues/VAY-42/transitions/closed/_execute" {
+		t.Fatalf("expected transition URL, got %q", got)
+	}
+	if capturedBody["resolution"] != "fixed" {
+		t.Fatalf("expected fixed resolution, got %#v", capturedBody)
+	}
+}
+
+func TestClientExecuteIssueTransitionFallsBackToLegacyEndpoint(t *testing.T) {
+	var paths []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		if req.URL.Path == "/v3/issues/VAY-42/transitions/inProgress/_execute" {
+			return jsonResponse(http.StatusNotFound, `{"message":"not found"}`), nil
+		}
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if err := client.ExecuteIssueTransition(context.Background(), "VAY-42", IssueTransitionOptions{
+		Transition: "inProgress",
+	}); err != nil {
+		t.Fatalf("ExecuteIssueTransition returned error: %v", err)
+	}
+
+	want := []string{
+		"/v3/issues/VAY-42/transitions/inProgress/_execute",
+		"/v3/issues/VAY-42/transitions/inProgress",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("unexpected transition paths:\n got %#v\nwant %#v", paths, want)
 	}
 }
 

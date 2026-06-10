@@ -33,15 +33,25 @@ type HTTPClient interface {
 }
 
 type Config struct {
-	Endpoint         string
-	Token            string
-	HTTPClient       HTTPClient
-	MaxResponseBytes int64
-	ReadyLabel       string
-	InProgressLabel  string
-	CompletedLabel   string
-	BlockedLabel     string
-	FailedLabel      string
+	Endpoint          string
+	Token             string
+	HTTPClient        HTTPClient
+	MaxResponseBytes  int64
+	ReadyLabel        string
+	InProgressLabel   string
+	CompletedLabel    string
+	BlockedLabel      string
+	FailedLabel       string
+	StatusTransitions StatusTransitionNames
+}
+
+type StatusTransitionNames struct {
+	Ready               string
+	InProgress          string
+	Completed           string
+	Blocked             string
+	Failed              string
+	CompletedResolution string
 }
 
 type Client struct {
@@ -305,6 +315,48 @@ func (c *Client) mutateIssueLabel(ctx context.Context, issueID string, label str
 		return fmt.Errorf("%s startrek label %q on issue %q: %w", operation, normalizedLabel, strings.TrimSpace(issueID), err)
 	}
 	return nil
+}
+
+type IssueTransitionOptions struct {
+	Transition string
+	Resolution string
+	Comment    string
+}
+
+func (c *Client) ExecuteIssueTransition(ctx context.Context, issueID string, opts IssueTransitionOptions) error {
+	transition := strings.TrimSpace(opts.Transition)
+	if transition == "" {
+		return errors.New("startrek transition is required")
+	}
+
+	requestPath, err := issueTransitionExecutePath(issueID, transition)
+	if err != nil {
+		return err
+	}
+	payload := issueTransitionPayload(opts)
+	if err := c.DoJSON(ctx, http.MethodPost, requestPath, payload, nil); err == nil {
+		return nil
+	} else {
+		fallbackPath, fallbackPathErr := issueTransitionPath(issueID, transition)
+		if fallbackPathErr != nil {
+			return fallbackPathErr
+		}
+		if fallbackErr := c.DoJSON(ctx, http.MethodPost, fallbackPath, payload, nil); fallbackErr != nil {
+			return fmt.Errorf("execute startrek transition %q on issue %q: %w; fallback failed: %v", transition, strings.TrimSpace(issueID), err, fallbackErr)
+		}
+	}
+	return nil
+}
+
+func issueTransitionPayload(opts IssueTransitionOptions) map[string]string {
+	payload := map[string]string{}
+	if comment := strings.TrimSpace(opts.Comment); comment != "" {
+		payload["comment"] = comment
+	}
+	if resolution := strings.TrimSpace(opts.Resolution); resolution != "" {
+		payload["resolution"] = resolution
+	}
+	return payload
 }
 
 func isIdempotentLabelMutationError(err error, label string, phrases []string) bool {
@@ -577,6 +629,26 @@ func issueCommentsPath(issueID string) (string, error) {
 		return "", err
 	}
 	return requestPath + "/comments", nil
+}
+
+func issueTransitionPath(issueID string, transition string) (string, error) {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return "", err
+	}
+	transition = strings.TrimSpace(transition)
+	if transition == "" {
+		return "", errors.New("startrek transition is required")
+	}
+	return requestPath + "/transitions/" + url.PathEscape(transition), nil
+}
+
+func issueTransitionExecutePath(issueID string, transition string) (string, error) {
+	requestPath, err := issueTransitionPath(issueID, transition)
+	if err != nil {
+		return "", err
+	}
+	return requestPath + "/_execute", nil
 }
 
 func mapIssue(raw startrekIssueSearchItem) (Issue, error) {

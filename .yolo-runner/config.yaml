@@ -51,6 +51,10 @@ tracker_agent:
     completed: yolo-agent-completed
     blocked: yolo-agent-blocked
     failed: yolo-agent-failed
+  status_transitions:
+    in_progress: inProgress
+    completed: closed
+    completed_resolution: fixed
 landing:
   type: git
   title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"

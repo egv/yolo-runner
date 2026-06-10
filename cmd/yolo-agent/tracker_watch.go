@@ -580,6 +580,14 @@ func buildTrackerWatchStartrekBackend(profile resolvedTrackerProfile, trackerAge
 		CompletedLabel:  trackerAgentConfig.Labels.Completed,
 		BlockedLabel:    trackerAgentConfig.Labels.Blocked,
 		FailedLabel:     trackerAgentConfig.Labels.Failed,
+		StatusTransitions: startrek.StatusTransitionNames{
+			Ready:               trackerAgentConfig.StatusTransitions.Ready,
+			InProgress:          trackerAgentConfig.StatusTransitions.InProgress,
+			Completed:           trackerAgentConfig.StatusTransitions.Completed,
+			Blocked:             trackerAgentConfig.StatusTransitions.Blocked,
+			Failed:              trackerAgentConfig.StatusTransitions.Failed,
+			CompletedResolution: trackerAgentConfig.StatusTransitions.CompletedResolution,
+		},
 	})
 	if err != nil {
 		return nil, err

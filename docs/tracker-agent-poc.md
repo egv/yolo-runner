@@ -46,6 +46,10 @@ tracker_agent:
     completed: yolo-agent-completed
     blocked: yolo-agent-blocked
     failed: yolo-agent-failed
+  status_transitions:
+    in_progress: inProgress
+    completed: closed
+    completed_resolution: fixed
 landing:
   type: arc-pr
   title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
@@ -93,9 +97,11 @@ For a config-driven run, keep the same root and profile but rely on `.yolo-runne
 
 Before either run, commit and push the task/config changes that task clones must see.
 
-## Labels
+## Labels And Status Transitions
 
 The watcher searches each configured Startrek queue for issues with `yolo-agent-ready`. During preflight it removes `yolo-agent-ready`, adds `yolo-agent-in-progress`, then either restores `yolo-agent-ready` or applies the needs-info transition. If at least one task passes preflight, the watcher runs the normal implementation loop for that queue root and persists task status through the configured Startrek labels.
+
+For Startrek issue workflow status, `tracker_agent.status_transitions` maps runner task states to Tracker transition IDs. By default the watcher uses `inProgress` when work starts and `closed` with resolution `fixed` when a task completes. `ready`, `blocked`, and `failed` transitions are disabled by default because many queues do not have generic matching workflow transitions. Set any transition field to an empty string to disable it explicitly.
 
 Default labels:
 

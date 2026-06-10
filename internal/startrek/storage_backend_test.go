@@ -173,6 +173,109 @@ func TestStorageBackendSetTaskStatusMapsStatusToLabels(t *testing.T) {
 	}
 }
 
+func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *testing.T) {
+	var operations []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch req.Method + " " + req.URL.Path {
+		case "POST /v3/issues/VAY-42/transitions/closed/_execute":
+			var body map[string]string
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode transition body: %v", err)
+			}
+			operations = append(operations, "transition closed resolution="+body["resolution"])
+			return jsonResponse(http.StatusOK, `{}`), nil
+		case "PATCH /v3/issues/VAY-42":
+			var body struct {
+				Tags map[string][]string `json:"tags"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode label patch: %v", err)
+			}
+			for _, label := range body.Tags["remove"] {
+				operations = append(operations, "remove "+label)
+			}
+			for _, label := range body.Tags["add"] {
+				operations = append(operations, "add "+label)
+			}
+			return jsonResponse(http.StatusOK, `{}`), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:        "https://api.tracker.yandex.net/v3",
+		Token:           "tracker-token",
+		HTTPClient:      httpClient,
+		ReadyLabel:      "ready",
+		InProgressLabel: "running",
+		CompletedLabel:  "done",
+		BlockedLabel:    "blocked",
+		FailedLabel:     "failed",
+		StatusTransitions: StatusTransitionNames{
+			Completed:           "closed",
+			CompletedResolution: "fixed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	if err := backend.SetTaskStatus(context.Background(), "VAY-42", contracts.TaskStatusClosed); err != nil {
+		t.Fatalf("SetTaskStatus returned error: %v", err)
+	}
+
+	want := []string{
+		"transition closed resolution=fixed",
+		"remove ready",
+		"remove running",
+		"remove blocked",
+		"remove failed",
+		"add done",
+	}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("unexpected operations:\n got %#v\nwant %#v", operations, want)
+	}
+}
+
+func TestStorageBackendSetTaskStatusDoesNotRelabelWhenTransitionFails(t *testing.T) {
+	var operations []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		operations = append(operations, req.Method+" "+req.URL.Path)
+		if req.Method == http.MethodPost {
+			return jsonResponse(http.StatusBadRequest, `{"message":"transition is not available"}`), nil
+		}
+		t.Fatalf("unexpected label request after failed transition: %s %s", req.Method, req.URL.Path)
+		return nil, nil
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:       "https://api.tracker.yandex.net/v3",
+		Token:          "tracker-token",
+		HTTPClient:     httpClient,
+		CompletedLabel: "done",
+		StatusTransitions: StatusTransitionNames{
+			Completed: "closed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	if err := backend.SetTaskStatus(context.Background(), "VAY-42", contracts.TaskStatusClosed); err == nil {
+		t.Fatalf("expected SetTaskStatus to fail when transition fails")
+	}
+
+	want := []string{
+		"POST /v3/issues/VAY-42/transitions/closed/_execute",
+		"POST /v3/issues/VAY-42/transitions/closed",
+	}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("unexpected operations after failed transition:\n got %#v\nwant %#v", operations, want)
+	}
+}
+
 func TestStorageBackendGetTaskTreeIncludesLocalStatusOverrideWhenSearchLags(t *testing.T) {
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {

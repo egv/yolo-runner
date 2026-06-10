@@ -142,6 +142,11 @@ tracker_agent:
   labels:
     ready: custom-ready
     in_progress: custom-running
+  status_transitions:
+    in_progress: start
+    completed: finish
+    completed_resolution: done
+    blocked: ""
 `)
 
 	svc := newTrackerConfigService()
@@ -169,6 +174,18 @@ tracker_agent:
 	}
 	if cfg.Labels.Failed != "yolo-agent-failed" {
 		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
+	}
+	if cfg.StatusTransitions.InProgress != "start" {
+		t.Fatalf("expected custom in-progress transition, got %q", cfg.StatusTransitions.InProgress)
+	}
+	if cfg.StatusTransitions.Completed != "finish" {
+		t.Fatalf("expected custom completed transition, got %q", cfg.StatusTransitions.Completed)
+	}
+	if cfg.StatusTransitions.CompletedResolution != "done" {
+		t.Fatalf("expected custom completed resolution, got %q", cfg.StatusTransitions.CompletedResolution)
+	}
+	if cfg.StatusTransitions.Blocked != "" {
+		t.Fatalf("expected explicitly disabled blocked transition, got %q", cfg.StatusTransitions.Blocked)
 	}
 }
 
@@ -206,6 +223,18 @@ profiles:
 	}
 	if cfg.Labels.Failed != "yolo-agent-failed" {
 		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
+	}
+	if cfg.StatusTransitions.InProgress != "inProgress" {
+		t.Fatalf("expected default in-progress transition, got %q", cfg.StatusTransitions.InProgress)
+	}
+	if cfg.StatusTransitions.Completed != "closed" {
+		t.Fatalf("expected default completed transition, got %q", cfg.StatusTransitions.Completed)
+	}
+	if cfg.StatusTransitions.CompletedResolution != "fixed" {
+		t.Fatalf("expected default completed resolution, got %q", cfg.StatusTransitions.CompletedResolution)
+	}
+	if cfg.StatusTransitions.Ready != "" || cfg.StatusTransitions.Blocked != "" || cfg.StatusTransitions.Failed != "" {
+		t.Fatalf("expected ready/blocked/failed transitions disabled by default, got %#v", cfg.StatusTransitions)
 	}
 }
 

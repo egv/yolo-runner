@@ -152,9 +152,10 @@ type yoloAgentConfigModel struct {
 }
 
 type trackerAgentConfigModel struct {
-	PollInterval string                       `yaml:"poll_interval,omitempty"`
-	LockPath     string                       `yaml:"lock_path,omitempty"`
-	Labels       trackerAgentLabelNamesConfig `yaml:"labels,omitempty"`
+	PollInterval      string                              `yaml:"poll_interval,omitempty"`
+	LockPath          string                              `yaml:"lock_path,omitempty"`
+	Labels            trackerAgentLabelNamesConfig        `yaml:"labels,omitempty"`
+	StatusTransitions trackerAgentStatusTransitionsConfig `yaml:"status_transitions,omitempty"`
 }
 
 type trackerAgentLabelNamesConfig struct {
@@ -165,10 +166,29 @@ type trackerAgentLabelNamesConfig struct {
 	Failed     string `yaml:"failed,omitempty"`
 }
 
+type trackerAgentStatusTransitionsConfig struct {
+	Ready               *string `yaml:"ready,omitempty"`
+	InProgress          *string `yaml:"in_progress,omitempty"`
+	Completed           *string `yaml:"completed,omitempty"`
+	Blocked             *string `yaml:"blocked,omitempty"`
+	Failed              *string `yaml:"failed,omitempty"`
+	CompletedResolution *string `yaml:"completed_resolution,omitempty"`
+}
+
+type trackerAgentStatusTransitions struct {
+	Ready               string
+	InProgress          string
+	Completed           string
+	Blocked             string
+	Failed              string
+	CompletedResolution string
+}
+
 type trackerAgentConfig struct {
-	PollInterval time.Duration
-	LockPath     string
-	Labels       trackerAgentLabelNamesConfig
+	PollInterval      time.Duration
+	LockPath          string
+	Labels            trackerAgentLabelNamesConfig
+	StatusTransitions trackerAgentStatusTransitions
 }
 
 type arcReviewWatchConfigModel struct {
@@ -578,6 +598,12 @@ func resolveTrackerAgentConfig(model trackerAgentConfigModel, repoRoot string) (
 	cfg.Labels.Completed = resolveTrackerAgentLabel(model.Labels.Completed, cfg.Labels.Completed)
 	cfg.Labels.Blocked = resolveTrackerAgentLabel(model.Labels.Blocked, cfg.Labels.Blocked)
 	cfg.Labels.Failed = resolveTrackerAgentLabel(model.Labels.Failed, cfg.Labels.Failed)
+	cfg.StatusTransitions.Ready = resolveTrackerAgentTransition(model.StatusTransitions.Ready, cfg.StatusTransitions.Ready)
+	cfg.StatusTransitions.InProgress = resolveTrackerAgentTransition(model.StatusTransitions.InProgress, cfg.StatusTransitions.InProgress)
+	cfg.StatusTransitions.Completed = resolveTrackerAgentTransition(model.StatusTransitions.Completed, cfg.StatusTransitions.Completed)
+	cfg.StatusTransitions.Blocked = resolveTrackerAgentTransition(model.StatusTransitions.Blocked, cfg.StatusTransitions.Blocked)
+	cfg.StatusTransitions.Failed = resolveTrackerAgentTransition(model.StatusTransitions.Failed, cfg.StatusTransitions.Failed)
+	cfg.StatusTransitions.CompletedResolution = resolveTrackerAgentTransition(model.StatusTransitions.CompletedResolution, cfg.StatusTransitions.CompletedResolution)
 
 	return cfg, nil
 }
@@ -592,6 +618,11 @@ func defaultTrackerAgentConfig() trackerAgentConfig {
 			Completed:  defaultTrackerAgentDoneLabel,
 			Blocked:    defaultTrackerAgentBlockedLabel,
 			Failed:     defaultTrackerAgentFailedLabel,
+		},
+		StatusTransitions: trackerAgentStatusTransitions{
+			InProgress:          "inProgress",
+			Completed:           "closed",
+			CompletedResolution: "fixed",
 		},
 	}
 }
@@ -609,6 +640,13 @@ func resolveTrackerAgentLabel(raw string, fallback string) string {
 		return label
 	}
 	return fallback
+}
+
+func resolveTrackerAgentTransition(raw *string, fallback string) string {
+	if raw == nil {
+		return fallback
+	}
+	return strings.TrimSpace(*raw)
 }
 
 func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot string) (arcReviewWatchConfig, error) {

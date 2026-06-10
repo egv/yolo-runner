@@ -20,12 +20,13 @@ const startrekSubtaskLabel = "agent:subtask"
 
 // StorageBackend adapts Startrek issues to the storage-only contracts.StorageBackend API.
 type StorageBackend struct {
-	client          *Client
-	readyLabel      string
-	statusLabels    statusLabelNames
-	searchPerPage   int
-	overrideMu      sync.RWMutex
-	statusOverrides map[string]contracts.TaskStatus
+	client            *Client
+	readyLabel        string
+	statusLabels      statusLabelNames
+	statusTransitions StatusTransitionNames
+	searchPerPage     int
+	overrideMu        sync.RWMutex
+	statusOverrides   map[string]contracts.TaskStatus
 }
 
 type statusLabelNames struct {
@@ -44,9 +45,10 @@ func NewStorageBackend(cfg Config) (*StorageBackend, error) {
 		return nil, err
 	}
 	return &StorageBackend{
-		client:          client,
-		readyLabel:      strings.TrimSpace(cfg.ReadyLabel),
-		statusOverrides: map[string]contracts.TaskStatus{},
+		client:            client,
+		readyLabel:        strings.TrimSpace(cfg.ReadyLabel),
+		statusTransitions: trimStatusTransitions(cfg.StatusTransitions),
+		statusOverrides:   map[string]contracts.TaskStatus{},
 		statusLabels: statusLabelNames{
 			Ready:      strings.TrimSpace(cfg.ReadyLabel),
 			InProgress: strings.TrimSpace(cfg.InProgressLabel),
@@ -263,6 +265,9 @@ func (b *StorageBackend) SetTaskStatus(ctx context.Context, taskID string, statu
 	if err != nil {
 		return err
 	}
+	if err := b.transitionIssueStatus(ctx, taskID, status); err != nil {
+		return err
+	}
 	for _, label := range removeLabels {
 		if err := b.client.RemoveLabel(ctx, taskID, label); err != nil {
 			return fmt.Errorf("remove startrek status label %q from issue %q: %w", label, taskID, err)
@@ -275,6 +280,47 @@ func (b *StorageBackend) SetTaskStatus(ctx context.Context, taskID string, statu
 	}
 	b.recordStatusOverride(taskID, status)
 	return nil
+}
+
+func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
+	if b == nil || b.client == nil {
+		return errors.New("startrek storage backend is not initialized")
+	}
+	transition, resolution, err := b.statusTransition(status)
+	if err != nil {
+		return err
+	}
+	if transition == "" {
+		return nil
+	}
+	if err := b.client.ExecuteIssueTransition(ctx, taskID, IssueTransitionOptions{
+		Transition: transition,
+		Resolution: resolution,
+	}); err != nil {
+		return fmt.Errorf("transition startrek issue %q to task status %q: %w", taskID, status, err)
+	}
+	return nil
+}
+
+func (b *StorageBackend) statusTransition(status contracts.TaskStatus) (string, string, error) {
+	transitions := StatusTransitionNames{}
+	if b != nil {
+		transitions = b.statusTransitions
+	}
+	switch status {
+	case contracts.TaskStatusOpen:
+		return transitions.Ready, "", nil
+	case contracts.TaskStatusInProgress:
+		return transitions.InProgress, "", nil
+	case contracts.TaskStatusClosed:
+		return transitions.Completed, transitions.CompletedResolution, nil
+	case contracts.TaskStatusBlocked:
+		return transitions.Blocked, "", nil
+	case contracts.TaskStatusFailed:
+		return transitions.Failed, "", nil
+	default:
+		return "", "", fmt.Errorf("unsupported startrek task status %q", status)
+	}
 }
 
 func (b *StorageBackend) SetTaskData(context.Context, string, map[string]string) error {
@@ -457,6 +503,17 @@ func labelsExcept(labels []string, keep string) []string {
 		out = append(out, label)
 	}
 	return out
+}
+
+func trimStatusTransitions(transitions StatusTransitionNames) StatusTransitionNames {
+	return StatusTransitionNames{
+		Ready:               strings.TrimSpace(transitions.Ready),
+		InProgress:          strings.TrimSpace(transitions.InProgress),
+		Completed:           strings.TrimSpace(transitions.Completed),
+		Blocked:             strings.TrimSpace(transitions.Blocked),
+		Failed:              strings.TrimSpace(transitions.Failed),
+		CompletedResolution: strings.TrimSpace(transitions.CompletedResolution),
+	}
 }
 
 func startrekTreeParentID(issue Issue, rootID string, issueIDs map[string]struct{}) string {
