@@ -298,9 +298,44 @@ func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID strin
 		AlternativeTransitions: alternatives,
 		Resolution:             resolution,
 	}); err != nil {
+		if errors.Is(err, errStartrekNoMatchingTransition) {
+			alreadySet, checkErr := b.issueAlreadyHasExclusiveStatusLabel(ctx, taskID, status)
+			if checkErr != nil {
+				return fmt.Errorf("transition startrek issue %q to task status %q: %w; check current startrek status labels: %v", taskID, status, err, checkErr)
+			}
+			if alreadySet {
+				return nil
+			}
+		}
 		return fmt.Errorf("transition startrek issue %q to task status %q: %w", taskID, status, err)
 	}
 	return nil
+}
+
+func (b *StorageBackend) issueAlreadyHasExclusiveStatusLabel(ctx context.Context, taskID string, status contracts.TaskStatus) (bool, error) {
+	if b == nil || b.client == nil {
+		return false, errors.New("startrek storage backend is not initialized")
+	}
+	addLabel, removeLabels, err := b.statusLabelTransition(status)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(addLabel) == "" {
+		return false, nil
+	}
+	issue, err := b.client.GetIssue(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	if !hasStartrekLabel(issue.Labels, addLabel) {
+		return false, nil
+	}
+	for _, label := range removeLabels {
+		if hasStartrekLabel(issue.Labels, label) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (b *StorageBackend) statusTransition(status contracts.TaskStatus) (string, string, []string, error) {

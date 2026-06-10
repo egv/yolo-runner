@@ -282,6 +282,64 @@ func TestStorageBackendSetTaskStatusDoesNotRelabelWhenTransitionFails(t *testing
 	}
 }
 
+func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenWorkflowAlreadyStarted(t *testing.T) {
+	var operations []string
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		operations = append(operations, req.Method+" "+req.URL.Path)
+		switch req.Method + " " + req.URL.Path {
+		case "GET /v3/issues/VAY-42/transitions":
+			return jsonResponse(http.StatusOK, `[{"id":"close"},{"id":"need_info"},{"id":"stop_progress"}]`), nil
+		case "GET /v3/issues/VAY-42":
+			return jsonResponse(http.StatusOK, `{
+				"key": "VAY-42",
+				"summary": "Task",
+				"description": "",
+				"tags": ["running"],
+				"updatedAt": "2026-05-28T01:02:03.000+0000"
+			}`), nil
+		case "PATCH /v3/issues/VAY-42":
+			return jsonResponse(http.StatusOK, `{}`), nil
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
+			return nil, nil
+		}
+	})
+
+	backend, err := NewStorageBackend(Config{
+		Endpoint:        "https://api.tracker.yandex.net/v3",
+		Token:           "tracker-token",
+		HTTPClient:      httpClient,
+		ReadyLabel:      "ready",
+		InProgressLabel: "running",
+		CompletedLabel:  "done",
+		BlockedLabel:    "blocked",
+		FailedLabel:     "failed",
+		StatusTransitions: StatusTransitionNames{
+			InProgress: "inProgress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new storage backend: %v", err)
+	}
+
+	if err := backend.SetTaskStatus(context.Background(), "VAY-42", contracts.TaskStatusInProgress); err != nil {
+		t.Fatalf("SetTaskStatus returned error: %v", err)
+	}
+
+	want := []string{
+		"GET /v3/issues/VAY-42/transitions",
+		"GET /v3/issues/VAY-42",
+		"PATCH /v3/issues/VAY-42",
+		"PATCH /v3/issues/VAY-42",
+		"PATCH /v3/issues/VAY-42",
+		"PATCH /v3/issues/VAY-42",
+		"PATCH /v3/issues/VAY-42",
+	}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("unexpected operations for idempotent in-progress transition:\n got %#v\nwant %#v", operations, want)
+	}
+}
+
 func TestStorageBackendGetTaskTreeIncludesLocalStatusOverrideWhenSearchLags(t *testing.T) {
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
