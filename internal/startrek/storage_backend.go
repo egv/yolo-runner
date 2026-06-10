@@ -299,9 +299,9 @@ func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID strin
 		Resolution:             resolution,
 	}); err != nil {
 		if errors.Is(err, errStartrekNoMatchingTransition) {
-			alreadySet, checkErr := b.issueAlreadyHasExclusiveStatusLabel(ctx, taskID, status)
+			alreadySet, checkErr := b.issueAlreadyInTargetStatus(ctx, taskID, status)
 			if checkErr != nil {
-				return fmt.Errorf("transition startrek issue %q to task status %q: %w; check current startrek status labels: %v", taskID, status, err, checkErr)
+				return fmt.Errorf("transition startrek issue %q to task status %q: %w; check current startrek status: %v", taskID, status, err, checkErr)
 			}
 			if alreadySet {
 				return nil
@@ -312,10 +312,51 @@ func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID strin
 	return nil
 }
 
-func (b *StorageBackend) issueAlreadyHasExclusiveStatusLabel(ctx context.Context, taskID string, status contracts.TaskStatus) (bool, error) {
+func (b *StorageBackend) issueAlreadyInTargetStatus(ctx context.Context, taskID string, status contracts.TaskStatus) (bool, error) {
 	if b == nil || b.client == nil {
 		return false, errors.New("startrek storage backend is not initialized")
 	}
+	issue, err := b.client.GetIssue(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	// The workflow status is authoritative: agent labels can lag behind it,
+	// e.g. a review retry swaps in_progress -> ready labels without a
+	// configured "open" transition, leaving the issue In Progress. The next
+	// claim then has no in-progress transition to execute and must be a no-op.
+	if workflowStatusMatchesTaskStatus(issue.Status, status) {
+		return true, nil
+	}
+	return b.issueLabelsExclusivelyMarkStatus(issue.Labels, status)
+}
+
+func workflowStatusMatchesTaskStatus(workflowStatus string, status contracts.TaskStatus) bool {
+	workflowStatus = strings.TrimSpace(workflowStatus)
+	if workflowStatus == "" {
+		return false
+	}
+	var keys []string
+	switch status {
+	case contracts.TaskStatusOpen:
+		keys = []string{"open", "new", "reopened"}
+	case contracts.TaskStatusInProgress:
+		keys = []string{"inProgress", "in_progress"}
+	case contracts.TaskStatusClosed:
+		keys = []string{"closed", "resolved", "done"}
+	case contracts.TaskStatusBlocked:
+		keys = []string{"needInfo", "need_info", "blocked", "paused"}
+	case contracts.TaskStatusFailed:
+		keys = []string{"needInfo", "need_info", "failed"}
+	}
+	for _, key := range keys {
+		if strings.EqualFold(workflowStatus, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *StorageBackend) issueLabelsExclusivelyMarkStatus(issueLabels []string, status contracts.TaskStatus) (bool, error) {
 	addLabel, removeLabels, err := b.statusLabelTransition(status)
 	if err != nil {
 		return false, err
@@ -323,15 +364,11 @@ func (b *StorageBackend) issueAlreadyHasExclusiveStatusLabel(ctx context.Context
 	if strings.TrimSpace(addLabel) == "" {
 		return false, nil
 	}
-	issue, err := b.client.GetIssue(ctx, taskID)
-	if err != nil {
-		return false, err
-	}
-	if !hasStartrekLabel(issue.Labels, addLabel) {
+	if !hasStartrekLabel(issueLabels, addLabel) {
 		return false, nil
 	}
 	for _, label := range removeLabels {
-		if hasStartrekLabel(issue.Labels, label) {
+		if hasStartrekLabel(issueLabels, label) {
 			return false, nil
 		}
 	}

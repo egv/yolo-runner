@@ -86,6 +86,8 @@ type Issue struct {
 	Author        IssueAuthor
 	Assignee      IssueAuthor
 	UpdatedAt     time.Time
+	// Status is the Startrek workflow status key (e.g. "open", "inProgress").
+	Status string
 }
 
 type IssueAuthor struct {
@@ -597,6 +599,7 @@ type startrekIssueSearchItem struct {
 	CreatedBy    startrekIssueAuthor `json:"createdBy"`
 	Assignee     startrekIssueAuthor `json:"assignee"`
 	UpdatedAt    string              `json:"updatedAt"`
+	Status       startrekIssueRef    `json:"status"`
 }
 
 type startrekIssueRef struct {
@@ -772,6 +775,7 @@ func mapIssue(raw startrekIssueSearchItem) (Issue, error) {
 		Author:        mapIssueAuthor(raw.CreatedBy),
 		Assignee:      mapIssueAuthor(raw.Assignee),
 		UpdatedAt:     updatedAt,
+		Status:        fallbackText(raw.Status.Key, raw.Status.ID),
 	}, nil
 }
 
