@@ -30,7 +30,7 @@ Each task should include:
 Output structure:
 - `## Epics`
 - `## Tasks` containing only summary list items in the exact form `- <task id>: <title>`
-- `## Order`
+- `## Order` containing only dependency arrow chains like `- <task id> -> <task id>` or `- none`; do not write readiness prose such as `Ready now:` or `Blocked by:`
 - `## Risk notes`
 - after `## Risk notes`, one full task section for every task using `### Task: <task id> <title>` headings
 

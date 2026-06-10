@@ -200,7 +200,7 @@ func requiredOutputPromptSection() string {
 		"Required output:",
 		"- ## Epics",
 		"- ## Tasks containing only summary list items in the exact form `- <task id>: <title>`",
-		"- ## Order",
+		"- ## Order containing only dependency arrow chains like `- <task id> -> <task id>` or `- none`; do not write readiness prose such as `Ready now:` or `Blocked by:`",
 		"- ## Risk notes",
 		"- After ## Risk notes, one full strict task template for every task, using `### Task: <task id> <title>` headings and the exact required task template above.",
 		"- Do not place full task templates inside the ## Tasks summary section.",

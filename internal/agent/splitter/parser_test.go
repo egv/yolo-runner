@@ -132,6 +132,41 @@ func TestParseStrictOutputAcceptsTaskTemplatesInsideTasksSection(t *testing.T) {
 	}
 }
 
+func TestParseStrictOutputAcceptsReadyAndBlockedOrderAnnotations(t *testing.T) {
+	output := strings.Join([]string{
+		"## Epics",
+		"- Messenger platform parity: Add a parallel Yandex Messenger bot.",
+		"",
+		"## Tasks",
+		"- ADAPTABOT-1.1: Define Messenger OAuth token configuration seam",
+		"- ADAPTABOT-1.6: Add Messenger outbound send client happy path",
+		"- ADAPTABOT-1.10: Add Messenger registration command or startup hook",
+		"",
+		"## Order",
+		"- Ready now: ADAPTABOT-1.1",
+		"- Blocked by ADAPTABOT-1.1: ADAPTABOT-1.6, ADAPTABOT-1.10",
+		"",
+		"## Risk notes",
+		"- Repository structure is unknown because no files were inspected.",
+		"",
+		strictTaskFixture("ADAPTABOT-1.1", "Define Messenger OAuth token configuration seam", "The bot needs a stable secret contract.", []string{"none"}, []string{"ADAPTABOT-1.6", "ADAPTABOT-1.10"}),
+		strictTaskFixture("ADAPTABOT-1.6", "Add Messenger outbound send client happy path", "The bot needs a Messenger-specific client.", []string{"ADAPTABOT-1.1"}, []string{"none"}),
+		strictTaskFixture("ADAPTABOT-1.10", "Add Messenger registration command or startup hook", "The bot must register its Messenger callback.", []string{"ADAPTABOT-1.1"}, []string{"none"}),
+	}, "\n")
+
+	got, err := ParseStrictOutput(output)
+	if err != nil {
+		t.Fatalf("ParseStrictOutput returned error: %v", err)
+	}
+	wantOrder := []Dependency{
+		{From: "ADAPTABOT-1.1", To: "ADAPTABOT-1.6"},
+		{From: "ADAPTABOT-1.1", To: "ADAPTABOT-1.10"},
+	}
+	if !reflect.DeepEqual(got.Order, wantOrder) {
+		t.Fatalf("Order = %#v, want %#v", got.Order, wantOrder)
+	}
+}
+
 func strictOutputFixture(tasks ...string) string {
 	sections := []string{
 		"Introductory prose should be ignored.",

@@ -328,6 +328,18 @@ func parseOrder(lines []string) ([]Dependency, error) {
 
 	var dependencies []Dependency
 	for _, item := range items {
+		if isReadyOrderAnnotation(item) {
+			continue
+		}
+		blockedDeps, ok, err := parseBlockedByOrderAnnotation(item)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			dependencies = append(dependencies, blockedDeps...)
+			continue
+		}
+
 		if ambiguousOrder(item) {
 			return nil, fmt.Errorf("Order contains ambiguous dependency chain %q", item)
 		}
@@ -351,6 +363,57 @@ func parseOrder(lines []string) ([]Dependency, error) {
 		}
 	}
 	return dependencies, nil
+}
+
+func isReadyOrderAnnotation(item string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(item))
+	for _, prefix := range []string{
+		"ready:",
+		"ready now:",
+		"ready task:",
+		"ready tasks:",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseBlockedByOrderAnnotation(item string) ([]Dependency, bool, error) {
+	const prefix = "blocked by "
+	trimmed := strings.TrimSpace(item)
+	normalized := strings.ToLower(trimmed)
+	if !strings.HasPrefix(normalized, prefix) {
+		return nil, false, nil
+	}
+
+	rest := strings.TrimSpace(trimmed[len(prefix):])
+	fromPart, toPart, ok := strings.Cut(rest, ":")
+	if !ok {
+		return nil, true, fmt.Errorf("invalid Order item %q: expected \"Blocked by <task>: <task>\"", item)
+	}
+
+	from := trimRef(fromPart)
+	if from == "" || !simpleRefRE.MatchString(from) {
+		return nil, true, fmt.Errorf("invalid Order blocked-by reference %q in %q", fromPart, item)
+	}
+
+	var deps []Dependency
+	for _, part := range strings.Split(toPart, ",") {
+		to := trimRef(part)
+		if to == "" {
+			continue
+		}
+		if ambiguousWordRE.MatchString(to) || strings.ContainsAny(to, "/&") || !simpleRefRE.MatchString(to) {
+			return nil, true, fmt.Errorf("invalid Order blocked task reference %q in %q", part, item)
+		}
+		deps = append(deps, Dependency{From: from, To: to})
+	}
+	if len(deps) == 0 {
+		return nil, true, fmt.Errorf("invalid Order item %q: expected at least one blocked task", item)
+	}
+	return deps, true, nil
 }
 
 func ambiguousOrder(item string) bool {
