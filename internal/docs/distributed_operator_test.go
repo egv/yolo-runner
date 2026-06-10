@@ -21,7 +21,7 @@ func TestReadmeDocumentsDistributedBusFallbackBackend(t *testing.T) {
 
 	readme := string(contents)
 	required := []string{
-		"defaults to `redis`",
+		"defaults to `nats`",
 		"--distributed-bus-backend` is omitted",
 	}
 	for _, needle := range required {

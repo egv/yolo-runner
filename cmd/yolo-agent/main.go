@@ -41,8 +41,7 @@ const (
 	agentRoleLocal      = "local"
 	agentRoleMaster     = "mastermind"
 	agentRoleWorker     = "executor"
-	distributedBusRedis = "redis"
-	distributedBusNATS  = "nats"
+	distributedBusNATS = "nats"
 	inboxAuthTokenEnv   = "YOLO_INBOX_WRITE_TOKEN"
 	monitorSourceIDEnv  = "YOLO_MONITOR_SOURCE_ID"
 )
@@ -114,8 +113,6 @@ type arcReviewWatchCommandConfig struct {
 
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch backend {
-	case distributedBusRedis:
-		return distributed.NewRedisBus(address, opts)
 	case distributedBusNATS:
 		return distributed.NewNATSBus(address, opts)
 	default:
@@ -193,7 +190,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	retryBudget := fs.Int("retry-budget", 5, "Maximum retry attempts per task for remediation loop")
 	events := fs.String("events", "", "Path to JSONL events log")
 	role := fs.String("role", "", "Distributed execution role: local, mastermind, executor")
-	distributedBusBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (redis, nats)")
+	distributedBusBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (nats)")
 	distributedBusAddress := fs.String("distributed-bus-address", "", "Distributed bus address")
 	distributedBusPrefix := fs.String("distributed-bus-prefix", "", "Distributed bus subject prefix")
 	distributedExecutorID := fs.String("distributed-executor-id", "", "Distributed executor id (executor role)")
@@ -1601,12 +1598,10 @@ func normalizeDistributedRole(raw string) (string, error) {
 func normalizeDistributedBusBackend(raw string) (string, error) {
 	backend := strings.ToLower(strings.TrimSpace(raw))
 	switch backend {
-	case "", distributedBusRedis:
-		return distributedBusRedis, nil
-	case distributedBusNATS:
+	case "", distributedBusNATS:
 		return distributedBusNATS, nil
 	default:
-		return "", fmt.Errorf("invalid distributed bus backend %q (supported: %s, %s)", backend, distributedBusRedis, distributedBusNATS)
+		return "", fmt.Errorf("invalid distributed bus backend %q (supported: %s)", backend, distributedBusNATS)
 	}
 }
 
@@ -1621,7 +1616,7 @@ func resolveAgentDistributedBusConfig(
 	if err != nil {
 		return distributed.DistributedBusConfig{}, err
 	}
-	configBus = configBus.ApplyDefaults(distributedBusRedis, "yolo")
+	configBus = configBus.ApplyDefaults(distributedBusNATS, "yolo")
 	if getenv == nil {
 		getenv = os.Getenv
 	}

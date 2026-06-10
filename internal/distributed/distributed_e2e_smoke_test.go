@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
@@ -43,32 +42,12 @@ func runDistributedSmokeHarness(t *testing.T) {
 		name string
 		run  func(*testing.T)
 	}{
-		{name: "redis", run: runDistributedSmokeRedis},
 		{name: "nats", run: runDistributedSmokeNATS},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, tc.run)
 	}
-}
-
-func runDistributedSmokeRedis(t *testing.T) {
-	t.Helper()
-	address := strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_SMOKE_REDIS_ADDR"))
-	if address == "" {
-		server := miniredis.RunT(t)
-		address = "redis://" + server.Addr()
-	}
-
-	bus, err := NewRedisBus(address, BusBackendOptions{Stream: "smoke-tasks", Group: "smoke-workers", Durable: "smoke-durable"})
-	if err != nil {
-		t.Fatalf("create redis bus: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = bus.Close()
-	})
-
-	runDistributedSmokeScenario(t, "redis", bus)
 }
 
 func runDistributedSmokeNATS(t *testing.T) {

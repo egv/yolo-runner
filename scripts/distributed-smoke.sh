@@ -4,7 +4,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${REPO_ROOT}/dev/distributed/docker-compose.yml"
 
-REDIS_PORT="${YOLO_SMOKE_REDIS_PORT:-16379}"
 NATS_PORT="${YOLO_SMOKE_NATS_PORT:-14222}"
 EVENTS_DIR="${YOLO_DISTRIBUTED_SMOKE_EVENTS_DIR:-${REPO_ROOT}/runner-logs/distributed-smoke}"
 
@@ -28,7 +27,7 @@ if [[ "${YOLO_DISTRIBUTED_SMOKE_KEEP_UP:-0}" != "1" ]]; then
   trap cleanup EXIT
 fi
 
-"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d redis nats
+"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d nats
 
 wait_for_port() {
   local host="$1"
@@ -44,10 +43,8 @@ wait_for_port() {
   return 1
 }
 
-wait_for_port "127.0.0.1" "${REDIS_PORT}" "redis"
 wait_for_port "127.0.0.1" "${NATS_PORT}" "nats"
 
-YOLO_DISTRIBUTED_SMOKE_REDIS_ADDR="redis://127.0.0.1:${REDIS_PORT}" \
 YOLO_DISTRIBUTED_SMOKE_NATS_ADDR="nats://127.0.0.1:${NATS_PORT}" \
 YOLO_DISTRIBUTED_SMOKE_EVENTS_DIR="${EVENTS_DIR}" \
 go test ./internal/distributed -run '^TestDistributedE2ESmokeHarness$' -count=1 -v

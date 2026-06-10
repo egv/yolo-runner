@@ -39,7 +39,7 @@ func TestRunMainRejectsMissingBusAddress(t *testing.T) {
 		t.Fatalf("run function should not be called when validation fails")
 		return nil
 	}
-	code := RunMain([]string{"--distributed-bus-backend", "redis"}, run)
+	code := RunMain([]string{"--distributed-bus-backend", "nats"}, run)
 	if code != 1 {
 		t.Fatalf("expected code 1, got %d", code)
 	}
@@ -66,7 +66,7 @@ func TestRunMainParsesMonitorSourceAndListenAddress(t *testing.T) {
 	}
 
 	code := RunMain([]string{
-		"--distributed-bus-backend", "redis",
+		"--distributed-bus-backend", "nats",
 		"--distributed-bus-address", "mem://unit",
 		"--distributed-bus-prefix", "unit",
 		"--events-bus-source", "worker-1",
@@ -96,7 +96,7 @@ func TestRunMainParsesTaskStatusControlFlags(t *testing.T) {
 	}
 
 	code := RunMain([]string{
-		"--distributed-bus-backend", "redis",
+		"--distributed-bus-backend", "nats",
 		"--distributed-bus-address", "mem://unit",
 		"--task-status-auth-token", "token-1",
 		"--task-status-backends", "tk, linear,tk,github",

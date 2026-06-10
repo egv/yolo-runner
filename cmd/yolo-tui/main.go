@@ -21,9 +21,8 @@ import (
 )
 
 const (
-	distributedBusRedis        = "redis"
 	distributedBusNATS         = "nats"
-	runDefaultEventsBusBackend = "redis"
+	runDefaultEventsBusBackend = "nats"
 	runDefaultEventsBusPrefix  = "yolo"
 	runDefaultMonitorSourceEnv = "YOLO_MONITOR_SOURCE_ID"
 	runDefaultBusBackendEnv    = "YOLO_DISTRIBUTED_BUS_BACKEND"
@@ -33,8 +32,6 @@ const (
 
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch strings.TrimSpace(backend) {
-	case distributedBusRedis:
-		return distributed.NewRedisBus(address, opts)
 	case distributedBusNATS:
 		return distributed.NewNATSBus(address, opts)
 	default:
@@ -57,7 +54,7 @@ func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	repoRoot := fs.String("repo", ".", "Repository root")
 	eventsStdin := fs.Bool("events-stdin", false, "Read NDJSON events from stdin")
 	eventsBus := fs.Bool("events-bus", false, "Read monitor events from distributed bus")
-	busBackend := fs.String("events-bus-backend", "", "Distributed bus backend (redis, nats)")
+	busBackend := fs.String("events-bus-backend", "", "Distributed bus backend (nats)")
 	busAddress := fs.String("events-bus-address", "", "Distributed bus address")
 	busPrefix := fs.String("events-bus-prefix", "", "Distributed bus subject prefix")
 	busSource := fs.String("events-bus-source", "", "Monitor source filter")
@@ -169,12 +166,10 @@ func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 
 func normalizeDistributedBusBackend(raw string) (string, error) {
 	switch strings.TrimSpace(raw) {
-	case "", distributedBusRedis:
-		return distributedBusRedis, nil
-	case distributedBusNATS:
+	case "", distributedBusNATS:
 		return distributedBusNATS, nil
 	default:
-		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: %s, %s)", raw, distributedBusRedis, distributedBusNATS)
+		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: %s)", raw, distributedBusNATS)
 	}
 }
 

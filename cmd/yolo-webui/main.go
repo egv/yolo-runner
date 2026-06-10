@@ -31,14 +31,12 @@ var webUIIndexHTML string
 var webUIAppJS string
 
 const (
-	defaultBusBackend = "redis"
+	defaultBusBackend = "nats"
 	defaultBusPrefix  = "yolo"
 )
 
 var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
 	switch strings.TrimSpace(backend) {
-	case "redis":
-		return distributed.NewRedisBus(address, opts)
 	case "nats":
 		return distributed.NewNATSBus(address, opts)
 	default:
@@ -124,7 +122,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	repoRoot := fs.String("repo", ".", "Repository root")
 	listen := fs.String("listen", ":8080", "HTTP listen address")
 	authToken := fs.String("auth-token", "", "Bearer token required for /api and /ws requests (empty disables auth)")
-	busBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (redis, nats)")
+	busBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (nats)")
 	busAddress := fs.String("distributed-bus-address", "", "Distributed bus address")
 	busPrefix := fs.String("distributed-bus-prefix", "", "Distributed bus subject prefix")
 	busSource := fs.String("events-bus-source", "", "Monitor source filter")
@@ -952,12 +950,10 @@ func legacyRenderWebUIPage() string {
 
 func normalizeDistributedBusBackend(raw string) (string, error) {
 	switch strings.TrimSpace(raw) {
-	case "", "redis":
-		return "redis", nil
-	case "nats":
+	case "", "nats":
 		return "nats", nil
 	default:
-		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: redis, nats)", raw)
+		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: nats)", raw)
 	}
 }
 

@@ -332,9 +332,9 @@ Common options:
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
 
-### Distributed dogfooding (queues via Redis/NATS + Podman)
+### Distributed dogfooding (queues via NATS + Podman)
 
-Use the queue-backed transport with Redis or NATS, started via Podman Compose. Services bind to Tailscale (tailnet) addresses for security - only accessible from within your tailnet.
+Use the queue-backed transport with NATS, started via Podman Compose. Services bind to Tailscale (tailnet) addresses for security - only accessible from within your tailnet.
 
 ```bash
 make build
@@ -345,18 +345,6 @@ export GITHUB_TOKEN=$(gh auth token)
 # Get your tailscale IP (or set YOLO_TAILNET_IP in .env)
 export YOLO_TAILNET_IP=$(tailscale ip -4)
 
-./bin/yolo-agent \
-  --repo . \
-  --root <root-id> \
-  --profile github \
-  --distributed-bus-backend redis \
-  --distributed-bus-address "redis://${YOLO_TAILNET_IP}:16379" \
-  --stream | ./bin/yolo-tui --events-stdin
-```
-
-Switch to NATS by changing the backend and address:
-
-```bash
 ./bin/yolo-agent \
   --repo . \
   --root <root-id> \
@@ -375,7 +363,7 @@ make distributed-dev-down
 #### Makefile targets for distributed dev
 
 ```bash
-# Start Redis and NATS containers (bound to tailnet IP)
+# Start the NATS container (bound to tailnet IP)
 make distributed-dev-up
 
 # Stop and remove containers with volumes
@@ -394,8 +382,8 @@ export YOLO_TAILNET_IP=$(tailscale ip -4)
 ./bin/yolo-webui \
   --repo . \
   --listen "${YOLO_TAILNET_IP}:8080" \
-  --distributed-bus-backend redis \
-  --distributed-bus-address "redis://${YOLO_TAILNET_IP}:16379" \
+  --distributed-bus-backend nats \
+  --distributed-bus-address "nats://${YOLO_TAILNET_IP}:14222" \
   --auth-token "${YOLO_WEBUI_TOKEN:-your-secret-token}"
 ```
 
@@ -414,15 +402,11 @@ Features:
 
 #### Distributed bus operator notes
 
-**Fallback backend:** When `--distributed-bus-backend` is omitted, it defaults to `redis`. Pass `--distributed-bus-backend nats` to use NATS instead.
+**Fallback backend:** When `--distributed-bus-backend` is omitted, it defaults to `nats`.
 
 **Startup:** Before starting `yolo-agent` in distributed mode, verify the bus is reachable:
 
 ```bash
-# Redis
-redis-cli -u "redis://${YOLO_TAILNET_IP}:16379" ping
-
-# NATS
 nats account info --server "nats://${YOLO_TAILNET_IP}:14222"
 ```
 
@@ -464,7 +448,7 @@ TDD mode with streaming:
 
 The TUI is decoder-safe: malformed JSONL lines are surfaced as warnings while valid events continue rendering.
 
-#### TUI Bus Mode (connect directly to Redis/NATS)
+#### TUI Bus Mode (connect directly to NATS)
 
 Connect TUI directly to the distributed bus - useful when running agent separately or monitoring remote runs:
 
@@ -474,8 +458,8 @@ export YOLO_TAILNET_IP=$(tailscale ip -4)
 ./bin/yolo-tui \
   --repo . \
   --events-bus \
-  --events-bus-backend redis \
-  --events-bus-address "redis://${YOLO_TAILNET_IP}:16379"
+  --events-bus-backend nats \
+  --events-bus-address "nats://${YOLO_TAILNET_IP}:14222"
 ```
 
 **TUI shows:**

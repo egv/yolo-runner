@@ -109,7 +109,7 @@ func TestRunMainSupportsDistributedBusEventsFromEnvelope(t *testing.T) {
 
 	code := RunMain([]string{
 		"--events-bus",
-		"--events-bus-backend", "redis",
+		"--events-bus-backend", "nats",
 		"--events-bus-address", "mem://unit-test",
 		"--events-bus-prefix", "unit",
 		"--events-bus-source", "agent",

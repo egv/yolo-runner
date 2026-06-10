@@ -13,8 +13,8 @@ func TestResolveTUIDistributedBusConfigUsesConfigDefaults(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(`distributed_bus:
-  backend: redis
-  address: redis://127.0.0.1:6381
+  backend: nats
+  address: nats://127.0.0.1:4222
   prefix: tui
   source: monitor-2
 `), 0o644); err != nil {
@@ -25,7 +25,7 @@ func TestResolveTUIDistributedBusConfigUsesConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve config: %v", err)
 	}
-	if cfg.Backend != "redis" || cfg.Address != "redis://127.0.0.1:6381" || cfg.Prefix != "tui" || cfg.Source != "monitor-2" {
+	if cfg.Backend != "nats" || cfg.Address != "nats://127.0.0.1:4222" || cfg.Prefix != "tui" || cfg.Source != "monitor-2" {
 		t.Fatalf("unexpected resolved config: %#v", cfg)
 	}
 }
