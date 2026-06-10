@@ -490,6 +490,9 @@ func TestClientExecuteIssueTransitionUsesExecuteEndpointWithResolution(t *testin
 	var capturedRequest *http.Request
 	var capturedBody map[string]string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet && req.URL.Path == "/v3/issues/VAY-42/transitions" {
+			return jsonResponse(http.StatusOK, `[{"id":"closed"}]`), nil
+		}
 		capturedRequest = req
 		if err := json.NewDecoder(req.Body).Decode(&capturedBody); err != nil {
 			t.Fatalf("decode transition body: %v", err)
@@ -531,6 +534,9 @@ func TestClientExecuteIssueTransitionFallsBackToLegacyEndpoint(t *testing.T) {
 	var paths []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		paths = append(paths, req.URL.Path)
+		if req.Method == http.MethodGet && req.URL.Path == "/v3/issues/VAY-42/transitions" {
+			return jsonResponse(http.StatusOK, `[{"id":"inProgress"}]`), nil
+		}
 		if req.URL.Path == "/v3/issues/VAY-42/transitions/inProgress/_execute" {
 			return jsonResponse(http.StatusNotFound, `{"message":"not found"}`), nil
 		}
@@ -553,6 +559,7 @@ func TestClientExecuteIssueTransitionFallsBackToLegacyEndpoint(t *testing.T) {
 	}
 
 	want := []string{
+		"/v3/issues/VAY-42/transitions",
 		"/v3/issues/VAY-42/transitions/inProgress/_execute",
 		"/v3/issues/VAY-42/transitions/inProgress",
 	}

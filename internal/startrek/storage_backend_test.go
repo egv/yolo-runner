@@ -177,12 +177,14 @@ func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *
 	var operations []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
-		case "POST /v3/issues/VAY-42/transitions/closed/_execute":
+		case "GET /v3/issues/VAY-42/transitions":
+			return jsonResponse(http.StatusOK, `[{"id":"close"}]`), nil
+		case "POST /v3/issues/VAY-42/transitions/close/_execute":
 			var body map[string]string
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Fatalf("decode transition body: %v", err)
 			}
-			operations = append(operations, "transition closed resolution="+body["resolution"])
+			operations = append(operations, "transition close resolution="+body["resolution"])
 			return jsonResponse(http.StatusOK, `{}`), nil
 		case "PATCH /v3/issues/VAY-42":
 			var body struct {
@@ -227,7 +229,7 @@ func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *
 	}
 
 	want := []string{
-		"transition closed resolution=fixed",
+		"transition close resolution=fixed",
 		"remove ready",
 		"remove running",
 		"remove blocked",
@@ -243,6 +245,9 @@ func TestStorageBackendSetTaskStatusDoesNotRelabelWhenTransitionFails(t *testing
 	var operations []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		operations = append(operations, req.Method+" "+req.URL.Path)
+		if req.Method == http.MethodGet {
+			return jsonResponse(http.StatusOK, `[{"id":"closed"}]`), nil
+		}
 		if req.Method == http.MethodPost {
 			return jsonResponse(http.StatusBadRequest, `{"message":"transition is not available"}`), nil
 		}
@@ -268,6 +273,7 @@ func TestStorageBackendSetTaskStatusDoesNotRelabelWhenTransitionFails(t *testing
 	}
 
 	want := []string{
+		"GET /v3/issues/VAY-42/transitions",
 		"POST /v3/issues/VAY-42/transitions/closed/_execute",
 		"POST /v3/issues/VAY-42/transitions/closed",
 	}

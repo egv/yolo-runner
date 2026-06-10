@@ -318,15 +318,22 @@ func (c *Client) mutateIssueLabel(ctx context.Context, issueID string, label str
 }
 
 type IssueTransitionOptions struct {
-	Transition string
-	Resolution string
-	Comment    string
+	Transition             string
+	AlternativeTransitions []string
+	Resolution             string
+	Comment                string
 }
 
 func (c *Client) ExecuteIssueTransition(ctx context.Context, issueID string, opts IssueTransitionOptions) error {
-	transition := strings.TrimSpace(opts.Transition)
-	if transition == "" {
+	candidates := normalizedTransitionCandidates(opts.Transition, opts.AlternativeTransitions)
+	if len(candidates) == 0 {
 		return errors.New("startrek transition is required")
+	}
+	transition := candidates[0]
+	if selected, err := c.selectAvailableIssueTransition(ctx, issueID, candidates); err == nil {
+		transition = selected
+	} else if errors.Is(err, errStartrekNoMatchingTransition) {
+		return err
 	}
 
 	requestPath, err := issueTransitionExecutePath(issueID, transition)
@@ -346,6 +353,96 @@ func (c *Client) ExecuteIssueTransition(ctx context.Context, issueID string, opt
 		}
 	}
 	return nil
+}
+
+var errStartrekNoMatchingTransition = errors.New("no matching startrek transition")
+
+func (c *Client) selectAvailableIssueTransition(ctx context.Context, issueID string, candidates []string) (string, error) {
+	available, err := c.GetIssueTransitionIDs(ctx, issueID)
+	if err != nil || len(available) == 0 {
+		return "", err
+	}
+
+	for _, candidate := range candidates {
+		for _, transition := range available {
+			if strings.EqualFold(candidate, transition) {
+				return transition, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%w for issue %q: candidates %v, available transitions: %v", errStartrekNoMatchingTransition, strings.TrimSpace(issueID), candidates, available)
+}
+
+func (c *Client) GetIssueTransitionIDs(ctx context.Context, issueID string) ([]string, error) {
+	requestPath, err := issueTransitionsPath(issueID)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw any
+	if err := c.DoJSON(ctx, http.MethodGet, requestPath, nil, &raw); err != nil {
+		return nil, err
+	}
+	return transitionIDsFromValue(raw), nil
+}
+
+func normalizedTransitionCandidates(primary string, alternatives []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 1+len(alternatives))
+	for _, value := range append([]string{primary}, alternatives...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func transitionIDsFromValue(value any) []string {
+	seen := map[string]struct{}{}
+	var ids []string
+	var walk func(any)
+	walk = func(current any) {
+		switch typed := current.(type) {
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			if id := transitionIDFromMap(typed); id != "" {
+				key := strings.ToLower(id)
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					ids = append(ids, id)
+				}
+			}
+			for _, key := range []string{"transitions", "items", "values"} {
+				if nested, ok := typed[key]; ok {
+					walk(nested)
+				}
+			}
+		}
+	}
+	walk(value)
+	sort.Strings(ids)
+	return ids
+}
+
+func transitionIDFromMap(value map[string]any) string {
+	for _, key := range []string{"id", "key"} {
+		if raw, ok := value[key]; ok {
+			if text := strings.TrimSpace(fmt.Sprint(raw)); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func issueTransitionPayload(opts IssueTransitionOptions) map[string]string {
@@ -629,6 +726,14 @@ func issueCommentsPath(issueID string) (string, error) {
 		return "", err
 	}
 	return requestPath + "/comments", nil
+}
+
+func issueTransitionsPath(issueID string) (string, error) {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return "", err
+	}
+	return requestPath + "/transitions", nil
 }
 
 func issueTransitionPath(issueID string, transition string) (string, error) {

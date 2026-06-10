@@ -286,7 +286,7 @@ func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID strin
 	if b == nil || b.client == nil {
 		return errors.New("startrek storage backend is not initialized")
 	}
-	transition, resolution, err := b.statusTransition(status)
+	transition, resolution, alternatives, err := b.statusTransition(status)
 	if err != nil {
 		return err
 	}
@@ -294,32 +294,33 @@ func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID strin
 		return nil
 	}
 	if err := b.client.ExecuteIssueTransition(ctx, taskID, IssueTransitionOptions{
-		Transition: transition,
-		Resolution: resolution,
+		Transition:             transition,
+		AlternativeTransitions: alternatives,
+		Resolution:             resolution,
 	}); err != nil {
 		return fmt.Errorf("transition startrek issue %q to task status %q: %w", taskID, status, err)
 	}
 	return nil
 }
 
-func (b *StorageBackend) statusTransition(status contracts.TaskStatus) (string, string, error) {
+func (b *StorageBackend) statusTransition(status contracts.TaskStatus) (string, string, []string, error) {
 	transitions := StatusTransitionNames{}
 	if b != nil {
 		transitions = b.statusTransitions
 	}
 	switch status {
 	case contracts.TaskStatusOpen:
-		return transitions.Ready, "", nil
+		return transitions.Ready, "", []string{"reopen", "open"}, nil
 	case contracts.TaskStatusInProgress:
-		return transitions.InProgress, "", nil
+		return transitions.InProgress, "", []string{"start_progress", "inProgress", "startProgress", "start"}, nil
 	case contracts.TaskStatusClosed:
-		return transitions.Completed, transitions.CompletedResolution, nil
+		return transitions.Completed, transitions.CompletedResolution, []string{"close", "closed", "resolve", "done", "finish"}, nil
 	case contracts.TaskStatusBlocked:
-		return transitions.Blocked, "", nil
+		return transitions.Blocked, "", []string{"need_info", "needInfo", "blocked", "pause"}, nil
 	case contracts.TaskStatusFailed:
-		return transitions.Failed, "", nil
+		return transitions.Failed, "", []string{"need_info", "needInfo", "failed"}, nil
 	default:
-		return "", "", fmt.Errorf("unsupported startrek task status %q", status)
+		return "", "", nil, fmt.Errorf("unsupported startrek task status %q", status)
 	}
 }
 
