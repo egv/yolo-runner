@@ -2007,6 +2007,39 @@ func TestStorageEngineTaskManagerSetTaskStatusPropagatesTaskEngineErrors(t *test
 	}
 }
 
+func TestStorageEngineTaskManagerSetTaskStatusSkipsGraphUpdateForUntrackedTask(t *testing.T) {
+	storage := newSpyStorageBackend([]contracts.Task{
+		{ID: "root", Title: "Root", Status: contracts.TaskStatusClosed},
+		{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen, ParentID: "root"},
+	}, []contracts.TaskRelation{
+		{FromID: "root", ToID: "t-1", Type: contracts.RelationParent},
+	})
+	engine := newSpyTaskEngine(enginepkg.NewTaskEngine())
+	manager := newStorageEngineTaskManager(storage, engine, "root")
+
+	if _, err := manager.NextTasks(context.Background(), "root"); err != nil {
+		t.Fatalf("NextTasks failed: %v", err)
+	}
+
+	// A task can exist in storage while being absent from the cached graph:
+	// tracker backends only load issues carrying agent status labels, so a
+	// task demoted to needs_info disappears from the graph even though
+	// scheduler-state recovery still references it.
+	storage.mu.Lock()
+	storage.tasks["stale-1"] = contracts.Task{ID: "stale-1", Title: "Stale", Status: contracts.TaskStatusInProgress, ParentID: "root"}
+	storage.mu.Unlock()
+
+	if err := manager.SetTaskStatus(context.Background(), "stale-1", contracts.TaskStatusOpen); err != nil {
+		t.Fatalf("SetTaskStatus failed for task missing from graph: %v", err)
+	}
+	if storage.statusSetCount("stale-1", contracts.TaskStatusOpen) == 0 {
+		t.Fatalf("expected storage SetTaskStatus to be called")
+	}
+	if engine.updateTaskStatusCalls != 0 {
+		t.Fatalf("expected graph update to be skipped for untracked task")
+	}
+}
+
 func TestStorageEngineTaskManagerSetTaskStatusPersistsBackendStateChanges(t *testing.T) {
 	storage := newPersistingSpyStorageBackend([]contracts.Task{
 		{ID: "root", Title: "Root", Status: contracts.TaskStatusClosed},
