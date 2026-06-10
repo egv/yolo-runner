@@ -12,7 +12,7 @@ import (
 
 var _ arcreview.ReplyArcanumClient = ReplyArcanumClient{}
 
-func TestReplyArcanumClientPostCommentReplyInvokesArcanumReplyAPI(t *testing.T) {
+func TestReplyArcanumClientPostCommentReplyInvokesArcReply(t *testing.T) {
 	oldExec := arcExec
 	t.Cleanup(func() {
 		arcExec = oldExec
@@ -28,9 +28,6 @@ func TestReplyArcanumClientPostCommentReplyInvokesArcanumReplyAPI(t *testing.T) 
 			name:      name,
 			args:      append([]string{}, args...),
 		})
-		if name == "arc" {
-			return []byte("token-123\n"), nil, nil
-		}
 		return nil, nil, nil
 	}
 
@@ -39,8 +36,8 @@ func TestReplyArcanumClientPostCommentReplyInvokesArcanumReplyAPI(t *testing.T) 
 	if err != nil {
 		t.Fatalf("PostCommentReply() error = %v", err)
 	}
-	if len(gotCalls) != 2 {
-		t.Fatalf("PostCommentReply() call count = %d, want 2: %#v", len(gotCalls), gotCalls)
+	if len(gotCalls) != 1 {
+		t.Fatalf("PostCommentReply() call count = %d, want 1: %#v", len(gotCalls), gotCalls)
 	}
 
 	wantCalls := []replyClientExecCall{
@@ -48,21 +45,10 @@ func TestReplyArcanumClientPostCommentReplyInvokesArcanumReplyAPI(t *testing.T) 
 			ctx:       ctx,
 			workspace: "/arcadia/workspace",
 			name:      "arc",
-			args:      []string{"token", "show"},
-		},
-		{
-			ctx:       ctx,
-			workspace: "/arcadia/workspace",
-			name:      "curl",
 			args: []string{
-				"--fail-with-body",
-				"--silent",
-				"--show-error",
-				"--request", "POST",
-				"--header", "Authorization: OAuth token-123",
-				"--header", "Content-Type: application/json",
-				"--data-binary", `{"content":"Fixed in the latest revision.","draft":false}`,
-				"https://arcanum.yandex.net/api/v1/public/review-requests-comments/comment-7/replies",
+				"reply",
+				"--comment-id", "comment-7",
+				"--message", "Fixed in the latest revision.",
 			},
 		},
 	}
@@ -71,17 +57,14 @@ func TestReplyArcanumClientPostCommentReplyInvokesArcanumReplyAPI(t *testing.T) 
 	}
 }
 
-func TestReplyArcanumClientPostCommentReplySurfacesArcanumAPIErrors(t *testing.T) {
+func TestReplyArcanumClientPostCommentReplySurfacesArcReplyErrors(t *testing.T) {
 	oldExec := arcExec
 	t.Cleanup(func() {
 		arcExec = oldExec
 	})
 
-	arcExec = func(_ context.Context, _ string, name string, _ ...string) ([]byte, []byte, error) {
-		if name == "arc" {
-			return []byte("token-123\n"), nil, nil
-		}
-		return []byte(`{"message":"comment is closed"}`), []byte("curl: (22) HTTP response code said error"), errors.New("exit status 22")
+	arcExec = func(context.Context, string, string, ...string) ([]byte, []byte, error) {
+		return nil, []byte("arc: comment is closed"), errors.New("exit status 1")
 	}
 
 	client := ReplyArcanumClient{Workspace: "/arcadia/workspace"}
@@ -92,19 +75,14 @@ func TestReplyArcanumClientPostCommentReplySurfacesArcanumAPIErrors(t *testing.T
 
 	message := err.Error()
 	for _, want := range []string{
-		"curl --fail-with-body --silent --show-error --request POST",
-		"Authorization: OAuth <redacted>",
-		"https://arcanum.yandex.net/api/v1/public/review-requests-comments/comment-7/replies",
+		"arc reply --comment-id comment-7 --message Fixed in the latest revision.",
 		"/arcadia/workspace",
 		"comment is closed",
-		"exit status 22",
+		"exit status 1",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("PostCommentReply() error = %q, want substring %q", message, want)
 		}
-	}
-	if strings.Contains(message, "token-123") {
-		t.Fatalf("PostCommentReply() error leaked token: %q", message)
 	}
 }
 
