@@ -261,7 +261,7 @@ func validateExplicitArcReviewWatchConfigValues(repoRoot string) error {
 		return fmt.Errorf("arc_review_watch in %s must be a mapping", trackerConfigRelPath)
 	}
 
-	for _, field := range []string{"poll_interval", "lock_path", "state_path"} {
+	for _, field := range []string{"poll_interval", "lock_path", "state_path", "reviewer"} {
 		if node := configValidationYAMLMappingValue(watchNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
 			return fmt.Errorf("arc_review_watch.%s in %s must not be empty", field, trackerConfigRelPath)
 		}
@@ -414,6 +414,7 @@ func inferConfigField(message string) string {
 		"arc_review_watch.poll_interval",
 		"arc_review_watch.lock_path",
 		"arc_review_watch.state_path",
+		"arc_review_watch.reviewer",
 		"arc_review_watch.max_concurrency",
 		"arc_review_watch.allow_ship",
 		"arc_review_watch.workspaces",
@@ -537,6 +538,8 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set arc_review_watch.lock_path to a non-empty file path, or omit it to use the default."
 	case "arc_review_watch.state_path":
 		return "Set arc_review_watch.state_path to a non-empty file path, or omit it to use the default."
+	case "arc_review_watch.reviewer":
+		return "Set arc_review_watch.reviewer to a non-empty reviewer login, or omit it to leave reviewer filtering unset."
 	case "arc_review_watch.max_concurrency":
 		return "Set arc_review_watch.max_concurrency to an integer greater than 0, or omit it to use the default."
 	case "arc_review_watch.allow_ship":

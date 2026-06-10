@@ -569,6 +569,27 @@ func TestBuildTaskManagerForTrackerWrapsLinearAuthErrors(t *testing.T) {
 	}
 }
 
+func TestResolveArcReviewWatchConfigParsesReviewer(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  reviewer: "  alice  "
+`)
+
+	cfg, err := newTrackerConfigService().ResolveArcReviewWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected reviewer to resolve from arc_review_watch config, got %v", err)
+	}
+
+	if got := cfg.Reviewer; got != "alice" {
+		t.Fatalf("expected reviewer to be trimmed, got %q", got)
+	}
+}
+
 func TestBuildTaskManagerForTrackerSupportsGitHub(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_test")
 	originalFactory := newGitHubTaskManager
