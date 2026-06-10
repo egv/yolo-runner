@@ -27,6 +27,13 @@ func TestFetchPRRuntimeStateRunsArcCommandsAndNormalizesState(t *testing.T) {
     {"id":"ARW2-10","status":"open","message":"state fetcher missing"},
     {"id":"ARW2-09","status":"resolved","message":"checks parser done"}
   ],
+  "checks": [
+    {
+      "name": "required-reviewers",
+      "status": "SUCCESS",
+      "description": "All required reviewers approved."
+    }
+  ],
   "from_branch":"users/alice/arw2-10",
   "from_id":"rev-42",
   "to_branch":"trunk"
@@ -64,15 +71,6 @@ index 0000000..1111111
 +
 +func FetchPRRuntimeState() {}
 `)
-	checksFixture := []byte(`{
-  "checks": [
-    {
-      "name": "required-reviewers",
-      "status": "SUCCESS",
-      "description": "All required reviewers approved."
-    }
-  ]
-}`)
 
 	ctx := context.WithValue(context.Background(), contextKey("state"), "value")
 	var gotCtx []context.Context
@@ -81,19 +79,22 @@ index 0000000..1111111
 	var gotArgs [][]string
 
 	fixtures := map[string][]byte{
-		"pr status --json 13843457":   detailsFixture,
-		"pr comments --json 13843457": commentsFixture,
-		"pr changes 13843457":         diffFixture,
-		"pr checks --json 13843457":   checksFixture,
+		"arc pr status --json 13843457": detailsFixture,
+		"curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments": commentsFixture,
+		"arc pr changes 13843457": diffFixture,
 	}
 
 	arcExec = func(ctx context.Context, workspace string, name string, args ...string) ([]byte, []byte, error) {
+		if name == "arc" && len(args) >= 2 && args[0] == "pr" && (args[1] == "comments" || args[1] == "checks") {
+			return nil, []byte("unsupported arc pr mode"), fmt.Errorf("unsupported arc pr mode: %s", args[1])
+		}
+
 		gotCtx = append(gotCtx, ctx)
 		gotWorkspace = append(gotWorkspace, workspace)
 		gotName = append(gotName, name)
 		gotArgs = append(gotArgs, append([]string{}, args...))
 
-		key := strings.Join(args, " ")
+		key := strings.Join(append([]string{name}, args...), " ")
 		fixture, ok := fixtures[key]
 		if !ok {
 			return nil, []byte("unexpected args"), fmt.Errorf("unexpected args: %s", key)
@@ -111,17 +112,16 @@ index 0000000..1111111
 			t.Fatalf("FetchPRRuntimeState() call %d did not pass through context", i)
 		}
 	}
-	if !reflect.DeepEqual(gotWorkspace, []string{"/arcadia/workspace", "/arcadia/workspace", "/arcadia/workspace", "/arcadia/workspace"}) {
+	if !reflect.DeepEqual(gotWorkspace, []string{"/arcadia/workspace", "/arcadia/workspace", "/arcadia/workspace"}) {
 		t.Fatalf("FetchPRRuntimeState() workspaces = %#v", gotWorkspace)
 	}
-	if !reflect.DeepEqual(gotName, []string{"arc", "arc", "arc", "arc"}) {
+	if !reflect.DeepEqual(gotName, []string{"arc", "curl", "arc"}) {
 		t.Fatalf("FetchPRRuntimeState() commands = %#v", gotName)
 	}
 	wantArgs := [][]string{
 		{"pr", "status", "--json", "13843457"},
-		{"pr", "comments", "--json", "13843457"},
+		{"-fsSL", "https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments"},
 		{"pr", "changes", "13843457"},
-		{"pr", "checks", "--json", "13843457"},
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("FetchPRRuntimeState() args = %#v, want %#v", gotArgs, wantArgs)
