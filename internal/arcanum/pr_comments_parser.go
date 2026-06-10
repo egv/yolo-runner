@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 )
 
-// ParsePRCommentsJSON parses JSON emitted by: arc pr comments --json <pr-id>.
+// ParsePRCommentsJSON parses JSON from Arcanum:
+// GET https://a.yandex-team.ru/api/v1/public/review-requests/{id}/comments.
+//
+// The installed arc CLI exposes no comments subcommand; `arc pr status --json`
+// and `arc pr history --json` do not include review comments.
 func ParsePRCommentsJSON(data []byte) ([]arcreview.PRComment, error) {
 	rawComments, err := prCommentItems(data)
 	if err != nil {
@@ -17,150 +22,163 @@ func ParsePRCommentsJSON(data []byte) ([]arcreview.PRComment, error) {
 
 	comments := make([]arcreview.PRComment, 0, len(rawComments))
 	for i, raw := range rawComments {
-		parsed, err := parsePRCommentOrThread(raw)
+		comment, err := parseArcanumPRComment(raw)
 		if err != nil {
-			return nil, fmt.Errorf("parse arc pr comments item %d: %w", i, err)
+			return nil, fmt.Errorf("parse Arcanum PR comment %d: %w", i, err)
 		}
-		comments = append(comments, parsed...)
+		comments = append(comments, comment)
 	}
 	return comments, nil
 }
 
 func prCommentItems(data []byte) ([]json.RawMessage, error) {
-	var list []json.RawMessage
-	if err := json.Unmarshal(data, &list); err == nil {
-		return list, nil
-	}
-
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(data, &object); err != nil {
-		return nil, fmt.Errorf("parse arc pr comments JSON: %w", err)
+		return nil, fmt.Errorf("parse Arcanum PR comments JSON: %w", err)
 	}
 
-	for _, key := range []string{"comments", "review_comments", "reviewComments", "pull_request_comments", "pullRequestComments", "threads", "items", "result"} {
-		raw := object[key]
-		if len(raw) == 0 {
-			continue
-		}
-		items, err := prCommentRawList(raw)
-		if err != nil {
-			return nil, fmt.Errorf("parse %q as PR comments: %w", key, err)
-		}
-		return items, nil
+	raw := object["data"]
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("Arcanum PR comments JSON did not contain data")
 	}
 
-	return nil, fmt.Errorf("arc pr comments JSON did not contain a comments list")
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("parse data as PR comments: %w", err)
+	}
+	return list, nil
 }
 
-func prCommentRawList(raw json.RawMessage) ([]json.RawMessage, error) {
-	var list []json.RawMessage
-	if err := json.Unmarshal(raw, &list); err == nil {
-		return list, nil
+func parseArcanumPRComment(raw json.RawMessage) (arcreview.PRComment, error) {
+	var item map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return arcreview.PRComment{}, err
+	}
+
+	createdAt, err := prCommentTimeScalar(item, "created_at", "createdAt")
+	if err != nil {
+		return arcreview.PRComment{}, err
+	}
+	updatedAt, err := prCommentTimeScalar(item, "updated_at", "updatedAt")
+	if err != nil {
+		return arcreview.PRComment{}, err
+	}
+
+	issueStatus := normalizedPRCommentIssueStatus(item)
+	comment := arcreview.PRComment{
+		ID:        firstScalar(item, "id"),
+		ThreadID:  firstScalar(item, "reply_to_id", "replyToId"),
+		Author:    firstPerson(item, "user", "author"),
+		Body:      firstScalar(item, "content"),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+		Resolved:  issueStatus == "resolved",
+		Answered:  prCommentIsAnswered(item, issueStatus),
+	}
+	applyPRCommentAnchor(&comment, item)
+
+	return comment, nil
+}
+
+func normalizedPRCommentIssueStatus(item map[string]json.RawMessage) string {
+	status := firstScalar(item, "issue_status", "issueStatus")
+	return strings.ToLower(strings.TrimSpace(status))
+}
+
+func prCommentIsAnswered(item map[string]json.RawMessage, issueStatus string) bool {
+	if firstScalar(item, "reply_to_id", "replyToId") != "" {
+		return true
+	}
+	if boolScalar(item, "draft", "is_draft", "isDraft") {
+		return true
+	}
+	if firstScalar(item, "deleted_at", "deletedAt") != "" {
+		return true
+	}
+
+	switch issueStatus {
+	case "open", "resolved":
+		return false
+	default:
+		return true
+	}
+}
+
+func prCommentTimeScalar(item map[string]json.RawMessage, keys ...string) (time.Time, error) {
+	for _, key := range keys {
+		value := firstScalar(item, key)
+		if value == "" {
+			continue
+		}
+
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse %s %q: %w", key, value, err)
+		}
+		return parsed, nil
+	}
+	return time.Time{}, nil
+}
+
+func applyPRCommentAnchor(comment *arcreview.PRComment, item map[string]json.RawMessage) {
+	applyPRCommentAnchorRaw(comment, item["anchor"])
+	if comment.Path == "" || comment.Line == 0 || comment.Revision == "" {
+		applyPRCommentAnchorRaw(comment, item["original_anchor"])
+	}
+}
+
+func applyPRCommentAnchorRaw(comment *arcreview.PRComment, raw json.RawMessage) {
+	anchor := rawObject(raw)
+	if anchor == nil {
+		return
+	}
+
+	reviewRequest := rawObject(anchor["review_request"])
+	diff := rawObject(reviewRequest["diff"])
+	if diff == nil {
+		return
+	}
+
+	if comment.Revision == "" {
+		comment.Revision = firstScalar(diff, "diff_set_xid", "diffSetXid")
+	}
+
+	file := rawObject(diff["file"])
+	if file == nil {
+		return
+	}
+	if comment.Path == "" {
+		comment.Path = prCommentFilePath(file)
+	}
+	if comment.Line == 0 {
+		position := rawObject(file["position"])
+		comment.Line = intScalar(position, "line")
+	}
+}
+
+func prCommentFilePath(file map[string]json.RawMessage) string {
+	if path := firstScalar(file, "path", "file_path", "filePath"); path != "" {
+		return path
+	}
+
+	entryID := rawObject(file["entry_id"])
+	for _, key := range []string{"content_id_after", "contentIdAfter", "content_id_before", "contentIdBefore"} {
+		contentID := rawObject(entryID[key])
+		if path := firstScalar(contentID, "path"); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func rawObject(raw json.RawMessage) map[string]json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
 	}
 
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
-		return nil, err
+		return nil
 	}
-
-	for _, key := range []string{"comments", "review_comments", "reviewComments", "pull_request_comments", "pullRequestComments", "threads", "items", "result"} {
-		child := object[key]
-		if len(child) == 0 {
-			continue
-		}
-		return prCommentRawList(child)
-	}
-
-	return nil, fmt.Errorf("comments list not found")
-}
-
-func parsePRCommentOrThread(raw json.RawMessage) ([]arcreview.PRComment, error) {
-	var item map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return nil, err
-	}
-
-	comment := parsePRComment(item)
-	childRaw := firstRawList(item, "comments", "replies", "answers")
-	if len(childRaw) == 0 {
-		return []arcreview.PRComment{comment}, nil
-	}
-
-	comments := make([]arcreview.PRComment, 0, len(childRaw)+1)
-	if comment.Body != "" {
-		comments = append(comments, comment)
-	}
-
-	threadID := firstNonEmpty(comment.ThreadID, comment.ID)
-	for i, rawChild := range childRaw {
-		var childItem map[string]json.RawMessage
-		if err := json.Unmarshal(rawChild, &childItem); err != nil {
-			return nil, fmt.Errorf("parse thread comment %d: %w", i, err)
-		}
-
-		child := parsePRComment(childItem)
-		if child.ThreadID == "" {
-			child.ThreadID = threadID
-		}
-		if child.Path == "" {
-			child.Path = comment.Path
-		}
-		if child.Line == 0 {
-			child.Line = comment.Line
-		}
-		child.Resolved = child.Resolved || comment.Resolved
-		comments = append(comments, child)
-	}
-	return comments, nil
-}
-
-func parsePRComment(item map[string]json.RawMessage) arcreview.PRComment {
-	return arcreview.PRComment{
-		ID:       firstScalar(item, "id", "comment_id", "commentId", "number"),
-		ThreadID: firstScalar(item, "thread_id", "threadId", "discussion_id", "discussionId"),
-		Author:   firstPerson(item, "author", "created_by", "createdBy", "user"),
-		Body:     firstScalar(item, "body", "text", "message", "content", "comment"),
-		Path:     firstScalar(item, "path", "file", "file_path", "filePath"),
-		Line:     intScalar(item, "line", "line_number", "lineNumber"),
-		Revision: firstScalar(item, "revision", "from_revision", "fromRevision"),
-		Resolved: prCommentBoolScalar(item, "resolved", "is_resolved", "isResolved"),
-		Answered: prCommentBoolScalar(item, "answered", "is_answered", "isAnswered"),
-	}
-}
-
-func firstRawList(item map[string]json.RawMessage, keys ...string) []json.RawMessage {
-	for _, key := range keys {
-		raw := item[key]
-		if len(raw) == 0 || string(raw) == "null" {
-			continue
-		}
-
-		var list []json.RawMessage
-		if err := json.Unmarshal(raw, &list); err == nil {
-			return list
-		}
-	}
-	return nil
-}
-
-func prCommentBoolScalar(item map[string]json.RawMessage, keys ...string) bool {
-	for _, key := range keys {
-		raw := item[key]
-		if len(raw) == 0 || string(raw) == "null" {
-			continue
-		}
-
-		var value bool
-		if err := json.Unmarshal(raw, &value); err == nil {
-			return value
-		}
-
-		switch strings.ToLower(scalarValue(raw)) {
-		case "1", "true", "yes", "answered", "closed", "done", "resolved":
-			return true
-		case "0", "false", "no", "open", "unanswered", "unresolved":
-			return false
-		}
-	}
-	return false
+	return object
 }
