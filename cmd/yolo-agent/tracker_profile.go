@@ -175,6 +175,7 @@ type arcReviewWatchConfigModel struct {
 	PollInterval   string            `yaml:"poll_interval,omitempty"`
 	LockPath       string            `yaml:"lock_path,omitempty"`
 	StatePath      string            `yaml:"state_path,omitempty"`
+	Reviewer       string            `yaml:"reviewer,omitempty"`
 	MaxConcurrency *int              `yaml:"max_concurrency,omitempty"`
 	AllowShip      bool              `yaml:"allow_ship,omitempty"`
 	Workspaces     []string          `yaml:"workspaces,omitempty"`
@@ -186,6 +187,7 @@ type arcReviewWatchConfig struct {
 	PollInterval   time.Duration
 	LockPath       string
 	StatePath      string
+	Reviewer       string
 	MaxConcurrency int
 	AllowShip      bool
 	Workspaces     []string
@@ -634,6 +636,7 @@ func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot strin
 		cfg.StatePath = statePath
 	}
 	cfg.StatePath = resolveRepoLocalPath(repoRoot, cfg.StatePath)
+	cfg.Reviewer = strings.TrimSpace(model.Reviewer)
 
 	if model.MaxConcurrency != nil {
 		if *model.MaxConcurrency <= 0 {
