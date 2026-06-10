@@ -62,19 +62,10 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 			}
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			if shouldPreserveSplitterOutputWhitespace(progress.Metadata) {
-				output.WriteString(progress.Message)
+			if progress.Message == "" {
 				return
 			}
-
-			message := strings.TrimSpace(progress.Message)
-			if message == "" {
-				return
-			}
-			output.WriteString(message)
-			if !strings.HasSuffix(message, "\n") {
-				output.WriteByte('\n')
-			}
+			output.WriteString(progress.Message)
 		},
 	}
 
@@ -90,7 +81,7 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 	capturedOutput := output.String()
 	outputMu.Unlock()
 
-	parsed, err := ParseStrictOutput(capturedOutput)
+	parsed, err := ParseStrictJSONOutput(capturedOutput)
 	if err != nil {
 		return StrictOutput{}, fmt.Errorf("parse strict splitter output: %w", err)
 	}
@@ -104,19 +95,11 @@ func splitterParentID(input RunInput) string {
 	return input.Task.ParentID
 }
 
-func shouldPreserveSplitterOutputWhitespace(metadata map[string]string) bool {
-	if metadata == nil {
-		return false
-	}
-	value := strings.TrimSpace(metadata["preserve_whitespace"])
-	return strings.EqualFold(value, "true") || value == "1"
-}
-
 func buildStrictSplitterPrompt(input RunInput) string {
 	return strings.Join([]string{
 		"Run the bundled strict task splitter using only the instructions in this prompt.",
 		"No external command, skill, file, or repository context is required. Do not run shell commands, inspect files, or search the filesystem. If context is missing, record the gap in Risk notes instead of looking it up.",
-		"Return only the strict splitter markdown. Do not edit files, create Tracker tasks, update task status, commit, or push.",
+		"Return only valid JSON matching the required schema. Do not wrap the JSON in markdown or code fences. Do not edit files, create Tracker tasks, update task status, commit, or push.",
 		"Use aggressive micro-splitting: one seam per task, one strict red-green loop per task, explicit dependencies, and only the next intended task ready.",
 		strictSplitterRulesPromptSection(),
 		taskPromptSection(input.Task),
@@ -158,52 +141,23 @@ func strictSplitterRulesPromptSection() string {
 		"- Split again if a task mixes implementation, docs, integration wiring, e2e, multiple abstractions, multiple test types, or multiple subsystem boundaries.",
 		"- Prefer helper-first decomposition before wiring, happy-path slices before fallback/teardown/e2e, and 1-3 production files plus 1-2 test files per task.",
 		"- When unsure, split smaller.",
-		"",
-		"Required task template for each task:",
-		"### Task: <task id> <title>",
-		"",
-		"Why:",
-		"- <one sentence>",
-		"",
-		"In scope:",
-		"- <specific behavior>",
-		"- <specific seam>",
-		"",
-		"Out of scope:",
-		"- <explicit exclusions>",
-		"",
-		"Strict TDD:",
-		"1. Add or update one targeted failing test first",
-		"2. Run the targeted test and confirm it fails for the intended reason",
-		"3. Implement the minimum production change needed to make it pass",
-		"4. Re-run the targeted test",
-		"5. Run one narrow follow-up verification command",
-		"",
-		"Done when:",
-		"- <specific test or command passes>",
-		"- <specific behavior is verified>",
-		"",
-		"Expected files:",
-		"- <prod files>",
-		"- <test files>",
-		"",
-		"Depends on:",
-		"- <task IDs or none>",
-		"",
-		"Unlocks:",
-		"- <task IDs or none>",
+		"- All fields that are arrays must be JSON arrays of strings or objects, never comma-delimited prose.",
+		"- Use depends_on: [\"none\"] only for the next intended ready task. Later tasks should depend on earlier task IDs.",
+		"- Use unlocks: [\"none\"] when a task unlocks no later split task.",
 	}, "\n")
 }
 
 func requiredOutputPromptSection() string {
 	return strings.Join([]string{
-		"Required output:",
-		"- ## Epics",
-		"- ## Tasks containing only summary list items in the exact form `- <task id>: <title>`",
-		"- ## Order containing only dependency arrow chains like `- <task id> -> <task id>` or `- none`; do not write readiness prose such as `Ready now:` or `Blocked by:`",
-		"- ## Risk notes",
-		"- After ## Risk notes, one full strict task template for every task, using `### Task: <task id> <title>` headings and the exact required task template above.",
-		"- Do not place full task templates inside the ## Tasks summary section.",
+		"Required JSON response:",
+		"Return only one JSON object with exactly these top-level fields:",
+		`{"epics":[{"name":"<epic name>","goal":"<goal>"}],"tasks":[{"id":"<task id>","title":"<title>","why":["<one sentence>"],"in_scope":["<specific behavior>","<specific seam>"],"out_of_scope":["<explicit exclusions>"],"strict_tdd":["Add or update one targeted failing test first","Run the targeted test and confirm it fails for the intended reason","Implement the minimum production change needed to make it pass","Re-run the targeted test","Run one narrow follow-up verification command"],"done_when":["<specific test or command passes>","<specific behavior is verified>"],"expected_files":["<prod files>","<test files>"],"depends_on":["none"],"unlocks":["<task id>"]}],"order":[{"from":"<task id>","to":"<task id>"}],"risk_notes":["<risk or missing context>"]}`,
+		"Schema rules:",
+		"- epics must contain at least one object with name and goal.",
+		"- tasks must contain at least one object and every task object must contain exactly: id, title, why, in_scope, out_of_scope, strict_tdd, done_when, expected_files, depends_on, unlocks.",
+		"- order must be an array of dependency edge objects. Use [] when there are no edges. Do not write readiness prose such as Ready now or Blocked by.",
+		"- risk_notes must contain at least one concrete risk string, or [\"none\"] when there are no known risks.",
+		"- Do not include markdown headings, task templates, comments, trailing prose, or any field not shown in the schema.",
 	}, "\n")
 }
 

@@ -8,39 +8,39 @@ import (
 )
 
 type StrictOutput struct {
-	Epics     []Epic
-	Tasks     []Task
-	Order     []Dependency
-	RiskNotes []string
+	Epics     []Epic       `json:"epics"`
+	Tasks     []Task       `json:"tasks"`
+	Order     []Dependency `json:"order"`
+	RiskNotes []string     `json:"risk_notes"`
 }
 
 type Output = StrictOutput
 
 type Epic struct {
-	Name string
-	Goal string
+	Name string `json:"name"`
+	Goal string `json:"goal"`
 }
 
 type Dependency struct {
-	From string
-	To   string
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 type Task struct {
-	ID            string
-	Title         string
-	Why           []string
-	InScope       []string
-	OutOfScope    []string
-	StrictTDD     []string
-	DoneWhen      []string
-	ExpectedFiles []string
-	DependsOn     []string
-	Unlocks       []string
+	ID            string   `json:"id"`
+	Title         string   `json:"title"`
+	Why           []string `json:"why"`
+	InScope       []string `json:"in_scope"`
+	OutOfScope    []string `json:"out_of_scope"`
+	StrictTDD     []string `json:"strict_tdd"`
+	DoneWhen      []string `json:"done_when"`
+	ExpectedFiles []string `json:"expected_files"`
+	DependsOn     []string `json:"depends_on"`
+	Unlocks       []string `json:"unlocks"`
 }
 
 func Parse(input string) (StrictOutput, error) {
-	return ParseStrictOutput(input)
+	return ParseStrictJSONOutput(input)
 }
 
 func ParseStrictOutput(input string) (StrictOutput, error) {

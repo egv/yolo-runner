@@ -18,47 +18,44 @@ Constraints:
 - no mixed implementation, docs, integration, or e2e work
 - explicit out-of-scope for every task
 - explicit dependency chain so only the next intended task is ready
+- all output arrays must be JSON arrays, never comma-delimited prose
 
-Required task template for every task:
+Return only valid JSON. Do not wrap it in markdown or code fences. Use exactly this
+top-level shape:
 
-### Task: <task id> <title>
+```json
+{
+  "epics": [
+    {"name": "<epic name>", "goal": "<goal>"}
+  ],
+  "tasks": [
+    {
+      "id": "<task id>",
+      "title": "<title>",
+      "why": ["<one sentence>"],
+      "in_scope": ["<specific behavior>", "<specific seam>"],
+      "out_of_scope": ["<explicit exclusions>"],
+      "strict_tdd": [
+        "Add or update one targeted failing test first",
+        "Run the targeted test and confirm it fails for the intended reason",
+        "Implement the minimum production change needed to make it pass",
+        "Re-run the targeted test",
+        "Run one narrow follow-up verification command"
+      ],
+      "done_when": ["<specific test or command passes>", "<specific behavior is verified>"],
+      "expected_files": ["<prod files>", "<test files>"],
+      "depends_on": ["none"],
+      "unlocks": ["<task id>"]
+    }
+  ],
+  "order": [
+    {"from": "<task id>", "to": "<task id>"}
+  ],
+  "risk_notes": ["<risk or missing context>"]
+}
+```
 
-Why:
-- <one sentence>
-
-In scope:
-- <specific behavior>
-- <specific seam>
-
-Out of scope:
-- <explicit exclusions>
-
-Strict TDD:
-1. Add or update one targeted failing test first
-2. Run the targeted test and confirm it fails for the intended reason
-3. Implement the minimum production change needed to make it pass
-4. Re-run the targeted test
-5. Run one narrow follow-up verification command
-
-Done when:
-- <specific test or command passes>
-- <specific behavior is verified>
-
-Expected files:
-- <prod files>
-- <test files>
-
-Depends on:
-- <task IDs or none>
-
-Unlocks:
-- <task IDs or none>
-
-Required output structure:
-- `## Epics`
-- `## Tasks` containing only summary list items in the exact form `- <task id>: <title>`
-- `## Order` containing only dependency arrow chains like `- <task id> -> <task id>` or `- none`; do not write readiness prose such as `Ready now:` or `Blocked by:`
-- `## Risk notes`
-- after `## Risk notes`, one full strict task template for every task using `### Task: <task id> <title>` headings
-
-Do not place full task templates inside the `## Tasks` summary section.
+Use `order: []` when there are no dependency edges. Use `risk_notes: ["none"]`
+only when there are no known risks or missing-context notes. Do not include any
+markdown headings, task templates, comments, trailing prose, or fields not shown
+above.

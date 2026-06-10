@@ -1,10 +1,79 @@
 package splitter
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestParseStrictJSONOutputParsesAndRejectsInvalidOutput(t *testing.T) {
+	valid := strictJSONOutputFixture(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
+		strictJSONTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"}),
+		strictJSONTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"}),
+	)
+
+	got, err := ParseStrictJSONOutput(valid)
+	if err != nil {
+		t.Fatalf("ParseStrictJSONOutput returned error: %v", err)
+	}
+
+	wantEpics := []Epic{{Name: "Tracker task generation", Goal: "Generate strict Tracker subtasks from a broad task."}}
+	if !reflect.DeepEqual(got.Epics, wantEpics) {
+		t.Fatalf("Epics = %#v, want %#v", got.Epics, wantEpics)
+	}
+
+	wantOrder := []Dependency{
+		{From: "T20", To: "T21"},
+		{From: "T21", To: "T22"},
+	}
+	if !reflect.DeepEqual(got.Order, wantOrder) {
+		t.Fatalf("Order = %#v, want %#v", got.Order, wantOrder)
+	}
+
+	task := got.TaskByID("T21")
+	if task == nil {
+		t.Fatalf("expected T21 task, got tasks %#v", got.Tasks)
+	}
+	if task.Title != "Parse strict splitter output" {
+		t.Fatalf("T21 title = %q", task.Title)
+	}
+	if !reflect.DeepEqual(task.DependsOn, []string{"T20"}) {
+		t.Fatalf("T21 DependsOn = %#v", task.DependsOn)
+	}
+
+	_, err = ParseStrictJSONOutput("```json\n" + valid + "\n```")
+	if err == nil || !strings.Contains(err.Error(), "code fence") {
+		t.Fatalf("expected code fence rejection, got %v", err)
+	}
+
+	withUnknownField := strings.Replace(valid, `"risk_notes"`, `"extra":true,"risk_notes"`, 1)
+	_, err = ParseStrictJSONOutput(withUnknownField)
+	if err == nil || !strings.Contains(err.Error(), "unexpected JSON field") {
+		t.Fatalf("expected unknown field rejection, got %v", err)
+	}
+
+	missingOutOfScope := strictJSONOutput(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
+		strictJSONTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"}),
+	)
+	missingOutOfScope.Tasks[1].OutOfScope = nil
+	_, err = ParseStrictJSONOutput(mustStrictJSON(missingOutOfScope))
+	if err == nil || !strings.Contains(err.Error(), "out_of_scope") {
+		t.Fatalf("expected missing out_of_scope rejection, got %v", err)
+	}
+
+	ambiguousDependency := strictJSONOutput(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
+		strictJSONTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"none"}),
+	)
+	ambiguousDependency.Tasks[1].DependsOn = []string{"T20 or T22"}
+	_, err = ParseStrictJSONOutput(mustStrictJSON(ambiguousDependency))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
+		t.Fatalf("expected ambiguous dependency rejection, got %v", err)
+	}
+}
 
 func TestParseStrictOutputParsesSectionsAndRejectsInvalidOutput(t *testing.T) {
 	valid := strictOutputFixture(
@@ -165,6 +234,77 @@ func TestParseStrictOutputAcceptsReadyAndBlockedOrderAnnotations(t *testing.T) {
 	if !reflect.DeepEqual(got.Order, wantOrder) {
 		t.Fatalf("Order = %#v, want %#v", got.Order, wantOrder)
 	}
+}
+
+func strictJSONOutputFixture(tasks ...Task) string {
+	return mustStrictJSON(strictJSONOutput(tasks...))
+}
+
+func strictJSONOutput(tasks ...Task) StrictOutput {
+	orderCap := 0
+	if len(tasks) > 1 {
+		orderCap = len(tasks) - 1
+	}
+	order := make([]Dependency, 0, orderCap)
+	for i := 0; i < len(tasks)-1; i++ {
+		order = append(order, Dependency{From: tasks[i].ID, To: tasks[i+1].ID})
+	}
+	return StrictOutput{
+		Epics:     []Epic{{Name: "Tracker task generation", Goal: "Generate strict Tracker subtasks from a broad task."}},
+		Tasks:     tasks,
+		Order:     order,
+		RiskNotes: []string{"Model output may include stray prose before the first heading."},
+	}
+}
+
+func strictJSONTaskFixture(id, title, why string, dependsOn, unlocks []string) Task {
+	if id == "T21" {
+		return Task{
+			ID:         id,
+			Title:      title,
+			Why:        []string{why},
+			InScope:    []string{"Parse Epics, Tasks, Order, Risk notes, and each strict task object from splitter output.", "Seam: split output parser"},
+			OutOfScope: []string{"Codex invocation and Tracker subtask creation."},
+			StrictTDD: []string{
+				"Add or update one targeted failing test first",
+				"Run the targeted test and confirm it fails for the intended reason",
+				"Implement the minimum production change needed to make it pass",
+				"Re-run the targeted test",
+				"Run one narrow follow-up verification command",
+			},
+			DoneWhen:      []string{"Tests reject missing strict fields and dependency-ambiguous output.", "The narrow verification command for the touched package passes."},
+			ExpectedFiles: []string{"internal/agent/splitter/json_parser.go", "internal/agent/splitter/parser_test.go"},
+			DependsOn:     dependsOn,
+			Unlocks:       unlocks,
+		}
+	}
+
+	return Task{
+		ID:         id,
+		Title:      title,
+		Why:        []string{why},
+		InScope:    []string{"Implement one focused behavior."},
+		OutOfScope: []string{"Other task slices."},
+		StrictTDD: []string{
+			"Add or update one targeted failing test first",
+			"Run the targeted test and confirm it fails for the intended reason",
+			"Implement the minimum production change needed to make it pass",
+			"Re-run the targeted test",
+			"Run one narrow follow-up verification command",
+		},
+		DoneWhen:      []string{"The targeted test passes."},
+		ExpectedFiles: []string{"internal/agent/splitter/json_parser.go"},
+		DependsOn:     dependsOn,
+		Unlocks:       unlocks,
+	}
+}
+
+func mustStrictJSON(output StrictOutput) string {
+	payload, err := json.Marshal(output)
+	if err != nil {
+		panic(err)
+	}
+	return string(payload)
 }
 
 func strictOutputFixture(tasks ...string) string {

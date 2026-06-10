@@ -15,23 +15,40 @@ Requirements:
 - produce explicit dependency order
 - include strict TDD acceptance criteria
 - call out any tasks that are still too broad
+- return strict JSON only, with arrays for all repeated fields
 
-Each task should include:
-- Title
-- Why
-- In scope
-- Out of scope
-- Strict TDD steps
-- Done when
-- Expected files
-- Depends on
-- Unlocks
+Return only valid JSON. Do not wrap it in markdown or code fences. Use exactly
+these top-level fields:
 
-Output structure:
-- `## Epics`
-- `## Tasks` containing only summary list items in the exact form `- <task id>: <title>`
-- `## Order` containing only dependency arrow chains like `- <task id> -> <task id>` or `- none`; do not write readiness prose such as `Ready now:` or `Blocked by:`
-- `## Risk notes`
-- after `## Risk notes`, one full task section for every task using `### Task: <task id> <title>` headings
+```json
+{
+  "epics": [{"name": "<epic name>", "goal": "<goal>"}],
+  "tasks": [
+    {
+      "id": "<task id>",
+      "title": "<title>",
+      "why": ["<one sentence>"],
+      "in_scope": ["<specific behavior>", "<specific seam>"],
+      "out_of_scope": ["<explicit exclusions>"],
+      "strict_tdd": [
+        "Add or update one targeted failing test first",
+        "Run the targeted test and confirm it fails for the intended reason",
+        "Implement the minimum production change needed to make it pass",
+        "Re-run the targeted test",
+        "Run one narrow follow-up verification command"
+      ],
+      "done_when": ["<specific test or command passes>", "<specific behavior is verified>"],
+      "expected_files": ["<prod files>", "<test files>"],
+      "depends_on": ["none"],
+      "unlocks": ["<task id>"]
+    }
+  ],
+  "order": [{"from": "<task id>", "to": "<task id>"}],
+  "risk_notes": ["<risk or missing context>"]
+}
+```
 
-Do not place full task sections inside the `## Tasks` summary section.
+Use `order: []` when there are no dependency edges. Use `risk_notes: ["none"]`
+only when there are no known risks or missing-context notes. Do not include any
+markdown headings, task templates, comments, trailing prose, or fields not shown
+above.

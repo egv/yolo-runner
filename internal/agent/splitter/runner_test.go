@@ -11,10 +11,10 @@ import (
 )
 
 func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
-	output := strictOutputFixture(
-		strictTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
-		strictTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"}),
-		strictTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"}),
+	output := strictJSONOutputFixture(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
+		strictJSONTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"}),
+		strictJSONTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"}),
 	)
 	agent := &fakeSplitterAgentRunner{output: output}
 	runner := NewRunner(agent)
@@ -65,11 +65,11 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 	for _, want := range []string{
 		"using only the instructions in this prompt",
 		"Do not run shell commands, inspect files, or search the filesystem",
-		"Required task template for each task",
-		"## Tasks containing only summary list items",
-		"Do not place full task templates inside the ## Tasks summary section",
-		"do not write readiness prose",
-		"Return only the strict splitter markdown",
+		"Return only valid JSON matching the required schema",
+		"Do not wrap the JSON in markdown or code fences",
+		`"epics"`,
+		`"depends_on"`,
+		"Do not include markdown headings, task templates, comments, trailing prose, or any field not shown in the schema",
 		"ID: parent-123",
 		"Title: Implement broad tracker automation",
 		"Create a pipeline that splits ready parent issues before implementation.",
@@ -104,29 +104,25 @@ func TestRunnerInvokesStrictSplitterAndParsesTasks(t *testing.T) {
 }
 
 func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
-	taskT20 := strictTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"})
-	taskT21 := strictTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"})
-	taskT22 := strictTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"})
-	output := strictOutputFixture(
-		taskT20,
-		taskT21,
-		taskT22,
+	output := strictJSONOutputFixture(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"T21"}),
+		strictJSONTaskFixture("T21", "Parse strict splitter output", "Generated Tracker subtasks need structured task sections, not prose blobs.", []string{"T20"}, []string{"T22"}),
+		strictJSONTaskFixture("T22", "Create Tracker subtasks", "Tracker needs concrete child tasks from parsed splitter output.", []string{"T21"}, []string{"none"}),
 	)
+	trackerIndex := strings.Index(output, "Tracker task generation")
+	if trackerIndex < 0 {
+		t.Fatalf("fixture missing expected split point: %s", output)
+	}
 	chunks := []string{
-		"Introductory prose should be ignored.\n\n#",
-		"# Epics\n- Tracker task generation",
-		": Generate strict Tracker subtasks from a broad task.\n\n## Tas",
-		"ks\n- T20: Invoke strict splitter\n- T21: Parse strict splitter output\n- T22: Create Tracker subtasks\n\n## Order\n- T20 -> T21 -> T22\n\n## Risk notes\n- Model output may include stray prose before the first heading.\n\n",
-		taskT20,
-		taskT21,
-		taskT22,
+		output[:trackerIndex+7],
+		output[trackerIndex+7 : trackerIndex+12],
+		output[trackerIndex+12:],
 	}
 	progress := make([]contracts.RunnerProgress, 0, len(chunks))
 	for _, chunk := range chunks {
 		progress = append(progress, contracts.RunnerProgress{
-			Type:     string(contracts.EventTypeRunnerOutput),
-			Message:  chunk,
-			Metadata: map[string]string{"preserve_whitespace": "true"},
+			Type:    string(contracts.EventTypeRunnerOutput),
+			Message: chunk,
 		})
 	}
 	agent := &fakeSplitterAgentRunner{progress: progress}
