@@ -1,8 +1,10 @@
 package arcanum
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -32,6 +34,10 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(data, &object); err != nil {
+		stream, streamErr := prListStreamItems(data)
+		if streamErr == nil {
+			return stream, nil
+		}
 		return nil, fmt.Errorf("parse arc pr list JSON: %w", err)
 	}
 
@@ -47,6 +53,22 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 	}
 
 	return nil, fmt.Errorf("arc pr list JSON did not contain a PR list")
+}
+
+func prListStreamItems(data []byte) ([]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var list []json.RawMessage
+
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			if err == io.EOF {
+				return list, nil
+			}
+			return nil, err
+		}
+		list = append(list, raw)
+	}
 }
 
 func parsePRSummary(raw json.RawMessage) (PRSummary, error) {
