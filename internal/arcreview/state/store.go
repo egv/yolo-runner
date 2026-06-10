@@ -90,6 +90,12 @@ CREATE TABLE IF NOT EXISTS answered_comments (
 	comment_id TEXT NOT NULL,
 	answered_at TEXT NOT NULL,
 	PRIMARY KEY (pr_id, comment_id)
+);
+
+CREATE TABLE IF NOT EXISTS reviewed_revisions (
+	pr_id TEXT PRIMARY KEY,
+	revision TEXT NOT NULL,
+	reviewed_at TEXT NOT NULL
 );`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -425,6 +431,51 @@ ORDER BY comment_id`, prID)
 		return nil, fmt.Errorf("read answered comments for PR %q: %w", prID, err)
 	}
 	return commentIDs, nil
+}
+
+func (s *Store) StoreReviewedRevision(ctx context.Context, prID string, revision string) error {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return fmt.Errorf("PR ID is required")
+	}
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return fmt.Errorf("revision is required")
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO reviewed_revisions (pr_id, revision, reviewed_at)
+VALUES (?, ?, ?)
+ON CONFLICT(pr_id) DO UPDATE SET
+	revision = excluded.revision,
+	reviewed_at = excluded.reviewed_at`,
+		prID,
+		revision,
+		formatTime(time.Now().UTC()),
+	); err != nil {
+		return fmt.Errorf("store reviewed revision for PR %q: %w", prID, err)
+	}
+	return nil
+}
+
+func (s *Store) GetReviewedRevision(ctx context.Context, prID string) (string, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return "", fmt.Errorf("PR ID is required")
+	}
+
+	var revision string
+	err := s.db.QueryRowContext(ctx, `
+SELECT revision
+FROM reviewed_revisions
+WHERE pr_id = ?`, prID).Scan(&revision)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get reviewed revision for PR %q: %w", prID, err)
+	}
+	return revision, nil
 }
 
 type sessionScanner interface {
