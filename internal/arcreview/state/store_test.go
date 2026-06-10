@@ -1,11 +1,16 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 )
+
+var _ arcreview.ReviewedRevisionStore = (*Store)(nil)
 
 func TestOpenInitializesRequiredTablesIdempotently(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "state.db")
@@ -14,7 +19,7 @@ func TestOpenInitializesRequiredTablesIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	assertTablesExist(t, store.db, "pr_sessions", "pr_events", "heartbeats")
+	assertTablesExist(t, store.db, "pr_sessions", "pr_events", "heartbeats", "reviewed_revisions")
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -28,7 +33,7 @@ func TestOpenInitializesRequiredTablesIdempotently(t *testing.T) {
 			t.Errorf("Close() error = %v", err)
 		}
 	})
-	assertTablesExist(t, reopened.db, "pr_sessions", "pr_events", "heartbeats")
+	assertTablesExist(t, reopened.db, "pr_sessions", "pr_events", "heartbeats", "reviewed_revisions")
 }
 
 func TestStoreSessionCRUDPersistsAcrossReopen(t *testing.T) {
@@ -196,6 +201,49 @@ func TestStoreHeartbeatPersistsAndClassifiesFreshness(t *testing.T) {
 	}
 	if !persisted.Equal(beatAt) {
 		t.Fatalf("reopened GetHeartbeat() = %v, want %v", persisted, beatAt)
+	}
+}
+
+func TestStoreReviewedRevisionRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	unknownRevision, err := store.GetReviewedRevision(ctx, "ARCADIA-404")
+	if err != nil {
+		t.Fatalf("GetReviewedRevision(unknown) error = %v", err)
+	}
+	if unknownRevision != "" {
+		t.Fatalf("GetReviewedRevision(unknown) = %q, want empty", unknownRevision)
+	}
+
+	if err := store.StoreReviewedRevision(ctx, "ARCADIA-42", "r7"); err != nil {
+		t.Fatalf("StoreReviewedRevision() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	revision, err := reopened.GetReviewedRevision(ctx, "ARCADIA-42")
+	if err != nil {
+		t.Fatalf("GetReviewedRevision() error = %v", err)
+	}
+	if revision != "r7" {
+		t.Fatalf("GetReviewedRevision() = %q, want %q", revision, "r7")
 	}
 }
 
