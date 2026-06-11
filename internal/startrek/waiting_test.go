@@ -44,6 +44,18 @@ func TestShouldResumeNeedsInfoWait(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "author marker reply",
+			comments: []IssueComment{
+				{
+					ID:        "author-marker-after-marker",
+					Body:      "<!-- yolo-runner:needs-info -->\n\nStill waiting for input.",
+					Author:    IssueAuthor{ID: "author-1"},
+					CreatedAt: markerAt.Add(time.Minute),
+				},
+			},
+			want: false,
+		},
+		{
 			name: "author reply",
 			comments: []IssueComment{
 				{
