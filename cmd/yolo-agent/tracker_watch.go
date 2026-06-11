@@ -32,6 +32,7 @@ type trackerWatchLock struct {
 
 type trackerWatchPollIteration func(context.Context) error
 type trackerWatchIterationErrorHandler func(error)
+type trackerWatchPollIntervalProvider func() time.Duration
 type trackerWatchPollWait func(context.Context, time.Duration) error
 
 type trackerAgentConfigResolver interface {
@@ -61,7 +62,9 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	}()
 	sawIterationError := false
 	recoveredFromIterationError := false
-	err = runTrackerWatchPollLoop(ctx, cfg.once, startupTrackerAgentConfig.PollInterval, func(ctx context.Context) error {
+	err = runTrackerWatchPollLoop(ctx, cfg.once, func() time.Duration {
+		return startupTrackerAgentConfig.PollInterval
+	}, func(ctx context.Context) error {
 		err := runTrackerWatchPollIteration(ctx, cfg)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
@@ -117,9 +120,12 @@ func trackerWatchEventSink(cfg trackerWatchConfig) (contracts.EventSink, func())
 	return contracts.NewFanoutEventSink(sinks...), closeFn
 }
 
-func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, maxConsecutiveFailures int, wait trackerWatchPollWait) error {
+func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval trackerWatchPollIntervalProvider, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, maxConsecutiveFailures int, wait trackerWatchPollWait) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if pollInterval == nil {
+		return errors.New("tracker-watch poll interval provider is required")
 	}
 	if iterate == nil {
 		return errors.New("tracker-watch poll iteration is required")
@@ -153,7 +159,7 @@ func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.D
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := wait(ctx, pollInterval); err != nil {
+		if err := wait(ctx, pollInterval()); err != nil {
 			return err
 		}
 	}

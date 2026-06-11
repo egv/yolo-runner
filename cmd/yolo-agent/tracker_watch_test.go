@@ -27,7 +27,7 @@ func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
 		err := runTrackerWatchPollLoop(
 			context.Background(),
 			true,
-			time.Hour,
+			fixedTrackerWatchPollInterval(time.Hour),
 			func(context.Context) error {
 				calls++
 				return nil
@@ -61,7 +61,7 @@ func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
 		err := runTrackerWatchPollLoop(
 			ctx,
 			false,
-			wantInterval,
+			fixedTrackerWatchPollInterval(wantInterval),
 			func(context.Context) error {
 				calls++
 				if calls == 3 {
@@ -109,7 +109,7 @@ func TestRunTrackerWatchPollLoopContinuesAfterIterationErrors(t *testing.T) {
 		err := runTrackerWatchPollLoop(
 			ctx,
 			false,
-			time.Hour,
+			fixedTrackerWatchPollInterval(time.Hour),
 			func(context.Context) error {
 				if calls >= len(iterationResults) {
 					cancel()
@@ -157,7 +157,7 @@ func TestRunTrackerWatchPollLoopContinuesAfterIterationErrors(t *testing.T) {
 		err := runTrackerWatchPollLoop(
 			context.Background(),
 			false,
-			time.Hour,
+			fixedTrackerWatchPollInterval(time.Hour),
 			func(context.Context) error {
 				calls++
 				if calls == 1 {
@@ -190,6 +190,56 @@ func TestRunTrackerWatchPollLoopContinuesAfterIterationErrors(t *testing.T) {
 			t.Fatalf("unexpected reported errors: %#v", iterationErrors)
 		}
 	})
+}
+
+func TestRunTrackerWatchPollLoopUsesFreshIntervalProviderForEachWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	providerCalls := 0
+	waitIntervals := []time.Duration{}
+
+	err := runTrackerWatchPollLoop(
+		ctx,
+		false,
+		func() time.Duration {
+			providerCalls++
+			return time.Duration(providerCalls) * time.Second
+		},
+		func(context.Context) error {
+			return nil
+		},
+		func(error) {},
+		3,
+		func(_ context.Context, interval time.Duration) error {
+			waitIntervals = append(waitIntervals, interval)
+			if len(waitIntervals) == 3 {
+				cancel()
+			}
+			return nil
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if providerCalls != 3 {
+		t.Fatalf("expected interval provider to be called before each wait, got %d calls", providerCalls)
+	}
+	wantIntervals := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second}
+	if len(waitIntervals) != len(wantIntervals) {
+		t.Fatalf("expected wait intervals %#v, got %#v", wantIntervals, waitIntervals)
+	}
+	for i, want := range wantIntervals {
+		if waitIntervals[i] != want {
+			t.Fatalf("expected wait interval %d to be %s, got %s", i, want, waitIntervals[i])
+		}
+	}
+}
+
+func fixedTrackerWatchPollInterval(interval time.Duration) trackerWatchPollIntervalProvider {
+	return func() time.Duration {
+		return interval
+	}
 }
 
 func TestDefaultRunTrackerWatchEmitsWarningAndContinuesAfterIterationError(t *testing.T) {

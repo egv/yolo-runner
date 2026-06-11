@@ -63,7 +63,9 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	emitArcReviewWatchStarted(ctx, cfg, reviewWatchConfig)
 	sawIterationError := false
 	recoveredFromIterationError := false
-	err = runArcReviewWatchPollLoop(ctx, cfg.once, reviewWatchConfig.PollInterval, func(context.Context) error {
+	err = runArcReviewWatchPollLoop(ctx, cfg.once, func() time.Duration {
+		return reviewWatchConfig.PollInterval
+	}, func(context.Context) error {
 		err := runArcReviewWatchPollIteration(cfg)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
@@ -120,7 +122,7 @@ func arcReviewWatchEventSink(cfg arcReviewWatchCommandConfig) (contracts.EventSi
 	return contracts.NewFanoutEventSink(sinks...), closeFn
 }
 
-func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, wait trackerWatchPollWait) error {
+func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval trackerWatchPollIntervalProvider, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, wait trackerWatchPollWait) error {
 	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, onIterationError, defaultTrackerWatchResilientMaxConsecutiveFailures, wait)
 }
 
