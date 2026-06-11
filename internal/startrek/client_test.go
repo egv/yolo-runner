@@ -3,10 +3,13 @@ package startrek
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,6 +108,120 @@ func TestClientDoJSONReturnsJSONErrorMessage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "queue is required") {
 		t.Fatalf("expected nested error message in error, got %q", err.Error())
+	}
+}
+
+func TestClientRetriesTransientSearchFailuresOnlyForIdempotentRequests(t *testing.T) {
+	var searchAttempts int32
+	var mutationAttempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/v3/issues/_search":
+			attempt := atomic.AddInt32(&searchAttempts, 1)
+			if attempt < 3 {
+				http.Error(w, `{"message":"temporary startrek failure"}`, http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Total-Count", "0")
+			w.Header().Set("X-Total-Pages", "0")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case req.Method == http.MethodPatch && req.URL.Path == "/v3/issues/VAY-42":
+			atomic.AddInt32(&mutationAttempts, 1)
+			http.Error(w, `{"message":"temporary startrek failure"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{
+		Endpoint: server.URL + "/v3",
+		Token:    "tracker-token",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if _, err := client.SearchIssues(context.Background(), IssueSearchOptions{
+		QueueKey:   "VAY",
+		ReadyLabel: "ready-for-yolo",
+	}); err != nil {
+		t.Fatalf("search issues after transient failures: %v", err)
+	}
+	if got := atomic.LoadInt32(&searchAttempts); got != 3 {
+		t.Fatalf("expected search to be attempted 3 times, got %d", got)
+	}
+
+	err = client.AddLabel(context.Background(), "VAY-42", "ready-for-yolo")
+	if err == nil {
+		t.Fatalf("expected mutating request to fail on first 500")
+	}
+	if got := atomic.LoadInt32(&mutationAttempts); got != 1 {
+		t.Fatalf("expected mutating request to be attempted once, got %d", got)
+	}
+}
+
+func TestClientRetriesConnectionErrorsForIdempotentRequests(t *testing.T) {
+	var attempts int
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("temporary connection failure")
+		}
+		return jsonResponse(http.StatusOK, `{"ok":true}`), nil
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var response struct {
+		OK bool `json:"ok"`
+	}
+	if err := client.DoJSON(context.Background(), http.MethodGet, "issues/VAY-42", nil, &response); err != nil {
+		t.Fatalf("get issue after connection errors: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected GET to be attempted 3 times, got %d", attempts)
+	}
+	if !response.OK {
+		t.Fatalf("expected successful response to be decoded")
+	}
+}
+
+func TestClientRetryHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int
+	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		cancel()
+		return jsonResponse(http.StatusInternalServerError, `{"message":"temporary startrek failure"}`), nil
+	})
+
+	client, err := NewClient(Config{
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	err = client.DoJSON(ctx, http.MethodGet, "issues/VAY-42", nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected cancellation to stop retry after first attempt, got %d attempts", attempts)
 	}
 }
 

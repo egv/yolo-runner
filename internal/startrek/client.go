@@ -19,6 +19,11 @@ import (
 const defaultMaxResponseBytes int64 = 1 << 20
 
 const (
+	startrekRequestMaxAttempts         = 3
+	startrekRequestInitialRetryBackoff = 10 * time.Millisecond
+)
+
+const (
 	defaultIssueSearchPage    = 1
 	defaultIssueSearchPerPage = 50
 )
@@ -492,55 +497,121 @@ func (c *Client) doJSON(ctx context.Context, method string, requestPath string, 
 		return nil, err
 	}
 
-	var body io.Reader = http.NoBody
+	var payload []byte
 	if requestBody != nil {
-		payload, err := json.Marshal(requestBody)
+		payload, err = json.Marshal(requestBody)
 		if err != nil {
 			return nil, fmt.Errorf("marshal startrek request body: %w", err)
 		}
-		body = bytes.NewReader(payload)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
-	if err != nil {
-		return nil, fmt.Errorf("build startrek request: %w", err)
-	}
-	req.Header.Set("Authorization", "OAuth "+c.token)
-	req.Header.Set("Accept", "application/json")
-	if requestBody != nil {
-		req.Header.Set("Content-Type", "application/json")
+	maxAttempts := 1
+	if isRetryableStartrekRequest(method, requestPath) {
+		maxAttempts = startrekRequestMaxAttempts
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send startrek request: %w", err)
-	}
-	if resp == nil {
-		return nil, errors.New("send startrek request: nil response")
-	}
-	defer resp.Body.Close()
-
-	raw, err := readBounded(resp.Body, c.maxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("read startrek response: %w", err)
-	}
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		msg := startrekErrorMessage(raw)
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("startrek request %s %s: http %d: %s", method, requestPath, resp.StatusCode, msg)
-	}
 
-	if responseBody == nil || len(strings.TrimSpace(string(raw))) == 0 {
+		var body io.Reader = http.NoBody
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
+		if err != nil {
+			return nil, fmt.Errorf("build startrek request: %w", err)
+		}
+		req.Header.Set("Authorization", "OAuth "+c.token)
+		req.Header.Set("Accept", "application/json")
+		if requestBody != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if attempt < maxAttempts {
+				if err := waitStartrekRetryBackoff(ctx, attempt); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, fmt.Errorf("send startrek request: %w", err)
+		}
+		if resp == nil {
+			return nil, errors.New("send startrek request: nil response")
+		}
+
+		raw, err := readBounded(resp.Body, c.maxResponseBytes)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read startrek response: %w", err)
+		}
+
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			msg := startrekErrorMessage(raw)
+			if msg == "" {
+				msg = http.StatusText(resp.StatusCode)
+			}
+			requestErr := fmt.Errorf("startrek request %s %s: http %d: %s", method, requestPath, resp.StatusCode, msg)
+			if resp.StatusCode >= http.StatusInternalServerError && attempt < maxAttempts {
+				if err := waitStartrekRetryBackoff(ctx, attempt); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, requestErr
+		}
+
+		if responseBody == nil || len(strings.TrimSpace(string(raw))) == 0 {
+			return resp.Header.Clone(), nil
+		}
+		if err := json.Unmarshal(raw, responseBody); err != nil {
+			return nil, fmt.Errorf("decode startrek response: %w", err)
+		}
+
 		return resp.Header.Clone(), nil
 	}
-	if err := json.Unmarshal(raw, responseBody); err != nil {
-		return nil, fmt.Errorf("decode startrek response: %w", err)
+
+	return nil, errors.New("send startrek request: retry attempts exhausted")
+}
+
+func isRetryableStartrekRequest(method string, requestPath string) bool {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == http.MethodGet {
+		return true
+	}
+	if method != http.MethodPost {
+		return false
 	}
 
-	return resp.Header.Clone(), nil
+	path := strings.Trim(strings.TrimSpace(requestPath), "/")
+	if beforeQuery, _, ok := strings.Cut(path, "?"); ok {
+		path = beforeQuery
+	}
+	return path == "issues/_search"
+}
+
+func waitStartrekRetryBackoff(ctx context.Context, attempt int) error {
+	backoff := startrekRequestInitialRetryBackoff
+	for i := 1; i < attempt; i++ {
+		backoff *= 2
+	}
+
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func normalizeEndpoint(raw string) (string, error) {
