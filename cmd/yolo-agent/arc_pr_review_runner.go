@@ -38,13 +38,18 @@ type arcPRReviewRunnerHeartbeatFunc func(context.Context, time.Time) error
 type arcPRReviewRunnerClockFunc func() time.Time
 type arcPRReviewRunnerWaitFunc func(context.Context, time.Duration) error
 
+type arcPRReviewRunnerReviewWatchConfigResolver interface {
+	ResolveArcReviewWatchConfig(repoRoot string) (arcReviewWatchConfig, error)
+}
+
 type arcPRReviewRunnerLoopConfig struct {
-	CycleConfig  arcPRReviewCycleConfig
-	PollInterval time.Duration
-	Heartbeat    arcPRReviewRunnerHeartbeatFunc
-	Cycle        arcPRReviewRunnerCycleFunc
-	Now          arcPRReviewRunnerClockFunc
-	Wait         arcPRReviewRunnerWaitFunc
+	CycleConfig               arcPRReviewCycleConfig
+	PollInterval              time.Duration
+	ReviewWatchConfigResolver arcPRReviewRunnerReviewWatchConfigResolver
+	Heartbeat                 arcPRReviewRunnerHeartbeatFunc
+	Cycle                     arcPRReviewRunnerCycleFunc
+	Now                       arcPRReviewRunnerClockFunc
+	Wait                      arcPRReviewRunnerWaitFunc
 }
 
 var runArcPRReviewRunner = defaultRunArcPRReviewRunner
@@ -138,7 +143,8 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 		return nil
 	}
 
-	reviewWatchConfig, err := newTrackerConfigService().ResolveArcReviewWatchConfig(cfg.repoRoot)
+	configService := newTrackerConfigService()
+	reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -182,7 +188,8 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 				Client: arcanum.NewShipArcanumClient(cfg.workspace),
 			},
 		},
-		PollInterval: reviewWatchConfig.PollInterval,
+		PollInterval:              reviewWatchConfig.PollInterval,
+		ReviewWatchConfigResolver: configService,
 		Heartbeat: func(_ context.Context, at time.Time) error {
 			return store.UpdateHeartbeat(session.ID, at)
 		},
@@ -230,7 +237,13 @@ func runArcPRReviewRunnerLoop(ctx context.Context, cfg arcPRReviewRunnerLoopConf
 			}
 			return err
 		}
-		result, err := cfg.Cycle(ctx, cfg.CycleConfig)
+		cycleConfig := cfg.CycleConfig
+		if cfg.ReviewWatchConfigResolver != nil {
+			if reviewWatchConfig, err := cfg.ReviewWatchConfigResolver.ResolveArcReviewWatchConfig(cfg.CycleConfig.RepoRoot); err == nil {
+				cycleConfig = arcPRReviewRunnerCycleConfigWithReviewWatchConfig(cfg.CycleConfig, reviewWatchConfig)
+			}
+		}
+		result, err := cfg.Cycle(ctx, cycleConfig)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return nil
@@ -250,6 +263,30 @@ func runArcPRReviewRunnerLoop(ctx context.Context, cfg arcPRReviewRunnerLoopConf
 			return err
 		}
 	}
+}
+
+func arcPRReviewRunnerCycleConfigWithReviewWatchConfig(base arcPRReviewCycleConfig, reviewWatchConfig arcReviewWatchConfig) arcPRReviewCycleConfig {
+	cycleConfig := base
+	cycleConfig.AllowShip = reviewWatchConfig.AllowShip
+	cycleConfig.Metadata = arcPRReviewRunnerMetadataWithReviewer(base.Metadata, reviewWatchConfig.Reviewer)
+	return cycleConfig
+}
+
+func arcPRReviewRunnerMetadataWithReviewer(metadata map[string]string, reviewer string) map[string]string {
+	out := cloneArcPRReviewModelMetadata(metadata)
+	reviewer = strings.TrimSpace(reviewer)
+	if reviewer == "" {
+		delete(out, "reviewer")
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if out == nil {
+		out = map[string]string{}
+	}
+	out["reviewer"] = reviewer
+	return out
 }
 
 func defaultRunArcPRReviewRunnerCycle(ctx context.Context, cfg arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error) {
