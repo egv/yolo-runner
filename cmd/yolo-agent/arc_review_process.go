@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -55,9 +56,7 @@ func buildArcReviewProcessSpec(cfg arcReviewProcessConfig) arcReviewProcessSpec 
 	if sessionID != "" {
 		argv = append(argv, "--session-id", sessionID)
 	}
-	if cfg.AllowShip {
-		argv = append(argv, "--allow-ship=true")
-	}
+	argv = append(argv, "--allow-ship="+strconv.FormatBool(cfg.AllowShip))
 	if reviewer := strings.TrimSpace(cfg.Reviewer); reviewer != "" {
 		argv = append(argv, "--reviewer", reviewer)
 	}
