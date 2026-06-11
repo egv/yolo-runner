@@ -109,7 +109,7 @@ func arcReviewWatchEventSink(cfg arcReviewWatchCommandConfig) (contracts.EventSi
 }
 
 func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, wait trackerWatchPollWait) error {
-	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, wait)
+	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, nil, defaultTrackerWatchMaxConsecutiveFailures, wait)
 }
 
 func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
