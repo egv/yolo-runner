@@ -6,7 +6,7 @@ The watcher reads the top-level `arc_review_watch` block from `.yolo-runner/conf
 
 ## Configuration
 
-Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove the review loop without landing anything.
+Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove session handoff without landing anything.
 
 ```yaml
 default_profile: arc-review
@@ -48,10 +48,10 @@ Important fields:
 - `poll_interval`: time between watch iterations when `--once` is omitted.
 - `lock_path`: local single-watcher lock. Remove it only after confirming no watcher is running.
 - `state_path`: SQLite session store for PR sessions, heartbeats, process IDs, event rows, and log paths.
-- `reviewer`: optional reviewer login used to filter discovered PRs. Omit it only when every eligible PR in the configured workspaces should be considered.
+- `reviewer`: required reviewer identity used by PR discovery. Omitted or blank discovers no eligible PRs.
 - `max_concurrency`: upper bound for concurrently managed review sessions.
 - `allow_ship`: final shipping gate. Omitted or `false` keeps shipping disabled.
-- `workspaces` and `branches`: filters used by PR discovery.
+- `workspaces` and `branches`: filters used by PR discovery. Discovery keeps only open PRs assigned to `reviewer` on one of the configured target branches.
 - `arc_mount`: optional Arc mount settings used when the watcher needs a managed Arcadia checkout.
 
 Validate the file before a live run:
@@ -76,19 +76,6 @@ For a dry run with a saved event log:
 ./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run --events "runner-logs/arc-review-watch-dry-run.events.jsonl"
 ```
 
-## Live Review Cycle
-
-A non-dry polling iteration discovers eligible open PRs from the configured `workspaces`, filters them by `reviewer` and `branches`, deduplicates by PR ID, and reconciles the result into `pr_sessions`. Newly discovered PRs are recorded with their workspace, branch, revision, and `pending` status. Existing running sessions are supervised by heartbeat and PID; stale or dead sessions are marked `crashed` before a replacement child process is started.
-
-The watcher hands `arc_review_watch.allow_ship` to the child runner as `--allow-ship=true` or `--allow-ship=false`. The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set, so its model metadata and logs match the discovery filter.
-
-The child `arc-pr-review-runner` fetches PR runtime state, reads the last handled revision from `reviewed_revisions`, plans one action, and then waits for the next poll interval unless the PR has reached a terminal state:
-
-- `review`: run the configured model, post inline comments and a summary, then store the reviewed revision.
-- `answer`: run the configured model and post replies for unanswered PR comments.
-- `ship`: call the ship gate only after `allow_ship` is true, the current revision has been reviewed, comments and blockers are clear, checks are not failing or pending, and the model verdict is `ship`.
-- `wait`: leave the PR untouched when it is terminal, checks are still pending or unknown, or shipping remains disabled after review.
-
 ## Events And TUI
 
 When `--events` is omitted and `--stream` is not set, the watcher writes `runner-logs/arc-review-watch.events.jsonl`.
@@ -107,6 +94,35 @@ For an operator-visible one-shot validation, keep `--once` and keep `allow_ship:
 
 The `run_started` and `run_finished` event metadata includes `command`, `repo`, `profile`, `dry_run`, `once`, `poll_interval`, `lock_path`, `state_path`, `max_concurrency`, and `allow_ship`. Child PR review processes write combined stdout and stderr to `runner-logs/arc-pr-review-<session-id>.log`.
 
+## Watcher Handoff And Live Review Cycle
+
+The watcher polls configured `workspaces`, filters discovered PRs by `reviewer`, `branches`, and open status, deduplicates by PR ID, reconciles the result into `pr_sessions`, and restarts stale `running` sessions. Newly discovered PRs are recorded with their workspace, branch, revision, and `pending` status.
+
+When the watcher starts a child runner, it passes `--state-path <state_path>`, `--events <events_path>`, and passes the setting to child runners as `--allow-ship=<true|false>`. The watcher hands `arc_review_watch.allow_ship` to the child runner as `--allow-ship=true` or `--allow-ship=false`. The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set, so its model metadata and logs match the discovery filter.
+
+Watcher-started child processes currently include `--once`, so they write one heartbeat and exit instead of running the full live review loop. Treat the watcher path as discovery, SQLite reconciliation, heartbeat, liveness, and process-handoff validation until the child launch mode changes.
+
+Run `arc-pr-review-runner` without `--once` for a full live review cycle. From an existing session:
+
+```bash
+./bin/yolo-agent arc-pr-review-runner \
+  --repo . \
+  --workspace /arcadia/users/alice/review-1 \
+  --pr-id <pr-id> \
+  --session-id <session-id> \
+  --state-path .yolo-runner/arc-review-watch-state.json \
+  --events runner-logs/arc-review-watch.events.jsonl \
+  --reviewer alice \
+  --allow-ship=false
+```
+
+Each live cycle writes a heartbeat, fetches the current PR runtime state, compares the current revision with `reviewed_revisions`, and plans one action before waiting for the next poll interval unless the PR has reached a terminal state:
+
+- Review: for a new revision, open blockers, or failed checks, run the configured model, post inline comments plus a summary, and store the reviewed revision in `reviewed_revisions`.
+- Answer: for unanswered comments, run the reply path and post answers.
+- Wait: for pending or unknown checks, terminal PR state, or disabled shipping after review, leave the PR untouched until the next interval.
+- Ship: call the ship gate only after `allow_ship: true`, a reviewed current revision, no open blockers, no unanswered comments, non-failing checks, and a model verdict of `ship`.
+
 ## Safe Startup
 
 1. Commit and push the config and task definitions needed by any downstream clones.
@@ -114,7 +130,7 @@ The `run_started` and `run_finished` event metadata includes `command`, `repo`, 
 3. Run `./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run`.
 4. Confirm the event log reports `dry_run=true` and the expected `state_path`.
 5. Start the watcher with `allow_ship: false`.
-6. Inspect the first live cycle in TUI and verify sessions are being discovered as expected.
+6. Inspect the first non-dry watcher iteration in TUI and verify sessions are being discovered as expected.
 
 After the dry run and one-shot validation pass, start the long-lived watcher by omitting `--once`:
 
@@ -133,7 +149,7 @@ STATE=.yolo-runner/arc-review-watch-state.json
 sqlite3 "$STATE" "select id, pr_id, workspace, branch, status, pid, heartbeat_at, failure_count, log_path from pr_sessions order by updated_at desc;"
 ```
 
-Inspect the last reviewed revision per PR:
+Inspect reviewed revisions used by the live review runner and ship gate:
 
 ```bash
 sqlite3 "$STATE" "select pr_id, revision, reviewed_at from reviewed_revisions order by reviewed_at desc;"
@@ -148,10 +164,11 @@ sqlite3 "$STATE" "update pr_sessions set status = 'crashed', pid = 0 where id = 
 Reset a PR completely when the state is wrong and you want fresh discovery:
 
 ```bash
+sqlite3 "$STATE" "delete from reviewed_revisions where pr_id = '<pr-id>';"
 sqlite3 "$STATE" "delete from pr_sessions where pr_id = '<pr-id>';"
 ```
 
-Use `delete` only for sessions that are not running. Keep the event JSONL and process log paths from `log_path` before deleting if you need audit evidence.
+Use `delete` only for sessions that are not running. Keep the event JSONL and process log paths from `log_path` before deleting if you need audit evidence. Delete the matching `reviewed_revisions` row when you need the next full runner cycle to review the current revision again.
 
 Use a full SQLite reset only when the state database is corrupt, points at the wrong repo, or contains sessions that should not be retried:
 
@@ -206,14 +223,14 @@ The watcher also detects stale `running` sessions by heartbeat age or dead PID a
 
 ## Ship Instructions
 
-Shipping is controlled by `arc_review_watch.allow_ship`. The ship gate still requires a reviewed current revision, no open blockers, no unanswered comments, non-failing checks, and a model verdict of `ship`.
+Shipping is controlled by `arc_review_watch.allow_ship`. The watcher passes the setting to child runners as `--allow-ship=<true|false>`, and the full live runner also resolves `arc_review_watch.allow_ship` before planning ship actions. The ship gate still requires a reviewed current revision, no open blockers, no unanswered comments, non-failing checks, and a model verdict of `ship`.
 
 The watcher hands `arc_review_watch.allow_ship` to the child runner as `--allow-ship=true` or `--allow-ship=false`. Confirm the child runner log or process arguments show `--allow-ship=true` only after the rollout gate has been intentionally opened.
 
 Recommended rollout:
 
-1. First production run: keep `allow_ship: false` and watch at least one full review cycle.
-2. Confirm review comments, summaries, checks, and session heartbeats are correct.
+1. First production run: keep `allow_ship: false` and watch at least one discovery and heartbeat handoff.
+2. Run or observe the full `arc-pr-review-runner` loop without `--once` while `allow_ship: false`, then confirm review comments, summaries, checks, and session heartbeats are correct.
 3. Confirm no stale `running` sessions remain in SQLite.
 4. Set `arc_review_watch.allow_ship: true` explicitly:
 
@@ -223,6 +240,6 @@ arc_review_watch:
 ```
 
 5. Run one more `--once --dry-run` to confirm config parsing and event metadata.
-6. Start the live watcher and monitor TUI plus `runner-logs/arc-review-watch.events.jsonl`.
+6. Start the long-lived watcher and monitor TUI plus `runner-logs/arc-review-watch.events.jsonl`.
 
 If an unexpected ship attempt is suspected, immediately stop the watcher, set `allow_ship: false`, remove only stale locks/processes, and inspect the SQLite sessions plus event logs before restarting.
