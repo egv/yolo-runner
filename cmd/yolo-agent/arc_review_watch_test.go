@@ -283,6 +283,99 @@ arc_review_watch:
 	t.Fatalf("expected runner_warning event, got %#v", events)
 }
 
+func TestDefaultRunArcReviewWatchUsesReloadedPollIntervalForNextWait(t *testing.T) {
+	repoRoot := t.TempDir()
+	reloadedInterval := 120 * time.Millisecond
+	configService := &fakeArcReviewWatchConfigService{
+		cfg: arcReviewWatchConfig{
+			PollInterval:   time.Millisecond,
+			LockPath:       filepath.Join(repoRoot, "locks", "arc-review-watch.lock"),
+			StatePath:      filepath.Join(repoRoot, "state", "arc-review-watch.db"),
+			MaxConcurrency: defaultArcReviewWatchMaxConcurrency,
+		},
+	}
+
+	originalConfigService := newArcReviewWatchConfigService
+	originalDiscover := discoverArcReviewPRs
+	originalWait := arcReviewWatchPollWait
+	t.Cleanup(func() {
+		newArcReviewWatchConfigService = originalConfigService
+		discoverArcReviewPRs = originalDiscover
+		arcReviewWatchPollWait = originalWait
+	})
+
+	newArcReviewWatchConfigService = func() arcReviewWatchConfigResolver {
+		return configService
+	}
+
+	discoverCalls := 0
+	discoverArcReviewPRs = func(_ arcReviewWatchCommandConfig, _ arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+		discoverCalls++
+		if discoverCalls == 2 {
+			configService.setPollInterval(reloadedInterval)
+		}
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var waits []time.Duration
+	arcReviewWatchPollWait = func(_ context.Context, interval time.Duration) error {
+		waits = append(waits, interval)
+		if len(waits) == 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := defaultRunArcReviewWatch(ctx, arcReviewWatchCommandConfig{
+		repoRoot: repoRoot,
+		dryRun:   true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected arc-review-watch to stop by context cancellation, got %v", err)
+	}
+	if discoverCalls < 2 {
+		t.Fatalf("expected at least two iterations before cancellation, got %d", discoverCalls)
+	}
+
+	wantWaits := []time.Duration{time.Millisecond, reloadedInterval}
+	if !reflect.DeepEqual(waits, wantWaits) {
+		t.Fatalf("wait intervals = %#v, want %#v", waits, wantWaits)
+	}
+}
+
+func TestArcReviewWatchDynamicPollIntervalProviderFallsBackToLastGoodOnResolutionError(t *testing.T) {
+	reloadErr := errors.New("reload failed")
+	calls := 0
+	resolver := arcReviewWatchConfigResolverFunc(func(repoRoot string) (arcReviewWatchConfig, error) {
+		if repoRoot != "/repo/yolo" {
+			t.Fatalf("repoRoot = %q, want /repo/yolo", repoRoot)
+		}
+		calls++
+		switch calls {
+		case 1:
+			return arcReviewWatchConfig{PollInterval: 5 * time.Second}, nil
+		case 2:
+			return arcReviewWatchConfig{}, reloadErr
+		default:
+			return arcReviewWatchConfig{PollInterval: 9 * time.Second}, nil
+		}
+	})
+	provider := arcReviewWatchDynamicPollIntervalProvider("/repo/yolo", resolver, time.Second)
+
+	if got := provider(); got != 5*time.Second {
+		t.Fatalf("first interval = %s, want 5s", got)
+	}
+	if got := provider(); got != 5*time.Second {
+		t.Fatalf("fallback interval = %s, want last good 5s", got)
+	}
+	if got := provider(); got != 9*time.Second {
+		t.Fatalf("recovered interval = %s, want 9s", got)
+	}
+}
+
 func TestReconcileArcReviewSessionsCreatesMissingPendingSessionsAndKeepsExistingNonTerminal(t *testing.T) {
 	store, err := arcreviewstate.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -755,4 +848,26 @@ func arcPRReviewRunnerConfigStringField(t *testing.T, cfg arcPRReviewRunnerComma
 		t.Fatalf("arcPRReviewRunnerCommandConfig.%s kind = %s, want string", name, field.Kind())
 	}
 	return field.String()
+}
+
+type fakeArcReviewWatchConfigService struct {
+	cfg arcReviewWatchConfig
+	err error
+}
+
+func (s *fakeArcReviewWatchConfigService) ResolveArcReviewWatchConfig(string) (arcReviewWatchConfig, error) {
+	if s.err != nil {
+		return arcReviewWatchConfig{}, s.err
+	}
+	return s.cfg, nil
+}
+
+func (s *fakeArcReviewWatchConfigService) setPollInterval(interval time.Duration) {
+	s.cfg.PollInterval = interval
+}
+
+type arcReviewWatchConfigResolverFunc func(string) (arcReviewWatchConfig, error)
+
+func (f arcReviewWatchConfigResolverFunc) ResolveArcReviewWatchConfig(repoRoot string) (arcReviewWatchConfig, error) {
+	return f(repoRoot)
 }

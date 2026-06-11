@@ -28,9 +28,17 @@ type arcReviewDiscoveredPR struct {
 var discoverArcReviewPRs = defaultDiscoverArcReviewPRs
 var listArcReviewWorkspacePRs = arcanum.ListWorkspacePRs
 var defaultArcReviewPIDLiveness arcReviewPIDLivenessChecker = arcReviewPIDLivenessFunc(isArcReviewPIDAlive)
+var arcReviewWatchPollWait = waitTrackerWatchPollInterval
+var newArcReviewWatchConfigService = func() arcReviewWatchConfigResolver {
+	return newTrackerConfigService()
+}
 
 type arcReviewPIDLivenessChecker interface {
 	IsArcReviewPIDAlive(pid int) bool
+}
+
+type arcReviewWatchConfigResolver interface {
+	ResolveArcReviewWatchConfig(repoRoot string) (arcReviewWatchConfig, error)
 }
 
 type arcReviewPIDLivenessFunc func(pid int) bool
@@ -48,7 +56,8 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	defer closeEventSink()
 	cfg.eventSink = eventSink
 
-	reviewWatchConfig, err := newTrackerConfigService().ResolveArcReviewWatchConfig(cfg.repoRoot)
+	configService := newArcReviewWatchConfigService()
+	reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -63,10 +72,9 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	emitArcReviewWatchStarted(ctx, cfg, reviewWatchConfig)
 	sawIterationError := false
 	recoveredFromIterationError := false
-	err = runArcReviewWatchPollLoop(ctx, cfg.once, func() time.Duration {
-		return reviewWatchConfig.PollInterval
-	}, func(context.Context) error {
-		err := runArcReviewWatchPollIteration(cfg)
+	pollInterval := arcReviewWatchDynamicPollIntervalProvider(cfg.repoRoot, configService, reviewWatchConfig.PollInterval)
+	err = runArcReviewWatchPollLoop(ctx, cfg.once, pollInterval, func(context.Context) error {
+		err := runArcReviewWatchPollIterationWithConfigService(cfg, configService)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
 		}
@@ -74,7 +82,7 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	}, func(err error) {
 		sawIterationError = true
 		emitTrackerWatchIterationWarning(ctx, cfg.eventSink, err)
-	}, waitTrackerWatchPollInterval)
+	}, arcReviewWatchPollWait)
 	if errors.Is(err, context.Canceled) && recoveredFromIterationError {
 		err = nil
 	}
@@ -126,8 +134,29 @@ func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval trac
 	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, onIterationError, defaultTrackerWatchResilientMaxConsecutiveFailures, wait)
 }
 
+func arcReviewWatchDynamicPollIntervalProvider(repoRoot string, configService arcReviewWatchConfigResolver, lastGood time.Duration) trackerWatchPollIntervalProvider {
+	return func() time.Duration {
+		if configService == nil {
+			return lastGood
+		}
+		reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(repoRoot)
+		if err != nil {
+			return lastGood
+		}
+		lastGood = reviewWatchConfig.PollInterval
+		return lastGood
+	}
+}
+
 func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
-	reviewWatchConfig, err := newTrackerConfigService().ResolveArcReviewWatchConfig(cfg.repoRoot)
+	return runArcReviewWatchPollIterationWithConfigService(cfg, newArcReviewWatchConfigService())
+}
+
+func runArcReviewWatchPollIterationWithConfigService(cfg arcReviewWatchCommandConfig, configService arcReviewWatchConfigResolver) error {
+	if configService == nil {
+		return errors.New("arc-review-watch config service is required")
+	}
+	reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
