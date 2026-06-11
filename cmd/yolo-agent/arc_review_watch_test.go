@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 func TestDefaultDiscoverArcReviewPRsAggregatesConfiguredWorkspacesAndDedupesByPRID(t *testing.T) {
@@ -222,6 +224,63 @@ arc_review_watch:
 	if unchanged != existing {
 		t.Fatalf("existing session changed\ngot:  %#v\nwant: %#v", unchanged, existing)
 	}
+}
+
+func TestDefaultRunArcReviewWatchEmitsWarningAndContinuesAfterIterationError(t *testing.T) {
+	repoRoot := t.TempDir()
+	eventsPath := filepath.Join(repoRoot, "runner-logs", "arc-review-watch.events.jsonl")
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  poll_interval: 1ms
+`)
+
+	originalDiscover := discoverArcReviewPRs
+	t.Cleanup(func() {
+		discoverArcReviewPRs = originalDiscover
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transientErr := errors.New("temporary arcanum outage")
+	discoverCalls := 0
+	discoverArcReviewPRs = func(_ arcReviewWatchCommandConfig, _ arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+		discoverCalls++
+		if discoverCalls == 1 {
+			return nil, transientErr
+		}
+		cancel()
+		return nil, nil
+	}
+
+	err := defaultRunArcReviewWatch(ctx, arcReviewWatchCommandConfig{
+		repoRoot:   repoRoot,
+		profile:    "default",
+		dryRun:     true,
+		eventsPath: eventsPath,
+	})
+	if err != nil {
+		t.Fatalf("expected arc-review-watch to keep running after transient iteration error, got %v", err)
+	}
+	if discoverCalls < 2 {
+		t.Fatalf("expected polling to continue after transient error, got %d discover calls", discoverCalls)
+	}
+
+	events := readTrackerWatchEvents(t, eventsPath)
+	for _, event := range events {
+		if event.Type != contracts.EventTypeRunnerWarning {
+			continue
+		}
+		if !strings.Contains(event.Message, "temporary arcanum outage") {
+			t.Fatalf("expected warning to include iteration error cause, got %q", event.Message)
+		}
+		return
+	}
+	t.Fatalf("expected runner_warning event, got %#v", events)
 }
 
 func TestReconcileArcReviewSessionsCreatesMissingPendingSessionsAndKeepsExistingNonTerminal(t *testing.T) {
