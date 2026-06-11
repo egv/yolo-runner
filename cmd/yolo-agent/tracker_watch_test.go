@@ -22,6 +22,8 @@ func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
 				calls++
 				return nil
 			},
+			func(error) {},
+			3,
 			func(context.Context, time.Duration) error {
 				waits++
 				return nil
@@ -57,6 +59,8 @@ func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
 				}
 				return nil
 			},
+			func(error) {},
+			3,
 			func(_ context.Context, interval time.Duration) error {
 				waits = append(waits, interval)
 				return nil
@@ -75,6 +79,105 @@ func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
 			if got != wantInterval {
 				t.Fatalf("expected wait interval %s, got %s", wantInterval, got)
 			}
+		}
+	})
+}
+
+func TestRunTrackerWatchPollLoopContinuesAfterIterationErrors(t *testing.T) {
+	t.Run("keeps polling after transient iteration errors and resets consecutive failures", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errOne := errors.New("tracker failure one")
+		errTwo := errors.New("tracker failure two")
+		errThree := errors.New("tracker failure three")
+		iterationResults := []error{errOne, errTwo, nil, errThree, nil}
+		calls := 0
+		waits := 0
+		var iterationErrors []error
+
+		err := runTrackerWatchPollLoop(
+			ctx,
+			false,
+			time.Hour,
+			func(context.Context) error {
+				if calls >= len(iterationResults) {
+					cancel()
+					return nil
+				}
+				err := iterationResults[calls]
+				calls++
+				return err
+			},
+			func(err error) {
+				iterationErrors = append(iterationErrors, err)
+			},
+			3,
+			func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			},
+		)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation after transient errors, got %v", err)
+		}
+		if calls != len(iterationResults) {
+			t.Fatalf("expected %d iterations, got %d", len(iterationResults), calls)
+		}
+		if waits != len(iterationResults) {
+			t.Fatalf("expected wait after each non-once iteration, got %d", waits)
+		}
+		if len(iterationErrors) != 3 {
+			t.Fatalf("expected three reported iteration errors, got %d", len(iterationErrors))
+		}
+		for i, want := range []error{errOne, errTwo, errThree} {
+			if !errors.Is(iterationErrors[i], want) {
+				t.Fatalf("expected reported error %d to be %v, got %v", i, want, iterationErrors[i])
+			}
+		}
+	})
+
+	t.Run("exits after max consecutive iteration failures", func(t *testing.T) {
+		errOne := errors.New("tracker failure one")
+		errTwo := errors.New("tracker failure two")
+		calls := 0
+		waits := 0
+		var iterationErrors []error
+
+		err := runTrackerWatchPollLoop(
+			context.Background(),
+			false,
+			time.Hour,
+			func(context.Context) error {
+				calls++
+				if calls == 1 {
+					return errOne
+				}
+				return errTwo
+			},
+			func(err error) {
+				iterationErrors = append(iterationErrors, err)
+			},
+			2,
+			func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			},
+		)
+		if !errors.Is(err, errTwo) {
+			t.Fatalf("expected second consecutive error, got %v", err)
+		}
+		if calls != 2 {
+			t.Fatalf("expected two iterations before cap exit, got %d", calls)
+		}
+		if waits != 1 {
+			t.Fatalf("expected one wait before cap exit, got %d", waits)
+		}
+		if len(iterationErrors) != 2 {
+			t.Fatalf("expected two reported iteration errors, got %d", len(iterationErrors))
+		}
+		if !errors.Is(iterationErrors[0], errOne) || !errors.Is(iterationErrors[1], errTwo) {
+			t.Fatalf("unexpected reported errors: %#v", iterationErrors)
 		}
 	})
 }
