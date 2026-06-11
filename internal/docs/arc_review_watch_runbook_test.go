@@ -18,42 +18,69 @@ func TestArcReviewWatchRunbookDocumentsOperatorWorkflow(t *testing.T) {
 		"max_concurrency: 1",
 		"allow_ship: false",
 		"Keep `allow_ship: false` for the first production run",
-		"`reviewer`: required reviewer identity used by PR discovery. Omitted or blank discovers no eligible PRs.",
+		"`reviewer`: required reviewer identity used by PR discovery and handed to child runners as `--reviewer <login>`. Omitted or blank discovers no eligible PRs.",
+		"Discovery keeps only open PRs assigned to `reviewer` on one of the configured target branches.",
 		"./bin/yolo-agent config validate --repo .",
 		"./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once --dry-run",
 		"--events \"runner-logs/arc-review-watch-$(date +%Y%m%d_%H%M%S).events.jsonl\" --stream | ./bin/yolo-tui --events-stdin",
 		"runner-logs/arc-review-watch.events.jsonl",
 		"runner-logs/arc-pr-review-<session-id>.log",
-		"## Watcher Handoff And Live Review Cycle",
-		"The watcher polls configured `workspaces`, filters discovered PRs by `reviewer`, `branches`, and open status",
-		"Newly discovered PRs are recorded with their workspace, branch, revision, and `pending` status.",
-		"Watcher-started child processes currently include `--once`, so they write one heartbeat and exit instead of running the full live review loop.",
-		"Run `arc-pr-review-runner` without `--once` for a full live review cycle.",
-		"Each live cycle writes a heartbeat",
-		"fetches the current PR runtime state",
-		"store the reviewed revision in `reviewed_revisions`",
-		"Answer: for unanswered comments, run the reply path and post answers.",
-		"Ship: call the ship gate only after `allow_ship: true`",
+		"## Live Review Cycle",
+		"A non-dry polling iteration discovers eligible open PRs",
+		"reconciles the result into `pr_sessions`",
+		"The current watcher does not start children from newly created `pending` sessions directly.",
+		"The watcher starts replacement `arc-pr-review-runner` children with `--once`",
+		"The `--once` child writes one heartbeat for the target session and exits",
+		"It does not fetch PR runtime state, read `reviewed_revisions`, post review comments, answer comments, or ship.",
+		"Replacement children are handed to `arc-pr-review-runner` with `--session-id`, `--state-path`, `--events`, `--once`, and `--allow-ship=true` or `--allow-ship=false`.",
+		"The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set",
+		"The full `arc-pr-review-runner` loop only runs when the runner is started without `--once`.",
+		"In non-`--once` live review mode, the child writes a heartbeat, fetches PR runtime state",
+		"reads the last handled revision from `reviewed_revisions`",
+		"plans exactly one action",
+		"`review`: run the configured model, post inline comments and a summary, then store the current revision in `reviewed_revisions`.",
+		"`answer`: run the configured model, post replies for unanswered PR comments, then record answered comment IDs.",
+		"`ship`: call the ship gate when planning reaches a ship candidate. The gate still evaluates `allow_ship`, the reviewed current revision, open blockers, unanswered comments, check status, and model ship approval.",
+		"`wait`: leave the PR untouched when it is terminal, checks are still pending or unknown, or shipping remains disabled after review.",
 		"SQLite",
 		"sqlite3 \"$STATE\"",
 		"select pr_id, revision, reviewed_at from reviewed_revisions order by reviewed_at desc;",
 		"update pr_sessions set status = 'crashed', pid = 0",
 		"delete from reviewed_revisions where pr_id = '<pr-id>';",
+		"`reviewed_revisions` is read before planning and written after a successful `review` action",
 		"mv .yolo-runner/arc-review-watch-state.json \".yolo-runner/arc-review-watch-state.json.$(date +%Y%m%d_%H%M%S).bak\"",
 		"pgrep -af 'yolo-agent arc-review-watch|arc-pr-review-runner'",
 		"kill <pid>",
 		"pkill -f 'arc-pr-review-runner'",
 		"rm -f .yolo-runner/arc-review-watch.lock",
-		"passes the setting to child runners as `--allow-ship=<true|false>`",
+		"`allow_ship`: watcher-managed flag handoff.",
 		"arc_review_watch.allow_ship",
 		"allow_ship: true",
 		"--allow-ship=true",
 		"The watcher hands `arc_review_watch.allow_ship` to the child runner as `--allow-ship=true` or `--allow-ship=false`",
-		"The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set",
+		"For watcher-started handoff, `allow_ship` is visible in child arguments but cannot trigger review, answer, or ship because the `--once` child exits after the heartbeat.",
+		"Manual full-runner invocations do not read `arc_review_watch.allow_ship`; pass the intended gate explicitly with `--allow-ship=true` or `--allow-ship=false`.",
+		"It only affects shipping when `arc-pr-review-runner` is running the full non-`--once` review loop.",
+		"First production run: keep `allow_ship: false` and watch at least one heartbeat-only watcher cycle",
 	}
 	for _, needle := range required {
 		if !strings.Contains(runbook, needle) {
 			t.Fatalf("arc review watch runbook missing %q", needle)
+		}
+	}
+
+	forbidden := []string{
+		"Eligible sessions are handed to `arc-pr-review-runner` with `--session-id`, `--state-path`, `--events`, and `--allow-ship=true` or `--allow-ship=false`.",
+		"After a non-terminal action, the runner waits for `poll_interval` and repeats until the PR reaches a terminal state or the process is stopped:",
+		"With `allow_ship: false`, the runner may still review and answer comments, but the ship gate reports shipping disabled.",
+		"With `allow_ship: true`, shipping can proceed only after the same runner has reviewed the current revision and all other gate conditions pass.",
+		"First production run: keep `allow_ship: false` and watch at least one full review cycle.",
+		"First production run: keep `allow_ship: false` and watch at least one live watcher cycle",
+		"- `reviewer`: optional reviewer login used to filter discovered PRs",
+	}
+	for _, needle := range forbidden {
+		if strings.Contains(runbook, needle) {
+			t.Fatalf("arc review watch runbook still contains stale behavior %q", needle)
 		}
 	}
 }
