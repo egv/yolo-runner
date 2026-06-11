@@ -150,6 +150,10 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 	if err != nil {
 		return err
 	}
+	metadata := map[string]string{"phase": "arc_pr_review_cycle"}
+	if reviewer := strings.TrimSpace(cfg.reviewer); reviewer != "" {
+		metadata["reviewer"] = reviewer
+	}
 
 	return runArcPRReviewRunnerLoop(ctx, arcPRReviewRunnerLoopConfig{
 		CycleConfig: arcPRReviewCycleConfig{
@@ -159,8 +163,8 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 			Model:         runnerDefaults.Config.Model,
 			Timeout:       runnerDefaults.RunnerTimeoutValue(),
 			MaxRetries:    runnerDefaults.RetryBudgetValue(),
-			Metadata:      map[string]string{"phase": "arc_pr_review_cycle"},
-			AllowShip:     reviewWatchConfig.AllowShip,
+			Metadata:      metadata,
+			AllowShip:     cfg.allowShip,
 			StateFetcher:  arcPRReviewCycleStateFetcherFunc(arcanum.FetchPRRuntimeState),
 			RevisionStore: store,
 			ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {

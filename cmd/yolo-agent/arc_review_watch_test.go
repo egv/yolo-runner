@@ -599,6 +599,122 @@ func TestRestartStaleArcReviewSessionsCreatesReplacementBeforeStartAndTargetsSes
 	}
 }
 
+func TestRestartStaleArcReviewSessionsPassesWatcherHandoffToChildProcess(t *testing.T) {
+	store, err := arcreviewstate.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	session := arcreviewstate.Session{
+		ID:        "pr-arcadia-501",
+		PRID:      "ARCADIA-501",
+		Workspace: "/repo/workspaces/pr-501",
+		Branch:    "trunk",
+		Status:    "running",
+		PID:       501,
+		Heartbeat: now.Add(-10 * time.Minute),
+	}
+	if _, err := store.CreateSession(session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	var started []arcReviewProcessSpec
+	restarted, err := restartStaleArcReviewSessions(store, arcReviewWatchCommandConfig{repoRoot: "/repo/yolo"}, arcReviewWatchConfig{
+		StatePath:    "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+		PollInterval: 5 * time.Minute,
+		Reviewer:     "  alice  ",
+		AllowShip:    true,
+	}, now, arcReviewPIDLivenessFunc(func(int) bool {
+		return true
+	}), arcReviewProcessStarterFunc(func(spec arcReviewProcessSpec) (arcReviewStartedProcess, error) {
+		started = append(started, spec)
+		return arcReviewStartedProcess{PID: 9501}, nil
+	}))
+	if err != nil {
+		t.Fatalf("restartStaleArcReviewSessions() error = %v", err)
+	}
+	if restarted != 1 {
+		t.Fatalf("restartStaleArcReviewSessions() = %d, want 1", restarted)
+	}
+	if len(started) != 1 {
+		t.Fatalf("started %d child processes, want 1", len(started))
+	}
+	if !containsArg(started[0].Argv, "--allow-ship=true") {
+		t.Fatalf("started argv missing allow_ship handoff: %#v", started[0].Argv)
+	}
+	if !containsOrderedArgs(started[0].Argv, "--reviewer", "alice") {
+		t.Fatalf("started argv missing reviewer handoff: %#v", started[0].Argv)
+	}
+}
+
+func TestArcPRReviewRunnerCommandParsesWatcherHandoff(t *testing.T) {
+	originalRun := runArcPRReviewRunner
+	t.Cleanup(func() {
+		runArcPRReviewRunner = originalRun
+	})
+
+	var captured []arcPRReviewRunnerCommandConfig
+	runArcPRReviewRunner = func(_ context.Context, cfg arcPRReviewRunnerCommandConfig) error {
+		captured = append(captured, cfg)
+		return nil
+	}
+
+	code := RunMain([]string{
+		"arc-pr-review-runner",
+		"--repo", "/repo/yolo",
+		"--workspace", "/repo/workspaces/pr-502",
+		"--pr", "ARCADIA-502",
+		"--state", "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+		"--allow-ship=true",
+		"--reviewer", "  alice  ",
+	}, func(context.Context, runConfig) error {
+		t.Fatalf("legacy run function should not be called")
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("RunMain() exit code = %d, want 0", code)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured %d runner configs, want 1", len(captured))
+	}
+	if !arcPRReviewRunnerConfigBoolField(t, captured[0], "allowShip") {
+		t.Fatalf("allowShip = false, want true")
+	}
+	if got := arcPRReviewRunnerConfigStringField(t, captured[0], "reviewer"); got != "alice" {
+		t.Fatalf("reviewer = %q, want alice", got)
+	}
+
+	captured = nil
+	code = RunMain([]string{
+		"arc-pr-review-runner",
+		"--repo", "/repo/yolo",
+		"--workspace", "/repo/workspaces/pr-503",
+		"--pr", "ARCADIA-503",
+		"--state", "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+	}, func(context.Context, runConfig) error {
+		t.Fatalf("legacy run function should not be called")
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("RunMain() exit code without allow_ship = %d, want 0", code)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("captured %d default runner configs, want 1", len(captured))
+	}
+	if arcPRReviewRunnerConfigBoolField(t, captured[0], "allowShip") {
+		t.Fatalf("allowShip default = true, want false")
+	}
+	if got := arcPRReviewRunnerConfigStringField(t, captured[0], "reviewer"); got != "" {
+		t.Fatalf("reviewer default = %q, want empty", got)
+	}
+}
+
 func containsOrderedArgs(args []string, key string, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
@@ -615,4 +731,28 @@ func containsArg(args []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func arcPRReviewRunnerConfigBoolField(t *testing.T, cfg arcPRReviewRunnerCommandConfig, name string) bool {
+	t.Helper()
+	field := reflect.ValueOf(cfg).FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("arcPRReviewRunnerCommandConfig missing %s field", name)
+	}
+	if field.Kind() != reflect.Bool {
+		t.Fatalf("arcPRReviewRunnerCommandConfig.%s kind = %s, want bool", name, field.Kind())
+	}
+	return field.Bool()
+}
+
+func arcPRReviewRunnerConfigStringField(t *testing.T, cfg arcPRReviewRunnerCommandConfig, name string) string {
+	t.Helper()
+	field := reflect.ValueOf(cfg).FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("arcPRReviewRunnerCommandConfig missing %s field", name)
+	}
+	if field.Kind() != reflect.String {
+		t.Fatalf("arcPRReviewRunnerCommandConfig.%s kind = %s, want string", name, field.Kind())
+	}
+	return field.String()
 }
