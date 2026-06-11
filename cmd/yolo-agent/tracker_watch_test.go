@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,7 +209,7 @@ func TestDefaultRunTrackerWatchEmitsWarningAndContinuesAfterIterationError(t *te
 		}
 
 		call := atomic.AddInt32(&searchCalls, 1)
-		if call == 1 {
+		if call <= 3 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"message":"temporary tracker outage"}`))
@@ -219,8 +220,8 @@ func TestDefaultRunTrackerWatchEmitsWarningAndContinuesAfterIterationError(t *te
 		w.Header().Set("X-Total-Count", "0")
 		w.Header().Set("X-Total-Pages", "1")
 		_, _ = w.Write([]byte(`[]`))
-		if call >= 6 {
-			time.AfterFunc(time.Millisecond, cancel)
+		if call >= 9 {
+			time.AfterFunc(20*time.Millisecond, cancel)
 		}
 	}))
 	defer startrek.Close()
@@ -241,7 +242,7 @@ profiles:
           - key: VAY
             root: %q
 tracker_agent:
-  poll_interval: 10ms
+  poll_interval: 100ms
 `, startrek.URL, repoRoot))
 	t.Setenv("STARTREK_TOKEN", "tracker-token")
 
@@ -268,6 +269,117 @@ tracker_agent:
 		return
 	}
 	t.Fatalf("expected runner_warning event, got %#v", events)
+}
+
+func TestDefaultRunTrackerWatchReloadsTrackerAgentConfigPerIteration(t *testing.T) {
+	repoRoot := t.TempDir()
+	lockPath := filepath.Join(repoRoot, "locks", "tracker-agent.lock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	configWithLabels := func(ready string, inProgress string, completed string, blocked string, failed string) trackerAgentConfig {
+		cfg := defaultTrackerAgentConfig()
+		cfg.PollInterval = 10 * time.Millisecond
+		cfg.LockPath = lockPath
+		cfg.Labels = trackerAgentLabelNamesConfig{
+			Ready:      ready,
+			InProgress: inProgress,
+			Completed:  completed,
+			Blocked:    blocked,
+			Failed:     failed,
+		}
+		return cfg
+	}
+	configService := &fakeTrackerWatchConfigService{
+		configs: []trackerAgentConfig{
+			configWithLabels("ready-startup", "running-startup", "done-startup", "blocked-startup", "failed-startup"),
+			configWithLabels("ready-v1", "running-v1", "done-v1", "blocked-v1", "failed-v1"),
+			configWithLabels("ready-v2", "running-v2", "done-v2", "blocked-v2", "failed-v2"),
+		},
+	}
+	originalConfigService := newTrackerWatchConfigService
+	newTrackerWatchConfigService = func() trackerAgentConfigResolver {
+		return configService
+	}
+	t.Cleanup(func() {
+		newTrackerWatchConfigService = originalConfigService
+	})
+
+	var searchCalls int32
+	var capturedMu sync.Mutex
+	var capturedTags []string
+	startrek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := strings.TrimSpace(r.Header.Get("Authorization")); got != "OAuth tracker-token" {
+			t.Fatalf("expected Startrek OAuth token, got %q", got)
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/issues/_search" {
+			t.Fatalf("unexpected Startrek request: %s %s", r.Method, r.URL.String())
+		}
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode search body: %v", err)
+		}
+		filter, ok := body["filter"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected search filter object, got %#v", body["filter"])
+		}
+		capturedMu.Lock()
+		capturedTags = append(capturedTags, strings.TrimSpace(fmt.Sprint(filter["tags"])))
+		capturedMu.Unlock()
+
+		call := atomic.AddInt32(&searchCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Total-Count", "0")
+		w.Header().Set("X-Total-Pages", "1")
+		_, _ = w.Write([]byte(`[]`))
+		if call >= 12 {
+			time.AfterFunc(5*time.Millisecond, cancel)
+		}
+	}))
+	defer startrek.Close()
+
+	writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+agent:
+  backend: codex-cli
+  model: fake-codex
+default_profile: startrek-demo
+profiles:
+  startrek-demo:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: %q
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            root: %q
+`, startrek.URL, repoRoot))
+	t.Setenv("STARTREK_TOKEN", "tracker-token")
+
+	err := defaultRunTrackerWatch(ctx, trackerWatchConfig{
+		repoRoot: repoRoot,
+		profile:  "startrek-demo",
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected tracker-watch to stop by context cancellation, got %v", err)
+	}
+
+	capturedMu.Lock()
+	tags := append([]string(nil), capturedTags...)
+	capturedMu.Unlock()
+	readyTags := make([]string, 0, 2)
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "ready-") {
+			readyTags = append(readyTags, tag)
+		}
+	}
+	if len(readyTags) < 2 {
+		t.Fatalf("expected ready label searches from two iterations, got tags %#v", tags)
+	}
+	if got, want := readyTags[1], "ready-v2"; got != want {
+		t.Fatalf("expected second iteration to use reloaded ready label %q, got %q (all ready labels %#v)", want, got, readyTags)
+	}
 }
 
 func TestDefaultRunTrackerWatchRejectsHeldLock(t *testing.T) {
@@ -431,4 +543,28 @@ func readTrackerWatchEvents(t *testing.T, path string) []contracts.Event {
 		events = append(events, event)
 	}
 	return events
+}
+
+type fakeTrackerWatchConfigService struct {
+	mu      sync.Mutex
+	configs []trackerAgentConfig
+	calls   int
+	err     error
+}
+
+func (s *fakeTrackerWatchConfigService) ResolveTrackerAgentConfig(string) (trackerAgentConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.err != nil {
+		return trackerAgentConfig{}, s.err
+	}
+	if len(s.configs) == 0 {
+		return trackerAgentConfig{}, errors.New("fake tracker-watch config service has no configs")
+	}
+	index := s.calls - 1
+	if index >= len(s.configs) {
+		index = len(s.configs) - 1
+	}
+	return s.configs[index], nil
 }
