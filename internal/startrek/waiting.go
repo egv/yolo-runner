@@ -37,6 +37,9 @@ func ShouldResumeNeedsInfoWait(wait NeedsInfoWaitState, comments []IssueComment)
 		if strings.TrimSpace(comment.Body) == "" || !comment.CreatedAt.After(wait.MarkerCreatedAt) {
 			continue
 		}
+		if strings.Contains(comment.Body, "<!-- yolo-runner:") {
+			continue
+		}
 
 		authorID := normalizeAuthorID(comment.Author.ID)
 		if authorID == "" {
