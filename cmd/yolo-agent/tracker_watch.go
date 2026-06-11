@@ -49,7 +49,8 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	defer closeEventSink()
 	cfg.eventSink = eventSink
 
-	startupTrackerAgentConfig, err := newTrackerWatchConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
+	configService := newTrackerWatchConfigService()
+	startupTrackerAgentConfig, err := configService.ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
@@ -62,9 +63,8 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	}()
 	sawIterationError := false
 	recoveredFromIterationError := false
-	err = runTrackerWatchPollLoop(ctx, cfg.once, func() time.Duration {
-		return startupTrackerAgentConfig.PollInterval
-	}, func(ctx context.Context) error {
+	pollInterval := trackerWatchDynamicPollIntervalProvider(cfg.repoRoot, configService, startupTrackerAgentConfig.PollInterval)
+	err = runTrackerWatchPollLoop(ctx, cfg.once, pollInterval, func(ctx context.Context) error {
 		err := runTrackerWatchPollIteration(ctx, cfg)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
@@ -78,6 +78,20 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 		return nil
 	}
 	return err
+}
+
+func trackerWatchDynamicPollIntervalProvider(repoRoot string, configService trackerAgentConfigResolver, lastGood time.Duration) trackerWatchPollIntervalProvider {
+	return func() time.Duration {
+		if configService == nil {
+			return lastGood
+		}
+		trackerAgentConfig, err := configService.ResolveTrackerAgentConfig(repoRoot)
+		if err != nil {
+			return lastGood
+		}
+		lastGood = trackerAgentConfig.PollInterval
+		return lastGood
+	}
 }
 
 func resolveTrackerWatchEventsPath(cfg trackerWatchConfig) string {
