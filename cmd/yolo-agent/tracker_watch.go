@@ -22,12 +22,16 @@ import (
 
 var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
 
+const defaultTrackerWatchMaxConsecutiveFailures = 3
+const defaultTrackerWatchResilientMaxConsecutiveFailures = 20
+
 type trackerWatchLock struct {
 	path string
 	file *os.File
 }
 
 type trackerWatchPollIteration func(context.Context) error
+type trackerWatchIterationErrorHandler func(error)
 type trackerWatchPollWait func(context.Context, time.Duration) error
 
 func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
@@ -47,9 +51,22 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	defer func() {
 		_ = lock.Release()
 	}()
-	return runTrackerWatchPollLoop(ctx, cfg.once, trackerAgentConfig.PollInterval, func(ctx context.Context) error {
-		return runTrackerWatchPollIteration(ctx, cfg, trackerAgentConfig)
-	}, waitTrackerWatchPollInterval)
+	sawIterationError := false
+	recoveredFromIterationError := false
+	err = runTrackerWatchPollLoop(ctx, cfg.once, trackerAgentConfig.PollInterval, func(ctx context.Context) error {
+		err := runTrackerWatchPollIteration(ctx, cfg, trackerAgentConfig)
+		if err == nil && sawIterationError {
+			recoveredFromIterationError = true
+		}
+		return err
+	}, func(err error) {
+		sawIterationError = true
+		emitTrackerWatchIterationWarning(ctx, cfg.eventSink, err)
+	}, defaultTrackerWatchResilientMaxConsecutiveFailures, waitTrackerWatchPollInterval)
+	if errors.Is(err, context.Canceled) && recoveredFromIterationError {
+		return nil
+	}
+	return err
 }
 
 func resolveTrackerWatchEventsPath(cfg trackerWatchConfig) string {
@@ -92,7 +109,7 @@ func trackerWatchEventSink(cfg trackerWatchConfig) (contracts.EventSink, func())
 	return contracts.NewFanoutEventSink(sinks...), closeFn
 }
 
-func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, wait trackerWatchPollWait) error {
+func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, maxConsecutiveFailures int, wait trackerWatchPollWait) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -103,15 +120,27 @@ func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.D
 		return errors.New("tracker-watch poll wait is required")
 	}
 
+	consecutiveFailures := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := iterate(ctx); err != nil {
-			return err
-		}
-		if once {
-			return nil
+			if onIterationError != nil {
+				onIterationError(err)
+			}
+			if once {
+				return err
+			}
+			consecutiveFailures++
+			if maxConsecutiveFailures > 0 && consecutiveFailures >= maxConsecutiveFailures {
+				return err
+			}
+		} else {
+			consecutiveFailures = 0
+			if once {
+				return nil
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -548,6 +577,19 @@ func emitTrackerWatchEvent(ctx context.Context, sink contracts.EventSink, event 
 		event.Timestamp = time.Now().UTC()
 	}
 	_ = sink.Emit(ctx, event)
+}
+
+func emitTrackerWatchIterationWarning(ctx context.Context, sink contracts.EventSink, err error) {
+	if err == nil {
+		return
+	}
+	emitTrackerWatchEvent(ctx, sink, contracts.Event{
+		Type:    contracts.EventTypeRunnerWarning,
+		Message: agent.FormatActionableError(err),
+		Metadata: compactTrackerWatchMetadata(map[string]string{
+			"phase": "watch_iteration",
+		}),
+	})
 }
 
 func compactTrackerWatchMetadata(metadata map[string]string) map[string]string {

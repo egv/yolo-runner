@@ -25,6 +25,8 @@ agent:
   concurrency: 2
   watchdog_timeout: 10m
   watchdog_interval: 5s
+arc_review_watch:
+  reviewer: alice
 `)
 	t.Setenv("LINEAR_TOKEN", "lin_api_token")
 

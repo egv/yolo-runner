@@ -1,14 +1,103 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
+
+func TestDefaultDiscoverArcReviewPRsAggregatesConfiguredWorkspacesAndDedupesByPRID(t *testing.T) {
+	originalList := listArcReviewWorkspacePRs
+	t.Cleanup(func() {
+		listArcReviewWorkspacePRs = originalList
+	})
+
+	calls := []string{}
+	listArcReviewWorkspacePRs = func(ctx context.Context, workspace string) ([]arcanum.PRSummary, error) {
+		if ctx == nil {
+			t.Fatal("listArcReviewWorkspacePRs() context is nil")
+		}
+		calls = append(calls, workspace)
+		switch workspace {
+		case "/arcadia/users/alice/review-1":
+			return []arcanum.PRSummary{
+				{
+					ID:        "ARCADIA-501",
+					Reviewers: []string{"alice"},
+					Branch:    "trunk",
+					Status:    "open",
+				},
+				{
+					ID:        "ARCADIA-502",
+					Reviewers: []string{"alice"},
+					Branch:    "release",
+					Status:    "open",
+				},
+				{
+					ID:        "ARCADIA-503",
+					Reviewers: []string{"bob"},
+					Branch:    "trunk",
+					Status:    "open",
+				},
+			}, nil
+		case "/arcadia/users/alice/review-2":
+			return []arcanum.PRSummary{
+				{
+					ID:        "ARCADIA-501",
+					Reviewers: []string{"alice"},
+					Branch:    "trunk",
+					Status:    "open",
+				},
+				{
+					ID:        "ARCADIA-504",
+					Reviewers: []string{"alice"},
+					Branch:    "trunk",
+					Status:    "open",
+				},
+			}, nil
+		default:
+			t.Fatalf("unexpected workspace %q", workspace)
+			return nil, nil
+		}
+	}
+
+	got, err := defaultDiscoverArcReviewPRs(arcReviewWatchCommandConfig{}, arcReviewWatchConfig{
+		Reviewer:   "alice",
+		Workspaces: []string{"/arcadia/users/alice/review-1", "/arcadia/users/alice/review-2"},
+		Branches:   []string{"trunk"},
+	})
+	if err != nil {
+		t.Fatalf("defaultDiscoverArcReviewPRs() error = %v", err)
+	}
+
+	wantCalls := []string{"/arcadia/users/alice/review-1", "/arcadia/users/alice/review-2"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("listArcReviewWorkspacePRs() calls = %#v, want %#v", calls, wantCalls)
+	}
+	want := []arcReviewDiscoveredPR{
+		{
+			ID:        "ARCADIA-501",
+			Workspace: "/arcadia/users/alice/review-1",
+			Branch:    "trunk",
+		},
+		{
+			ID:        "ARCADIA-504",
+			Workspace: "/arcadia/users/alice/review-2",
+			Branch:    "trunk",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("defaultDiscoverArcReviewPRs() = %#v, want %#v", got, want)
+	}
+}
 
 func TestRunArcReviewWatchPollIterationReconcilesDiscoveredPRsOnce(t *testing.T) {
 	repoRoot := t.TempDir()
@@ -135,6 +224,63 @@ arc_review_watch:
 	if unchanged != existing {
 		t.Fatalf("existing session changed\ngot:  %#v\nwant: %#v", unchanged, existing)
 	}
+}
+
+func TestDefaultRunArcReviewWatchEmitsWarningAndContinuesAfterIterationError(t *testing.T) {
+	repoRoot := t.TempDir()
+	eventsPath := filepath.Join(repoRoot, "runner-logs", "arc-review-watch.events.jsonl")
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  poll_interval: 1ms
+`)
+
+	originalDiscover := discoverArcReviewPRs
+	t.Cleanup(func() {
+		discoverArcReviewPRs = originalDiscover
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	transientErr := errors.New("temporary arcanum outage")
+	discoverCalls := 0
+	discoverArcReviewPRs = func(_ arcReviewWatchCommandConfig, _ arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+		discoverCalls++
+		if discoverCalls == 1 {
+			return nil, transientErr
+		}
+		cancel()
+		return nil, nil
+	}
+
+	err := defaultRunArcReviewWatch(ctx, arcReviewWatchCommandConfig{
+		repoRoot:   repoRoot,
+		profile:    "default",
+		dryRun:     true,
+		eventsPath: eventsPath,
+	})
+	if err != nil {
+		t.Fatalf("expected arc-review-watch to keep running after transient iteration error, got %v", err)
+	}
+	if discoverCalls < 2 {
+		t.Fatalf("expected polling to continue after transient error, got %d discover calls", discoverCalls)
+	}
+
+	events := readTrackerWatchEvents(t, eventsPath)
+	for _, event := range events {
+		if event.Type != contracts.EventTypeRunnerWarning {
+			continue
+		}
+		if !strings.Contains(event.Message, "temporary arcanum outage") {
+			t.Fatalf("expected warning to include iteration error cause, got %q", event.Message)
+		}
+		return
+	}
+	t.Fatalf("expected runner_warning event, got %#v", events)
 }
 
 func TestReconcileArcReviewSessionsCreatesMissingPendingSessionsAndKeepsExistingNonTerminal(t *testing.T) {

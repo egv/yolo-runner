@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
@@ -25,6 +26,7 @@ type arcReviewDiscoveredPR struct {
 }
 
 var discoverArcReviewPRs = defaultDiscoverArcReviewPRs
+var listArcReviewWorkspacePRs = arcanum.ListWorkspacePRs
 var defaultArcReviewPIDLiveness arcReviewPIDLivenessChecker = arcReviewPIDLivenessFunc(isArcReviewPIDAlive)
 
 type arcReviewPIDLivenessChecker interface {
@@ -59,9 +61,21 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	}()
 
 	emitArcReviewWatchStarted(ctx, cfg, reviewWatchConfig)
+	sawIterationError := false
+	recoveredFromIterationError := false
 	err = runArcReviewWatchPollLoop(ctx, cfg.once, reviewWatchConfig.PollInterval, func(context.Context) error {
-		return runArcReviewWatchPollIteration(cfg)
+		err := runArcReviewWatchPollIteration(cfg)
+		if err == nil && sawIterationError {
+			recoveredFromIterationError = true
+		}
+		return err
+	}, func(err error) {
+		sawIterationError = true
+		emitTrackerWatchIterationWarning(ctx, cfg.eventSink, err)
 	}, waitTrackerWatchPollInterval)
+	if errors.Is(err, context.Canceled) && recoveredFromIterationError {
+		err = nil
+	}
 	emitArcReviewWatchFinished(ctx, cfg, reviewWatchConfig, err)
 	return err
 }
@@ -106,8 +120,8 @@ func arcReviewWatchEventSink(cfg arcReviewWatchCommandConfig) (contracts.EventSi
 	return contracts.NewFanoutEventSink(sinks...), closeFn
 }
 
-func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, wait trackerWatchPollWait) error {
-	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, wait)
+func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval time.Duration, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, wait trackerWatchPollWait) error {
+	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, onIterationError, defaultTrackerWatchResilientMaxConsecutiveFailures, wait)
 }
 
 func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
@@ -138,8 +152,24 @@ func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
 	return err
 }
 
-func defaultDiscoverArcReviewPRs(arcReviewWatchCommandConfig, arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
-	return nil, nil
+func defaultDiscoverArcReviewPRs(_ arcReviewWatchCommandConfig, cfg arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+	seen := map[string]struct{}{}
+	var discovered []arcReviewDiscoveredPR
+	for _, workspace := range cfg.Workspaces {
+		prs, err := listArcReviewWorkspacePRs(context.Background(), workspace)
+		if err != nil {
+			return nil, fmt.Errorf("list arc review PRs in workspace %q: %w", workspace, err)
+		}
+		for _, pr := range mapEligiblePRSummariesToArcReviewDiscoveredPRs(workspace, cfg.Reviewer, cfg.Branches, prs) {
+			pr.ID = strings.TrimSpace(pr.ID)
+			if _, ok := seen[pr.ID]; ok {
+				continue
+			}
+			seen[pr.ID] = struct{}{}
+			discovered = append(discovered, pr)
+		}
+	}
+	return discovered, nil
 }
 
 func reconcileArcReviewSessions(store *arcreviewstate.Store, prs []arcReviewDiscoveredPR) ([]arcreviewstate.Session, error) {
