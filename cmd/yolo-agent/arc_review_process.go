@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +18,8 @@ type arcReviewProcessConfig struct {
 	SessionID  string
 	StatePath  string
 	EventsPath string
+	AllowShip  bool
+	Reviewer   string
 }
 
 type arcReviewProcessSpec struct {
@@ -52,6 +55,10 @@ func buildArcReviewProcessSpec(cfg arcReviewProcessConfig) arcReviewProcessSpec 
 	}
 	if sessionID != "" {
 		argv = append(argv, "--session-id", sessionID)
+	}
+	argv = append(argv, "--allow-ship="+strconv.FormatBool(cfg.AllowShip))
+	if reviewer := strings.TrimSpace(cfg.Reviewer); reviewer != "" {
+		argv = append(argv, "--reviewer", reviewer)
 	}
 	argv = append(argv,
 		"--state-path", strings.TrimSpace(cfg.StatePath),

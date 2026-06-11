@@ -23,6 +23,8 @@ type arcPRReviewRunnerCommandConfig struct {
 	sessionID  string
 	statePath  string
 	eventsPath string
+	allowShip  bool
+	reviewer   string
 	once       bool
 }
 
@@ -58,6 +60,8 @@ func arcPRReviewRunnerCommand(args []string) int {
 	state := fs.String("state", "", "Arc review state DB path")
 	statePathAlias := fs.String("state-path", "", "Arc review state DB path")
 	events := fs.String("events", "", "Path to JSONL events log")
+	allowShip := fs.Bool("allow-ship", false, "Allow the Arc PR review runner to ship when the gate passes")
+	reviewer := fs.String("reviewer", "", "Arc reviewer identity")
 	once := fs.Bool("once", false, "Write one heartbeat and exit")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -90,6 +94,8 @@ func arcPRReviewRunnerCommand(args []string) int {
 		sessionID:  sessionID,
 		statePath:  statePath,
 		eventsPath: strings.TrimSpace(*events),
+		allowShip:  *allowShip,
+		reviewer:   strings.TrimSpace(*reviewer),
 		once:       *once,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)

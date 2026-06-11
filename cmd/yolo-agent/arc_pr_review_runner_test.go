@@ -71,6 +71,81 @@ func TestArcPRReviewRunnerCommandOnceWritesHeartbeat(t *testing.T) {
 	}
 }
 
+func TestArcPRReviewRunnerCommandParsesWatcherHandoffFlags(t *testing.T) {
+	originalRun := runArcPRReviewRunner
+	t.Cleanup(func() {
+		runArcPRReviewRunner = originalRun
+	})
+
+	tests := []struct {
+		name string
+		args []string
+		want arcPRReviewRunnerCommandConfig
+	}{
+		{
+			name: "configured values",
+			args: []string{
+				"--repo", "/repo/yolo",
+				"--workspace", "/repo/workspaces/pr-42",
+				"--pr-id", "ARCADIA-42",
+				"--session-id", "pr-arcadia-42",
+				"--state-path", "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+				"--events", "/repo/yolo/runner-logs/arc-review-watch.events.jsonl",
+				"--allow-ship=true",
+				"--reviewer", "alice",
+				"--once",
+			},
+			want: arcPRReviewRunnerCommandConfig{
+				repoRoot:   "/repo/yolo",
+				workspace:  "/repo/workspaces/pr-42",
+				prID:       "ARCADIA-42",
+				sessionID:  "pr-arcadia-42",
+				statePath:  "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+				eventsPath: "/repo/yolo/runner-logs/arc-review-watch.events.jsonl",
+				allowShip:  true,
+				reviewer:   "alice",
+				once:       true,
+			},
+		},
+		{
+			name: "allow ship defaults false when absent",
+			args: []string{
+				"--repo", "/repo/yolo",
+				"--workspace", "/repo/workspaces/pr-43",
+				"--pr-id", "ARCADIA-43",
+				"--state-path", "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+				"--once",
+			},
+			want: arcPRReviewRunnerCommandConfig{
+				repoRoot:  "/repo/yolo",
+				workspace: "/repo/workspaces/pr-43",
+				prID:      "ARCADIA-43",
+				statePath: "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
+				once:      true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got arcPRReviewRunnerCommandConfig
+			runArcPRReviewRunner = func(ctx context.Context, cfg arcPRReviewRunnerCommandConfig) error {
+				if ctx == nil {
+					t.Fatal("runArcPRReviewRunner() context is nil")
+				}
+				got = cfg
+				return nil
+			}
+			if code := arcPRReviewRunnerCommand(tt.args); code != 0 {
+				t.Fatalf("arcPRReviewRunnerCommand() exit code = %d, want 0", code)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("arcPRReviewRunnerCommand() config\ngot:  %#v\nwant: %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestArcPRReviewRunnerCommandOnceWritesHeartbeatForExplicitSessionWhenWorkspaceHasHistory(t *testing.T) {
 	repoRoot := t.TempDir()
 	statePath := filepath.Join(repoRoot, ".yolo-runner", "arc-review-watch-state.db")

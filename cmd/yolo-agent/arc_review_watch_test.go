@@ -560,6 +560,8 @@ func TestRestartStaleArcReviewSessionsCreatesReplacementBeforeStartAndTargetsSes
 	restarted, err := restartStaleArcReviewSessions(store, arcReviewWatchCommandConfig{repoRoot: "/repo/yolo"}, arcReviewWatchConfig{
 		StatePath:    "/repo/yolo/.yolo-runner/arc-review-watch-state.db",
 		PollInterval: 5 * time.Minute,
+		Reviewer:     "alice",
+		AllowShip:    true,
 	}, now, arcReviewPIDLivenessFunc(func(int) bool {
 		return true
 	}), arcReviewProcessStarterFunc(func(spec arcReviewProcessSpec) (arcReviewStartedProcess, error) {
@@ -572,6 +574,12 @@ func TestRestartStaleArcReviewSessionsCreatesReplacementBeforeStartAndTargetsSes
 		}
 		if !containsOrderedArgs(spec.Argv, "--session-id", "pr-arcadia-401-3") {
 			t.Fatalf("started argv does not target replacement session: %#v", spec.Argv)
+		}
+		if !containsArg(spec.Argv, "--allow-ship=true") {
+			t.Fatalf("started argv does not include allow_ship handoff: %#v", spec.Argv)
+		}
+		if !containsOrderedArgs(spec.Argv, "--reviewer", "alice") {
+			t.Fatalf("started argv does not include reviewer handoff: %#v", spec.Argv)
 		}
 		return arcReviewStartedProcess{PID: 9401}, nil
 	}))
@@ -594,6 +602,15 @@ func TestRestartStaleArcReviewSessionsCreatesReplacementBeforeStartAndTargetsSes
 func containsOrderedArgs(args []string, key string, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
 			return true
 		}
 	}

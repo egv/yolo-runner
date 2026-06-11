@@ -18,6 +18,8 @@ func TestBuildArcReviewProcessSpecBuildsStableCommandEnvAndLogPath(t *testing.T)
 		SessionID:  "pr-42",
 		StatePath:  statePath,
 		EventsPath: eventsPath,
+		AllowShip:  true,
+		Reviewer:   "alice",
 	})
 
 	wantArgv := []string{
@@ -26,6 +28,8 @@ func TestBuildArcReviewProcessSpecBuildsStableCommandEnvAndLogPath(t *testing.T)
 		"--workspace", filepath.Join(repoRoot, "workspaces", "pr-42"),
 		"--pr-id", "42",
 		"--session-id", "pr-42",
+		"--allow-ship=true",
+		"--reviewer", "alice",
 		"--state-path", statePath,
 		"--events", eventsPath,
 		"--once",
