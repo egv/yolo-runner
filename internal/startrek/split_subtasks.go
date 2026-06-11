@@ -5,12 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 )
 
 const startrekDependencyLabelPrefix = "depends-on:"
+
+var (
+	markdownDocLinkPattern = regexp.MustCompile(`\[[^\]\n]+\]\((https?://[^)\s]+)\)`)
+	bareDocLinkPattern     = regexp.MustCompile(`https?://[^\s<>()\]]+`)
+)
 
 type IssueCreateOptions struct {
 	QueueKey    string
@@ -31,9 +37,11 @@ type SplitSubtaskCreationService struct {
 }
 
 type SplitSubtasksInput struct {
-	QueueKey string
-	ParentID string
-	Output   splitter.StrictOutput
+	QueueKey          string
+	ParentID          string
+	ParentTitle       string
+	ParentDescription string
+	Output            splitter.StrictOutput
 }
 
 type SplitSubtasksResult struct {
@@ -77,7 +85,7 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 			QueueKey:    queueKey,
 			ParentID:    parentID,
 			Title:       splitSubtaskTitle(task),
-			Description: buildSplitSubtaskBody(task),
+			Description: buildSplitSubtaskBody(task, splitSubtaskContext(input, tasks, task)),
 			Labels:      splitSubtaskLabels(s.effectiveReadyLabel(), s.effectiveSubtaskLabel(), task.DependsOn, result.IssueIDsBySplitTaskID),
 		})
 		if err != nil {
@@ -260,12 +268,194 @@ func splitSubtaskTitle(task splitter.Task) string {
 	return id + " " + title
 }
 
-func buildSplitSubtaskBody(task splitter.Task) string {
+type splitSubtaskBodyContext struct {
+	EpicSummary       string
+	DocLinks          []string
+	ArtifactProducers []string
+}
+
+func splitSubtaskContext(input SplitSubtasksInput, tasks []splitter.Task, task splitter.Task) splitSubtaskBodyContext {
+	return splitSubtaskBodyContext{
+		EpicSummary:       splitEpicSummary(input),
+		DocLinks:          splitDocLinks(input),
+		ArtifactProducers: splitArtifactProducerPointers(tasks, task),
+	}
+}
+
+func splitEpicSummary(input SplitSubtasksInput) string {
+	parentID := strings.TrimSpace(input.ParentID)
+	parentTitle := strings.TrimSpace(input.ParentTitle)
+	parentDescription := splitParentEpicDescription(input.ParentDescription)
+	summary := firstEpicSummarySentence(parentDescription)
+
+	if parentTitle == "" && len(input.Output.Epics) > 0 {
+		parentTitle = strings.TrimSpace(input.Output.Epics[0].Name)
+	}
+	if summary == "" && len(input.Output.Epics) > 0 {
+		summary = strings.TrimSpace(input.Output.Epics[0].Goal)
+	}
+
+	head := strings.TrimSpace(strings.Join(nonEmptySplitContextItems(parentID, parentTitle), " "))
+	switch {
+	case head != "" && summary != "":
+		return head + " - " + summary
+	case head != "":
+		return head
+	case summary != "":
+		return summary
+	default:
+		return "none"
+	}
+}
+
+func firstEpicSummarySentence(description string) string {
+	for _, line := range strings.Split(description, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return firstSentence(line)
+	}
+	return ""
+}
+
+func splitParentEpicDescription(description string) string {
+	if block, ok := splitMappedStartrekDescriptionBlock(description); ok {
+		return block
+	}
+	return strings.TrimSpace(description)
+}
+
+func splitMappedStartrekDescriptionBlock(description string) (string, bool) {
+	description = strings.ReplaceAll(description, "\r\n", "\n")
+	description = strings.ReplaceAll(description, "\r", "\n")
+
+	lines := strings.Split(description, "\n")
+	descriptionIndex := -1
+	fieldCount := 0
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "Description:" {
+			descriptionIndex = i
+			break
+		}
+		if isMappedStartrekTaskField(line) {
+			fieldCount++
+		}
+	}
+	if descriptionIndex < 0 || fieldCount < 2 {
+		return "", false
+	}
+
+	endIndex := len(lines)
+	for i := descriptionIndex + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "Recent comments:" {
+			endIndex = i
+			break
+		}
+	}
+
+	block := strings.TrimSpace(strings.Join(lines[descriptionIndex+1:endIndex], "\n"))
+	if strings.EqualFold(block, "None") {
+		return "", true
+	}
+	return block, true
+}
+
+func isMappedStartrekTaskField(line string) bool {
+	name, _, ok := strings.Cut(line, ":")
+	if !ok {
+		return false
+	}
+	switch strings.TrimSpace(name) {
+	case "Title", "Issue", "Queue", "Root", "Author", "Labels":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstSentence(line string) string {
+	best := -1
+	for _, separator := range []string{". ", "? ", "! "} {
+		if idx := strings.Index(line, separator); idx >= 0 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	if best >= 0 {
+		return strings.TrimSpace(line[:best+1])
+	}
+	return line
+}
+
+func splitDocLinks(input SplitSubtasksInput) []string {
+	values := []string{splitParentEpicDescription(input.ParentDescription)}
+	for _, epic := range input.Output.Epics {
+		values = append(values, epic.Name, epic.Goal)
+	}
+
+	links := make([]string, 0)
+	seen := map[string]struct{}{}
+	appendLink := func(link string) {
+		link = strings.TrimRight(strings.TrimSpace(link), ".,;:!?")
+		if link == "" {
+			return
+		}
+		if _, ok := seen[link]; ok {
+			return
+		}
+		seen[link] = struct{}{}
+		links = append(links, link)
+	}
+
+	for _, value := range values {
+		for _, match := range markdownDocLinkPattern.FindAllStringSubmatch(value, -1) {
+			if len(match) > 1 {
+				appendLink(match[1])
+			}
+		}
+		for _, match := range bareDocLinkPattern.FindAllString(value, -1) {
+			appendLink(match)
+		}
+	}
+	return links
+}
+
+func splitArtifactProducerPointers(tasks []splitter.Task, current splitter.Task) []string {
+	currentID := trimSplitRef(current.ID)
+	producers := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		taskID := trimSplitRef(task.ID)
+		if taskID == "" || taskID == currentID {
+			continue
+		}
+		expectedFiles := normalizedSplitItems(task.ExpectedFiles)
+		if len(expectedFiles) == 0 {
+			continue
+		}
+		producers = append(producers, splitSubtaskTitle(task)+" -> "+strings.Join(expectedFiles, ", "))
+	}
+	return producers
+}
+
+func nonEmptySplitContextItems(items ...string) []string {
+	normalized := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			normalized = append(normalized, item)
+		}
+	}
+	return normalized
+}
+
+func buildSplitSubtaskBody(task splitter.Task, context splitSubtaskBodyContext) string {
 	var b strings.Builder
 	b.WriteString("### Task: ")
 	b.WriteString(splitSubtaskTitle(task))
 	b.WriteString("\n\n")
 
+	writeSplitContextSection(&b, context)
 	writeSplitBulletSection(&b, "Why", task.Why)
 	writeSplitBulletSection(&b, "In scope", task.InScope)
 	writeSplitBulletSection(&b, "Out of scope", task.OutOfScope)
@@ -276,6 +466,36 @@ func buildSplitSubtaskBody(task splitter.Task) string {
 	writeSplitBulletSection(&b, "Unlocks", task.Unlocks)
 
 	return strings.TrimSpace(b.String())
+}
+
+func writeSplitContextSection(b *strings.Builder, context splitSubtaskBodyContext) {
+	b.WriteString("Context:\n")
+	b.WriteString("- Epic summary: ")
+	b.WriteString(fallbackText(context.EpicSummary, "none"))
+	b.WriteByte('\n')
+
+	docLinks := normalizedSplitItems(context.DocLinks)
+	if len(docLinks) == 0 {
+		b.WriteString("- Doc: none\n")
+	} else {
+		for _, link := range docLinks {
+			b.WriteString("- Doc: ")
+			b.WriteString(link)
+			b.WriteByte('\n')
+		}
+	}
+
+	producers := normalizedSplitItems(context.ArtifactProducers)
+	if len(producers) == 0 {
+		b.WriteString("- Artifact producer: none\n\n")
+		return
+	}
+	for _, producer := range producers {
+		b.WriteString("- Artifact producer: ")
+		b.WriteString(producer)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
 }
 
 func writeSplitBulletSection(b *strings.Builder, label string, items []string) {
