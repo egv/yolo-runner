@@ -140,8 +140,8 @@ tracker_agent:
 	if got := fakeCodexCallCount(t, callsPath); got != 2 {
 		t.Fatalf("expected task to be reselected after author reply; fake Codex calls=%d", got)
 	}
-	if got := countNeedsInfoComments(startrek.commentTexts()); got != 2 {
-		t.Fatalf("expected a second needs-info preflight comment after author reply, got %d", got)
+	if got := countNeedsInfoComments(startrek.commentTexts()); got != 1 {
+		t.Fatalf("expected repeated needs-info questions after author reply to reuse the existing comment, got %d marked comments", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package startrek
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -102,10 +103,65 @@ func TestNeedsInfoTransitionServiceUsesRussianBodyForRussianQuestions(t *testing
 	}
 }
 
+func TestNeedsInfoTransitionServiceDeduplicatesLatestMatchingQuestions(t *testing.T) {
+	tracker := &fakeNeedsInfoTransitionTracker{}
+	service := NeedsInfoTransitionService{Tracker: tracker}
+
+	_, err := service.Apply(context.Background(), NeedsInfoTransitionInput{
+		IssueID: "ADAPTABOT-5",
+		Summary: "Ownership is unclear.",
+		Questions: []string{
+			"Which package owns this behavior?",
+			"Who should answer follow-up questions?",
+		},
+		SummoneeID: "author-1",
+	})
+	if err != nil {
+		t.Fatalf("first Apply returned error: %v", err)
+	}
+	if got := countNeedsInfoMarkerComments(tracker.comments); got != 1 {
+		t.Fatalf("expected first apply to post one needs-info comment, got %d", got)
+	}
+
+	_, err = service.Apply(context.Background(), NeedsInfoTransitionInput{
+		IssueID: "ADAPTABOT-5",
+		Summary: "Ownership is still unclear.",
+		Questions: []string{
+			" 1. which   package owns this behavior? ",
+			"2) WHO should answer follow-up questions?",
+		},
+		SummoneeID: "author-1",
+	})
+	if err != nil {
+		t.Fatalf("second Apply returned error: %v", err)
+	}
+	if got := countNeedsInfoMarkerComments(tracker.comments); got != 1 {
+		t.Fatalf("expected duplicate questions to reuse the latest marker comment, got %d comments", got)
+	}
+
+	_, err = service.Apply(context.Background(), NeedsInfoTransitionInput{
+		IssueID: "ADAPTABOT-5",
+		Summary: "Ownership is still unclear.",
+		Questions: []string{
+			"Which package owns this behavior?",
+			"Who should answer follow-up questions?",
+			"What deadline applies?",
+		},
+		SummoneeID: "author-1",
+	})
+	if err != nil {
+		t.Fatalf("third Apply returned error: %v", err)
+	}
+	if got := countNeedsInfoMarkerComments(tracker.comments); got != 2 {
+		t.Fatalf("expected changed questions to post a second needs-info comment, got %d", got)
+	}
+}
+
 type fakeNeedsInfoTransitionTracker struct {
 	ops            []string
 	commentOptions IssueCommentCreateOptions
 	comment        IssueComment
+	comments       []IssueComment
 	data           map[string]string
 }
 
@@ -122,11 +178,38 @@ func (f *fakeNeedsInfoTransitionTracker) AddLabel(_ context.Context, issueID str
 func (f *fakeNeedsInfoTransitionTracker) CreateIssueComment(_ context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error) {
 	f.ops = append(f.ops, "comment "+issueID)
 	f.commentOptions = opts
-	return f.comment, nil
+	comment := f.comment
+	if strings.TrimSpace(comment.ID) == "" {
+		comment.ID = fmt.Sprintf("comment-%d", len(f.comments)+1)
+	}
+	if comment.CreatedAt.IsZero() {
+		comment.CreatedAt = time.Date(2026, 5, 28, 12, 0, len(f.comments)+1, 0, time.UTC)
+	}
+	body, _, err := issueCommentCreateText(opts.Body, opts.Marker)
+	if err != nil {
+		return IssueComment{}, err
+	}
+	comment.Body = body
+	f.comments = append(f.comments, comment)
+	return comment, nil
 }
 
 func (f *fakeNeedsInfoTransitionTracker) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
 	f.ops = append(f.ops, "data "+taskID)
 	f.data = data
 	return nil
+}
+
+func (f *fakeNeedsInfoTransitionTracker) GetIssueComments(_ context.Context, _ string) ([]IssueComment, error) {
+	return append([]IssueComment(nil), f.comments...), nil
+}
+
+func countNeedsInfoMarkerComments(comments []IssueComment) int {
+	count := 0
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, "<!-- yolo-runner:needs-info -->") {
+			count++
+		}
+	}
+	return count
 }
