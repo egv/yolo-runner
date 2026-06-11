@@ -32,6 +32,17 @@ func TestParseResult(t *testing.T) {
 			},
 		},
 		{
+			name:  "reply",
+			input: `{"decision":"reply","confidence":0.88,"summary":"The newest human comment asks what the prior question means.","questions":[],"reply_text":"I need the package owner so the implementation agent knows where to change the code."}`,
+			want: Result{
+				Decision:   DecisionReply,
+				Confidence: 0.88,
+				Summary:    "The newest human comment asks what the prior question means.",
+				Questions:  []string{},
+				ReplyText:  "I need the package owner so the implementation agent knows where to change the code.",
+			},
+		},
+		{
 			name:  "low confidence",
 			input: `{"decision":"ready","confidence":0.79,"summary":"Probably enough.","questions":[]}`,
 			want: Result{

@@ -145,6 +145,113 @@ tracker_agent:
 	}
 }
 
+func TestTrackerWatchStartrekNeedsInfoReplyPostsAnswerAndKeepsNeedsInfo(t *testing.T) {
+	repoRoot := t.TempDir()
+	startrek := newFakeTrackerWatchStartrek(t)
+	defer startrek.Close()
+
+	startrek.mu.Lock()
+	startrek.issue["tags"] = []string{"needs-info"}
+	startrek.comments = []map[string]any{
+		{
+			"id":   1,
+			"text": "<!-- yolo-runner:needs-info -->\n\nQuestions:\n1. Which package owns this behavior?",
+			"createdBy": map[string]any{
+				"id":      "runner",
+				"display": "YOLO Runner",
+			},
+			"createdAt": "2026-05-28T05:00:00.000+0000",
+			"updatedAt": "2026-05-28T05:00:00.000+0000",
+		},
+		{
+			"id":   2,
+			"text": "Can you explain that in simple terms?",
+			"createdBy": map[string]any{
+				"id":      "author-1",
+				"display": "Ada Lovelace",
+			},
+			"createdAt": "2026-05-28T05:01:00.000+0000",
+			"updatedAt": "2026-05-28T05:01:00.000+0000",
+		},
+	}
+	startrek.mu.Unlock()
+
+	callsPath := filepath.Join(repoRoot, "fake-codex-calls")
+	fakeCodexPath := writeTrackerWatchFakeCodexOutput(t, repoRoot, `{"decision":"reply","confidence":0.91,"summary":"The newest human comment asks for a simpler explanation.","questions":[],"reply_text":"Simple answer: I need the package owner so the implementation agent knows where to change the code."}`)
+	writeTrackerWatchFakeCodexBackend(t, repoRoot, fakeCodexPath)
+	writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+agent:
+  backend: codex-cli
+  model: fake-codex
+  runner_timeout: 5s
+default_profile: startrek-demo
+profiles:
+  startrek-demo:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: %s
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            root: %s
+tracker_agent:
+  labels:
+    ready: yolo-agent-ready
+    in_progress: yolo-agent-in-progress
+    blocked: yolo-agent-blocked
+`, strconv.Quote(startrek.URL), strconv.Quote(repoRoot)))
+
+	t.Setenv("STARTREK_TOKEN", "tracker-token")
+	t.Setenv("FAKE_CODEX_CALLS", callsPath)
+
+	err := defaultRunTrackerWatch(context.Background(), trackerWatchConfig{
+		repoRoot: repoRoot,
+		profile:  "startrek-demo",
+		once:     true,
+	})
+	if err != nil {
+		t.Fatalf("tracker-watch iteration failed: %v", err)
+	}
+
+	if got := fakeCodexCallCount(t, callsPath); got != 1 {
+		t.Fatalf("expected one fake Codex preflight call after author question, got %d", got)
+	}
+	comments := startrek.commentTexts()
+	replyComments := matchingComments(comments, "Simple answer: I need the package owner")
+	if len(replyComments) != 1 {
+		t.Fatalf("expected one answer comment, got %d comments:\n%s", len(replyComments), strings.Join(comments, "\n---\n"))
+	}
+	reply := replyComments[0]
+	for _, want := range []string{
+		"<!-- yolo-runner:needs-info -->",
+		"Simple answer: I need the package owner so the implementation agent knows where to change the code.",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected reply comment to contain %q, got:\n%s", want, reply)
+		}
+	}
+	for _, unwanted := range []string{
+		"Questions:",
+		"Which package owns this behavior?",
+	} {
+		if strings.Contains(reply, unwanted) {
+			t.Fatalf("expected reply comment not to repost questionnaire text %q, got:\n%s", unwanted, reply)
+		}
+	}
+
+	labels := startrek.labels("VAY-42")
+	if hasLabel(labels, "yolo-agent-ready") {
+		t.Fatalf("expected ready label to be removed after reply, got %#v", labels)
+	}
+	if hasLabel(labels, "yolo-agent-in-progress") {
+		t.Fatalf("expected in-progress label to be removed after reply, got %#v", labels)
+	}
+	if !hasLabel(labels, "needs-info") {
+		t.Fatalf("expected needs-info label to remain after reply, got %#v", labels)
+	}
+}
+
 func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T) {
 	ctx := context.Background()
 	repoRoot := t.TempDir()
@@ -1052,12 +1159,16 @@ func countNeedsInfoComments(comments []string) int {
 }
 
 func writeTrackerWatchFakeCodex(t *testing.T, repoRoot string) string {
+	return writeTrackerWatchFakeCodexOutput(t, repoRoot, `{"decision":"needs_info","confidence":0.42,"summary":"Ownership is unclear.","questions":["Which package owns this behavior?","Who should answer follow-up questions?"]}`)
+}
+
+func writeTrackerWatchFakeCodexOutput(t *testing.T, repoRoot string, output string) string {
 	t.Helper()
 	path := filepath.Join(repoRoot, "fake-codex")
 	script := strings.Join([]string{
 		"#!/bin/sh",
 		`printf . >> "$FAKE_CODEX_CALLS"`,
-		`printf '%s\n' '{"decision":"needs_info","confidence":0.42,"summary":"Ownership is unclear.","questions":["Which package owns this behavior?","Who should answer follow-up questions?"]}'`,
+		`printf '%s\n' ` + strconv.Quote(output),
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)

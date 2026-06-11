@@ -10,6 +10,7 @@ type Decision string
 const (
 	DecisionReady     Decision = "ready"
 	DecisionNeedsInfo Decision = "needs_info"
+	DecisionReply     Decision = "reply"
 
 	MinimumReadyConfidence = 0.8
 )
@@ -19,6 +20,7 @@ type Result struct {
 	Confidence float64  `json:"confidence"`
 	Summary    string   `json:"summary"`
 	Questions  []string `json:"questions"`
+	ReplyText  string   `json:"reply_text"`
 }
 
 func ParseResult(output string) Result {
@@ -30,7 +32,11 @@ func ParseResult(output string) Result {
 	result.Decision = normalizeDecision(result.Decision)
 	result.Summary = strings.TrimSpace(result.Summary)
 	result.Questions = trimQuestions(result.Questions)
+	result.ReplyText = strings.TrimSpace(result.ReplyText)
 	if result.Decision == DecisionReady && result.Confidence < MinimumReadyConfidence {
+		result.Decision = DecisionNeedsInfo
+	}
+	if result.Decision == DecisionReply && result.ReplyText == "" {
 		result.Decision = DecisionNeedsInfo
 	}
 	return result
@@ -42,6 +48,8 @@ func normalizeDecision(decision Decision) Decision {
 		return DecisionReady
 	case DecisionNeedsInfo:
 		return DecisionNeedsInfo
+	case DecisionReply:
+		return DecisionReply
 	default:
 		return DecisionNeedsInfo
 	}
