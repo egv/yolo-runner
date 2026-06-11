@@ -3,9 +3,12 @@ package startrek
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,6 +108,134 @@ func TestClientDoJSONReturnsJSONErrorMessage(t *testing.T) {
 	if !strings.Contains(err.Error(), "queue is required") {
 		t.Fatalf("expected nested error message in error, got %q", err.Error())
 	}
+}
+
+func TestClientRetriesTransientSearchFailuresButNotMutations(t *testing.T) {
+	t.Run("search retries server errors", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			attempt := attempts.Add(1)
+			if req.Method != http.MethodPost {
+				t.Errorf("expected POST method, got %s", req.Method)
+			}
+			if req.URL.Path != "/v3/issues/_search" {
+				t.Errorf("expected search path, got %s", req.URL.Path)
+			}
+
+			if attempt < 3 {
+				http.Error(w, `{"message":"temporary startrek failure"}`, http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Total-Count", "0")
+			w.Header().Set("X-Total-Pages", "0")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `[]`)
+		}))
+		defer server.Close()
+
+		client, err := NewClient(Config{
+			Endpoint:   server.URL + "/v3",
+			Token:      "tracker-token",
+			HTTPClient: server.Client(),
+		})
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+
+		page, err := client.SearchIssues(context.Background(), IssueSearchOptions{
+			QueueKey:   "VAY",
+			ReadyLabel: "ready-for-yolo",
+		})
+		if err != nil {
+			t.Fatalf("search issues: %v", err)
+		}
+
+		if got := attempts.Load(); got != 3 {
+			t.Fatalf("expected search to succeed on third attempt, got %d attempts", got)
+		}
+		if len(page.Issues) != 0 || page.TotalCount != 0 || page.TotalPages != 0 {
+			t.Fatalf("unexpected search page: %#v", page)
+		}
+	})
+
+	t.Run("get retries connection errors", func(t *testing.T) {
+		attempts := 0
+		transientErr := errors.New("connection reset")
+		httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
+			attempts++
+			if req.Method != http.MethodGet {
+				t.Errorf("expected GET method, got %s", req.Method)
+			}
+			if req.URL.Path != "/v3/issues/VAY-42" {
+				t.Errorf("expected issue path, got %s", req.URL.Path)
+			}
+			if attempts < 3 {
+				return nil, transientErr
+			}
+			return jsonResponse(http.StatusOK, `{
+				"key": "VAY-42",
+				"summary": "Recovered issue",
+				"updatedAt": "2026-05-28T01:02:03.456+0000"
+			}`), nil
+		})
+
+		client, err := NewClient(Config{
+			Endpoint:   "https://api.tracker.yandex.net/v3",
+			Token:      "tracker-token",
+			HTTPClient: httpClient,
+		})
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+
+		issue, err := client.GetIssue(context.Background(), "VAY-42")
+		if err != nil {
+			t.Fatalf("get issue: %v", err)
+		}
+
+		if attempts != 3 {
+			t.Fatalf("expected get to succeed on third attempt, got %d attempts", attempts)
+		}
+		if issue.ID != "VAY-42" || issue.Title != "Recovered issue" {
+			t.Fatalf("unexpected issue: %#v", issue)
+		}
+	})
+
+	t.Run("label mutation does not retry server errors", func(t *testing.T) {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			attempts.Add(1)
+			if req.Method != http.MethodPatch {
+				t.Errorf("expected PATCH method, got %s", req.Method)
+			}
+			if req.URL.Path != "/v3/issues/VAY-42" {
+				t.Errorf("expected issue path, got %s", req.URL.Path)
+			}
+
+			http.Error(w, `{"message":"temporary startrek failure"}`, http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		client, err := NewClient(Config{
+			Endpoint:   server.URL + "/v3",
+			Token:      "tracker-token",
+			HTTPClient: server.Client(),
+		})
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+
+		err = client.AddLabel(context.Background(), "VAY-42", "ready-for-yolo")
+		if err == nil {
+			t.Fatalf("expected label mutation error")
+		}
+
+		if got := attempts.Load(); got != 1 {
+			t.Fatalf("expected label mutation to fail without retry, got %d attempts", got)
+		}
+	})
 }
 
 func TestClientSearchIssuesMapsReadyQueueCandidates(t *testing.T) {
