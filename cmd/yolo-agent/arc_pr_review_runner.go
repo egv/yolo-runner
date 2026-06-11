@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 )
 
@@ -19,6 +24,25 @@ type arcPRReviewRunnerCommandConfig struct {
 	statePath  string
 	eventsPath string
 	once       bool
+}
+
+type arcPRReviewRunnerCycleResult struct {
+	Action   arcreview.PRRunnerAction
+	Terminal bool
+}
+
+type arcPRReviewRunnerCycleFunc func(context.Context, arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error)
+type arcPRReviewRunnerHeartbeatFunc func(context.Context, time.Time) error
+type arcPRReviewRunnerClockFunc func() time.Time
+type arcPRReviewRunnerWaitFunc func(context.Context, time.Duration) error
+
+type arcPRReviewRunnerLoopConfig struct {
+	CycleConfig  arcPRReviewCycleConfig
+	PollInterval time.Duration
+	Heartbeat    arcPRReviewRunnerHeartbeatFunc
+	Cycle        arcPRReviewRunnerCycleFunc
+	Now          arcPRReviewRunnerClockFunc
+	Wait         arcPRReviewRunnerWaitFunc
 }
 
 var runArcPRReviewRunner = defaultRunArcPRReviewRunner
@@ -56,7 +80,10 @@ func arcPRReviewRunnerCommand(args []string) int {
 		sessionID = strings.TrimSpace(*sessionIDAlias)
 	}
 
-	if err := runArcPRReviewRunner(context.Background(), arcPRReviewRunnerCommandConfig{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := runArcPRReviewRunner(ctx, arcPRReviewRunnerCommandConfig{
 		repoRoot:   strings.TrimSpace(*repo),
 		workspace:  strings.TrimSpace(*workspace),
 		prID:       prID,
@@ -71,7 +98,10 @@ func arcPRReviewRunnerCommand(args []string) int {
 	return 0
 }
 
-func defaultRunArcPRReviewRunner(_ context.Context, cfg arcPRReviewRunnerCommandConfig) error {
+func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerCommandConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if strings.TrimSpace(cfg.repoRoot) == "" {
 		return fmt.Errorf("--repo is required")
 	}
@@ -84,9 +114,6 @@ func defaultRunArcPRReviewRunner(_ context.Context, cfg arcPRReviewRunnerCommand
 	if strings.TrimSpace(cfg.statePath) == "" {
 		return fmt.Errorf("--state is required")
 	}
-	if !cfg.once {
-		return fmt.Errorf("--once is required until continuous PR review runner mode is implemented")
-	}
 
 	store, err := arcreviewstate.Open(cfg.statePath)
 	if err != nil {
@@ -98,10 +125,159 @@ func defaultRunArcPRReviewRunner(_ context.Context, cfg arcPRReviewRunnerCommand
 	if err != nil {
 		return err
 	}
-	if err := store.UpdateHeartbeat(session.ID, time.Now().UTC()); err != nil {
+	if cfg.once {
+		if err := store.UpdateHeartbeat(session.ID, time.Now().UTC()); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	reviewWatchConfig, err := newTrackerConfigService().ResolveArcReviewWatchConfig(cfg.repoRoot)
+	if err != nil {
 		return err
 	}
-	return nil
+	runner, runnerDefaults, err := buildTrackerWatchRunner(cfg.repoRoot)
+	if err != nil {
+		return err
+	}
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{})
+	if err != nil {
+		return err
+	}
+
+	return runArcPRReviewRunnerLoop(ctx, arcPRReviewRunnerLoopConfig{
+		CycleConfig: arcPRReviewCycleConfig{
+			PRID:          cfg.prID,
+			Workspace:     cfg.workspace,
+			RepoRoot:      cfg.repoRoot,
+			Model:         runnerDefaults.Config.Model,
+			Timeout:       runnerDefaults.RunnerTimeoutValue(),
+			MaxRetries:    runnerDefaults.RetryBudgetValue(),
+			Metadata:      map[string]string{"phase": "arc_pr_review_cycle"},
+			AllowShip:     reviewWatchConfig.AllowShip,
+			StateFetcher:  arcPRReviewCycleStateFetcherFunc(arcanum.FetchPRRuntimeState),
+			RevisionStore: store,
+			ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
+				return runArcPRReviewModel(ctx, runner, input)
+			}),
+			ReviewApplier: arcreview.ReviewApplier{
+				Client: arcanum.NewReviewArcanumClient(apiClient),
+				Store:  store,
+			},
+			ReplyApplier: arcreview.ReplyApplier{
+				Client: arcanum.NewReplyArcanumClient(apiClient),
+				Store:  store,
+			},
+			ShipGate: arcreview.ShipGate{
+				Client: arcanum.NewShipArcanumClient(cfg.workspace),
+			},
+		},
+		PollInterval: reviewWatchConfig.PollInterval,
+		Heartbeat: func(_ context.Context, at time.Time) error {
+			return store.UpdateHeartbeat(session.ID, at)
+		},
+		Cycle: defaultRunArcPRReviewRunnerCycle,
+		Now: func() time.Time {
+			return time.Now().UTC()
+		},
+		Wait: waitTrackerWatchPollInterval,
+	})
+}
+
+type arcPRReviewCycleStateFetcherFunc func(context.Context, string, string) (arcreview.PRRuntimeState, error)
+
+func (f arcPRReviewCycleStateFetcherFunc) FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error) {
+	return f(ctx, workspace, prID)
+}
+
+func runArcPRReviewRunnerLoop(ctx context.Context, cfg arcPRReviewRunnerLoopConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cfg.PollInterval <= 0 {
+		return errors.New("arc PR review runner poll interval must be greater than 0")
+	}
+	if cfg.Heartbeat == nil {
+		return errors.New("arc PR review runner heartbeat is required")
+	}
+	if cfg.Cycle == nil {
+		return errors.New("arc PR review runner cycle is required")
+	}
+	if cfg.Now == nil {
+		return errors.New("arc PR review runner clock is required")
+	}
+	if cfg.Wait == nil {
+		return errors.New("arc PR review runner wait is required")
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if err := cfg.Heartbeat(ctx, cfg.Now().UTC()); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		result, err := cfg.Cycle(ctx, cfg.CycleConfig)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if result.Terminal {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if err := cfg.Wait(ctx, cfg.PollInterval); err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func defaultRunArcPRReviewRunnerCycle(ctx context.Context, cfg arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error) {
+	recorder := &arcPRReviewRunnerRecordingFetcher{inner: cfg.StateFetcher}
+	cfg.StateFetcher = recorder
+	action, err := runArcPRReviewCycle(ctx, cfg)
+	return arcPRReviewRunnerCycleResult{
+		Action:   action,
+		Terminal: recorder.fetched && isTerminalArcPRReviewRunnerStatus(recorder.state.Details.Status),
+	}, err
+}
+
+type arcPRReviewRunnerRecordingFetcher struct {
+	inner   arcPRReviewCycleStateFetcher
+	state   arcreview.PRRuntimeState
+	fetched bool
+}
+
+func (f *arcPRReviewRunnerRecordingFetcher) FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error) {
+	if f.inner == nil {
+		return arcreview.PRRuntimeState{}, errors.New("arc PR review state fetcher is required")
+	}
+	state, err := f.inner.FetchPRRuntimeState(ctx, workspace, prID)
+	if err != nil {
+		return state, err
+	}
+	f.state = state
+	f.fetched = true
+	return state, nil
+}
+
+func isTerminalArcPRReviewRunnerStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "abandoned", "cancelled", "canceled", "closed", "completed", "declined", "landed", "merged", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveArcPRReviewRunnerSession(store *arcreviewstate.Store, prID string, workspace string, sessionID string) (arcreviewstate.Session, error) {

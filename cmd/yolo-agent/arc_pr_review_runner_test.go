@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 )
 
@@ -140,5 +142,64 @@ func TestArcPRReviewRunnerCommandOnceWritesHeartbeatForExplicitSessionWhenWorksp
 	}
 	if replacementHeartbeat.IsZero() {
 		t.Fatalf("expected replacement heartbeat to be written")
+	}
+}
+
+func TestRunArcPRReviewRunnerLoopHeartbeatsAndExitsOnTerminalAction(t *testing.T) {
+	times := []time.Time{
+		time.Date(2026, 6, 11, 9, 30, 0, 0, time.UTC),
+		time.Date(2026, 6, 11, 9, 30, 5, 0, time.UTC),
+		time.Date(2026, 6, 11, 9, 30, 10, 0, time.UTC),
+	}
+	nowCalls := 0
+	var heartbeats []time.Time
+	var waits []time.Duration
+	var cycles []arcPRReviewCycleConfig
+	actions := []arcPRReviewRunnerCycleResult{
+		{Action: arcreview.PRRunnerActionWait},
+		{Action: arcreview.PRRunnerActionReview},
+		{Action: arcreview.PRRunnerActionWait, Terminal: true},
+	}
+
+	err := runArcPRReviewRunnerLoop(context.Background(), arcPRReviewRunnerLoopConfig{
+		CycleConfig:  arcPRReviewCycleConfig{PRID: "42", Workspace: "/workspace", RepoRoot: "/repo", AllowShip: true},
+		PollInterval: 25 * time.Millisecond,
+		Heartbeat: func(_ context.Context, at time.Time) error {
+			heartbeats = append(heartbeats, at)
+			return nil
+		},
+		Cycle: func(_ context.Context, cfg arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error) {
+			cycles = append(cycles, cfg)
+			return actions[len(cycles)-1], nil
+		},
+		Now: func() time.Time {
+			if nowCalls >= len(times) {
+				t.Fatalf("unexpected clock call %d", nowCalls+1)
+			}
+			at := times[nowCalls]
+			nowCalls++
+			return at
+		},
+		Wait: func(_ context.Context, interval time.Duration) error {
+			waits = append(waits, interval)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runArcPRReviewRunnerLoop() error = %v", err)
+	}
+	if len(cycles) != 3 {
+		t.Fatalf("expected 3 cycles, got %d", len(cycles))
+	}
+	for _, cycle := range cycles {
+		if cycle.PRID != "42" || cycle.Workspace != "/workspace" || cycle.RepoRoot != "/repo" || !cycle.AllowShip {
+			t.Fatalf("cycle config = %#v", cycle)
+		}
+	}
+	if !reflect.DeepEqual(heartbeats, times) {
+		t.Fatalf("heartbeats = %#v, want %#v", heartbeats, times)
+	}
+	if !reflect.DeepEqual(waits, []time.Duration{25 * time.Millisecond, 25 * time.Millisecond}) {
+		t.Fatalf("waits = %#v", waits)
 	}
 }
