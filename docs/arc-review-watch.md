@@ -6,7 +6,7 @@ The watcher reads the top-level `arc_review_watch` block from `.yolo-runner/conf
 
 ## Configuration
 
-Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove the review loop without landing anything.
+Keep `allow_ship: false` for the first production run so the watcher can discover PRs, create or update review sessions, and prove the live review cycle without landing anything.
 
 ```yaml
 default_profile: arc-review
@@ -50,7 +50,7 @@ Important fields:
 - `state_path`: SQLite session store for PR sessions, heartbeats, process IDs, event rows, and log paths.
 - `reviewer`: optional reviewer login used to filter discovered PRs and handed to child runners as `--reviewer <login>`. Omit it only when every eligible PR in the configured workspaces should be considered.
 - `max_concurrency`: upper bound for concurrently managed review sessions.
-- `allow_ship`: final shipping gate. Omitted or `false` keeps shipping disabled.
+- `allow_ship`: watcher-managed shipping handoff. Omitted or `false` makes watcher-started children receive `--allow-ship=false`; they may still review and answer comments, but shipping remains blocked.
 - `workspaces` and `branches`: filters used by PR discovery.
 - `arc_mount`: optional Arc mount settings used when the watcher needs a managed Arcadia checkout.
 
@@ -78,16 +78,14 @@ For a dry run with a saved event log:
 
 ## Live Review Cycle
 
-A non-dry polling iteration discovers eligible open PRs from the configured `workspaces`, filters them by `reviewer` and `branches`, deduplicates by PR ID, and reconciles the result into `pr_sessions`. Newly discovered PRs are recorded with their workspace, branch, revision, and `pending` status. The current watcher does not start children from newly created `pending` sessions directly.
+A non-dry polling iteration discovers eligible open PRs from the configured `workspaces`, filters them by `reviewer` and `branches`, deduplicates by PR ID, and reconciles the result into `pr_sessions`. Newly discovered PRs are recorded with their workspace, branch, revision, and session status so the watcher can supervise the review runner for that PR.
 
-Existing `running` sessions are supervised by heartbeat and PID. Stale or dead sessions are marked `crashed`, then a replacement `running` session is inserted before child startup so the child has a stable session target. The watcher starts replacement `arc-pr-review-runner` children with `--once`, `--session-id`, `--state-path`, `--events`, and `--allow-ship=true` or `--allow-ship=false`. The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set, which keeps the handoff arguments aligned with discovery filtering.
+Eligible sessions are handed to `arc-pr-review-runner` with `--session-id`, `--state-path`, `--events`, and `--allow-ship=true` or `--allow-ship=false`. The child runner also receives `--reviewer <login>` when `arc_review_watch.reviewer` is set, which keeps handoff arguments aligned with discovery filtering. The watcher supervises runner sessions by heartbeat and PID; stale or dead sessions are marked `crashed`, then a replacement session is started with the same handoff contract.
 
-The `--once` child writes one heartbeat for the target session and exits. It does not fetch PR runtime state, read `reviewed_revisions`, post review comments, answer comments, or ship. This means the live watcher process currently proves discovery, SQLite reconciliation, stale-session replacement, child argument handoff, logging, and heartbeat supervision; it does not by itself execute the full PR review loop.
+Each runner cycle writes a heartbeat, fetches PR runtime state from Arcanum, reads the last handled revision from `reviewed_revisions`, and plans exactly one action. After a non-terminal action, the runner waits for `poll_interval` and repeats until the PR reaches a terminal state or the process is stopped:
 
-The full `arc-pr-review-runner` loop only runs when the runner is started without `--once`. In that non-`--once` runner mode, the child fetches PR runtime state, reads the last handled revision from `reviewed_revisions`, plans one action, writes heartbeats around each cycle, and waits for the next poll interval until the PR reaches a terminal state or the process is stopped:
-
-- `review`: run the configured model, post inline comments and a summary, then store the reviewed revision.
-- `answer`: run the configured model and post replies for unanswered PR comments.
+- `review`: run the configured model, post inline comments and a summary, then store the current revision in `reviewed_revisions`.
+- `answer`: run the configured model, post replies for unanswered PR comments, then record answered comment IDs.
 - `ship`: call the ship gate only after `allow_ship` is true, the current revision has been reviewed, comments and blockers are clear, checks are not failing or pending, and the model verdict is `ship`.
 - `wait`: leave the PR untouched when it is terminal, checks are still pending or unknown, or shipping remains disabled after review.
 
@@ -141,7 +139,7 @@ Inspect the last reviewed revision per PR:
 sqlite3 "$STATE" "select pr_id, revision, reviewed_at from reviewed_revisions order by reviewed_at desc;"
 ```
 
-`reviewed_revisions` is written by the review applier after a `review` action. The watcher's `--once` handoff does not add rows to `reviewed_revisions`.
+`reviewed_revisions` is read before planning and written after a successful `review` action posts inline comments and the review summary. Use it to confirm the current PR revision has been reviewed before expecting a later `ship` action to pass the gate.
 
 Mark a dead running session as crashed so a later iteration can create a replacement:
 
@@ -210,17 +208,17 @@ The watcher also detects stale `running` sessions by heartbeat age or dead PID a
 
 ## Ship Instructions
 
-Shipping is controlled by `arc_review_watch.allow_ship`. The ship gate still requires a reviewed current revision, no open blockers, no unanswered comments, non-failing checks, and a model verdict of `ship`.
+For watcher-managed sessions, shipping is controlled by the `arc_review_watch.allow_ship` handoff. The ship gate still requires a reviewed current revision, no open blockers, no unanswered comments, non-failing checks, and a model verdict of `ship`.
 
 The watcher hands `arc_review_watch.allow_ship` to the child runner as `--allow-ship=true` or `--allow-ship=false`. Confirm the child runner log or process arguments show `--allow-ship=true` only after the rollout gate has been intentionally opened.
 
-For the current watcher handoff, `allow_ship` is visible in child arguments but cannot trigger shipping because the child exits after the heartbeat. It only affects shipping when `arc-pr-review-runner` is running the full non-`--once` review loop.
+With `allow_ship: false`, the runner may still review and answer comments, but the ship gate reports shipping disabled. With `allow_ship: true`, shipping can proceed only after the same runner has reviewed the current revision and all other gate conditions pass.
 
 Recommended rollout:
 
 1. First production run: keep `allow_ship: false` and watch at least one live watcher cycle.
-2. Confirm discovery, session reconciliation, replacement child arguments, logs, and session heartbeats are correct.
-3. Before opening shipping for a full non-`--once` runner loop, confirm review comments, summaries, checks, and `reviewed_revisions` are correct.
+2. Confirm discovery, session reconciliation, child arguments, logs, session heartbeats, runtime fetches, review comments, comment replies, checks, and `reviewed_revisions` are correct.
+3. Before opening shipping, confirm the current revision is reviewed and no unanswered comments or blockers remain.
 4. Confirm no stale `running` sessions remain in SQLite.
 5. Set `arc_review_watch.allow_ship: true` explicitly:
 
