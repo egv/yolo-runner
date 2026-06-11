@@ -281,6 +281,8 @@ func restartStaleArcReviewSessions(
 			SessionID:  replacement.ID,
 			StatePath:  watchCfg.StatePath,
 			EventsPath: resolveArcReviewWatchEventsPath(commandCfg),
+			AllowShip:  watchCfg.AllowShip,
+			Reviewer:   watchCfg.Reviewer,
 		})
 		replacement.LogPath = spec.LogPath
 		if _, err := store.CreateSession(replacement); err != nil {

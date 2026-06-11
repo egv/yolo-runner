@@ -23,6 +23,8 @@ type arcPRReviewRunnerCommandConfig struct {
 	sessionID  string
 	statePath  string
 	eventsPath string
+	allowShip  bool
+	reviewer   string
 	once       bool
 }
 
@@ -58,6 +60,8 @@ func arcPRReviewRunnerCommand(args []string) int {
 	state := fs.String("state", "", "Arc review state DB path")
 	statePathAlias := fs.String("state-path", "", "Arc review state DB path")
 	events := fs.String("events", "", "Path to JSONL events log")
+	allowShip := fs.Bool("allow-ship", false, "Allow arc PR runner to ship when review gates pass")
+	reviewer := fs.String("reviewer", "", "Arc review reviewer login")
 	once := fs.Bool("once", false, "Write one heartbeat and exit")
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -90,6 +94,8 @@ func arcPRReviewRunnerCommand(args []string) int {
 		sessionID:  sessionID,
 		statePath:  statePath,
 		eventsPath: strings.TrimSpace(*events),
+		allowShip:  *allowShip,
+		reviewer:   strings.TrimSpace(*reviewer),
 		once:       *once,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -144,6 +150,10 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 	if err != nil {
 		return err
 	}
+	metadata := map[string]string{"phase": "arc_pr_review_cycle"}
+	if reviewer := strings.TrimSpace(cfg.reviewer); reviewer != "" {
+		metadata["reviewer"] = reviewer
+	}
 
 	return runArcPRReviewRunnerLoop(ctx, arcPRReviewRunnerLoopConfig{
 		CycleConfig: arcPRReviewCycleConfig{
@@ -153,8 +163,8 @@ func defaultRunArcPRReviewRunner(ctx context.Context, cfg arcPRReviewRunnerComma
 			Model:         runnerDefaults.Config.Model,
 			Timeout:       runnerDefaults.RunnerTimeoutValue(),
 			MaxRetries:    runnerDefaults.RetryBudgetValue(),
-			Metadata:      map[string]string{"phase": "arc_pr_review_cycle"},
-			AllowShip:     reviewWatchConfig.AllowShip,
+			Metadata:      metadata,
+			AllowShip:     cfg.allowShip,
 			StateFetcher:  arcPRReviewCycleStateFetcherFunc(arcanum.FetchPRRuntimeState),
 			RevisionStore: store,
 			ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
