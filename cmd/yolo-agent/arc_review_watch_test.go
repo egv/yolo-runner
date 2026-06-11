@@ -346,6 +346,62 @@ func TestDefaultRunArcReviewWatchUsesReloadedPollIntervalForNextWait(t *testing.
 	}
 }
 
+func TestDefaultRunArcReviewWatchReloadsConfigForEachIteration(t *testing.T) {
+	repoRoot := t.TempDir()
+	configService := &fakeArcReviewWatchConfigService{
+		cfg: arcReviewWatchConfig{
+			PollInterval:   time.Millisecond,
+			LockPath:       filepath.Join(repoRoot, "locks", "arc-review-watch.lock"),
+			StatePath:      filepath.Join(repoRoot, "state", "arc-review-watch.db"),
+			MaxConcurrency: defaultArcReviewWatchMaxConcurrency,
+		},
+	}
+
+	originalConfigService := newArcReviewWatchConfigService
+	originalDiscover := discoverArcReviewPRs
+	originalWait := arcReviewWatchPollWait
+	t.Cleanup(func() {
+		newArcReviewWatchConfigService = originalConfigService
+		discoverArcReviewPRs = originalDiscover
+		arcReviewWatchPollWait = originalWait
+	})
+
+	newArcReviewWatchConfigService = func() arcReviewWatchConfigResolver {
+		return configService
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var observedAllowShip []bool
+	discoverArcReviewPRs = func(_ arcReviewWatchCommandConfig, cfg arcReviewWatchConfig) ([]arcReviewDiscoveredPR, error) {
+		observedAllowShip = append(observedAllowShip, cfg.AllowShip)
+		switch len(observedAllowShip) {
+		case 1:
+			configService.setAllowShip(true)
+		case 2:
+			cancel()
+		}
+		return nil, nil
+	}
+	arcReviewWatchPollWait = func(context.Context, time.Duration) error {
+		return nil
+	}
+
+	err := defaultRunArcReviewWatch(ctx, arcReviewWatchCommandConfig{
+		repoRoot: repoRoot,
+		dryRun:   true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected arc-review-watch to stop by context cancellation, got %v", err)
+	}
+
+	wantAllowShip := []bool{false, true}
+	if !reflect.DeepEqual(observedAllowShip, wantAllowShip) {
+		t.Fatalf("observed allow_ship values = %#v, want %#v", observedAllowShip, wantAllowShip)
+	}
+}
+
 func TestArcReviewWatchDynamicPollIntervalProviderFallsBackToLastGoodOnResolutionError(t *testing.T) {
 	reloadErr := errors.New("reload failed")
 	calls := 0
@@ -864,6 +920,10 @@ func (s *fakeArcReviewWatchConfigService) ResolveArcReviewWatchConfig(string) (a
 
 func (s *fakeArcReviewWatchConfigService) setPollInterval(interval time.Duration) {
 	s.cfg.PollInterval = interval
+}
+
+func (s *fakeArcReviewWatchConfigService) setAllowShip(allowShip bool) {
+	s.cfg.AllowShip = allowShip
 }
 
 type arcReviewWatchConfigResolverFunc func(string) (arcReviewWatchConfig, error)
