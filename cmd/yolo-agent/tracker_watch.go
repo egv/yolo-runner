@@ -275,9 +275,14 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		if strings.TrimSpace(summary.ID) == strings.TrimSpace(queueRoot.ID) {
 			continue
 		}
+		task := trackerWatchStartrekTaskFromTree(summary, tasks)
+		preflightQueueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, backend, queueRoot, task, tasks)
+		if err != nil {
+			return err
+		}
 		ready, err := runTrackerWatchStartrekPreflight(ctx, backend, preflightRunner, trackerWatchStartrekPreflightInput{
 			TaskSummary:      summary,
-			QueueRoot:        queueRoot,
+			QueueRoot:        preflightQueueRoot,
 			ConfigRepoRoot:   cfg.repoRoot,
 			QueueRootPath:    queueRootPath,
 			Backend:          runnerDefaults.Config.Backend,
@@ -289,7 +294,6 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		if err != nil {
 			return err
 		}
-		task := trackerWatchStartrekTaskFromTree(summary, tasks)
 		switch planTrackerWatchStartrekTaskCycle(queueRoot, task, ready) {
 		case trackerWatchStartrekTaskCycleSplit:
 			if err := runTrackerWatchStartrekSplit(ctx, backend, runner, trackerWatchStartrekSplitInput{
@@ -328,6 +332,89 @@ func trackerWatchStartrekTaskFromTree(summary contracts.TaskSummary, tasks map[s
 		Title:  strings.TrimSpace(summary.Title),
 		Status: contracts.TaskStatusOpen,
 	}
+}
+
+func trackerWatchStartrekPreflightQueueRoot(ctx context.Context, backend trackerWatchStartrekBackend, queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task) (contracts.Task, error) {
+	parentID := trackerWatchStartrekPreflightParentID(queueRoot, task, tasks)
+	if parentID == "" {
+		return queueRoot, nil
+	}
+	parent, err := backend.GetTask(ctx, parentID)
+	if err != nil {
+		return contracts.Task{}, fmt.Errorf("get startrek parent issue %q for preflight: %w", parentID, err)
+	}
+	if parent == nil || strings.TrimSpace(parent.ID) == "" {
+		return queueRoot, nil
+	}
+	return *parent, nil
+}
+
+func trackerWatchStartrekPreflightParentID(queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task) string {
+	rootID := strings.TrimSpace(queueRoot.ID)
+	parentID := strings.TrimSpace(task.ParentID)
+	if parentID != "" && !strings.EqualFold(parentID, rootID) {
+		return parentID
+	}
+	if !trackerWatchStartrekTaskHasSubtaskLabel(task) {
+		return ""
+	}
+	for _, dependencyID := range trackerWatchStartrekTaskDependencyIDs(task) {
+		if dependencyID == "" || strings.EqualFold(dependencyID, rootID) || strings.EqualFold(dependencyID, strings.TrimSpace(task.ID)) {
+			continue
+		}
+		if dependencyTask, ok := tasks[dependencyID]; ok {
+			dependencyParentID := strings.TrimSpace(dependencyTask.ParentID)
+			if dependencyParentID != "" && !strings.EqualFold(dependencyParentID, rootID) {
+				continue
+			}
+		}
+		return dependencyID
+	}
+	return ""
+}
+
+func trackerWatchStartrekTaskHasSubtaskLabel(task contracts.Task) bool {
+	for _, token := range trackerWatchStartrekTaskDescriptionTokens(task) {
+		if strings.EqualFold(strings.Trim(token, ".,;"), "agent:subtask") {
+			return true
+		}
+	}
+	return false
+}
+
+func trackerWatchStartrekTaskDependencyIDs(task contracts.Task) []string {
+	seen := map[string]struct{}{}
+	ids := make([]string, 0)
+	for _, raw := range strings.Split(task.Metadata["dependencies"], ",") {
+		ids = appendUniqueTrackerWatchStartrekDependencyID(ids, seen, raw)
+	}
+	for _, token := range trackerWatchStartrekTaskDescriptionTokens(task) {
+		dependencyID, ok := strings.CutPrefix(strings.TrimSpace(token), "depends-on:")
+		if !ok {
+			continue
+		}
+		ids = appendUniqueTrackerWatchStartrekDependencyID(ids, seen, dependencyID)
+	}
+	return ids
+}
+
+func trackerWatchStartrekTaskDescriptionTokens(task contracts.Task) []string {
+	return strings.FieldsFunc(task.Description, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+}
+
+func appendUniqueTrackerWatchStartrekDependencyID(ids []string, seen map[string]struct{}, raw string) []string {
+	id := strings.Trim(strings.TrimSpace(raw), ".,;")
+	if id == "" {
+		return ids
+	}
+	key := strings.ToLower(id)
+	if _, ok := seen[key]; ok {
+		return ids
+	}
+	seen[key] = struct{}{}
+	return append(ids, id)
 }
 
 func planTrackerWatchStartrekTaskCycle(queueRoot contracts.Task, task contracts.Task, preflightReady bool) trackerWatchStartrekTaskCycleAction {

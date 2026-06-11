@@ -637,6 +637,62 @@ func TestTrackerWatchArcMountPathFallsBackToQueueRoot(t *testing.T) {
 	}
 }
 
+func TestRunTrackerWatchStartrekQueuePreflightUsesParentIssueContextForSubtask(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	storage := newTrackerWatchSplitPRStorage()
+	const parentDescriptionMarker = "EPIC-PREFLIGHT-CONTEXT-MARKER"
+
+	storage.mu.Lock()
+	parent := storage.tasks["VAY-42"]
+	parent.Description = "Parent epic requirements. " + parentDescriptionMarker + " https://docs.example.test/epic"
+	storage.tasks[parent.ID] = parent
+	storage.tasks["VAY-43"] = contracts.Task{
+		ID:          "VAY-43",
+		Title:       "Implement generated subtask",
+		Description: "Leaf task that depends on the parent epic context.",
+		Status:      contracts.TaskStatusOpen,
+		ParentID:    "VAY-42",
+		Metadata:    map[string]string{},
+	}
+	storage.relations = append(storage.relations, contracts.TaskRelation{
+		FromID: "VAY-42",
+		ToID:   "VAY-43",
+		Type:   contracts.RelationParent,
+	})
+	storage.mu.Unlock()
+
+	tree, err := storage.GetTaskTree(ctx, "VAY")
+	if err != nil {
+		t.Fatalf("get task tree: %v", err)
+	}
+	runner := &trackerWatchNeedsInfoPreflightRunner{}
+	err = runTrackerWatchStartrekQueue(ctx, trackerWatchConfig{repoRoot: repoRoot}, storage, runner, preflight.NewRunner(runner), trackerWatchRunnerDefaults{
+		Config: yoloAgentConfigDefaults{
+			Backend: "fake-codex",
+			Model:   "fake-codex",
+		},
+	}, startrekQueueModel{Key: "VAY"}, tree.Root, []contracts.TaskSummary{
+		{ID: "VAY-43", Title: "Implement generated subtask"},
+	}, tree.Tasks, repoRoot, trackerAgentConfig{
+		Labels: trackerAgentLabelNamesConfig{
+			Ready:      "yolo-agent-ready",
+			InProgress: "yolo-agent-in-progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run tracker-watch queue: %v", err)
+	}
+
+	requests := runner.requestSnapshots()
+	if len(requests) != 1 {
+		t.Fatalf("expected one preflight request, got %d: %#v", len(requests), requests)
+	}
+	if !strings.Contains(requests[0].Prompt, parentDescriptionMarker) {
+		t.Fatalf("expected subtask preflight prompt to contain parent issue description marker %q, got:\n%s", parentDescriptionMarker, requests[0].Prompt)
+	}
+}
+
 func TestFallbackTrackerWatchPreflightQuestionsUseSummary(t *testing.T) {
 	questions := fallbackTrackerWatchPreflightQuestions(contracts.Task{
 		ID:    "ADAPTABOT-1",
@@ -696,6 +752,41 @@ func readTrackerWatchEvents(t *testing.T, path string) []contracts.Event {
 		events = append(events, event)
 	}
 	return events
+}
+
+type trackerWatchNeedsInfoPreflightRunner struct {
+	mu       sync.Mutex
+	requests []contracts.RunnerRequest
+}
+
+func (r *trackerWatchNeedsInfoPreflightRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, contracts.RunnerRequest{
+		TaskID:   request.TaskID,
+		ParentID: request.ParentID,
+		Prompt:   request.Prompt,
+		Mode:     request.Mode,
+		Model:    request.Model,
+		RepoRoot: request.RepoRoot,
+		Metadata: cloneStringMapForTrackerWatchTest(request.Metadata),
+	})
+	r.mu.Unlock()
+
+	if request.OnProgress != nil {
+		request.OnProgress(contracts.RunnerProgress{
+			Type:      string(contracts.EventTypeRunnerOutput),
+			Message:   `{"decision":"needs_info","confidence":0.30,"summary":"Parent context check.","questions":["Confirm the parent context."]}`,
+			Metadata:  map[string]string{"source": "stdout"},
+			Timestamp: time.Now().UTC(),
+		})
+	}
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+func (r *trackerWatchNeedsInfoPreflightRunner) requestSnapshots() []contracts.RunnerRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]contracts.RunnerRequest(nil), r.requests...)
 }
 
 type fakeTrackerWatchConfigService struct {
