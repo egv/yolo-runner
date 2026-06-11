@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ const (
 )
 
 type NeedsInfoTransitionTracker interface {
+	GetIssueComments(ctx context.Context, issueID string) ([]IssueComment, error)
 	RemoveLabel(ctx context.Context, issueID string, label string) error
 	AddLabel(ctx context.Context, issueID string, label string) error
 	CreateIssueComment(ctx context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error)
@@ -70,11 +72,29 @@ func (s NeedsInfoTransitionService) Apply(ctx context.Context, input NeedsInfoTr
 	needsInfoLabel := fallbackText(s.NeedsInfoLabel, defaultNeedsInfoLabel)
 	marker := fallbackText(s.Marker, defaultNeedsInfoMarker)
 
+	comments, err := s.Tracker.GetIssueComments(ctx, issueID)
+	if err != nil {
+		return NeedsInfoTransitionResult{}, fmt.Errorf("read startrek needs-info comments on issue %q: %w", issueID, err)
+	}
+
 	if err := s.Tracker.RemoveLabel(ctx, issueID, processingLabel); err != nil {
 		return NeedsInfoTransitionResult{}, fmt.Errorf("remove startrek processing label from issue %q: %w", issueID, err)
 	}
 	if err := s.Tracker.AddLabel(ctx, issueID, needsInfoLabel); err != nil {
 		return NeedsInfoTransitionResult{}, fmt.Errorf("add startrek needs-info label to issue %q: %w", issueID, err)
+	}
+
+	if comment, ok := latestNeedsInfoMarkerComment(comments, marker); ok {
+		if needsInfoQuestionSetsEqual(needsInfoQuestionSetFromComment(comment, marker), normalizedNeedsInfoQuestionSet(questions)) {
+			markerData := s.needsInfoMarkerData(marker, comment)
+			if err := s.Tracker.SetTaskData(ctx, issueID, markerData); err != nil {
+				return NeedsInfoTransitionResult{}, fmt.Errorf("write startrek needs-info marker data on issue %q: %w", issueID, err)
+			}
+			return NeedsInfoTransitionResult{
+				Comment:    comment,
+				MarkerData: markerData,
+			}, nil
+		}
 	}
 
 	body := buildNeedsInfoCommentBody(input.Summary, questions)
@@ -87,15 +107,7 @@ func (s NeedsInfoTransitionService) Apply(ctx context.Context, input NeedsInfoTr
 		return NeedsInfoTransitionResult{}, fmt.Errorf("post startrek needs-info questions on issue %q: %w", issueID, err)
 	}
 
-	createdAt := comment.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = s.now()
-	}
-	markerData := map[string]string{
-		needsInfoMarkerKey:          marker,
-		needsInfoMarkerCommentIDKey: strings.TrimSpace(comment.ID),
-		needsInfoMarkerCreatedAtKey: createdAt.UTC().Format(time.RFC3339Nano),
-	}
+	markerData := s.needsInfoMarkerData(marker, comment)
 	if err := s.Tracker.SetTaskData(ctx, issueID, markerData); err != nil {
 		return NeedsInfoTransitionResult{}, fmt.Errorf("write startrek needs-info marker data on issue %q: %w", issueID, err)
 	}
@@ -104,6 +116,18 @@ func (s NeedsInfoTransitionService) Apply(ctx context.Context, input NeedsInfoTr
 		Comment:    comment,
 		MarkerData: markerData,
 	}, nil
+}
+
+func (s NeedsInfoTransitionService) needsInfoMarkerData(marker string, comment IssueComment) map[string]string {
+	createdAt := comment.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = s.now()
+	}
+	return map[string]string{
+		needsInfoMarkerKey:          marker,
+		needsInfoMarkerCommentIDKey: strings.TrimSpace(comment.ID),
+		needsInfoMarkerCreatedAtKey: createdAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 func (s NeedsInfoTransitionService) now() time.Time {
@@ -122,6 +146,88 @@ func normalizedNeedsInfoQuestions(questions []string) []string {
 		}
 	}
 	return normalized
+}
+
+var needsInfoQuestionNumberPrefix = regexp.MustCompile(`^\s*(?:\d+[\.)]|[-*])\s*`)
+
+func latestNeedsInfoMarkerComment(comments []IssueComment, marker string) (IssueComment, bool) {
+	marker = fallbackText(marker, defaultNeedsInfoMarker)
+	prefix := "<!-- yolo-runner:" + marker + " -->"
+
+	var latest IssueComment
+	found := false
+	for _, comment := range comments {
+		if !strings.HasPrefix(strings.TrimSpace(comment.Body), prefix) {
+			continue
+		}
+		if !found || comment.CreatedAt.After(latest.CreatedAt) || comment.CreatedAt.Equal(latest.CreatedAt) {
+			latest = comment
+			found = true
+		}
+	}
+	return latest, found
+}
+
+func needsInfoQuestionSetFromComment(comment IssueComment, marker string) map[string]struct{} {
+	body := strings.TrimSpace(comment.Body)
+	prefix := "<!-- yolo-runner:" + fallbackText(marker, defaultNeedsInfoMarker) + " -->"
+	if !strings.HasPrefix(body, prefix) {
+		return nil
+	}
+	body = strings.TrimSpace(strings.TrimPrefix(body, prefix))
+
+	questions := make([]string, 0)
+	inQuestions := false
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch strings.ToLower(line) {
+		case "questions:", "questions", "вопросы:", "вопросы":
+			inQuestions = true
+			continue
+		}
+		if inQuestions {
+			questions = append(questions, line)
+		}
+	}
+	return normalizedNeedsInfoQuestionSet(questions)
+}
+
+func normalizedNeedsInfoQuestionSet(questions []string) map[string]struct{} {
+	normalized := make(map[string]struct{}, len(questions))
+	for _, question := range questions {
+		question = normalizeNeedsInfoQuestionForDedupe(question)
+		if question != "" {
+			normalized[question] = struct{}{}
+		}
+	}
+	return normalized
+}
+
+func normalizeNeedsInfoQuestionForDedupe(question string) string {
+	question = strings.TrimSpace(question)
+	for {
+		stripped := needsInfoQuestionNumberPrefix.ReplaceAllString(question, "")
+		if stripped == question {
+			break
+		}
+		question = strings.TrimSpace(stripped)
+	}
+	return strings.ToLower(strings.Join(strings.Fields(question), " "))
+}
+
+func needsInfoQuestionSetsEqual(left map[string]struct{}, right map[string]struct{}) bool {
+	if len(left) == 0 || len(right) == 0 || len(left) != len(right) {
+		return false
+	}
+	for question := range left {
+		if _, ok := right[question]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func buildNeedsInfoCommentBody(summary string, questions []string) string {
