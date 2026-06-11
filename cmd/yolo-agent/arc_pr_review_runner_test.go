@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -277,4 +278,145 @@ func TestRunArcPRReviewRunnerLoopHeartbeatsAndExitsOnTerminalAction(t *testing.T
 	if !reflect.DeepEqual(waits, []time.Duration{25 * time.Millisecond, 25 * time.Millisecond}) {
 		t.Fatalf("waits = %#v", waits)
 	}
+}
+
+func TestRunArcPRReviewRunnerLoopRefreshesShipGateInputFromConfigEachCycle(t *testing.T) {
+	resolver := &fakeArcPRReviewRunnerReviewWatchConfigResolver{
+		configs: []arcReviewWatchConfig{
+			{AllowShip: false, Reviewer: "alice"},
+			{AllowShip: true, Reviewer: "bob"},
+		},
+	}
+	shipGate := &fakeArcPRReviewCycleShipGate{}
+	var allowShipByCycle []bool
+	var reviewerByCycle []string
+	cycles := 0
+
+	err := runArcPRReviewRunnerLoop(context.Background(), arcPRReviewRunnerLoopConfig{
+		CycleConfig: arcPRReviewCycleConfig{
+			PRID:      "42",
+			Workspace: "/repo/workspaces/pr-42",
+			RepoRoot:  "/repo/yolo",
+			Metadata:  map[string]string{"phase": "arc_pr_review_cycle", "reviewer": "alice"},
+			AllowShip: false,
+			StateFetcher: &fakeArcPRReviewCycleFetcher{state: arcreview.PRRuntimeState{
+				PRID:     "42",
+				Revision: "r2",
+				Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r2"},
+				Checks: []arcreview.PRCheck{
+					{Name: "ci", Status: "passed"},
+				},
+			}},
+			RevisionStore: &fakeArcPRReviewCycleRevisionStore{revision: "r2"},
+			ShipGate:      shipGate,
+		},
+		PollInterval:              25 * time.Millisecond,
+		ReviewWatchConfigResolver: resolver,
+		Heartbeat: func(context.Context, time.Time) error {
+			return nil
+		},
+		Cycle: func(ctx context.Context, cfg arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error) {
+			cycles++
+			allowShipByCycle = append(allowShipByCycle, cfg.AllowShip)
+			reviewerByCycle = append(reviewerByCycle, cfg.Metadata["reviewer"])
+			result, err := defaultRunArcPRReviewRunnerCycle(ctx, cfg)
+			if cycles == 2 {
+				result.Terminal = true
+			}
+			return result, err
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 11, 9, 30, 0, 0, time.UTC)
+		},
+		Wait: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runArcPRReviewRunnerLoop() error = %v", err)
+	}
+	if !reflect.DeepEqual(allowShipByCycle, []bool{false, true}) {
+		t.Fatalf("cycle allow_ship values = %#v, want %#v", allowShipByCycle, []bool{false, true})
+	}
+	if !reflect.DeepEqual(reviewerByCycle, []string{"alice", "bob"}) {
+		t.Fatalf("cycle reviewers = %#v, want %#v", reviewerByCycle, []string{"alice", "bob"})
+	}
+	if len(shipGate.calls) != 1 {
+		t.Fatalf("ship gate calls = %d, want 1", len(shipGate.calls))
+	}
+	if !shipGate.calls[0].AllowShip {
+		t.Fatalf("ship gate allow_ship = false, want true")
+	}
+	if !reflect.DeepEqual(resolver.calls, []string{"/repo/yolo", "/repo/yolo"}) {
+		t.Fatalf("resolver calls = %#v", resolver.calls)
+	}
+}
+
+func TestRunArcPRReviewRunnerLoopFallsBackToSpawnConfigWhenRefreshFails(t *testing.T) {
+	resolver := &fakeArcPRReviewRunnerReviewWatchConfigResolver{
+		configs: []arcReviewWatchConfig{
+			{AllowShip: false, Reviewer: "bob"},
+		},
+		errs: []error{nil, errors.New("reload failed")},
+	}
+	var allowShipByCycle []bool
+	var reviewerByCycle []string
+	cycles := 0
+
+	err := runArcPRReviewRunnerLoop(context.Background(), arcPRReviewRunnerLoopConfig{
+		CycleConfig: arcPRReviewCycleConfig{
+			PRID:      "42",
+			Workspace: "/repo/workspaces/pr-42",
+			RepoRoot:  "/repo/yolo",
+			Metadata:  map[string]string{"phase": "arc_pr_review_cycle", "reviewer": "alice"},
+			AllowShip: true,
+		},
+		PollInterval:              25 * time.Millisecond,
+		ReviewWatchConfigResolver: resolver,
+		Heartbeat: func(context.Context, time.Time) error {
+			return nil
+		},
+		Cycle: func(_ context.Context, cfg arcPRReviewCycleConfig) (arcPRReviewRunnerCycleResult, error) {
+			cycles++
+			allowShipByCycle = append(allowShipByCycle, cfg.AllowShip)
+			reviewerByCycle = append(reviewerByCycle, cfg.Metadata["reviewer"])
+			return arcPRReviewRunnerCycleResult{Terminal: cycles == 2}, nil
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 11, 9, 30, 0, 0, time.UTC)
+		},
+		Wait: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runArcPRReviewRunnerLoop() error = %v", err)
+	}
+	if !reflect.DeepEqual(allowShipByCycle, []bool{false, true}) {
+		t.Fatalf("cycle allow_ship values = %#v, want %#v", allowShipByCycle, []bool{false, true})
+	}
+	if !reflect.DeepEqual(reviewerByCycle, []string{"bob", "alice"}) {
+		t.Fatalf("cycle reviewers = %#v, want %#v", reviewerByCycle, []string{"bob", "alice"})
+	}
+}
+
+type fakeArcPRReviewRunnerReviewWatchConfigResolver struct {
+	configs []arcReviewWatchConfig
+	errs    []error
+	calls   []string
+}
+
+func (r *fakeArcPRReviewRunnerReviewWatchConfigResolver) ResolveArcReviewWatchConfig(repoRoot string) (arcReviewWatchConfig, error) {
+	r.calls = append(r.calls, repoRoot)
+	index := len(r.calls) - 1
+	if index < len(r.errs) && r.errs[index] != nil {
+		return arcReviewWatchConfig{}, r.errs[index]
+	}
+	if len(r.configs) == 0 {
+		return arcReviewWatchConfig{}, nil
+	}
+	if index >= len(r.configs) {
+		index = len(r.configs) - 1
+	}
+	return r.configs[index], nil
 }
