@@ -432,6 +432,109 @@ profiles:
 	}
 }
 
+func TestDefaultRunTrackerWatchUsesReloadedPollIntervalForNextWait(t *testing.T) {
+	repoRoot := t.TempDir()
+	lockPath := filepath.Join(repoRoot, "locks", "tracker-agent.lock")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	configWithInterval := func(interval time.Duration) trackerAgentConfig {
+		cfg := defaultTrackerAgentConfig()
+		cfg.PollInterval = interval
+		cfg.LockPath = lockPath
+		cfg.Labels.Ready = "ready"
+		return cfg
+	}
+	configService := &fakeTrackerWatchConfigService{
+		configs: []trackerAgentConfig{
+			configWithInterval(1 * time.Millisecond),
+			configWithInterval(1 * time.Millisecond),
+			configWithInterval(1 * time.Millisecond),
+			configWithInterval(120 * time.Millisecond),
+			configWithInterval(120 * time.Millisecond),
+		},
+	}
+	originalConfigService := newTrackerWatchConfigService
+	newTrackerWatchConfigService = func() trackerAgentConfigResolver {
+		return configService
+	}
+	t.Cleanup(func() {
+		newTrackerWatchConfigService = originalConfigService
+	})
+
+	var readySearchMu sync.Mutex
+	var readySearchTimes []time.Time
+	startrek := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := strings.TrimSpace(r.Header.Get("Authorization")); got != "OAuth tracker-token" {
+			t.Fatalf("expected Startrek OAuth token, got %q", got)
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/issues/_search" {
+			t.Fatalf("unexpected Startrek request: %s %s", r.Method, r.URL.String())
+		}
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode search body: %v", err)
+		}
+		filter, ok := body["filter"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected search filter object, got %#v", body["filter"])
+		}
+		if strings.TrimSpace(fmt.Sprint(filter["tags"])) == "ready" {
+			readySearchMu.Lock()
+			readySearchTimes = append(readySearchTimes, time.Now())
+			readySearchCount := len(readySearchTimes)
+			readySearchMu.Unlock()
+			if readySearchCount >= 3 {
+				time.AfterFunc(5*time.Millisecond, cancel)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Total-Count", "0")
+		w.Header().Set("X-Total-Pages", "1")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer startrek.Close()
+
+	writeTrackerConfigYAML(t, repoRoot, fmt.Sprintf(`
+agent:
+  backend: codex-cli
+  model: fake-codex
+default_profile: startrek-demo
+profiles:
+  startrek-demo:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: %q
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            root: %q
+`, startrek.URL, repoRoot))
+	t.Setenv("STARTREK_TOKEN", "tracker-token")
+
+	err := defaultRunTrackerWatch(ctx, trackerWatchConfig{
+		repoRoot: repoRoot,
+		profile:  "startrek-demo",
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected tracker-watch to stop by context cancellation, got %v", err)
+	}
+
+	readySearchMu.Lock()
+	times := append([]time.Time(nil), readySearchTimes...)
+	readySearchMu.Unlock()
+	if len(times) < 3 {
+		t.Fatalf("expected ready-label searches from three iterations, got %d", len(times))
+	}
+	secondWait := times[2].Sub(times[1])
+	if secondWait < 80*time.Millisecond {
+		t.Fatalf("expected second wait to use reloaded poll interval, got gap %s", secondWait)
+	}
+}
+
 func TestDefaultRunTrackerWatchRejectsHeldLock(t *testing.T) {
 	repoRoot := t.TempDir()
 	lockPath := filepath.Join(repoRoot, "locks", "tracker-agent.lock")
