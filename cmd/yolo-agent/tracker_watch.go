@@ -34,17 +34,25 @@ type trackerWatchPollIteration func(context.Context) error
 type trackerWatchIterationErrorHandler func(error)
 type trackerWatchPollWait func(context.Context, time.Duration) error
 
+type trackerAgentConfigResolver interface {
+	ResolveTrackerAgentConfig(repoRoot string) (trackerAgentConfig, error)
+}
+
+var newTrackerWatchConfigService = func() trackerAgentConfigResolver {
+	return newTrackerConfigService()
+}
+
 func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	cfg.eventsPath = resolveTrackerWatchEventsPath(cfg)
 	eventSink, closeEventSink := trackerWatchEventSink(cfg)
 	defer closeEventSink()
 	cfg.eventSink = eventSink
 
-	trackerAgentConfig, err := newTrackerConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
+	startupTrackerAgentConfig, err := newTrackerWatchConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
 		return err
 	}
-	lock, err := acquireTrackerWatchLock(trackerAgentConfig.LockPath)
+	lock, err := acquireTrackerWatchLock(startupTrackerAgentConfig.LockPath)
 	if err != nil {
 		return err
 	}
@@ -53,8 +61,8 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	}()
 	sawIterationError := false
 	recoveredFromIterationError := false
-	err = runTrackerWatchPollLoop(ctx, cfg.once, trackerAgentConfig.PollInterval, func(ctx context.Context) error {
-		err := runTrackerWatchPollIteration(ctx, cfg, trackerAgentConfig)
+	err = runTrackerWatchPollLoop(ctx, cfg.once, startupTrackerAgentConfig.PollInterval, func(ctx context.Context) error {
+		err := runTrackerWatchPollIteration(ctx, cfg)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
 		}
@@ -151,7 +159,7 @@ func runTrackerWatchPollLoop(ctx context.Context, once bool, pollInterval time.D
 	}
 }
 
-func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, trackerAgentConfig trackerAgentConfig) error {
+func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -170,6 +178,10 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig, t
 		return errors.New("tracker.startrek settings are required")
 	}
 
+	trackerAgentConfig, err := newTrackerWatchConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
+	if err != nil {
+		return err
+	}
 	backend, err := buildTrackerWatchStartrekBackend(profile, trackerAgentConfig)
 	if err != nil {
 		return err
