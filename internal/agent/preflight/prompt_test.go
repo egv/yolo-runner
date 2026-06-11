@@ -14,6 +14,7 @@ func TestBuildPromptIncludesReadOnlyInstructionsAndSchemaSnapshot(t *testing.T) 
 			Description: "Wire the retry guard into the agent loop.",
 			Status:      contracts.TaskStatusOpen,
 			ParentID:    "epic-1",
+			Metadata:    map[string]string{"dependencies": "T17, T18"},
 		},
 		Comments: []Comment{
 			{Author: "alice", Body: "Keep the change in internal/agent."},
@@ -32,7 +33,8 @@ func TestBuildPromptIncludesReadOnlyInstructionsAndSchemaSnapshot(t *testing.T) 
 Rules:
 - Read only. Do not edit, create, delete, rename, format, or stage files.
 - Do not update task status, add comments, commit, push, or start an implementation.
-- Use only the task, comments, and queue root context below.
+- You may read files in the workspace to answer your own questions before deciding.
+- Check relevant workspace files before asking a human, especially outputs of dependency tasks.
 - Decide whether the implementation agent can proceed without asking a human for missing information.
 
 Task:
@@ -47,6 +49,10 @@ Wire the retry guard into the agent loop.
 Comments:
 1. alice: Keep the change in internal/agent.
 2. bob: The result parser landed in T17.
+
+Dependency hints:
+- T17
+- T18
 
 Queue root:
 ID: epic-1

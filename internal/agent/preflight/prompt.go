@@ -24,6 +24,7 @@ func BuildPrompt(input BuildPromptInput) string {
 		readOnlyRules(),
 		taskSection(input.Task),
 		commentsSection(input.Comments),
+		dependencyHintsSection(input.Task),
 		queueRootSection(input.QueueRoot),
 		responseSchemaSection(),
 	}, "\n\n")
@@ -34,7 +35,8 @@ func readOnlyRules() string {
 		"Rules:",
 		"- Read only. Do not edit, create, delete, rename, format, or stage files.",
 		"- Do not update task status, add comments, commit, push, or start an implementation.",
-		"- Use only the task, comments, and queue root context below.",
+		"- You may read files in the workspace to answer your own questions before deciding.",
+		"- Check relevant workspace files before asking a human, especially outputs of dependency tasks.",
 		"- Decide whether the implementation agent can proceed without asking a human for missing information.",
 	}, "\n")
 }
@@ -65,6 +67,45 @@ func commentsSection(comments []Comment) string {
 		lines = append(lines, "None")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func dependencyHintsSection(task contracts.Task) string {
+	lines := []string{"Dependency hints:"}
+	for _, id := range dependencyHintIDs(task) {
+		lines = append(lines, "- "+id)
+	}
+	if len(lines) == 1 {
+		lines = append(lines, "None")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func dependencyHintIDs(task contracts.Task) []string {
+	if len(task.Metadata) == 0 {
+		return nil
+	}
+	raw := strings.TrimSpace(task.Metadata["dependencies"])
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	ids := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		id := strings.TrimSpace(part)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func queueRootSection(root contracts.Task) string {
