@@ -285,7 +285,8 @@ func splitSubtaskContext(input SplitSubtasksInput, tasks []splitter.Task, task s
 func splitEpicSummary(input SplitSubtasksInput) string {
 	parentID := strings.TrimSpace(input.ParentID)
 	parentTitle := strings.TrimSpace(input.ParentTitle)
-	summary := firstEpicSummarySentence(input.ParentDescription)
+	parentDescription := splitParentEpicDescription(input.ParentDescription)
+	summary := firstEpicSummarySentence(parentDescription)
 
 	if parentTitle == "" && len(input.Output.Epics) > 0 {
 		parentTitle = strings.TrimSpace(input.Output.Epics[0].Name)
@@ -318,6 +319,62 @@ func firstEpicSummarySentence(description string) string {
 	return ""
 }
 
+func splitParentEpicDescription(description string) string {
+	if block, ok := splitMappedStartrekDescriptionBlock(description); ok {
+		return block
+	}
+	return strings.TrimSpace(description)
+}
+
+func splitMappedStartrekDescriptionBlock(description string) (string, bool) {
+	description = strings.ReplaceAll(description, "\r\n", "\n")
+	description = strings.ReplaceAll(description, "\r", "\n")
+
+	lines := strings.Split(description, "\n")
+	descriptionIndex := -1
+	fieldCount := 0
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "Description:" {
+			descriptionIndex = i
+			break
+		}
+		if isMappedStartrekTaskField(line) {
+			fieldCount++
+		}
+	}
+	if descriptionIndex < 0 || fieldCount < 2 {
+		return "", false
+	}
+
+	endIndex := len(lines)
+	for i := descriptionIndex + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "Recent comments:" {
+			endIndex = i
+			break
+		}
+	}
+
+	block := strings.TrimSpace(strings.Join(lines[descriptionIndex+1:endIndex], "\n"))
+	if strings.EqualFold(block, "None") {
+		return "", true
+	}
+	return block, true
+}
+
+func isMappedStartrekTaskField(line string) bool {
+	name, _, ok := strings.Cut(line, ":")
+	if !ok {
+		return false
+	}
+	switch strings.TrimSpace(name) {
+	case "Title", "Issue", "Queue", "Root", "Author", "Labels":
+		return true
+	default:
+		return false
+	}
+}
+
 func firstSentence(line string) string {
 	best := -1
 	for _, separator := range []string{". ", "? ", "! "} {
@@ -332,7 +389,7 @@ func firstSentence(line string) string {
 }
 
 func splitDocLinks(input SplitSubtasksInput) []string {
-	values := []string{input.ParentDescription}
+	values := []string{splitParentEpicDescription(input.ParentDescription)}
 	for _, epic := range input.Output.Epics {
 		values = append(values, epic.Name, epic.Goal)
 	}
