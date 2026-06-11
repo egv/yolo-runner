@@ -528,9 +528,11 @@ func runTrackerWatchStartrekSplit(ctx context.Context, backend trackerWatchStart
 		SubtaskLabel: "agent:subtask",
 		SplitVersion: trackerWatchStartrekSplitVersion,
 	}).Create(ctx, startrek.SplitSubtasksInput{
-		QueueKey: strings.TrimSpace(input.Queue.Key),
-		ParentID: taskID,
-		Output:   splitOutput,
+		QueueKey:          strings.TrimSpace(input.Queue.Key),
+		ParentID:          taskID,
+		ParentTitle:       task.Title,
+		ParentDescription: task.Description,
+		Output:            splitOutput,
 	})
 	if err != nil {
 		return err
