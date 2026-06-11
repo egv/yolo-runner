@@ -22,8 +22,12 @@ import (
 
 var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
 
-const defaultTrackerWatchMaxConsecutiveFailures = 3
-const defaultTrackerWatchResilientMaxConsecutiveFailures = 20
+const (
+	defaultTrackerWatchMaxConsecutiveFailures          = 3
+	defaultTrackerWatchResilientMaxConsecutiveFailures = 20
+	trackerWatchStartrekNeedsInfoLabel                 = "needs-info"
+	trackerWatchStartrekNeedsInfoMarker                = "needs-info"
+)
 
 type trackerWatchLock struct {
 	path string
@@ -894,6 +898,18 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend trackerWatchS
 		return false, err
 	}
 
+	if result.Decision == preflight.DecisionReply {
+		if err := applyTrackerWatchStartrekPreflightReply(ctx, backend, trackerWatchStartrekPreflightReplyInput{
+			IssueID:         taskID,
+			ProcessingLabel: inProgressLabel,
+			ReplyText:       result.ReplyText,
+			SummoneeID:      startrekSummoneeID(*task),
+		}); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
 	if result.Decision == preflight.DecisionNeedsInfo {
 		questions := result.Questions
 		if len(questions) == 0 {
@@ -921,6 +937,46 @@ func runTrackerWatchStartrekPreflight(ctx context.Context, backend trackerWatchS
 		return false, err
 	}
 	return true, nil
+}
+
+type trackerWatchStartrekPreflightReplyInput struct {
+	IssueID         string
+	ProcessingLabel string
+	ReplyText       string
+	SummoneeID      string
+}
+
+func applyTrackerWatchStartrekPreflightReply(ctx context.Context, backend trackerWatchStartrekBackend, input trackerWatchStartrekPreflightReplyInput) error {
+	if backend == nil {
+		return errors.New("startrek preflight reply backend is required")
+	}
+	issueID := strings.TrimSpace(input.IssueID)
+	if issueID == "" {
+		return errors.New("startrek preflight reply issue id is required")
+	}
+	replyText := strings.TrimSpace(input.ReplyText)
+	if replyText == "" {
+		return errors.New("startrek preflight reply text is required")
+	}
+	processingLabel := strings.TrimSpace(input.ProcessingLabel)
+	if processingLabel == "" {
+		processingLabel = defaultTrackerAgentRunningLabel
+	}
+
+	if err := backend.RemoveLabel(ctx, issueID, processingLabel); err != nil {
+		return fmt.Errorf("remove startrek processing label from issue %q before preflight reply: %w", issueID, err)
+	}
+	if err := backend.AddLabel(ctx, issueID, trackerWatchStartrekNeedsInfoLabel); err != nil {
+		return fmt.Errorf("add startrek needs-info label to issue %q after preflight reply: %w", issueID, err)
+	}
+	if _, err := backend.CreateIssueComment(ctx, issueID, startrek.IssueCommentCreateOptions{
+		Body:     replyText,
+		AuthorID: strings.TrimSpace(input.SummoneeID),
+		Marker:   trackerWatchStartrekNeedsInfoMarker,
+	}); err != nil {
+		return fmt.Errorf("post startrek preflight reply on needs-info issue %q: %w", issueID, err)
+	}
+	return nil
 }
 
 func fallbackTrackerWatchPreflightQuestions(task contracts.Task, result preflight.Result) []string {
