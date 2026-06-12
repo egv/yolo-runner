@@ -122,11 +122,13 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 	if err != nil {
 		return err
 	}
+	handlers := defaultRunnerKindRegistry()
+	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
 
 	daemon := runnerDaemon{
 		store:              store,
 		runners:            runners,
-		handlers:           defaultRunnerKindRegistry(),
+		handlers:           handlers,
 		environmentPresets: environmentPresets,
 		materialize:        envpreset.Materialize,
 		cfg:                cfg,
@@ -217,7 +219,14 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now().UTC()
 	}
-	return d.store.Complete(item.ID, result)
+	switch result.Status {
+	case workqueue.ResultStatusBlocked:
+		return d.store.Block(item.ID, result)
+	case workqueue.ResultStatusFailed:
+		return d.store.Fail(item.ID, result)
+	default:
+		return d.store.Complete(item.ID, result)
+	}
 }
 
 func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {
@@ -302,7 +311,6 @@ func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemI
 func defaultRunnerKindRegistry() runnerKindRegistry {
 	registry := runnerKindRegistry{}
 	for _, kind := range []workitem.Kind{
-		workitem.KindImplement,
 		workitem.KindReview,
 		workitem.KindSplit,
 		workitem.KindPRReview,
@@ -310,6 +318,7 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 	} {
 		registry[kind] = stubRunnerKindHandler
 	}
+	registry[workitem.KindImplement] = newRunnerImplementKindHandler(defaultRunnerImplementExecutorResolver)
 	registry[workitem.KindPreflight] = newRunnerPreflightKindHandler(defaultRunnerPreflightAgentResolver)
 	return registry
 }

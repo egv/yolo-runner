@@ -53,6 +53,13 @@ func (s *Store) Complete(itemID string, result Result) error {
 	return s.finishItem(itemID, itemStateDone, result)
 }
 
+// Block writes a blocked work result and moves the item to done for source
+// consumption. The queue item itself has no separate blocked state.
+func (s *Store) Block(itemID string, result Result) error {
+	result.Status = ResultStatusBlocked
+	return s.finishItem(itemID, itemStateDone, result)
+}
+
 // Fail writes a failed work result and moves the item to failed.
 func (s *Store) Fail(itemID string, result Result) error {
 	result.Status = ResultStatusFailed
