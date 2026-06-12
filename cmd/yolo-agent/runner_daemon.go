@@ -123,11 +123,13 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 	if err != nil {
 		return err
 	}
+	handlers := defaultRunnerKindRegistry()
+	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
 
 	daemon := runnerDaemon{
 		store:              store,
 		runners:            runners,
-		handlers:           defaultRunnerKindRegistry(),
+		handlers:           handlers,
 		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
 		environmentPresets: environmentPresets,
 		materialize:        envpreset.Materialize,
@@ -365,10 +367,23 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now().UTC()
 	}
-	if err := d.store.Complete(item.ID, result); err != nil {
-		return err
+
+	var finishErr error
+	status := workqueue.ResultStatusCompleted
+	switch result.Status {
+	case workqueue.ResultStatusBlocked:
+		status = workqueue.ResultStatusBlocked
+		finishErr = d.store.Block(item.ID, result)
+	case workqueue.ResultStatusFailed:
+		status = workqueue.ResultStatusFailed
+		finishErr = d.store.Fail(item.ID, result)
+	default:
+		finishErr = d.store.Complete(item.ID, result)
 	}
-	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusCompleted), nil, result.FinishedAt)
+	if finishErr != nil {
+		return finishErr
+	}
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(status), nil, result.FinishedAt)
 	return nil
 }
 
@@ -475,7 +490,6 @@ func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemI
 func defaultRunnerKindRegistry() runnerKindRegistry {
 	registry := runnerKindRegistry{}
 	for _, kind := range []workitem.Kind{
-		workitem.KindImplement,
 		workitem.KindReview,
 		workitem.KindSplit,
 		workitem.KindPRReview,
@@ -483,6 +497,7 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 	} {
 		registry[kind] = stubRunnerKindHandler
 	}
+	registry[workitem.KindImplement] = newRunnerImplementKindHandler(defaultRunnerImplementExecutorResolver)
 	registry[workitem.KindPreflight] = newRunnerPreflightKindHandler(defaultRunnerPreflightAgentResolver)
 	return registry
 }

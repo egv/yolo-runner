@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -60,7 +59,7 @@ func newRunnerPreflightKindHandler(resolve runnerPreflightAgentResolver) runnerK
 }
 
 func defaultRunnerPreflightAgentResolver(_ context.Context, item workitem.Item) (runnerPreflightAgent, error) {
-	environmentsPath := defaultRunnerEnvironmentsPath()
+	environmentsPath := defaultRunnerDaemonEnvironmentsPath
 	presets, err := envpreset.Load(environmentsPath)
 	if err != nil {
 		return runnerPreflightAgent{}, err
@@ -91,14 +90,6 @@ func defaultRunnerPreflightAgentResolver(_ context.Context, item workitem.Item) 
 		Agent:    resolvedAgent,
 		RepoRoot: runnerPreflightRepoRoot(preset),
 	}, nil
-}
-
-func defaultRunnerEnvironmentsPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return filepath.Join(".yolo-runner", "environments.yaml")
-	}
-	return filepath.Join(home, ".yolo-runner", "environments.yaml")
 }
 
 func runnerPreflightRepoRoot(preset envpreset.Preset) string {
