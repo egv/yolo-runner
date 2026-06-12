@@ -36,6 +36,7 @@ func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.
 
 	var listedWorkspaces []string
 	var fetchedPRs []string
+	writebackClient := &fakeArcPRWritebackClient{}
 	src := &Source{
 		SourceName: "arcpr-adapta",
 		Preset:     "adapta",
@@ -44,6 +45,17 @@ func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.
 		Branches:   []string{"trunk"},
 		AllowShip:  true,
 		State:      state,
+		ReplyApplier: arcreview.ReplyApplier{
+			Client: writebackClient,
+			Store:  state,
+		},
+		ReviewApplier: arcreview.ReviewApplier{
+			Client: writebackClient,
+			Store:  state,
+		},
+		ShipGate: arcreview.ShipGate{
+			Client: writebackClient,
+		},
 		Lister: PRListerFunc(func(_ context.Context, workspace string) ([]arcanum.PRSummary, error) {
 			listedWorkspaces = append(listedWorkspaces, workspace)
 			switch workspace {
