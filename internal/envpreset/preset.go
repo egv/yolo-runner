@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +45,8 @@ type Workspace struct {
 	Mount      string            `yaml:"mount"`
 	Subpath    string            `yaml:"subpath"`
 	Path       string            `yaml:"path"`
+	VCS        contracts.VCS     `yaml:"-"`
+	Cleanup    func() error      `yaml:"-"`
 }
 
 type Landing struct {
