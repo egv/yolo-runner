@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 func TestRunnerDaemonOnceClaimsStubHandlerAndWritesResult(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	environmentsPath := writeRunnerEnvironmentFile(t, "linux")
 	store, err := workqueue.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -39,6 +42,7 @@ func TestRunnerDaemonOnceClaimsStubHandlerAndWritesResult(t *testing.T) {
 	code := RunMain([]string{
 		"runner",
 		"--queue", dbPath,
+		"--environments", environmentsPath,
 		"--presets", "linux",
 		"--runner-id", "runner-test",
 		"--once",
@@ -119,6 +123,24 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	if startedAt == "" || heartbeatAt == "" {
 		t.Fatalf("runner timestamps not populated: started_at=%q heartbeat_at=%q", startedAt, heartbeatAt)
 	}
+}
+
+func writeRunnerEnvironmentFile(t *testing.T, presetName string) string {
+	t.Helper()
+
+	workspacePath := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "environments.yaml")
+	content := "presets:\n" +
+		"  " + presetName + ":\n" +
+		"    workspace:\n" +
+		"      strategy: path\n" +
+		"      path: " + strconv.Quote(workspacePath) + "\n" +
+		"    landing:\n" +
+		"      type: none\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write environments file: %v", err)
+	}
+	return configPath
 }
 
 func TestRunnerDaemonMaterializesEachPresetStrategyAndCleansUp(t *testing.T) {
@@ -226,5 +248,73 @@ func TestRunnerDaemonMaterializesEachPresetStrategyAndCleansUp(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("strategy %s workspace should be cleaned up, stat error = %v", strategy, err)
 		}
+	}
+}
+
+func TestRunnerDaemonFailsClaimWithoutEnvironmentPresets(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPreflight,
+		Source:         "test-source",
+		SourceRef:      "TASK-missing-presets",
+		IdempotencyKey: "test-source/TASK-missing-presets/preflight",
+		Preset:         "linux",
+		Payload:        json.RawMessage(`{"task_id":"TASK"}`),
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	item, err := store.Claim("runner-test", []string{"linux"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if item == nil {
+		t.Fatal("Claim() returned nil item")
+	}
+
+	handlerCalled := false
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPreflight: func(context.Context, workitem.Item, envpreset.Workspace) (workqueue.Result, error) {
+				handlerCalled = true
+				return workqueue.Result{Payload: json.RawMessage(`{"ok":true}`)}, nil
+			},
+		},
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-test",
+			heartbeatInterval: time.Hour,
+		},
+	}
+
+	if err := daemon.runClaimedItem(ctx, *item); err != nil {
+		t.Fatalf("runClaimedItem() error = %v", err)
+	}
+	if handlerCalled {
+		t.Fatal("handler should not run without environment presets")
+	}
+
+	results, err := store.ListUnconsumedResults("test-source")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("ListUnconsumedResults() len = %d, want 1", len(results))
+	}
+	if results[0].Result.Status != workqueue.ResultStatusFailed {
+		t.Fatalf("result status = %q, want failed", results[0].Result.Status)
+	}
+	if !strings.Contains(string(results[0].Result.Payload), "environment presets are required") {
+		t.Fatalf("result payload %s does not mention missing environment presets", results[0].Result.Payload)
 	}
 }

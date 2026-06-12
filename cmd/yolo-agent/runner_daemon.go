@@ -222,7 +222,7 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 
 func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {
 	if len(d.environmentPresets) == 0 {
-		return envpreset.Workspace{Cleanup: func() error { return nil }}, nil
+		return envpreset.Workspace{}, fmt.Errorf("environment presets are required for runner dispatch")
 	}
 
 	presetName := strings.TrimSpace(item.Preset)
@@ -328,17 +328,12 @@ func stubRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Wo
 
 func loadRunnerEnvironmentPresets(path string, requiredPresets []string) (map[string]envpreset.Preset, error) {
 	path = strings.TrimSpace(path)
-	defaulted := false
 	if path == "" {
 		path = defaultRunnerEnvironmentsPath
-		defaulted = true
 	}
 
 	presets, err := envpreset.Load(path)
 	if err != nil {
-		if defaulted && errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
 
