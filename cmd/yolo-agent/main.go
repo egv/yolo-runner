@@ -14,28 +14,24 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
-	"github.com/egv/yolo-runner/v2/internal/claude"
-	"github.com/egv/yolo-runner/v2/internal/codex"
 	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/engine"
-	"github.com/egv/yolo-runner/v2/internal/kimi"
-	"github.com/egv/yolo-runner/v2/internal/opencode"
 	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 	"github.com/egv/yolo-runner/v2/internal/version"
 )
 
 const (
-	backendOpenCode     = "opencode"
-	backendOpenCodeACP  = "opencode-acp"
-	backendCodex        = "codex"
-	backendCodexCLI     = "codex-cli"
-	backendClaude       = "claude"
-	backendKimi         = "kimi"
-	backendGemini       = "gemini"
-	agentModeStream     = "stream"
-	agentModeUI         = "ui"
+	backendOpenCode    = "opencode"
+	backendOpenCodeACP = "opencode-acp"
+	backendCodex       = "codex"
+	backendCodexCLI    = "codex-cli"
+	backendClaude      = "claude"
+	backendKimi        = "kimi"
+	backendGemini      = "gemini"
+	agentModeStream    = "stream"
+	agentModeUI        = "ui"
 )
 
 type runConfig struct {
@@ -446,7 +442,7 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	vcsAdapter := gitvcs.NewVCSAdapter(localGitRunner{dir: cfg.repoRoot})
-	runnerAdapter, err := buildRunnerAdapter(cfg)
+	runnerAdapter, err := buildAgentRunner(cfg.codingAgents, cfg.backend, cfg.model, cfg.runnerTimeout)
 	if err != nil {
 		return err
 	}
@@ -456,32 +452,7 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 }
 
 func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
-	selectedBackend := normalizeBackend(cfg.backend)
-	if selectedBackend == "" {
-		return nil, fmt.Errorf("unsupported runner backend %q", cfg.backend)
-	}
-	definition, ok := cfg.codingAgents.Backend(selectedBackend)
-	if !ok {
-		return nil, fmt.Errorf("unsupported runner backend %q", cfg.backend)
-	}
-
-	switch definition.Adapter {
-	case "opencode":
-		command := append([]string{}, definition.Args...)
-		return opencode.NewCLIRunnerAdapter(opencode.CommandRunner{}, nil, defaultConfigRoot(), defaultConfigDir(), definition.Binary, command...), nil
-	case "opencode-serve":
-		return opencode.NewServeRunnerAdapter(definition.Binary, definition.Args...), nil
-	case "codex", "codex-app-server":
-		return codex.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
-	case "claude":
-		return claude.NewSessionRunnerAdapter(definition.Binary), nil
-	case "kimi":
-		return kimi.NewCLIRunnerAdapter(definition.Binary, nil, definition.Args...), nil
-	case "command":
-		return codingagents.NewGenericCLIRunnerAdapter(definition.Name, definition.Binary, definition.Args, nil).WithHealthConfig(definition.Health), nil
-	default:
-		return nil, fmt.Errorf("unsupported runner backend adapter %q", definition.Adapter)
-	}
+	return buildAgentRunner(cfg.codingAgents, cfg.backend, cfg.model, cfg.runnerTimeout)
 }
 
 func copyStringMap(values map[string]string) map[string]string {

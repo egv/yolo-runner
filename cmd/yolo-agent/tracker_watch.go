@@ -786,13 +786,7 @@ func buildTrackerWatchRunner(repoRoot string) (contracts.AgentRunner, trackerWat
 		return nil, trackerWatchRunnerDefaults{}, err
 	}
 	resolved := trackerWatchRunnerDefaults{Config: defaults}
-	runner, err := buildRunnerAdapter(runConfig{
-		repoRoot:      repoRoot,
-		backend:       defaults.Backend,
-		model:         defaults.Model,
-		runnerTimeout: resolved.RunnerTimeoutValue(),
-		codingAgents:  catalog,
-	})
+	runner, err := buildAgentRunner(catalog, defaults.Backend, defaults.Model, resolved.RunnerTimeoutValue())
 	if err != nil {
 		return nil, trackerWatchRunnerDefaults{}, err
 	}
