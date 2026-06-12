@@ -15,10 +15,7 @@ import (
 type Item = workitem.Item
 type Submission = workitem.Submission
 
-const (
-	defaultMaxAttempts = 3
-	itemStatePending   = "pending"
-)
+const defaultMaxAttempts = 3
 
 func (s *Store) Enqueue(submission Submission) (Item, error) {
 	return s.EnqueueWithDeps(submission, nil)
@@ -276,24 +273,6 @@ func itemSelectSQL() string {
 	created_at,
 	updated_at
 FROM work_items`
-}
-
-func formatQueueTime(value time.Time) string {
-	if value.IsZero() {
-		return ""
-	}
-	return value.UTC().Format(time.RFC3339Nano)
-}
-
-func parseQueueTime(column string, value string) (time.Time, error) {
-	if strings.TrimSpace(value) == "" {
-		return time.Time{}, nil
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse work_items.%s %q: %w", column, value, err)
-	}
-	return parsed, nil
 }
 
 func newWorkItemID(now time.Time) (string, error) {

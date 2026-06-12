@@ -20,8 +20,6 @@ const (
 	itemStateRunning   = "running"
 	itemStateFailed    = "failed"
 	itemStateCancelled = "cancelled"
-
-	defaultMaxAttempts = 3
 )
 
 type ResultStatus string
