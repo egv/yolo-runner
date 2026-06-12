@@ -345,17 +345,71 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		return summary, err
 	}
 
-	switch contracts.RunnerResultStatus(strings.TrimSpace(result.Status)) {
-	case contracts.RunnerResultCompleted:
+	taskStatus, _, err := l.writeResultTaskUpdate(ctx, task, worker, queuePos, result)
+	if err != nil {
+		return summary, err
+	}
+	switch taskStatus {
+	case contracts.TaskStatusClosed:
 		summary.Completed++
-	case contracts.RunnerResultBlocked:
+	case contracts.TaskStatusBlocked:
 		summary.Blocked++
-	case contracts.RunnerResultFailed:
+	case contracts.TaskStatusFailed:
 		summary.Failed++
 	default:
 		summary.Failed++
 	}
 	return summary, nil
+}
+
+func (l *Loop) writeResultTaskUpdate(ctx context.Context, task contracts.Task, worker string, queuePos int, result workitem.ImplementResult) (contracts.TaskStatus, map[string]string, error) {
+	taskStatus, taskData := mapResultToTaskUpdate(result)
+	clonePath := firstNonEmptyString(result.Artifacts["clone_path"], l.options.RepoRoot)
+
+	switch taskStatus {
+	case contracts.TaskStatusClosed:
+		if err := l.markTaskCompleted(task.ID); err != nil {
+			return taskStatus, taskData, err
+		}
+		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
+			return taskStatus, taskData, err
+		}
+		if err := l.clearTaskTerminalState(task.ID); err != nil {
+			return taskStatus, taskData, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
+	case contracts.TaskStatusBlocked:
+		if err := l.markTaskBlockedWithData(task.ID, taskData); err != nil {
+			return taskStatus, taskData, err
+		}
+		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
+			return taskStatus, taskData, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: taskData, Timestamp: time.Now().UTC()})
+		if err := l.tasks.SetTaskData(ctx, task.ID, taskData); err != nil {
+			return taskStatus, taskData, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Metadata: taskData, Timestamp: time.Now().UTC()})
+		if err := l.clearTaskTerminalState(task.ID); err != nil {
+			return taskStatus, taskData, err
+		}
+	case contracts.TaskStatusFailed:
+		if err := l.tasks.SetTaskData(ctx, task.ID, taskData); err != nil {
+			return taskStatus, taskData, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Metadata: taskData, Timestamp: time.Now().UTC()})
+		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
+			return taskStatus, taskData, err
+		}
+		if err := l.clearTaskInFlight(task.ID); err != nil {
+			return taskStatus, taskData, err
+		}
+		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: taskData, Timestamp: time.Now().UTC()})
+	default:
+		return taskStatus, taskData, fmt.Errorf("unsupported task status %q from implement result", taskStatus)
+	}
+
+	return taskStatus, taskData, nil
 }
 
 type loopExecutorTaskManager struct {

@@ -320,36 +320,10 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				runnerResult.Artifacts = mergeStringMaps(runnerResult.Artifacts, events.snapshot())
 			}
 
-			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusClosed); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := clearExecutorTerminalState(e, task.ID); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
 			return e.resultFromRunnerResult(runnerResult, taskBranch), nil
 
 		case contracts.RunnerResultBlocked:
-			blockedData := map[string]string{"triage_status": "blocked"}
-			if runnerResult.Reason != "" {
-				blockedData["triage_reason"] = runnerResult.Reason
-			}
-			blockedData = appendExecutorDecisionMetadata(blockedData, "blocked", runnerResult.Reason)
-			blockedData = appendExecutorReviewOutcomeMetadata(blockedData, runnerResult)
-			if err := markExecutorTaskBlockedWithData(e, task.ID, blockedData); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusBlocked); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := setExecutorTaskData(ctx, taskManager, task.ID, blockedData); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusBlocked), Metadata: blockedData, Timestamp: time.Now().UTC()})
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
-			if err := clearExecutorTerminalState(e, task.ID); err != nil {
-				return workitem.ImplementResult{}, err
-			}
+			runnerResult.Artifacts = mergeStringMaps(runnerResult.Artifacts, events.snapshot())
 			return e.resultFromRunnerResult(runnerResult, taskBranch), nil
 
 		case contracts.RunnerResultFailed:
@@ -424,52 +398,18 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				}
 
 				completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries+1, completionReason)
-				blockedData := map[string]string{
-					"triage_status":          "blocked",
+				artifacts := mergeStringMaps(runnerResult.Artifacts, map[string]string{
 					"completion_retry_count": fmt.Sprintf("%d", completionRetries),
 					"completion_addendum":    completionAddendum,
-					"triage_reason":          completionReason,
-				}
-				blockedData = appendExecutorDecisionMetadata(blockedData, "blocked", completionReason)
-				blockedData = appendExecutorReviewOutcomeMetadata(blockedData, runnerResult)
-				if err := markExecutorTaskBlockedWithData(e, task.ID, blockedData); err != nil {
-					return workitem.ImplementResult{}, err
-				}
-				if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusBlocked); err != nil {
-					return workitem.ImplementResult{}, err
-				}
-				if err := setExecutorTaskData(ctx, taskManager, task.ID, blockedData); err != nil {
-					return workitem.ImplementResult{}, err
-				}
-				_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusBlocked), Metadata: blockedData, Timestamp: time.Now().UTC()})
-				_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
-				if err := clearExecutorTerminalState(e, task.ID); err != nil {
-					return workitem.ImplementResult{}, err
-				}
-				return e.resultFromRunnerResult(contracts.RunnerResult{Status: contracts.RunnerResultBlocked, Reason: completionReason, Artifacts: runnerResult.Artifacts}, taskBranch), nil
+				})
+				return e.resultFromRunnerResult(contracts.RunnerResult{Status: contracts.RunnerResultBlocked, Reason: completionReason, Artifacts: artifacts}, taskBranch), nil
 			}
 
-			failedData := map[string]string{"triage_status": "failed"}
-			if runnerResult.Reason != "" {
-				failedData["triage_reason"] = runnerResult.Reason
-			}
-			failedData = appendExecutorDecisionMetadata(failedData, "failed", runnerResult.Reason)
+			artifacts := runnerResult.Artifacts
 			if reviewFail || reviewRetries > 0 {
-				failedData["review_retry_count"] = fmt.Sprintf("%d", reviewRetries)
+				artifacts = mergeStringMaps(artifacts, map[string]string{"review_retry_count": fmt.Sprintf("%d", reviewRetries)})
 			}
-			failedData = appendExecutorReviewOutcomeMetadata(failedData, runnerResult)
-			if err := setExecutorTaskData(ctx, taskManager, task.ID, failedData); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusFailed); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := clearExecutorInFlight(e, task.ID); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusFailed), Metadata: failedData, Timestamp: time.Now().UTC()})
-			return e.resultFromRunnerResult(runnerResult, taskBranch), nil
+			return e.resultFromRunnerResult(contracts.RunnerResult{Status: runnerResult.Status, Reason: runnerResult.Reason, LogPath: runnerResult.LogPath, Artifacts: artifacts}, taskBranch), nil
 
 		default:
 			reason := strings.TrimSpace(runnerResult.Reason)
@@ -477,20 +417,6 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				reason = fmt.Sprintf("invalid runner result status %q", runnerResult.Status)
 			}
 			failedResult := contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason, Artifacts: runnerResult.Artifacts}
-			failedData := map[string]string{"triage_status": "failed", "triage_reason": reason}
-			failedData = appendExecutorDecisionMetadata(failedData, "failed", reason)
-			failedData = appendExecutorReviewOutcomeMetadata(failedData, failedResult)
-			if err := setExecutorTaskData(ctx, taskManager, task.ID, failedData); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusFailed); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			if err := clearExecutorInFlight(e, task.ID); err != nil {
-				return workitem.ImplementResult{}, err
-			}
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
-			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusFailed), Metadata: failedData, Timestamp: time.Now().UTC()})
 			return e.resultFromRunnerResult(failedResult, taskBranch), nil
 		}
 	}
