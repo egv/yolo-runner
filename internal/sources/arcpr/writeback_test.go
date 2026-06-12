@@ -117,6 +117,68 @@ func TestSourceHandleResultAppliesRepliesReviewAndShipsWhenGateAllows(t *testing
 	}
 }
 
+func TestSourceHandleResultDoesNotShipStaleReviewedRevision(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	client := &fakeArcPRWritebackClient{}
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r8",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r8"},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "Already handled.", Answered: true},
+			},
+			Checks: []arcreview.PRCheck{{Name: "ci", Status: "passed"}},
+		},
+	}
+	src := &Source{
+		SourceName:   "arcpr-adapta",
+		Workspaces:   []string{"/arcadia/project"},
+		AllowShip:    true,
+		State:        state,
+		StateFetcher: fetcher,
+		ReviewApplier: arcreview.ReviewApplier{
+			Client: client,
+			Store:  state,
+		},
+		ShipGate: arcreview.ShipGate{
+			Client: client,
+		},
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Ship:     true,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			ReviewVerdict:    "ship",
+			ShipReady:        true,
+			RevisionReviewed: "r7",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(client.ships) != 0 {
+		t.Fatalf("stale reviewed revision shipped PRs, want none: %#v", client.ships)
+	}
+	reviewed, err := state.GetReviewedRevision(ctx, "42")
+	if err != nil {
+		t.Fatalf("GetReviewedRevision() error = %v", err)
+	}
+	if reviewed != "r7" {
+		t.Fatalf("reviewed revision = %q, want stale result revision recorded", reviewed)
+	}
+}
+
 func arcPRWritebackRuntimeState(commentsAnswered bool, checks []arcreview.PRCheck) arcreview.PRRuntimeState {
 	return arcreview.PRRuntimeState{
 		PRID:     "42",

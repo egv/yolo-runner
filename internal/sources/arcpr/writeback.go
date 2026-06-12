@@ -48,11 +48,12 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	if err != nil {
 		return nil, err
 	}
-	state = stateWithWritebackIdentity(state, prID, payload.Revision)
+	gateStateBase := stateWithWritebackIdentity(state, prID, "")
+	writebackState := stateWithWritebackIdentity(state, prID, payload.Revision)
 
 	repliedCommentIDs := resultReplyCommentIDs(resultPayload.Replies)
 	if len(resultPayload.Replies) > 0 {
-		if err := s.applyPRReviewReplies(ctx, state, resultPayload); err != nil {
+		if err := s.applyPRReviewReplies(ctx, writebackState, resultPayload); err != nil {
 			return nil, fmt.Errorf("apply arc PR replies: %w", err)
 		}
 		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, repliedCommentIDs); err != nil {
@@ -62,7 +63,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 
 	reviewedRevision := strings.TrimSpace(resultPayload.RevisionReviewed)
 	if reviewedRevision != "" {
-		if err := s.applyPRReview(ctx, state, prID, reviewedRevision, resultPayload); err != nil {
+		if err := s.applyPRReview(ctx, writebackState, prID, reviewedRevision, resultPayload); err != nil {
 			return nil, fmt.Errorf("apply arc PR review: %w", err)
 		}
 		if err := s.State.StoreReviewedRevision(ctx, prID, reviewedRevision); err != nil {
@@ -71,7 +72,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	}
 
 	if resultPayload.ShipReady {
-		gateState, err := s.shipGateState(ctx, state, prID, repliedCommentIDs)
+		gateState, err := s.shipGateState(ctx, gateStateBase, prID, repliedCommentIDs)
 		if err != nil {
 			return nil, err
 		}
