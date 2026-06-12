@@ -55,11 +55,11 @@ func parseArcanumPRComment(raw json.RawMessage) (arcreview.PRComment, error) {
 		return arcreview.PRComment{}, err
 	}
 
-	createdAt, err := prCommentTimeScalar(item, "created_at", "createdAt")
+	createdAt, err := timeScalar(item, "created_at", "createdAt")
 	if err != nil {
 		return arcreview.PRComment{}, err
 	}
-	updatedAt, err := prCommentTimeScalar(item, "updated_at", "updatedAt")
+	updatedAt, err := timeScalar(item, "updated_at", "updatedAt")
 	if err != nil {
 		return arcreview.PRComment{}, err
 	}
@@ -104,7 +104,7 @@ func prCommentIsAnswered(item map[string]json.RawMessage, issueStatus string) bo
 	}
 }
 
-func prCommentTimeScalar(item map[string]json.RawMessage, keys ...string) (time.Time, error) {
+func timeScalar(item map[string]json.RawMessage, keys ...string) (time.Time, error) {
 	for _, key := range keys {
 		value := firstScalar(item, key)
 		if value == "" {

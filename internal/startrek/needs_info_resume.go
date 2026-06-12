@@ -119,7 +119,7 @@ func (b *StorageBackend) searchIssuesByLabel(ctx context.Context, queueKey strin
 
 func latestNeedsInfoMarkerCreatedAt(comments []IssueComment, marker string) time.Time {
 	marker = fallbackText(marker, defaultNeedsInfoMarker)
-	needle := "<!-- yolo-runner:" + marker + " -->"
+	needle := markerCommentNeedle(marker)
 	var latest time.Time
 	for _, comment := range comments {
 		if !strings.Contains(comment.Body, needle) {

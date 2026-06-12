@@ -12,6 +12,23 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Session lifecycle statuses persisted in pr_sessions.status.
+const (
+	SessionStatusPending = "pending"
+	SessionStatusRunning = "running"
+	SessionStatusCrashed = "crashed"
+)
+
+// IsTerminalSessionStatus reports whether a session can never run again.
+func IsTerminalSessionStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", SessionStatusCrashed, "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
 type Store struct {
 	db *sql.DB
 }

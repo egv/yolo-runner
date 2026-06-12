@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,7 +15,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
-const arcReviewPendingSessionStatus = "pending"
+const arcReviewPendingSessionStatus = arcreviewstate.SessionStatusPending
 
 type arcReviewDiscoveredPR struct {
 	ID        string
@@ -70,82 +69,34 @@ func defaultRunArcReviewWatch(ctx context.Context, cfg arcReviewWatchCommandConf
 	}()
 
 	emitArcReviewWatchStarted(ctx, cfg, reviewWatchConfig)
-	sawIterationError := false
-	recoveredFromIterationError := false
 	pollInterval := arcReviewWatchDynamicPollIntervalProvider(cfg.repoRoot, configService, reviewWatchConfig.PollInterval)
-	err = runArcReviewWatchPollLoop(ctx, cfg.once, pollInterval, func(context.Context) error {
-		err := runArcReviewWatchPollIterationWithConfigService(cfg, configService)
-		if err == nil && sawIterationError {
-			recoveredFromIterationError = true
-		}
-		return err
-	}, func(err error) {
-		sawIterationError = true
-		emitTrackerWatchIterationWarning(ctx, cfg.eventSink, err)
-	}, arcReviewWatchPollWait)
-	if errors.Is(err, context.Canceled) && recoveredFromIterationError {
-		err = nil
-	}
+	err = runResilientWatchPollLoop(ctx, cfg.once, pollInterval, func(context.Context) error {
+		return runArcReviewWatchPollIterationWithConfigService(cfg, configService)
+	}, cfg.eventSink, arcReviewWatchPollWait)
 	emitArcReviewWatchFinished(ctx, cfg, reviewWatchConfig, err)
 	return err
 }
 
 func resolveArcReviewWatchEventsPath(cfg arcReviewWatchCommandConfig) string {
-	if strings.TrimSpace(cfg.eventsPath) != "" {
-		return cfg.eventsPath
-	}
-	if cfg.stream {
-		return ""
-	}
-	return filepath.Join(cfg.repoRoot, "runner-logs", "arc-review-watch.events.jsonl")
+	return resolveWatchEventsPath(cfg.eventsPath, cfg.stream, cfg.repoRoot, "arc-review-watch.events.jsonl")
 }
 
 func arcReviewWatchEventSink(cfg arcReviewWatchCommandConfig) (contracts.EventSink, func()) {
-	sinks := []contracts.EventSink{}
-	closers := []func(){}
-	if cfg.stream {
-		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
-	}
-	if strings.TrimSpace(cfg.eventsPath) != "" {
-		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
-		if cfg.stream {
-			mirror := newMirrorEventSink(fileSink, 64)
-			closers = append(closers, mirror.Close)
-			sinks = append(sinks, mirror)
-		} else {
-			sinks = append(sinks, fileSink)
-		}
-	}
-	closeFn := func() {
-		for _, closer := range closers {
-			closer()
-		}
-	}
-	if len(sinks) == 0 {
-		return nil, closeFn
-	}
-	if len(sinks) == 1 {
-		return sinks[0], closeFn
-	}
-	return contracts.NewFanoutEventSink(sinks...), closeFn
-}
-
-func runArcReviewWatchPollLoop(ctx context.Context, once bool, pollInterval trackerWatchPollIntervalProvider, iterate trackerWatchPollIteration, onIterationError trackerWatchIterationErrorHandler, wait trackerWatchPollWait) error {
-	return runTrackerWatchPollLoop(ctx, once, pollInterval, iterate, onIterationError, defaultTrackerWatchResilientMaxConsecutiveFailures, wait)
+	return watchEventSink(cfg.stream, cfg.eventsPath)
 }
 
 func arcReviewWatchDynamicPollIntervalProvider(repoRoot string, configService arcReviewWatchConfigResolver, lastGood time.Duration) trackerWatchPollIntervalProvider {
-	return func() time.Duration {
-		if configService == nil {
-			return lastGood
+	var resolve func() (time.Duration, error)
+	if configService != nil {
+		resolve = func() (time.Duration, error) {
+			reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(repoRoot)
+			if err != nil {
+				return 0, err
+			}
+			return reviewWatchConfig.PollInterval, nil
 		}
-		reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(repoRoot)
-		if err != nil {
-			return lastGood
-		}
-		lastGood = reviewWatchConfig.PollInterval
-		return lastGood
 	}
+	return dynamicWatchPollIntervalProvider(lastGood, resolve)
 }
 
 func runArcReviewWatchPollIteration(cfg arcReviewWatchCommandConfig) error {
@@ -248,12 +199,7 @@ func hasNonTerminalArcReviewSession(sessions []arcreviewstate.Session) bool {
 }
 
 func isTerminalArcReviewSessionStatus(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "failed", "crashed", "cancelled", "canceled":
-		return true
-	default:
-		return false
-	}
+	return arcreviewstate.IsTerminalSessionStatus(status)
 }
 
 func restartStaleArcReviewSessions(
@@ -284,7 +230,7 @@ func restartStaleArcReviewSessions(
 			continue
 		}
 		failed := session
-		failed.Status = "crashed"
+		failed.Status = arcreviewstate.SessionStatusCrashed
 		failed.PID = 0
 		failed.FailureCount++
 		if _, err := store.UpdateSession(failed); err != nil {
@@ -300,7 +246,7 @@ func restartStaleArcReviewSessions(
 			PRID:         failed.PRID,
 			Workspace:    failed.Workspace,
 			Branch:       failed.Branch,
-			Status:       "running",
+			Status:       arcreviewstate.SessionStatusRunning,
 			Revision:     failed.Revision,
 			Heartbeat:    checkedAt,
 			FailureCount: failed.FailureCount,
@@ -321,7 +267,7 @@ func restartStaleArcReviewSessions(
 		}
 		started, err := starter.StartArcReviewProcess(spec)
 		if err != nil {
-			replacement.Status = "crashed"
+			replacement.Status = arcreviewstate.SessionStatusCrashed
 			if _, updateErr := store.UpdateSession(replacement); updateErr != nil {
 				return restarted, fmt.Errorf("%w; also failed to mark replacement session crashed: %v", err, updateErr)
 			}
@@ -337,7 +283,7 @@ func restartStaleArcReviewSessions(
 }
 
 func shouldRestartArcReviewSession(session arcreviewstate.Session, checkedAt time.Time, maxHeartbeatAge time.Duration, liveness arcReviewPIDLivenessChecker) bool {
-	if strings.ToLower(strings.TrimSpace(session.Status)) != "running" {
+	if !strings.EqualFold(strings.TrimSpace(session.Status), arcreviewstate.SessionStatusRunning) {
 		return false
 	}
 	if arcreviewstate.HeartbeatFreshness(session.Heartbeat, checkedAt, maxHeartbeatAge).Stale {

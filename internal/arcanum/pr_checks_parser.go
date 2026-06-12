@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 )
@@ -100,11 +99,11 @@ func parseArcPRCheck(raw json.RawMessage) (arcreview.PRCheck, error) {
 		return arcreview.PRCheck{}, err
 	}
 
-	startedAt, err := prCheckTimeScalar(item, "started_at", "startedAt", "start_time", "startTime")
+	startedAt, err := timeScalar(item, "started_at", "startedAt", "start_time", "startTime")
 	if err != nil {
 		return arcreview.PRCheck{}, err
 	}
-	completedAt, err := prCheckTimeScalar(item, "completed_at", "completedAt", "finished_at", "finishedAt", "finish_time", "finishTime")
+	completedAt, err := timeScalar(item, "completed_at", "completedAt", "finished_at", "finishedAt", "finish_time", "finishTime")
 	if err != nil {
 		return arcreview.PRCheck{}, err
 	}
@@ -166,20 +165,4 @@ func normalizeArcPRCheckStatus(status string) string {
 	default:
 		return normalized
 	}
-}
-
-func prCheckTimeScalar(item map[string]json.RawMessage, keys ...string) (time.Time, error) {
-	for _, key := range keys {
-		value := firstScalar(item, key)
-		if value == "" {
-			continue
-		}
-
-		parsed, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse %s %q: %w", key, value, err)
-		}
-		return parsed, nil
-	}
-	return time.Time{}, nil
 }

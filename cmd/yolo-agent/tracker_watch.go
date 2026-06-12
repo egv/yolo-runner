@@ -65,19 +65,28 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	defer func() {
 		_ = lock.Release()
 	}()
+	pollInterval := trackerWatchDynamicPollIntervalProvider(cfg.repoRoot, configService, startupTrackerAgentConfig.PollInterval)
+	return runResilientWatchPollLoop(ctx, cfg.once, pollInterval, func(ctx context.Context) error {
+		return runTrackerWatchPollIteration(ctx, cfg)
+	}, cfg.eventSink, waitTrackerWatchPollInterval)
+}
+
+// runResilientWatchPollLoop runs a watch poll loop that emits a warning event
+// per failed iteration and keeps polling. A context cancellation after the
+// loop has recovered from an earlier failure is a clean shutdown, not an error.
+func runResilientWatchPollLoop(ctx context.Context, once bool, pollInterval trackerWatchPollIntervalProvider, iterate trackerWatchPollIteration, eventSink contracts.EventSink, wait trackerWatchPollWait) error {
 	sawIterationError := false
 	recoveredFromIterationError := false
-	pollInterval := trackerWatchDynamicPollIntervalProvider(cfg.repoRoot, configService, startupTrackerAgentConfig.PollInterval)
-	err = runTrackerWatchPollLoop(ctx, cfg.once, pollInterval, func(ctx context.Context) error {
-		err := runTrackerWatchPollIteration(ctx, cfg)
+	err := runTrackerWatchPollLoop(ctx, once, pollInterval, func(ctx context.Context) error {
+		err := iterate(ctx)
 		if err == nil && sawIterationError {
 			recoveredFromIterationError = true
 		}
 		return err
 	}, func(err error) {
 		sawIterationError = true
-		emitTrackerWatchIterationWarning(ctx, cfg.eventSink, err)
-	}, defaultTrackerWatchResilientMaxConsecutiveFailures, waitTrackerWatchPollInterval)
+		emitTrackerWatchIterationWarning(ctx, eventSink, err)
+	}, defaultTrackerWatchResilientMaxConsecutiveFailures, wait)
 	if errors.Is(err, context.Canceled) && recoveredFromIterationError {
 		return nil
 	}
@@ -85,38 +94,62 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 }
 
 func trackerWatchDynamicPollIntervalProvider(repoRoot string, configService trackerAgentConfigResolver, lastGood time.Duration) trackerWatchPollIntervalProvider {
+	var resolve func() (time.Duration, error)
+	if configService != nil {
+		resolve = func() (time.Duration, error) {
+			trackerAgentConfig, err := configService.ResolveTrackerAgentConfig(repoRoot)
+			if err != nil {
+				return 0, err
+			}
+			return trackerAgentConfig.PollInterval, nil
+		}
+	}
+	return dynamicWatchPollIntervalProvider(lastGood, resolve)
+}
+
+// dynamicWatchPollIntervalProvider re-resolves the poll interval before each
+// wait and falls back to the last successfully resolved value on error.
+func dynamicWatchPollIntervalProvider(lastGood time.Duration, resolve func() (time.Duration, error)) trackerWatchPollIntervalProvider {
 	return func() time.Duration {
-		if configService == nil {
+		if resolve == nil {
 			return lastGood
 		}
-		trackerAgentConfig, err := configService.ResolveTrackerAgentConfig(repoRoot)
+		interval, err := resolve()
 		if err != nil {
 			return lastGood
 		}
-		lastGood = trackerAgentConfig.PollInterval
+		lastGood = interval
 		return lastGood
 	}
 }
 
 func resolveTrackerWatchEventsPath(cfg trackerWatchConfig) string {
-	if strings.TrimSpace(cfg.eventsPath) != "" {
-		return cfg.eventsPath
+	return resolveWatchEventsPath(cfg.eventsPath, cfg.stream, cfg.repoRoot, "agent.events.jsonl")
+}
+
+func resolveWatchEventsPath(eventsPath string, stream bool, repoRoot string, defaultName string) string {
+	if strings.TrimSpace(eventsPath) != "" {
+		return eventsPath
 	}
-	if cfg.stream {
+	if stream {
 		return ""
 	}
-	return filepath.Join(cfg.repoRoot, "runner-logs", "agent.events.jsonl")
+	return filepath.Join(repoRoot, "runner-logs", defaultName)
 }
 
 func trackerWatchEventSink(cfg trackerWatchConfig) (contracts.EventSink, func()) {
+	return watchEventSink(cfg.stream, cfg.eventsPath)
+}
+
+func watchEventSink(stream bool, eventsPath string) (contracts.EventSink, func()) {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
-	if cfg.stream {
+	if stream {
 		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
 	}
-	if strings.TrimSpace(cfg.eventsPath) != "" {
-		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
-		if cfg.stream {
+	if strings.TrimSpace(eventsPath) != "" {
+		fileSink := contracts.NewFileEventSink(eventsPath)
+		if stream {
 			mirror := newMirrorEventSink(fileSink, 64)
 			closers = append(closers, mirror.Close)
 			sinks = append(sinks, mirror)
@@ -275,12 +308,15 @@ const (
 
 func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend trackerWatchStartrekBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, tasks map[string]contracts.Task, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
 	hasReadyTask := false
+	// Available tasks usually share one parent epic; cache it per iteration
+	// so preflight context does not refetch the same issue for every task.
+	parentCache := map[string]contracts.Task{}
 	for _, summary := range available {
 		if strings.TrimSpace(summary.ID) == strings.TrimSpace(queueRoot.ID) {
 			continue
 		}
 		task := trackerWatchStartrekTaskFromTree(summary, tasks)
-		preflightQueueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, backend, queueRoot, task, tasks)
+		preflightQueueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, backend, queueRoot, task, tasks, parentCache)
 		if err != nil {
 			return err
 		}
@@ -338,17 +374,28 @@ func trackerWatchStartrekTaskFromTree(summary contracts.TaskSummary, tasks map[s
 	}
 }
 
-func trackerWatchStartrekPreflightQueueRoot(ctx context.Context, backend trackerWatchStartrekBackend, queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task) (contracts.Task, error) {
+func trackerWatchStartrekPreflightQueueRoot(ctx context.Context, backend trackerWatchStartrekBackend, queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task, parentCache map[string]contracts.Task) (contracts.Task, error) {
 	parentID := trackerWatchStartrekPreflightParentID(queueRoot, task, tasks)
 	if parentID == "" {
 		return queueRoot, nil
+	}
+	if parentCache != nil {
+		if cached, ok := parentCache[parentID]; ok {
+			return cached, nil
+		}
 	}
 	parent, err := backend.GetTask(ctx, parentID)
 	if err != nil {
 		return contracts.Task{}, fmt.Errorf("get startrek parent issue %q for preflight: %w", parentID, err)
 	}
 	if parent == nil || strings.TrimSpace(parent.ID) == "" {
+		if parentCache != nil {
+			parentCache[parentID] = queueRoot
+		}
 		return queueRoot, nil
+	}
+	if parentCache != nil {
+		parentCache[parentID] = *parent
 	}
 	return *parent, nil
 }

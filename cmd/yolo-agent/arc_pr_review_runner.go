@@ -54,6 +54,20 @@ type arcPRReviewRunnerLoopConfig struct {
 
 var runArcPRReviewRunner = defaultRunArcPRReviewRunner
 
+// firstNonEmptyFlag returns the first flag value that is non-empty after
+// trimming, supporting aliased flag spellings.
+func firstNonEmptyFlag(values ...*string) string {
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(*value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
 func arcPRReviewRunnerCommand(args []string) int {
 	fs := flag.NewFlagSet("arc-pr-review-runner", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "Repository root")
@@ -76,18 +90,9 @@ func arcPRReviewRunnerCommand(args []string) int {
 		return 1
 	}
 
-	prID := strings.TrimSpace(*pr)
-	if prID == "" {
-		prID = strings.TrimSpace(*prIDAlias)
-	}
-	statePath := strings.TrimSpace(*state)
-	if statePath == "" {
-		statePath = strings.TrimSpace(*statePathAlias)
-	}
-	sessionID := strings.TrimSpace(*session)
-	if sessionID == "" {
-		sessionID = strings.TrimSpace(*sessionIDAlias)
-	}
+	prID := firstNonEmptyFlag(pr, prIDAlias)
+	statePath := firstNonEmptyFlag(state, statePathAlias)
+	sessionID := firstNonEmptyFlag(session, sessionIDAlias)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -360,7 +365,7 @@ func resolveArcPRReviewRunnerSession(store *arcreviewstate.Store, prID string, w
 	}
 	var running []arcreviewstate.Session
 	for _, session := range matches {
-		if strings.EqualFold(strings.TrimSpace(session.Status), "running") {
+		if strings.EqualFold(strings.TrimSpace(session.Status), arcreviewstate.SessionStatusRunning) {
 			running = append(running, session)
 		}
 	}

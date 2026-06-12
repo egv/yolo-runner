@@ -902,7 +902,7 @@ func issueCommentCreateText(body string, marker string) (string, bool, error) {
 		return "", false, errors.New("startrek comment marker must be a single safe line")
 	}
 
-	return "<!-- yolo-runner:" + marker + " -->\n\n" + text, true, nil
+	return markerCommentNeedle(marker) + "\n\n" + text, true, nil
 }
 
 func mapIssueAuthor(raw startrekIssueAuthor) IssueAuthor {

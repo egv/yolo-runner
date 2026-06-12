@@ -17,7 +17,7 @@ const (
 	splitMarkerVersionKey    = "split_version"
 	splitMarkerSubtaskIDsKey = "split_subtask_ids"
 	splitMarkerCommentMarker = "split-marker"
-	splitMarkerCommentPrefix = "<!-- yolo-runner:" + splitMarkerCommentMarker + " -->"
+	splitMarkerCommentPrefix = yoloMarkerCommentPrefix + splitMarkerCommentMarker + " -->"
 )
 
 type SplitMarker struct {

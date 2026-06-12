@@ -22,6 +22,14 @@ const (
 	needsInfoMarkerCreatedAtKey = "needs_info_marker_created_at"
 )
 
+// yoloMarkerCommentPrefix opens every machine-readable yolo-runner marker
+// comment; markerCommentNeedle builds the full marker for a given name.
+const yoloMarkerCommentPrefix = "<!-- yolo-runner:"
+
+func markerCommentNeedle(marker string) string {
+	return yoloMarkerCommentPrefix + marker + " -->"
+}
+
 type NeedsInfoTransitionTracker interface {
 	GetIssueComments(ctx context.Context, issueID string) ([]IssueComment, error)
 	RemoveLabel(ctx context.Context, issueID string, label string) error
@@ -152,7 +160,7 @@ var needsInfoQuestionNumberPrefix = regexp.MustCompile(`^\s*(?:\d+[\.)]|[-*])\s*
 
 func latestNeedsInfoMarkerComment(comments []IssueComment, marker string) (IssueComment, bool) {
 	marker = fallbackText(marker, defaultNeedsInfoMarker)
-	prefix := "<!-- yolo-runner:" + marker + " -->"
+	prefix := markerCommentNeedle(marker)
 
 	var latest IssueComment
 	found := false
@@ -170,7 +178,7 @@ func latestNeedsInfoMarkerComment(comments []IssueComment, marker string) (Issue
 
 func needsInfoQuestionSetFromComment(comment IssueComment, marker string) map[string]struct{} {
 	body := strings.TrimSpace(comment.Body)
-	prefix := "<!-- yolo-runner:" + fallbackText(marker, defaultNeedsInfoMarker) + " -->"
+	prefix := markerCommentNeedle(fallbackText(marker, defaultNeedsInfoMarker))
 	if !strings.HasPrefix(body, prefix) {
 		return nil
 	}
