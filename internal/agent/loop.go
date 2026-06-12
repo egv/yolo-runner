@@ -32,21 +32,12 @@ type taskLock interface {
 	Unlock(taskID string)
 }
 
-type landingLock interface {
-	Lock()
-	Unlock()
-}
-
 type CloneManager interface {
 	CloneForTask(ctx context.Context, taskID string, repoRoot string) (string, error)
 	Cleanup(taskID string) error
 }
 
 type VCSFactory func(repoRoot string) contracts.VCS
-
-type pullRequestCreator interface {
-	CreatePR(ctx context.Context, title string, body string) (string, error)
-}
 
 type LoopOptions struct {
 	ParentID             string
@@ -83,7 +74,7 @@ type Loop struct {
 	events          contracts.EventSink
 	options         LoopOptions
 	taskLock        taskLock
-	landingLock     landingLock
+	landingLock     executor.LandingLock
 	cloneManager    CloneManager
 	schedulerState  *schedulerStateStore
 	parentFinalizer *parentFinalizer
@@ -613,180 +604,41 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 				return summary, err
 			}
 			if l.options.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
-				landingState := scheduler.NewLandingQueueStateMachine(2)
-				autoCommitSHA := ""
-				buildLandingMetadata := func(status string, attempt int, reason string) map[string]string {
-					metadata := map[string]string{"landing_status": status}
-					metadata = appendDecisionMetadata(metadata, status, reason)
-					if attempt > 0 {
-						metadata["landing_attempt"] = fmt.Sprintf("%d", attempt)
-					}
-					if strings.TrimSpace(reason) != "" {
-						metadata["triage_reason"] = reason
-					}
-					if autoCommitSHA != "" {
-						metadata["auto_commit_sha"] = autoCommitSHA
-					}
-					return metadata
+				blocked, err := executor.RunLanding(ctx, task, executor.LandingDependencies{
+					Tasks:                   l.tasks,
+					Runner:                  l.runner,
+					Events:                  loopMonitorEventSink{loop: l},
+					VCS:                     taskVCS,
+					LandingLock:             l.landingLock,
+					MarkTaskBlockedWithData: l.markTaskBlockedWithData,
+					ClearTaskTerminalState:  l.clearTaskTerminalState,
+				}, executor.LandingOptions{
+					ParentID:             l.options.ParentID,
+					Backend:              l.options.Backend,
+					Model:                l.options.Model,
+					WatchdogTimeout:      l.options.WatchdogTimeout,
+					WatchdogInterval:     l.options.WatchdogInterval,
+					HeartbeatInterval:    l.options.HeartbeatInterval,
+					NoOutputWarningAfter: l.options.NoOutputWarningAfter,
+					Runtime: executor.TaskRuntimeConfig{
+						Backend:   taskRuntime.backend,
+						Model:     taskRuntime.model,
+						Skillset:  taskRuntime.skillset,
+						Tools:     append([]string{}, taskRuntime.tools...),
+						Mode:      taskRuntime.mode,
+						Timeout:   taskRuntime.timeout,
+						UseConfig: taskRuntime.useConfig,
+					},
+				}, executor.LandingEventContext{
+					TaskBranch: taskBranch,
+					WorkerID:   worker,
+					ClonePath:  taskRepoRoot,
+					QueuePos:   queuePos,
+				})
+				if err != nil {
+					return summary, err
 				}
-				emitMergeQueueEvent := func(eventType contracts.EventType, metadata map[string]string) {
-					merged := map[string]string{}
-					for key, value := range metadata {
-						merged[key] = value
-					}
-					if autoCommitSHA != "" {
-						merged["auto_commit_sha"] = autoCommitSHA
-					}
-					_ = l.emit(ctx, contracts.Event{
-						Type:      eventType,
-						TaskID:    task.ID,
-						TaskTitle: task.Title,
-						WorkerID:  worker,
-						ClonePath: taskRepoRoot,
-						QueuePos:  queuePos,
-						Metadata:  compactMetadata(merged),
-						Timestamp: time.Now().UTC(),
-					})
-				}
-				emitMergeQueueEvent(contracts.EventTypeMergeQueued, appendDecisionMetadata(map[string]string{"landing_status": string(landingState.State())}, string(landingState.State()), ""))
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
-				if l.landingLock != nil {
-					l.landingLock.Lock()
-					defer l.landingLock.Unlock()
-				}
-				landingBlocked := false
-				landingReason := ""
-				autoCommitDone := false
-				for attempt := 1; attempt <= 2; attempt++ {
-					_ = landingState.Apply(scheduler.LandingEventBegin)
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
-
-					if !autoCommitDone {
-						sha, err := taskVCS.CommitAll(ctx, autoLandingCommitMessage(task, l.options.ParentID))
-						if err != nil {
-							landingReason = err.Error()
-							_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
-							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
-							landingBlocked = true
-							break
-						}
-						autoCommitDone = true
-						autoCommitSHA = strings.TrimSpace(sha)
-						if autoCommitSHA != "" {
-							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
-						}
-					}
-
-					if isDeferredPRLandingVCS(taskVCS) {
-						_ = landingState.Apply(scheduler.LandingEventSucceeded)
-						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
-						emitMergeQueueEvent(contracts.EventTypeMergeLanded, appendDecisionMetadata(map[string]string{
-							"landing_status":  string(landingState.State()),
-							"landing_attempt": fmt.Sprintf("%d", attempt),
-						}, "landed", landingReason))
-						break
-					}
-
-					if err := taskVCS.MergeToMain(ctx, taskBranch); err != nil {
-						landingReason = err.Error()
-						_ = landingState.Apply(scheduler.LandingEventFailedRetryable)
-						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
-						if attempt < 2 {
-							emitMergeQueueEvent(contracts.EventTypeMergeRetry, appendDecisionMetadata(map[string]string{
-								"landing_status":  string(landingState.State()),
-								"landing_attempt": fmt.Sprintf("%d", attempt),
-								"triage_reason":   landingReason,
-							}, "retry", landingReason))
-							if isMergeConflictError(landingReason) {
-								remediationResult := l.runLandingMergeConflictRemediation(ctx, task, taskVCS, taskBranch, worker, taskRepoRoot, queuePos, landingReason, taskRuntime)
-								if remediationResult.Status != contracts.RunnerResultCompleted {
-									remediationReason := strings.TrimSpace(remediationResult.Reason)
-									if remediationReason == "" {
-										remediationReason = "runner did not complete successfully"
-									}
-									landingReason = "merge conflict remediation failed: " + remediationReason
-									landingBlocked = true
-									break
-								}
-								autoCommitDone = false
-								autoCommitSHA = ""
-							}
-							_ = landingState.Apply(scheduler.LandingEventRequeued)
-							_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
-							emitMergeQueueEvent(contracts.EventTypeMergeQueued, appendDecisionMetadata(map[string]string{
-								"landing_status":  string(landingState.State()),
-								"landing_attempt": fmt.Sprintf("%d", attempt+1),
-							}, string(landingState.State()), ""))
-							continue
-						}
-						landingBlocked = true
-						break
-					}
-
-					mergeMetadata := map[string]string{}
-					if autoCommitSHA != "" {
-						mergeMetadata["auto_commit_sha"] = autoCommitSHA
-					}
-					if len(mergeMetadata) == 0 {
-						mergeMetadata = nil
-					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeMergeCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: taskBranch, Metadata: mergeMetadata, Timestamp: time.Now().UTC()})
-					if err := taskVCS.PushMain(ctx); err != nil {
-						landingReason = err.Error()
-						_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
-						_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
-						landingBlocked = true
-						break
-					}
-					pushMetadata := map[string]string{}
-					if autoCommitSHA != "" {
-						pushMetadata["auto_commit_sha"] = autoCommitSHA
-					}
-					if len(pushMetadata) == 0 {
-						pushMetadata = nil
-					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypePushCompleted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: pushMetadata, Timestamp: time.Now().UTC()})
-					_ = landingState.Apply(scheduler.LandingEventSucceeded)
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
-					emitMergeQueueEvent(contracts.EventTypeMergeLanded, appendDecisionMetadata(map[string]string{
-						"landing_status":  string(landingState.State()),
-						"landing_attempt": fmt.Sprintf("%d", attempt),
-					}, "landed", landingReason))
-					break
-				}
-
-				if landingBlocked {
-					emitMergeQueueEvent(contracts.EventTypeMergeBlocked, appendDecisionMetadata(map[string]string{
-						"landing_status": string(landingState.State()),
-						"triage_reason":  landingReason,
-					}, "blocked", landingReason))
-					blockedData := map[string]string{"triage_status": "blocked", "landing_status": string(landingState.State())}
-					if landingReason != "" {
-						blockedData["triage_reason"] = landingReason
-					}
-					blockedData = appendDecisionMetadata(blockedData, "blocked", landingReason)
-					if autoCommitSHA != "" {
-						blockedData["auto_commit_sha"] = autoCommitSHA
-					}
-					if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
-						return summary, err
-					}
-					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
-						return summary, err
-					}
-					finishedMetadata := map[string]string{"triage_status": "blocked"}
-					if landingReason != "" {
-						finishedMetadata["triage_reason"] = landingReason
-					}
-					finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", landingReason)
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
-					if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
-						return summary, err
-					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
-					if err := l.clearTaskTerminalState(task.ID); err != nil {
-						return summary, err
-					}
+				if blocked {
 					summary.Blocked++
 					return summary, nil
 				}
@@ -1004,14 +856,6 @@ func (l *Loop) vcsForRepo(repoRoot string) contracts.VCS {
 		}
 	}
 	return l.options.VCS
-}
-
-func isDeferredPRLandingVCS(vcs contracts.VCS) bool {
-	if vcs == nil {
-		return false
-	}
-	_, ok := vcs.(pullRequestCreator)
-	return ok
 }
 
 func taskMonitoringMetadata(task contracts.Task, arcRoot string) map[string]string {
@@ -1238,63 +1082,6 @@ func (s loopMonitorEventSink) Emit(ctx context.Context, event contracts.Event) e
 	return s.loop.emit(ctx, event)
 }
 
-func (l *Loop) runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task, taskVCS contracts.VCS, taskBranch string, worker string, taskRepoRoot string, queuePos int, mergeFailureReason string, runtime taskRuntimeConfig) contracts.RunnerResult {
-	if taskVCS != nil && strings.TrimSpace(taskBranch) != "" {
-		if err := taskVCS.Checkout(ctx, taskBranch); err != nil {
-			return contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: fmt.Sprintf("git checkout %s failed: %v", taskBranch, err)}
-		}
-	}
-
-	epicID := strings.TrimSpace(task.ParentID)
-	if epicID == "" {
-		epicID = strings.TrimSpace(l.options.ParentID)
-	}
-
-	runtimeBackend := strings.TrimSpace(runtime.backend)
-	if runtimeBackend == "" {
-		runtimeBackend = strings.TrimSpace(l.options.Backend)
-	}
-	runtimeModel := strings.TrimSpace(runtime.model)
-	if runtimeModel == "" {
-		runtimeModel = strings.TrimSpace(l.options.Model)
-	}
-
-	remediationLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID, epicID, runtimeBackend)
-	if err := ensureRunnerLogDirectory(taskRepoRoot, remediationLogPath); err != nil {
-		return contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: err.Error()}
-	}
-	remediationStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, runtimeBackend, runtimeModel, taskRepoRoot, remediationLogPath, time.Now().UTC())
-	remediationStartMeta = appendTaskRuntimeMetadata(remediationStartMeta, runtime)
-	remediationStartMeta["landing_phase"] = "merge_conflict_remediation"
-	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Metadata: remediationStartMeta, Timestamp: time.Now().UTC()})
-
-	remediationMetadata := map[string]string{"log_path": remediationLogPath, "clone_path": taskRepoRoot, "landing_phase": "merge_conflict_remediation"}
-	remediationMetadata = appendTaskRuntimeMetadata(remediationMetadata, runtime)
-	if l.options.WatchdogTimeout > 0 {
-		remediationMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
-	}
-	if l.options.WatchdogInterval > 0 {
-		remediationMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
-	}
-
-	result, err := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
-		TaskID:   task.ID,
-		ParentID: l.options.ParentID,
-		Mode:     contracts.RunnerModeImplement,
-		RepoRoot: taskRepoRoot,
-		Model:    runtimeModel,
-		Timeout:  runtime.timeout,
-		Prompt:   buildMergeConflictRemediationPrompt(task, taskBranch, mergeFailureReason),
-		Metadata: remediationMetadata,
-	}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
-	if err != nil {
-		result = contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: err.Error()}
-	}
-
-	_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Metadata: buildRunnerFinishedMetadata(result), Timestamp: time.Now().UTC()})
-	return result
-}
-
 func resolveTaskRuntimeConfig(task contracts.Task, options LoopOptions) (taskRuntimeConfig, error) {
 	backend := strings.TrimSpace(options.Backend)
 	model := strings.TrimSpace(options.Model)
@@ -1484,41 +1271,6 @@ func (l *Loop) gateDependencies() executor.GateDependencies {
 	}
 }
 
-func buildMergeConflictRemediationPrompt(task contracts.Task, taskBranch string, mergeFailureReason string) string {
-	base := executor.BuildImplementPrompt(task, "", 0, "", 0, false)
-	sections := []string{
-		base,
-		strings.Join([]string{
-			"Landing Merge Remediation:",
-			"- Auto-landing failed while merging the task branch into main.",
-			"- Resolve merge conflicts on the task branch so merge-to-main can succeed.",
-			"- Keep accepted behavior intact; do not discard required changes.",
-			"- Run relevant tests after conflict resolution.",
-			"- Commit conflict-resolution changes on the task branch.",
-		}, "\n"),
-	}
-	if strings.TrimSpace(taskBranch) != "" {
-		sections = append(sections, "Target Branch: "+strings.TrimSpace(taskBranch))
-	}
-	if strings.TrimSpace(mergeFailureReason) != "" {
-		sections = append(sections, "Merge Failure Details:\n"+strings.TrimSpace(mergeFailureReason))
-	}
-	return strings.Join(sections, "\n\n")
-}
-
-func isMergeConflictError(reason string) bool {
-	lower := strings.ToLower(strings.TrimSpace(reason))
-	if lower == "" {
-		return false
-	}
-	for _, needle := range []string{"automatic merge failed", "merge conflict", "conflict (", "needs merge"} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
-}
-
 func isReviewFailResult(result contracts.RunnerResult) bool {
 	if verdict := reviewVerdictFromArtifacts(result); verdict == "fail" {
 		return true
@@ -1595,57 +1347,6 @@ func isRecoverableModelFailureReason(reason string) bool {
 
 func isRecoverableModelFailureResult(result contracts.RunnerResult, currentModel string, fallbackModel string) bool {
 	return isRecoverableModelFailureReason(result.Reason) && strings.TrimSpace(currentModel) != "" && strings.TrimSpace(fallbackModel) != "" && !strings.EqualFold(strings.TrimSpace(currentModel), strings.TrimSpace(fallbackModel))
-}
-
-func autoLandingCommitMessage(task contracts.Task, fallbackParentID string) string {
-	taskID := strings.TrimSpace(task.ID)
-	subject := "chore(task): auto-commit before landing"
-	if taskID == "" {
-		return subject
-	}
-	subject = fmt.Sprintf("%s %s", subject, taskID)
-
-	parentID := strings.TrimSpace(task.ParentID)
-	if parentID == "" {
-		parentID = strings.TrimSpace(fallbackParentID)
-	}
-	lineage := commitMessageLineage(parentID, taskID)
-	if len(lineage) == 0 {
-		return subject
-	}
-	return subject + "\n\n" + strings.Join(lineage, "\n")
-}
-
-func commitMessageLineage(parentID string, subtaskID string) []string {
-	var lines []string
-	if parentID != "" {
-		lines = append(lines, "Parent: "+parentID)
-	}
-	if subtaskID != "" {
-		lines = append(lines, "Subtask: "+subtaskID)
-	}
-	relates := uniqueNonEmpty(parentID, subtaskID)
-	if len(relates) > 0 {
-		lines = append(lines, "Relates: "+strings.Join(relates, ", "))
-	}
-	return lines
-}
-
-func uniqueNonEmpty(values ...string) []string {
-	seen := map[string]struct{}{}
-	var result []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
 }
 
 func defaultRunnerLogPath(repoRoot string, taskID string, epicID string, backend string) string {
