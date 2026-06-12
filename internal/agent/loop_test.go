@@ -3371,6 +3371,35 @@ func TestLoopEmitsTaskDataUpdatedEventForBlockedTriage(t *testing.T) {
 	}
 }
 
+func TestLoopWritesMappedResultArtifactsToBlockedTaskData(t *testing.T) {
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{
+			Status: contracts.RunnerResultBlocked,
+			Reason: "merge conflict remediation failed",
+			Artifacts: map[string]string{
+				"landing_status":  "blocked",
+				"auto_commit_sha": "abc123",
+			},
+		},
+	}}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root"})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Blocked != 1 {
+		t.Fatalf("expected blocked summary, got %#v", summary)
+	}
+	if got := mgr.dataByID["t-1"]["landing_status"]; got != "blocked" {
+		t.Fatalf("expected landing_status from result mapping, got %q in %#v", got, mgr.dataByID["t-1"])
+	}
+	if got := mgr.dataByID["t-1"]["auto_commit_sha"]; got != "abc123" {
+		t.Fatalf("expected auto_commit_sha from result mapping, got %q in %#v", got, mgr.dataByID["t-1"])
+	}
+}
+
 func TestLoopEmitsTaskDataUpdatedEventForFailedTriage(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "lint failed"}}}
