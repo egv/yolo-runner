@@ -39,6 +39,10 @@ type parentPRCreatedCommenter interface {
 	PostParentPRCreated(ctx context.Context, parentID string, prURL string, subtaskIDs []string) error
 }
 
+type pullRequestCreator interface {
+	CreatePR(ctx context.Context, title string, body string) (string, error)
+}
+
 type startrekIssueCommentCreator interface {
 	CreateIssueComment(ctx context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error)
 }

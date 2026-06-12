@@ -2719,7 +2719,7 @@ func TestLoopAutoCommitMessageFallsBackToConfiguredParentID(t *testing.T) {
 }
 
 func TestAutoLandingCommitMessageIncludesParentSubtaskAndRelates(t *testing.T) {
-	message := autoLandingCommitMessage(contracts.Task{
+	message := executor.AutoLandingCommitMessage(contracts.Task{
 		ID:       "VAY-43",
 		ParentID: "VAY-42",
 	}, "")
