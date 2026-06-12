@@ -2957,6 +2957,62 @@ func TestLoopRunTaskDelegatesToExecutorWhilePreservingEventTypeSequence(t *testi
 	}
 }
 
+func TestLoopRunTaskMapsUnknownRunnerStatusToFailedTerminalEvents(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "scheduler-state.json")
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", ParentID: "root", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{
+		Status: contracts.RunnerResultStatus("unexpected"),
+		Reason: "runner returned an unknown status",
+	}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", SchedulerStatePath: statePath})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Failed != 1 {
+		t.Fatalf("expected failed summary, got %#v", summary)
+	}
+	if got := mgr.statusByID["t-1"]; got != contracts.TaskStatusFailed {
+		t.Fatalf("expected failed task status, got %s", got)
+	}
+	if got := mgr.dataByID["t-1"]["triage_status"]; got != "failed" {
+		t.Fatalf("expected triage_status=failed, got %#v", mgr.dataByID["t-1"])
+	}
+	if got := mgr.dataByID["t-1"]["triage_reason"]; got != "runner returned an unknown status" {
+		t.Fatalf("expected unknown status reason, got %#v", mgr.dataByID["t-1"])
+	}
+
+	wantTypes := []contracts.EventType{
+		contracts.EventTypeTaskStarted,
+		contracts.EventTypeRunnerStarted,
+		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeTaskDataUpdated,
+		contracts.EventTypeTaskFinished,
+	}
+	if gotTypes := eventTypes(sink.events); !equalEventTypes(gotTypes, wantTypes) {
+		t.Fatalf("event type sequence changed:\n got: %v\nwant: %v", gotTypes, wantTypes)
+	}
+	if sink.events[3].Metadata["decision"] != "failed" {
+		t.Fatalf("expected task_data_updated decision=failed, got %#v", sink.events[3].Metadata)
+	}
+	if sink.events[4].Message != string(contracts.TaskStatusFailed) {
+		t.Fatalf("expected task_finished message=failed, got %q", sink.events[4].Message)
+	}
+	if sink.events[4].Metadata["decision"] != "failed" {
+		t.Fatalf("expected task_finished decision=failed, got %#v", sink.events[4].Metadata)
+	}
+
+	snapshot, err := loop.schedulerState.Load()
+	if err != nil {
+		t.Fatalf("load scheduler state: %v", err)
+	}
+	if _, ok := snapshot.InFlight["t-1"]; ok {
+		t.Fatalf("expected failed task to be cleared from in-flight state, got %#v", snapshot.InFlight)
+	}
+}
+
 func TestLoopEmitsParallelContextInRunnerStartedEvent(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}

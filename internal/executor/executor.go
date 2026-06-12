@@ -472,7 +472,22 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			if reason == "" {
 				reason = fmt.Sprintf("invalid runner result status %q", runnerResult.Status)
 			}
-			return e.resultFromRunnerResult(contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason, Artifacts: runnerResult.Artifacts}, taskBranch), nil
+			failedResult := contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason, Artifacts: runnerResult.Artifacts}
+			failedData := map[string]string{"triage_status": "failed", "triage_reason": reason}
+			failedData = appendExecutorDecisionMetadata(failedData, "failed", reason)
+			failedData = appendExecutorReviewOutcomeMetadata(failedData, failedResult)
+			if err := setExecutorTaskData(ctx, taskManager, task.ID, failedData); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusFailed); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			if err := clearExecutorInFlight(e, task.ID); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
+			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusFailed), Metadata: failedData, Timestamp: time.Now().UTC()})
+			return e.resultFromRunnerResult(failedResult, taskBranch), nil
 		}
 	}
 }
