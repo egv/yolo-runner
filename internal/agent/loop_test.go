@@ -2957,6 +2957,42 @@ func TestLoopRunTaskDelegatesToExecutorWhilePreservingEventTypeSequence(t *testi
 	}
 }
 
+func TestLoopRunTaskPreservesReviewedPassEventTypeSequenceWithoutQCTools(t *testing.T) {
+	repoRoot := t.TempDir()
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", ParentID: "root", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted},
+		{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"review_verdict": "pass"}},
+	}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", RepoRoot: repoRoot, Backend: "codex", Model: "gpt-test", RequireReview: true})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completed summary, got %#v", summary)
+	}
+
+	wantTypes := []contracts.EventType{
+		contracts.EventTypeTaskStarted,
+		contracts.EventTypeRunnerStarted,
+		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeReviewStarted,
+		contracts.EventTypeRunnerStarted,
+		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeReviewFinished,
+		contracts.EventTypeTaskFinished,
+	}
+	if gotTypes := eventTypes(sink.events); !equalEventTypes(gotTypes, wantTypes) {
+		t.Fatalf("event type sequence changed:\n got: %v\nwant: %v", gotTypes, wantTypes)
+	}
+	if updates := eventsByType(sink.events, contracts.EventTypeTaskDataUpdated); len(updates) != 0 {
+		t.Fatalf("did not expect task_data_updated for explicit review pass without QC tools, got %d", len(updates))
+	}
+}
+
 func TestLoopRunTaskMapsUnknownRunnerStatusToFailedTerminalEvents(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "scheduler-state.json")
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", ParentID: "root", Status: contracts.TaskStatusOpen})

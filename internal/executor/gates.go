@@ -321,6 +321,9 @@ func RunQCGate(ctx context.Context, task contracts.Task, result contracts.Runner
 			failed = append(failed, reviewApproval.Reason)
 		}
 	}
+	if len(tools) == 0 && reviewApproval.Tool != "" && reviewApproval.Passed {
+		return false, nil
+	}
 
 	report := QCGateReport{
 		Status:    "passed",
