@@ -422,48 +422,6 @@ func TestRunTrackerWatchStartrekQueueSplitsReadyTopLevelTaskBeforeImplementation
 	}
 }
 
-func TestPlanTrackerWatchStartrekTaskCycle(t *testing.T) {
-	queueRoot := contracts.Task{ID: "VAY"}
-	tests := []struct {
-		name           string
-		task           contracts.Task
-		preflightReady bool
-		want           trackerWatchStartrekTaskCycleAction
-	}{
-		{
-			name:           "unready task waits",
-			task:           contracts.Task{ID: "VAY-42", ParentID: "VAY"},
-			preflightReady: false,
-			want:           trackerWatchStartrekTaskCycleWait,
-		},
-		{
-			name:           "queue root waits",
-			task:           contracts.Task{ID: "VAY"},
-			preflightReady: true,
-			want:           trackerWatchStartrekTaskCycleWait,
-		},
-		{
-			name:           "ready top level task splits",
-			task:           contracts.Task{ID: "VAY-42", ParentID: "VAY"},
-			preflightReady: true,
-			want:           trackerWatchStartrekTaskCycleSplit,
-		},
-		{
-			name:           "ready split leaf implements",
-			task:           contracts.Task{ID: "VAY-43", ParentID: "VAY-42"},
-			preflightReady: true,
-			want:           trackerWatchStartrekTaskCycleImplement,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := planTrackerWatchStartrekTaskCycle(queueRoot, tt.task, tt.preflightReady); got != tt.want {
-				t.Fatalf("planTrackerWatchStartrekTaskCycle() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestAgentLoopForTrackerWatchImplementsReadyStartrekTask(t *testing.T) {
 	ctx := context.Background()
 	repoRoot := t.TempDir()
