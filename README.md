@@ -15,7 +15,6 @@ AI-powered task execution system with pluggable storage backends (GitHub, Linear
 ## CLI Tools
 
 - `yolo-agent` - Task orchestration and scheduling
-- `yolo-task` - Task management operations
 - `yolo-tui` - Real-time event monitoring with log browser
 
 See `MIGRATION.md` for historical command mapping.
@@ -42,7 +41,6 @@ make install
 
 ```bash
 ./bin/yolo-agent --version
-./bin/yolo-task --version
 ./bin/yolo-tui --version
 ```
 
@@ -104,8 +102,7 @@ These UI dependencies are mandatory for GUI workflow evolution and should be tre
 ## Current Orchestration Model
 
 - `yolo-agent` owns task selection, dependency-aware scheduling, retries, review, and event emission.
-- `yolo-task` exposes direct tracker operations.
-- `yolo-tui` and `yolo-webui` consume the event stream for monitoring.
+- `yolo-tui` consumes the event stream for monitoring.
 
 ## What It Does
 
@@ -136,9 +133,7 @@ make build
 
 ```bash
 ./bin/yolo-agent --version
-./bin/yolo-task --version
 ./bin/yolo-tui --version
-./bin/yolo-webui --version
 ```
 
 ## Installation Matrix
@@ -315,7 +310,7 @@ From repo root:
 ./bin/yolo-agent --repo . --root algi-8bt --dry-run
 ```
 
-Pipe `--stream` output into `yolo-tui` for live monitoring, or use `yolo-webui` against the distributed bus.
+Pipe `--stream` output into `yolo-tui` for live monitoring.
 
 Common options:
 - `--max N` limit number of tasks processed
@@ -331,100 +326,6 @@ Common options:
 - `--backend codex|opencode|claude|kimi|gemini` agent backend
 - `--model MODEL` model name (e.g., openai/gpt-5.3-codex)
 - `--runner-timeout DURATION` per-task timeout (e.g., 20m)
-
-### Distributed dogfooding (queues via NATS + Podman)
-
-Use the queue-backed transport with NATS, started via Podman Compose. Services bind to Tailscale (tailnet) addresses for security - only accessible from within your tailnet.
-
-```bash
-make build
-make distributed-dev-up
-
-export GITHUB_TOKEN=$(gh auth token)
-
-# Get your tailscale IP (or set YOLO_TAILNET_IP in .env)
-export YOLO_TAILNET_IP=$(tailscale ip -4)
-
-./bin/yolo-agent \
-  --repo . \
-  --root <root-id> \
-  --profile github \
-  --distributed-bus-backend nats \
-  --distributed-bus-address "nats://${YOLO_TAILNET_IP}:14222" \
-  --stream | ./bin/yolo-tui --events-stdin
-```
-
-When done, stop the containers:
-
-```bash
-make distributed-dev-down
-```
-
-#### Makefile targets for distributed dev
-
-```bash
-# Start the NATS container (bound to tailnet IP)
-make distributed-dev-up
-
-# Stop and remove containers with volumes
-make distributed-dev-down
-```
-
-These targets use `podman compose` with `dev/distributed/docker-compose.yml`. Services bind to `YOLO_TAILNET_IP` (default: `100.85.134.92`) so they're only accessible from your Tailscale network.
-
-#### Web UI for monitoring and control
-
-Start the web UI to monitor task queue, task graph, workers, and send control commands:
-
-```bash
-export YOLO_TAILNET_IP=$(tailscale ip -4)
-
-./bin/yolo-webui \
-  --repo . \
-  --listen "${YOLO_TAILNET_IP}:8080" \
-  --distributed-bus-backend nats \
-  --distributed-bus-address "nats://${YOLO_TAILNET_IP}:14222" \
-  --auth-token "${YOLO_WEBUI_TOKEN:-your-secret-token}"
-```
-
-Then open in your browser (only accessible from tailnet):
-
-```
-http://<your-tailnet-ip>:8080/?token=your-secret-token
-```
-
-Features:
-- Real-time task queue visualization
-- Task graph with status
-- Worker summaries
-- Control panel to change task status (blocked, in_progress, closed)
-- Run history and triage
-
-#### Distributed bus operator notes
-
-**Fallback backend:** When `--distributed-bus-backend` is omitted, it defaults to `nats`.
-
-**Startup:** Before starting `yolo-agent` in distributed mode, verify the bus is reachable:
-
-```bash
-nats account info --server "nats://${YOLO_TAILNET_IP}:14222"
-```
-
-If the bus is unavailable at startup, `yolo-agent` exits immediately with a connection error. Run `make distributed-dev-up` and confirm containers are running before retrying.
-
-**Cancellation:** Send SIGTERM or press Ctrl+C to stop the scheduler. The agent finishes its current dispatch loop iteration and then exits cleanly. In-flight tasks that were already dispatched to executors continue running; their results are recorded when they complete. Tasks that were queued but not yet dispatched are left in their current state and will be picked up on the next run.
-
-**Teardown:** Stop containers and remove volumes after a distributed run:
-
-```bash
-make distributed-dev-down
-```
-
-If in-flight tasks were interrupted before completing, reset them before the next run:
-
-1. Set interrupted tasks back to `open` status.
-2. Remove stale entries from `.yolo-runner/scheduler-state.json`.
-3. Remove stale clone directories under `.yolo-runner/clones/<task-id>`.
 
 ### Streaming Mode (Real-time TUI)
 
@@ -447,31 +348,6 @@ TDD mode with streaming:
 ```
 
 The TUI is decoder-safe: malformed JSONL lines are surfaced as warnings while valid events continue rendering.
-
-#### TUI Bus Mode (connect directly to NATS)
-
-Connect TUI directly to the distributed bus - useful when running agent separately or monitoring remote runs:
-
-```bash
-export YOLO_TAILNET_IP=$(tailscale ip -4)
-
-./bin/yolo-tui \
-  --repo . \
-  --events-bus \
-  --events-bus-backend nats \
-  --events-bus-address "nats://${YOLO_TAILNET_IP}:14222"
-```
-
-**TUI shows:**
-- Task queue with pending/ready tasks
-- Task graph with dependency tree and statuses
-- Worker summaries (active executors)
-- Run history and landing/triage outcomes
-- Real-time status bar with metrics
-
-**TUI vs Web UI:**
-- Use `yolo-tui` for terminal-based monitoring, local or SSH sessions
-- Use `yolo-webui` for browser access, remote monitoring, and sending control commands
 
 ### `yolo-agent` preflight (commit + push first)
 

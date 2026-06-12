@@ -14,7 +14,6 @@ func TestMakefileHasInstallTargetThatInstallsYoloAgent(t *testing.T) {
 
 	binaries := []string{
 		"yolo-agent",
-		"yolo-task",
 		"yolo-tui",
 	}
 
@@ -54,7 +53,6 @@ func TestMakefileInstallTargetHonorsPrefixAndCreatesExecutable(t *testing.T) {
 
 	binaries := []string{
 		"yolo-agent",
-		"yolo-task",
 		"yolo-tui",
 	}
 
@@ -90,7 +88,6 @@ func TestMakefileInstallTargetHonorsPrefixAndCreatesExecutable(t *testing.T) {
 
 	for _, binary := range []string{
 		"yolo-agent",
-		"yolo-task",
 		"yolo-tui",
 	} {
 		versionOutput, err := exec.Command(filepath.Join(binDir, binary), "--version").CombinedOutput()

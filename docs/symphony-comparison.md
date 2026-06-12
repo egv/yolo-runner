@@ -23,8 +23,7 @@ An explicit boundary in the spec:
 ## What yolo-runner Already Has That Maps Well
 
 - Multi-backend agent runners (Codex CLI, OpenCode/ACP) and a richer local operator experience
-  (`yolo-tui`, `yolo-webui`).
-- Distributed execution infrastructure (Redis/NATS bus, executor/mastermind roles).
+  (`yolo-tui`).
 - Per-task clones/workspaces under `.yolo-runner/clones/<task-id>`.
 - Ticket backends (GitHub + tk), plus dependency graphs.
 
@@ -125,8 +124,6 @@ And prescribes correlation keys for logs:
 - `issue_identifier` / `issue_id` / `session_id`
 
 Suggested fit:
-- Define a stable JSON API contract for `yolo-webui` so the UI and TUI can share one canonical
-  state model.
 - Ensure every “run attempt” has a stable `session_id` (already possible for ACP; add for Codex).
 
 ### 7) Explicit orchestrator state machine and reconciliation

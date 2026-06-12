@@ -11,15 +11,6 @@ smoke-config-commands:
 smoke-event-stream:
 	$(MAKE) smoke-agent-tui
 
-distributed-dev-up:
-	podman compose -f dev/distributed/docker-compose.yml up -d nats
-
-distributed-dev-down:
-	podman compose -f dev/distributed/docker-compose.yml down -v
-
-smoke-distributed-e2e:
-	./scripts/distributed-smoke.sh
-
 release-gate-e8:
 	go test ./cmd/yolo-agent -run 'TestE2E_(CodexTKConcurrency2LandsViaMergeQueue|ClaudeConflictRetryPathFinalizesWithLandingOrBlockedTriage|KimiLinearProfileProcessesAndClosesIssue|GitHubProfileProcessesAndClosesIssue)$$' -count=1
 	go test ./internal/docs -run 'Test(MakefileDefinesE8ReleaseGateChecklistTarget|ReadmeDocumentsE8ReleaseGateChecklist|MigrationDocumentsE8ReleaseGateMigrationInstructions)$$' -count=1
@@ -42,16 +33,12 @@ release-v2.7.0:
 build:
 	mkdir -p bin
 	go build -o bin/yolo-agent ./cmd/yolo-agent
-	go build -o bin/yolo-task ./cmd/yolo-task
 	go build -o bin/yolo-tui ./cmd/yolo-tui
-	go build -o bin/yolo-webui ./cmd/yolo-webui
 
 PREFIX ?= /usr/local
 
 install: build
 	mkdir -p $(PREFIX)/bin
 	cp bin/yolo-agent $(PREFIX)/bin/yolo-agent
-	cp bin/yolo-task $(PREFIX)/bin/yolo-task
 	cp bin/yolo-tui $(PREFIX)/bin/yolo-tui
-	cp bin/yolo-webui $(PREFIX)/bin/yolo-webui
-	chmod 755 $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-task $(PREFIX)/bin/yolo-tui $(PREFIX)/bin/yolo-webui
+	chmod 755 $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-tui

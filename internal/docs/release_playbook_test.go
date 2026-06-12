@@ -43,7 +43,6 @@ func TestReleasePlaybookCoversVerificationAndSmokeInstall(t *testing.T) {
 		"checksums-",
 		"sha256sum",
 		"## Smoke Install and CLI Check",
-		"/tmp/yolo-task --version",
 		"/tmp/yolo-tui --version",
 	}
 	for _, needle := range required {

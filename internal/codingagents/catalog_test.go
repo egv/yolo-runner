@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/egv/yolo-runner/v2/internal/distributed"
 )
 
 func TestLoadCatalogIncludesBuiltinAndCustomBackendDefinitions(t *testing.T) {
@@ -100,15 +98,6 @@ func containsStringSlice(values []string, target string) bool {
 	return false
 }
 
-func hasDistributedCapability(values []distributed.Capability, target distributed.Capability) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 func TestCatalogLoadsUnifiedBackendFieldsFromConfig(t *testing.T) {
 	repoRoot := t.TempDir()
 	customDir := filepath.Join(repoRoot, ".yolo-runner", "coding-agents")
@@ -135,6 +124,9 @@ config:
   api_key_env: UNIFIED_API_TOKEN
   args: ["--backend=unified"]
   timeout: 10s
+distributed_capabilities:
+  - implement
+  - review
 `), 0o644); err != nil {
 		t.Fatalf("write unified backend definition: %v", err)
 	}
@@ -166,15 +158,6 @@ config:
 	if !strings.Contains(definition.Model, "unified-v1") {
 		t.Fatalf("expected model field to retain unified model, got %#v", definition.Model)
 	}
-	if !hasDistributedCapability(definition.DistributedCaps, distributed.CapabilityImplement) {
-		t.Fatalf("expected implement feature to map to distributed capability, got %#v", definition.DistributedCaps)
-	}
-	if !hasDistributedCapability(definition.DistributedCaps, distributed.CapabilityReview) {
-		t.Fatalf("expected review feature to map to distributed capability, got %#v", definition.DistributedCaps)
-	}
-	if !hasDistributedCapability(definition.DistributedCaps, distributed.CapabilityServiceProxy) {
-		t.Fatalf("expected service_proxy feature to map to distributed capability, got %#v", definition.DistributedCaps)
-	}
 	if !containsStringSlice(definition.RequiredCredentials, "UNIFIED_API_TOKEN") {
 		t.Fatalf("expected api_key_env to map to required credentials, got %#v", definition.RequiredCredentials)
 	}
@@ -204,12 +187,6 @@ func TestCatalogBuiltinOpencodeServeIsRegistered(t *testing.T) {
 	}
 	if !backend.SupportsStream {
 		t.Error("expected opencode-serve to support stream")
-	}
-	if !hasDistributedCapability(backend.DistributedCaps, distributed.CapabilityImplement) {
-		t.Errorf("expected opencode-serve to advertise implement capability, got %#v", backend.DistributedCaps)
-	}
-	if !hasDistributedCapability(backend.DistributedCaps, distributed.CapabilityServiceProxy) {
-		t.Errorf("expected opencode-serve to advertise service_proxy capability, got %#v", backend.DistributedCaps)
 	}
 }
 
@@ -246,34 +223,5 @@ func TestCatalogBuiltinCodexUsesAppServerAdapter(t *testing.T) {
 	}
 	if len(codex.Args) == 0 || codex.Args[0] != "app-server" {
 		t.Errorf("expected codex args to start with %q, got %v", "app-server", codex.Args)
-	}
-}
-
-func TestCatalogBuiltinCodexCLIPreservesLegacyFallbackCapabilitiesOnly(t *testing.T) {
-	catalog, err := LoadCatalog("")
-	if err != nil {
-		t.Fatalf("load catalog: %v", err)
-	}
-
-	codexCLI, ok := catalog.Backend("codex-cli")
-	if !ok {
-		t.Fatal("expected builtin codex-cli backend")
-	}
-	if hasDistributedCapability(codexCLI.DistributedCaps, distributed.CapabilityServiceProxy) {
-		t.Fatalf("did not expect codex-cli to advertise service_proxy, got %#v", codexCLI.DistributedCaps)
-	}
-	if hasDistributedCapability(codexCLI.DistributedCaps, distributed.CapabilityLargerModel) {
-		t.Fatalf("did not expect codex-cli to advertise larger_model, got %#v", codexCLI.DistributedCaps)
-	}
-
-	codex, ok := catalog.Backend("codex")
-	if !ok {
-		t.Fatal("expected builtin codex backend")
-	}
-	if !hasDistributedCapability(codex.DistributedCaps, distributed.CapabilityServiceProxy) {
-		t.Fatalf("expected codex to advertise service_proxy, got %#v", codex.DistributedCaps)
-	}
-	if !hasDistributedCapability(codex.DistributedCaps, distributed.CapabilityLargerModel) {
-		t.Fatalf("expected codex to advertise larger_model, got %#v", codex.DistributedCaps)
 	}
 }

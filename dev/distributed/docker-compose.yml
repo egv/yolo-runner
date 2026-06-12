@@ -1,6 +1,0 @@
-services:
-  nats:
-    image: nats:2.10-alpine
-    command: ["-js"]
-    ports:
-      - "${YOLO_TAILNET_IP:-100.85.134.92}:${YOLO_SMOKE_NATS_PORT:-14222}:4222"

@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,7 +36,6 @@ type BackendDefinition struct {
 	Args                []string                 `yaml:"args" json:"args"`
 	SupportsReview      bool                     `yaml:"supports_review" json:"supports_review"`
 	SupportsStream      bool                     `yaml:"supports_stream" json:"supports_stream"`
-	DistributedCaps     []distributed.Capability `yaml:"distributed_capabilities" json:"distributed_capabilities"`
 	SupportedModels     []string                 `yaml:"supported_models" json:"supported_models"`
 	RequiredCredentials []string                 `yaml:"required_credentials" json:"required_credentials"`
 }
@@ -170,17 +168,6 @@ func (c Catalog) CapabilityProfile(name string) (BackendCapabilities, bool) {
 	return BackendCapabilities{SupportsReview: backend.SupportsReview, SupportsStream: backend.SupportsStream}, true
 }
 
-func (c Catalog) DistributedCapabilities(name string) ([]distributed.Capability, bool) {
-	backend, ok := c.Backend(name)
-	if !ok {
-		return nil, false
-	}
-	if len(backend.DistributedCaps) == 0 {
-		return nil, true
-	}
-	return append([]distributed.Capability(nil), backend.DistributedCaps...), true
-}
-
 func (c Catalog) ValidateBackendUsage(name string, model string, getenv func(string) string) error {
 	backend, ok := c.Backend(name)
 	if !ok {
@@ -300,13 +287,6 @@ func validateBackendDefinition(definition BackendDefinition) error {
 			return fmt.Errorf("invalid supported model pattern %q", trimmed)
 		}
 	}
-	for _, capability := range definition.DistributedCaps {
-		normalized, ok := supportedDistributedCapability(capability)
-		if !ok {
-			return fmt.Errorf("unsupported distributed capability %q", strings.TrimSpace(string(capability)))
-		}
-		_ = normalized
-	}
 	return nil
 }
 
@@ -375,13 +355,11 @@ func normalizeBackendDefinition(definition BackendDefinition) BackendDefinition 
 		if !definition.SupportsStream {
 			definition.SupportsStream = containsBackendFeature(definition.Capabilities.Features, "stream")
 		}
-		definition.DistributedCaps = mergeCapabilityConfig(definition.DistributedCaps, definition.Capabilities.Features)
 	}
 
 	definition.Args = normalizeStringSlice(definition.Args)
 	definition.RequiredCredentials = normalizeStringSlice(definition.RequiredCredentials)
 	definition.SupportedModels = normalizeStringSlice(definition.SupportedModels)
-	definition.DistributedCaps = normalizeDistributedCaps(definition.DistributedCaps)
 	return definition
 }
 
@@ -422,29 +400,6 @@ func normalizeStringSlice(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func normalizeDistributedCaps(caps []distributed.Capability) []distributed.Capability {
-	if len(caps) == 0 {
-		return nil
-	}
-	seen := map[distributed.Capability]struct{}{}
-	out := make([]distributed.Capability, 0, len(caps))
-	for _, raw := range caps {
-		normalized, ok := supportedDistributedCapability(raw)
-		if !ok {
-			continue
-		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		out = append(out, normalized)
 	}
 	if len(out) == 0 {
 		return nil
@@ -553,48 +508,6 @@ func containsBackendFeature(features []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-func mergeCapabilityConfig(existing []distributed.Capability, features []string) []distributed.Capability {
-	caps := make([]distributed.Capability, 0, len(existing))
-	caps = append(caps, existing...)
-	seen := map[distributed.Capability]struct{}{}
-	for _, capability := range existing {
-		seen[capability] = struct{}{}
-	}
-	for _, raw := range features {
-		switch distributed.Capability(strings.ToLower(strings.TrimSpace(raw))) {
-		case distributed.CapabilityImplement:
-			addDistributedCapability(&caps, seen, distributed.CapabilityImplement)
-		case distributed.CapabilityReview:
-			addDistributedCapability(&caps, seen, distributed.CapabilityReview)
-		case distributed.CapabilityRewriteTask:
-			addDistributedCapability(&caps, seen, distributed.CapabilityRewriteTask)
-		case distributed.CapabilityLargerModel:
-			addDistributedCapability(&caps, seen, distributed.CapabilityLargerModel)
-		case distributed.CapabilityServiceProxy:
-			addDistributedCapability(&caps, seen, distributed.CapabilityServiceProxy)
-		}
-	}
-	return caps
-}
-
-func addDistributedCapability(out *[]distributed.Capability, seen map[distributed.Capability]struct{}, capability distributed.Capability) {
-	if _, ok := seen[capability]; ok {
-		return
-	}
-	seen[capability] = struct{}{}
-	*out = append(*out, capability)
-}
-
-func supportedDistributedCapability(value distributed.Capability) (distributed.Capability, bool) {
-	normalized := distributed.Capability(strings.ToLower(strings.TrimSpace(string(value))))
-	switch normalized {
-	case distributed.CapabilityImplement, distributed.CapabilityReview, distributed.CapabilityRewriteTask, distributed.CapabilityLargerModel, distributed.CapabilityServiceProxy:
-		return normalized, true
-	default:
-		return "", false
-	}
 }
 
 func normalizeBackend(raw string) string {

@@ -24,6 +24,3 @@ config:
 adapter: command
 supports_review: true
 supports_stream: true
-distributed_capabilities:
-  - implement
-  - review

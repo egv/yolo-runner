@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,30 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
-	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/ui/monitor"
 	"github.com/egv/yolo-runner/v2/internal/version"
 	"golang.org/x/term"
 )
-
-const (
-	distributedBusNATS         = "nats"
-	runDefaultEventsBusBackend = "nats"
-	runDefaultEventsBusPrefix  = "yolo"
-	runDefaultMonitorSourceEnv = "YOLO_MONITOR_SOURCE_ID"
-	runDefaultBusBackendEnv    = "YOLO_DISTRIBUTED_BUS_BACKEND"
-	runDefaultBusAddressEnv    = "YOLO_DISTRIBUTED_BUS_ADDRESS"
-	runDefaultBusPrefixEnv     = "YOLO_DISTRIBUTED_BUS_PREFIX"
-)
-
-var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
-	switch strings.TrimSpace(backend) {
-	case distributedBusNATS:
-		return distributed.NewNATSBus(address, opts)
-	default:
-		return nil, fmt.Errorf("unsupported distributed bus backend %q", backend)
-	}
-}
 
 func main() {
 	os.Exit(RunMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
@@ -51,31 +29,17 @@ func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 
 	fs := flag.NewFlagSet("yolo-tui", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	repoRoot := fs.String("repo", ".", "Repository root")
 	eventsStdin := fs.Bool("events-stdin", false, "Read NDJSON events from stdin")
-	eventsBus := fs.Bool("events-bus", false, "Read monitor events from distributed bus")
-	busBackend := fs.String("events-bus-backend", "", "Distributed bus backend (nats)")
-	busAddress := fs.String("events-bus-address", "", "Distributed bus address")
-	busPrefix := fs.String("events-bus-prefix", "", "Distributed bus subject prefix")
-	busSource := fs.String("events-bus-source", "", "Monitor source filter")
 	demoState := fs.Bool("demo-state", false, "Render seeded demo state and stay open")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 
-	if *eventsBus && *eventsStdin {
-		fmt.Fprintln(errOut, "set exactly one event input mode: --events-stdin or --events-bus")
-		return 1
-	}
 	setFlags := map[string]struct{}{}
 	fs.Visit(func(f *flag.Flag) {
 		setFlags[f.Name] = struct{}{}
 	})
-	if _, eventsStdinSet := setFlags["events-stdin"]; !eventsStdinSet && !*eventsBus {
-		*eventsStdin = true
-	}
-	if _, eventsBusSet := setFlags["events-bus"]; !eventsBusSet && !*eventsStdin {
-		// default remains stdin when bus flag is not explicitly set
+	if _, eventsStdinSet := setFlags["events-stdin"]; !eventsStdinSet {
 		*eventsStdin = true
 	}
 
@@ -94,149 +58,27 @@ func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 		return 0
 	}
 
-	if !*eventsBus && !*eventsStdin {
+	if !*eventsStdin {
 		fmt.Fprintln(errOut, "--events-stdin must be enabled")
 		return 1
 	}
 	if in == nil {
-		if !*eventsBus {
-			fmt.Fprintln(errOut, "stdin reader is required")
-			return 1
-		}
-	}
-
-	if !*eventsBus {
-		if shouldUseFullscreen(out) {
-			if err := runFullscreenFromReader(in, out, errOut); err != nil {
-				fmt.Fprintln(errOut, err)
-				return 1
-			}
-			return 0
-		}
-		if err := renderFromReader(in, out, errOut); err != nil {
-			fmt.Fprintln(errOut, err)
-			return 1
-		}
-		return 0
-	}
-
-	selectedBusConfig, err := resolveTUIDistributedBusConfig(
-		*repoRoot,
-		*busBackend,
-		*busAddress,
-		*busPrefix,
-		*busSource,
-		os.Getenv,
-	)
-	if err != nil {
-		fmt.Fprintln(errOut, err)
+		fmt.Fprintln(errOut, "stdin reader is required")
 		return 1
 	}
 
 	if shouldUseFullscreen(out) {
-		if err := runFullscreenFromBus(
-			selectedBusConfig.Backend,
-			selectedBusConfig.Address,
-			selectedBusConfig.Prefix,
-			selectedBusConfig.Source,
-			selectedBusConfig.BackendOptions(),
-			out,
-			errOut,
-		); err != nil {
+		if err := runFullscreenFromReader(in, out, errOut); err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
 		}
 		return 0
 	}
-
-	if err := renderFromBus(
-		selectedBusConfig.Backend,
-		selectedBusConfig.Address,
-		selectedBusConfig.Prefix,
-		selectedBusConfig.Source,
-		selectedBusConfig.BackendOptions(),
-		out,
-		errOut,
-	); err != nil {
+	if err := renderFromReader(in, out, errOut); err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
 	return 0
-}
-
-func normalizeDistributedBusBackend(raw string) (string, error) {
-	switch strings.TrimSpace(raw) {
-	case "", distributedBusNATS:
-		return distributedBusNATS, nil
-	default:
-		return "", fmt.Errorf("unsupported distributed bus backend %q (supported: %s)", raw, distributedBusNATS)
-	}
-}
-
-func resolveTUIDistributedBusConfig(
-	repoRoot string,
-	flagBackend string,
-	flagAddress string,
-	flagPrefix string,
-	flagSource string,
-	getenv func(string) string,
-) (distributed.DistributedBusConfig, error) {
-	configBus, err := distributed.LoadDistributedBusConfig(repoRoot)
-	if err != nil {
-		return distributed.DistributedBusConfig{}, err
-	}
-	configBus = configBus.ApplyDefaults(runDefaultEventsBusBackend, runDefaultEventsBusPrefix)
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-
-	selectedBackend := strings.TrimSpace(flagBackend)
-	if selectedBackend == "" {
-		selectedBackend = strings.TrimSpace(getenv(runDefaultBusBackendEnv))
-	}
-	if selectedBackend == "" {
-		selectedBackend = configBus.Backend
-	}
-	selectedBackend, err = normalizeDistributedBusBackend(selectedBackend)
-	if err != nil {
-		return distributed.DistributedBusConfig{}, err
-	}
-
-	selectedAddress := strings.TrimSpace(flagAddress)
-	if selectedAddress == "" {
-		selectedAddress = strings.TrimSpace(getenv(runDefaultBusAddressEnv))
-	}
-	if selectedAddress == "" {
-		selectedAddress = configBus.Address
-	}
-	if selectedAddress == "" {
-		return distributed.DistributedBusConfig{}, fmt.Errorf("--events-bus-address is required")
-	}
-
-	selectedPrefix := strings.TrimSpace(flagPrefix)
-	if selectedPrefix == "" {
-		selectedPrefix = strings.TrimSpace(getenv(runDefaultBusPrefixEnv))
-	}
-	if selectedPrefix == "" {
-		selectedPrefix = configBus.Prefix
-	}
-	if selectedPrefix == "" {
-		selectedPrefix = runDefaultEventsBusPrefix
-	}
-
-	selectedSource := strings.TrimSpace(flagSource)
-	if selectedSource == "" {
-		selectedSource = strings.TrimSpace(getenv(runDefaultMonitorSourceEnv))
-	}
-	if selectedSource == "" {
-		selectedSource = configBus.Source
-	}
-
-	configBus.Backend = selectedBackend
-	configBus.Address = selectedAddress
-	configBus.Prefix = selectedPrefix
-	configBus.Source = selectedSource
-	return configBus, nil
 }
 
 func shouldUseFullscreen(out io.Writer) bool {
@@ -742,15 +584,6 @@ func runFullscreenFromReader(reader io.Reader, out io.Writer, errOut io.Writer) 
 	return runFullscreenFromStream(stream, out, errOut)
 }
 
-func runFullscreenFromBus(busBackend, busAddress, busPrefix, busSource string, opts distributed.BusBackendOptions, out io.Writer, errOut io.Writer) error {
-	stream, stop, err := startMonitorEventStream(busBackend, busAddress, busPrefix, busSource, opts)
-	if err != nil {
-		return err
-	}
-	defer stop()
-	return runFullscreenFromStream(stream, out, errOut)
-}
-
 func runFullscreenFromStream(stream <-chan streamMsg, out io.Writer, errOut io.Writer) error {
 	program := tea.NewProgram(
 		newFullscreenModel(stream, nil, false),
@@ -762,15 +595,6 @@ func runFullscreenFromStream(stream <-chan streamMsg, out io.Writer, errOut io.W
 	}
 	_ = errOut
 	return nil
-}
-
-func renderFromBus(busBackend, busAddress, busPrefix, busSource string, opts distributed.BusBackendOptions, out io.Writer, errOut io.Writer) error {
-	stream, stop, err := startMonitorEventStream(busBackend, busAddress, busPrefix, busSource, opts)
-	if err != nil {
-		return err
-	}
-	defer stop()
-	return renderFromStream(stream, out, errOut)
 }
 
 func renderFromReader(reader io.Reader, out io.Writer, errOut io.Writer) error {
@@ -884,71 +708,4 @@ func decodeEvents(reader io.Reader, out chan<- streamMsg) {
 		decodeFailures = 0
 		out <- eventMsg{event: event}
 	}
-}
-
-func startMonitorEventStream(busBackend string, busAddress string, busPrefix string, busSource string, opts distributed.BusBackendOptions) (<-chan streamMsg, func(), error) {
-	bus, err := newDistributedBus(busBackend, busAddress, opts)
-	if err != nil {
-		return nil, nil, err
-	}
-	subject := distributed.DefaultEventSubjects(busPrefix).MonitorEvent
-	ctx, cancel := context.WithCancel(context.Background())
-	out := make(chan streamMsg, 64)
-
-	rawEvents, unsubscribe, err := bus.Subscribe(ctx, subject)
-	if err != nil {
-		_ = bus.Close()
-		cancel()
-		close(out)
-		return nil, nil, err
-	}
-
-	stop := func() {
-		cancel()
-		if unsubscribe != nil {
-			unsubscribe()
-		}
-		_ = bus.Close()
-	}
-
-	go func() {
-		defer close(out)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case env, ok := <-rawEvents:
-				if !ok {
-					return
-				}
-				event, shouldUse, err := parseMonitorEnvelope(env, busSource)
-				if err != nil {
-					out <- decodeErrorMsg{err: err}
-					continue
-				}
-				if !shouldUse {
-					continue
-				}
-				out <- eventMsg{event: event}
-			}
-		}
-	}()
-	return out, stop, nil
-}
-
-func parseMonitorEnvelope(envelope distributed.EventEnvelope, sourceFilter string) (contracts.Event, bool, error) {
-	if envelope.Type != distributed.EventTypeMonitorEvent {
-		return contracts.Event{}, false, nil
-	}
-	if sourceFilter != "" && strings.TrimSpace(envelope.Source) != strings.TrimSpace(sourceFilter) {
-		return contracts.Event{}, false, nil
-	}
-	payload := distributed.MonitorEventPayload{}
-	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return contracts.Event{}, true, err
-	}
-	if payload.Event.Type == "" && payload.Event.TaskID == "" && payload.Event.WorkerID == "" && payload.Event.TaskTitle == "" && payload.Event.Message == "" {
-		return contracts.Event{}, true, nil
-	}
-	return payload.Event, true, nil
 }

@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/codex"
 	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
-	"github.com/egv/yolo-runner/v2/internal/distributed"
 	"github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/kimi"
 	"github.com/egv/yolo-runner/v2/internal/opencode"
@@ -38,57 +36,34 @@ const (
 	backendGemini       = "gemini"
 	agentModeStream     = "stream"
 	agentModeUI         = "ui"
-	agentRoleLocal      = "local"
-	agentRoleMaster     = "mastermind"
-	agentRoleWorker     = "executor"
-	distributedBusNATS = "nats"
-	inboxAuthTokenEnv   = "YOLO_INBOX_WRITE_TOKEN"
-	monitorSourceIDEnv  = "YOLO_MONITOR_SOURCE_ID"
 )
 
-var taskGraphSyncInterval = 5 * time.Second
-
 type runConfig struct {
-	repoRoot                        string
-	rootID                          string
-	backend                         string
-	profile                         string
-	trackerType                     string
-	model                           string
-	qualityThreshold                int
-	qualityGateTools                []string
-	qcGateTools                     []string
-	allowLowQuality                 bool
-	maxTasks                        int
-	retryBudget                     int
-	concurrency                     int
-	dryRun                          bool
-	mode                            string
-	stream                          bool
-	verboseStream                   bool
-	streamOutputInterval            time.Duration
-	streamOutputBuffer              int
-	tddMode                         bool
-	runnerTimeout                   time.Duration
-	watchdogTimeout                 time.Duration
-	watchdogInterval                time.Duration
-	eventsPath                      string
-	role                            string
-	distributedBusBackend           string
-	distributedBusAddress           string
-	distributedBusPrefix            string
-	distributedBusOptions           distributed.BusBackendOptions
-	distributedRoleID               string
-	codingAgents                    codingagents.Catalog
-	distributedExecutorCapabilities []distributed.Capability
-	distributedHeartbeatInterval    time.Duration
-	distributedRequestTimeout       time.Duration
-	distributedRegistryTTL          time.Duration
-	distributedReviewDefaultModel   string
-	distributedReviewLargerModel    string
-	distributedRewriteDefaultModel  string
-	distributedRewriteLargerModel   string
-	distributedEventBus             distributed.Bus
+	repoRoot             string
+	rootID               string
+	backend              string
+	profile              string
+	trackerType          string
+	model                string
+	qualityThreshold     int
+	qualityGateTools     []string
+	qcGateTools          []string
+	allowLowQuality      bool
+	maxTasks             int
+	retryBudget          int
+	concurrency          int
+	dryRun               bool
+	mode                 string
+	stream               bool
+	verboseStream        bool
+	streamOutputInterval time.Duration
+	streamOutputBuffer   int
+	tddMode              bool
+	runnerTimeout        time.Duration
+	watchdogTimeout      time.Duration
+	watchdogInterval     time.Duration
+	eventsPath           string
+	codingAgents         codingagents.Catalog
 }
 
 type trackerWatchConfig struct {
@@ -109,15 +84,6 @@ type arcReviewWatchCommandConfig struct {
 	stream     bool
 	eventsPath string
 	eventSink  contracts.EventSink
-}
-
-var newDistributedBus = func(backend string, address string, opts distributed.BusBackendOptions) (distributed.Bus, error) {
-	switch backend {
-	case distributedBusNATS:
-		return distributed.NewNATSBus(address, opts)
-	default:
-		return nil, fmt.Errorf("unsupported distributed bus backend %q", backend)
-	}
 }
 
 var loadCodingAgentsCatalog = codingagents.LoadCatalog
@@ -189,19 +155,6 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	watchdogInterval := fs.Duration("watchdog-interval", 5*time.Second, "Polling interval used by the no-output watchdog")
 	retryBudget := fs.Int("retry-budget", 5, "Maximum retry attempts per task for remediation loop")
 	events := fs.String("events", "", "Path to JSONL events log")
-	role := fs.String("role", "", "Distributed execution role: local, mastermind, executor")
-	distributedBusBackend := fs.String("distributed-bus-backend", "", "Distributed bus backend (nats)")
-	distributedBusAddress := fs.String("distributed-bus-address", "", "Distributed bus address")
-	distributedBusPrefix := fs.String("distributed-bus-prefix", "", "Distributed bus subject prefix")
-	distributedExecutorID := fs.String("distributed-executor-id", "", "Distributed executor id (executor role)")
-	distributedExecutorCapabilities := fs.String("distributed-executor-capabilities", "", "Comma-separated capabilities to advertise in executor role")
-	distributedHeartbeatInterval := fs.Duration("distributed-heartbeat-interval", 5*time.Second, "Heartbeat interval in executor role")
-	distributedRequestTimeout := fs.Duration("distributed-request-timeout", 30*time.Second, "Request timeout for task dispatch in mastermind/executor roles")
-	distributedRegistryTTL := fs.Duration("distributed-registry-ttl", 30*time.Second, "Executor registration TTL in mastermind role")
-	distributedReviewDefaultModel := fs.String("distributed-review-default-model", "", "Default model used by mastermind for review service requests")
-	distributedReviewLargerModel := fs.String("distributed-review-larger-model", "", "Larger model used by mastermind when review policy requests larger-model review")
-	distributedRewriteDefaultModel := fs.String("distributed-rewrite-default-model", "", "Default model used by mastermind for task-rewrite service requests")
-	distributedRewriteLargerModel := fs.String("distributed-rewrite-larger-model", "", "Larger model used by mastermind when rewrite policy requests larger-model rewrite")
 	var err error
 	if err = fs.Parse(args); err != nil {
 		return 1
@@ -214,17 +167,8 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		_, ok := setFlags[name]
 		return ok
 	}
-	selectedRole := strings.TrimSpace(*role)
-	if selectedRole == "" {
-		selectedRole = strings.TrimSpace(os.Getenv("YOLO_DISTRIBUTED_ROLE"))
-	}
-	selectedRole, err = normalizeDistributedRole(selectedRole)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
 
-	if *root == "" && selectedRole != agentRoleWorker {
+	if *root == "" {
 		fmt.Fprintln(os.Stderr, "--root is required")
 		return 1
 	}
@@ -333,97 +277,35 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 		fmt.Fprintln(os.Stderr, "--retry-budget must be greater than or equal to 0")
 		return 1
 	}
-	selectedDistributedBusConfig, err := resolveAgentDistributedBusConfig(
-		*repo,
-		*distributedBusBackend,
-		*distributedBusAddress,
-		*distributedBusPrefix,
-		os.Getenv,
-	)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	selectedDistributedExecutorCapabilities, err := distributedExecutorCapabilitiesForBackend(codingAgents, selectedBackend, *distributedExecutorCapabilities, flagWasSet("distributed-executor-capabilities"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	selectedDistributedHeartbeatInterval := *distributedHeartbeatInterval
-	selectedDistributedRequestTimeout := *distributedRequestTimeout
-	selectedDistributedRegistryTTL := *distributedRegistryTTL
-	selectedDistributedReviewDefaultModel := strings.TrimSpace(*distributedReviewDefaultModel)
-	if selectedDistributedReviewDefaultModel == "" {
-		selectedDistributedReviewDefaultModel = selectedModel
-	}
-	selectedDistributedReviewLargerModel := strings.TrimSpace(*distributedReviewLargerModel)
-	if selectedDistributedReviewLargerModel == "" {
-		selectedDistributedReviewLargerModel = selectedDistributedReviewDefaultModel
-	}
-	selectedDistributedRewriteDefaultModel := strings.TrimSpace(*distributedRewriteDefaultModel)
-	if selectedDistributedRewriteDefaultModel == "" {
-		selectedDistributedRewriteDefaultModel = selectedModel
-	}
-	selectedDistributedRewriteLargerModel := strings.TrimSpace(*distributedRewriteLargerModel)
-	if selectedDistributedRewriteLargerModel == "" {
-		selectedDistributedRewriteLargerModel = selectedDistributedRewriteDefaultModel
-	}
-	if selectedDistributedHeartbeatInterval <= 0 {
-		fmt.Fprintln(os.Stderr, "--distributed-heartbeat-interval must be greater than 0")
-		return 1
-	}
-	if selectedDistributedRequestTimeout <= 0 {
-		fmt.Fprintln(os.Stderr, "--distributed-request-timeout must be greater than 0")
-		return 1
-	}
-	if selectedDistributedRegistryTTL <= 0 {
-		fmt.Fprintln(os.Stderr, "--distributed-registry-ttl must be greater than 0")
-		return 1
-	}
-
 	if run == nil {
 		run = defaultRun
 	}
 
 	if err := run(context.Background(), runConfig{
-		repoRoot:                        *repo,
-		rootID:                          *root,
-		backend:                         selectedBackend,
-		profile:                         selectedProfile,
-		model:                           selectedModel,
-		maxTasks:                        *max,
-		retryBudget:                     selectedRetryBudget,
-		concurrency:                     selectedConcurrency,
-		dryRun:                          *dryRun,
-		stream:                          selectedStream,
-		mode:                            selectedMode,
-		verboseStream:                   *verboseStream,
-		tddMode:                         *tddMode,
-		streamOutputInterval:            *streamOutputInterval,
-		streamOutputBuffer:              *streamOutputBuffer,
-		qualityThreshold:                *qualityThreshold,
-		qualityGateTools:                selectedQualityGateTools,
-		qcGateTools:                     selectedQCGateTools,
-		allowLowQuality:                 *allowLowQuality,
-		runnerTimeout:                   selectedRunnerTimeout,
-		watchdogTimeout:                 selectedWatchdogTimeout,
-		watchdogInterval:                selectedWatchdogInterval,
-		eventsPath:                      *events,
-		role:                            selectedRole,
-		distributedBusBackend:           selectedDistributedBusConfig.Backend,
-		distributedBusAddress:           selectedDistributedBusConfig.Address,
-		distributedBusPrefix:            selectedDistributedBusConfig.Prefix,
-		distributedBusOptions:           selectedDistributedBusConfig.BackendOptions(),
-		distributedRoleID:               strings.TrimSpace(*distributedExecutorID),
-		codingAgents:                    codingAgents,
-		distributedExecutorCapabilities: selectedDistributedExecutorCapabilities,
-		distributedHeartbeatInterval:    selectedDistributedHeartbeatInterval,
-		distributedRequestTimeout:       selectedDistributedRequestTimeout,
-		distributedRegistryTTL:          selectedDistributedRegistryTTL,
-		distributedReviewDefaultModel:   selectedDistributedReviewDefaultModel,
-		distributedReviewLargerModel:    selectedDistributedReviewLargerModel,
-		distributedRewriteDefaultModel:  selectedDistributedRewriteDefaultModel,
-		distributedRewriteLargerModel:   selectedDistributedRewriteLargerModel,
+		repoRoot:             *repo,
+		rootID:               *root,
+		backend:              selectedBackend,
+		profile:              selectedProfile,
+		model:                selectedModel,
+		maxTasks:             *max,
+		retryBudget:          selectedRetryBudget,
+		concurrency:          selectedConcurrency,
+		dryRun:               *dryRun,
+		stream:               selectedStream,
+		mode:                 selectedMode,
+		verboseStream:        *verboseStream,
+		tddMode:              *tddMode,
+		streamOutputInterval: *streamOutputInterval,
+		streamOutputBuffer:   *streamOutputBuffer,
+		qualityThreshold:     *qualityThreshold,
+		qualityGateTools:     selectedQualityGateTools,
+		qcGateTools:          selectedQCGateTools,
+		allowLowQuality:      *allowLowQuality,
+		runnerTimeout:        selectedRunnerTimeout,
+		watchdogTimeout:      selectedWatchdogTimeout,
+		watchdogInterval:     selectedWatchdogInterval,
+		eventsPath:           *events,
+		codingAgents:         codingAgents,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
 		return 1
@@ -542,9 +424,6 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	if err := resolveRunConfigCodingAgents(&cfg); err != nil {
 		return err
 	}
-	if cfg.role == agentRoleWorker {
-		return runDistributedExecutor(ctx, cfg)
-	}
 	originalWD, originalWDErr := os.Getwd()
 	if err := os.Chdir(cfg.repoRoot); err != nil {
 		return err
@@ -566,24 +445,10 @@ func defaultRun(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
-	taskStatusBackends := map[string]contracts.StorageBackend{}
-	if strings.TrimSpace(cfg.trackerType) != "" {
-		taskStatusBackends[strings.ToLower(strings.TrimSpace(cfg.trackerType))] = storageBackend
-	}
 	vcsAdapter := gitvcs.NewVCSAdapter(localGitRunner{dir: cfg.repoRoot})
 	runnerAdapter, err := buildRunnerAdapter(cfg)
 	if err != nil {
 		return err
-	}
-	runnerAdapter, distributedBus, closeDistributed, err := maybeWrapWithMastermind(ctx, cfg, runnerAdapter, taskStatusBackends)
-	if err != nil {
-		return err
-	}
-	cfg.distributedEventBus = distributedBus
-	if closeDistributed != nil {
-		defer func() {
-			_ = closeDistributed()
-		}()
 	}
 
 	taskEngine := engine.NewTaskEngine()
@@ -619,583 +484,6 @@ func buildRunnerAdapter(cfg runConfig) (contracts.AgentRunner, error) {
 	}
 }
 
-func maybeWrapWithMastermind(ctx context.Context, cfg runConfig, localRunner contracts.AgentRunner, taskStatusBackends map[string]contracts.StorageBackend) (contracts.AgentRunner, distributed.Bus, func() error, error) {
-	if cfg.role != agentRoleMaster {
-		return localRunner, nil, nil, nil
-	}
-	taskStatusBackends = discoverTaskStatusBackendsForMastermind(cfg, taskStatusBackends)
-	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress, cfg.distributedBusOptions)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	subjects := distributed.DefaultEventSubjects(cfg.distributedBusPrefix)
-	id := strings.TrimSpace(cfg.distributedRoleID)
-	if id == "" {
-		id = "mastermind"
-	}
-	mastermind := distributed.NewMastermind(distributed.MastermindOptions{
-		ID:                    id,
-		Bus:                   bus,
-		Subjects:              subjects,
-		RegistryTTL:           cfg.distributedRegistryTTL,
-		RequestTimeout:        cfg.distributedRequestTimeout,
-		ServiceHandler:        mastermindServiceHandler(cfg, localRunner),
-		StatusUpdateBackends:  toTaskStatusWriterMap(taskStatusBackends),
-		StatusUpdateAuthToken: strings.TrimSpace(os.Getenv(inboxAuthTokenEnv)),
-		TaskGraphSyncRoots:    []string{strings.TrimSpace(cfg.rootID)},
-		TaskGraphSyncInterval: taskGraphSyncInterval,
-	})
-	if err := mastermind.Start(ctx); err != nil {
-		_ = bus.Close()
-		return nil, nil, nil, err
-	}
-	return distributedMastermindRunner{mastermind: mastermind}, bus, bus.Close, nil
-}
-
-func discoverTaskStatusBackendsForMastermind(cfg runConfig, taskStatusBackends map[string]contracts.StorageBackend) map[string]contracts.StorageBackend {
-	if strings.TrimSpace(cfg.role) != agentRoleMaster || strings.TrimSpace(cfg.repoRoot) == "" {
-		return taskStatusBackends
-	}
-	if taskStatusBackends == nil {
-		taskStatusBackends = map[string]contracts.StorageBackend{}
-	}
-	model, err := newTrackerConfigService().LoadModel(cfg.repoRoot)
-	if err != nil {
-		return taskStatusBackends
-	}
-
-	profileNames := make([]string, 0, len(model.Profiles))
-	for name := range model.Profiles {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		profileNames = append(profileNames, name)
-	}
-	sort.Strings(profileNames)
-	for _, profileName := range profileNames {
-		profileDef, ok := model.Profiles[profileName]
-		if !ok {
-			continue
-		}
-		tracker, err := validateTrackerModel(profileName, profileDef.Tracker, cfg.rootID, os.Getenv)
-		if err != nil {
-			continue
-		}
-		backendID := strings.ToLower(strings.TrimSpace(tracker.Type))
-		if backendID == "" {
-			continue
-		}
-		if _, exists := taskStatusBackends[backendID]; exists {
-			continue
-		}
-
-		backend, err := buildStorageBackendForTracker(cfg.repoRoot, resolvedTrackerProfile{
-			Name:    profileName,
-			Tracker: tracker,
-		})
-		if err != nil {
-			continue
-		}
-		taskStatusBackends[backendID] = backend
-	}
-
-	return taskStatusBackends
-}
-
-func toTaskStatusWriterMap(backends map[string]contracts.StorageBackend) map[string]distributed.TaskStatusWriter {
-	if len(backends) == 0 {
-		return nil
-	}
-	out := make(map[string]distributed.TaskStatusWriter, len(backends))
-	for backendID, backend := range backends {
-		out[backendID] = backend
-	}
-	return out
-}
-
-func runDistributedExecutor(ctx context.Context, cfg runConfig) error {
-	if err := resolveRunConfigCodingAgents(&cfg); err != nil {
-		return err
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	bus, err := newDistributedBus(cfg.distributedBusBackend, cfg.distributedBusAddress, cfg.distributedBusOptions)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = bus.Close()
-	}()
-
-	runners, err := buildDistributedAgentRunners(cfg)
-	if err != nil {
-		return err
-	}
-	if len(runners) == 0 {
-		return fmt.Errorf("no coding agents available for distributed execution")
-	}
-	subjects := distributed.DefaultEventSubjects(cfg.distributedBusPrefix)
-	executorID := strings.TrimSpace(cfg.distributedRoleID)
-	if executorID == "" {
-		executorID = "executor"
-	}
-	worker := distributed.NewExecutorWorker(distributed.ExecutorWorkerOptions{
-		ID:         executorID,
-		InstanceID: executorID + "-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-		Hostname:   hostName(),
-		Bus:        bus,
-		Backends:   runners,
-		AgentResolver: func(metadata map[string]string) (string, contracts.AgentRunner, error) {
-			return resolveDistributedRunnerSelection(cfg, runners, metadata)
-		},
-		Subjects:           subjects,
-		Capabilities:       cfg.distributedExecutorCapabilities,
-		SupportedPipelines: []string{"default"},
-		SupportedAgents:    sortedBackendNames(runners),
-		DeclaredLanguages:  declaredLanguagesForBackends(cfg.codingAgents, runners),
-		DeclaredFeatures:   declaredFeaturesForBackends(cfg.codingAgents, runners),
-		EnvironmentProbes:  distributed.DetectEnvironmentFeatureProbes(),
-		CredentialFlags:    credentialPresenceFlags(cfg.codingAgents, runners),
-		ResourceHints:      distributed.DetectResourceHints(),
-		MaxConcurrency:     cfg.concurrency,
-		HeartbeatInterval:  cfg.distributedHeartbeatInterval,
-		RequestTimeout:     cfg.distributedRequestTimeout,
-	})
-	return worker.Start(ctx)
-}
-
-func buildDistributedAgentRunners(cfg runConfig) (map[string]contracts.AgentRunner, error) {
-	names := cfg.codingAgents.Names()
-	if len(names) == 0 {
-		return nil, fmt.Errorf("no coding agent backends configured")
-	}
-	runners := make(map[string]contracts.AgentRunner, len(names))
-	for _, name := range names {
-		name = normalizeBackend(name)
-		if name == "" {
-			continue
-		}
-		agentCfg := cfg
-		agentCfg.backend = name
-		runner, err := buildRunnerAdapter(agentCfg)
-		if err != nil {
-			return nil, fmt.Errorf("build runner for backend %q: %w", name, err)
-		}
-		runners[name] = runner
-	}
-	return runners, nil
-}
-
-func resolveDistributedRunnerSelection(cfg runConfig, runners map[string]contracts.AgentRunner, metadata map[string]string) (string, contracts.AgentRunner, error) {
-	selectedBackend := resolveAgentBackendFromMetadata(metadata, cfg.codingAgents, cfg.backend)
-	selectedBackend = normalizeBackend(selectedBackend)
-	if selectedBackend == "" {
-		return "", nil, fmt.Errorf("agent selection resolved to empty backend")
-	}
-	runner, ok := runners[selectedBackend]
-	if !ok || runner == nil {
-		return "", nil, fmt.Errorf("no runner configured for backend %q", selectedBackend)
-	}
-	if err := cfg.codingAgents.ValidateBackendUsage(selectedBackend, "", os.Getenv); err != nil {
-		return "", nil, err
-	}
-	return selectedBackend, runner, nil
-}
-
-func resolveAgentBackendFromMetadata(metadata map[string]string, catalog codingagents.Catalog, defaultBackend string) string {
-	if metadata == nil {
-		metadata = map[string]string{}
-	}
-	explicitBackend := strings.TrimSpace(strings.ToLower(metadata["backend"]))
-	if explicitBackend == "" {
-		explicitBackend = strings.TrimSpace(strings.ToLower(metadata["agent"]))
-	}
-	if explicitBackend == "" {
-		explicitBackend = strings.TrimSpace(strings.ToLower(metadata["agent_name"]))
-	}
-	if explicitBackend != "" {
-		return explicitBackend
-	}
-
-	languages := parseMetadataCSV(metadata["language"])
-	if len(languages) == 0 {
-		languages = parseMetadataCSV(metadata["languages"])
-	}
-	features := parseMetadataCSV(metadata["feature"])
-	if len(features) == 0 {
-		features = parseMetadataCSV(metadata["features"])
-	}
-	if len(languages) == 0 && len(features) == 0 {
-		return normalizeBackend(defaultBackend)
-	}
-
-	matches := make([]string, 0, 2)
-	for _, name := range catalog.Names() {
-		definition, ok := catalog.Backend(name)
-		if !ok {
-			continue
-		}
-		if !backendMatchesCapabilities(definition, languages, features) {
-			continue
-		}
-		matches = append(matches, name)
-	}
-	sort.Strings(matches)
-	if len(matches) == 0 {
-		return normalizeBackend(defaultBackend)
-	}
-	return matches[0]
-}
-
-func parseMetadataCSV(raw string) []string {
-	parts := strings.Split(raw, ",")
-	values := make([]string, 0, len(parts))
-	for _, part := range parts {
-		value := strings.TrimSpace(strings.ToLower(part))
-		if value == "" {
-			continue
-		}
-		duplicate := false
-		for _, existing := range values {
-			if existing == value {
-				duplicate = true
-				break
-			}
-		}
-		if duplicate {
-			continue
-		}
-		values = append(values, value)
-	}
-	return values
-}
-
-func sortedBackendNames(runners map[string]contracts.AgentRunner) []string {
-	if len(runners) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(runners))
-	for name := range runners {
-		normalized := normalizeBackend(name)
-		if normalized == "" {
-			continue
-		}
-		names = append(names, normalized)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func declaredLanguagesForBackends(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) []string {
-	set := map[string]struct{}{}
-	for _, backend := range sortedBackendNames(runners) {
-		definition, ok := catalog.Backend(backend)
-		if !ok {
-			continue
-		}
-		for _, language := range definition.Capabilities.Languages {
-			normalized := strings.TrimSpace(strings.ToLower(language))
-			if normalized == "" {
-				continue
-			}
-			set[normalized] = struct{}{}
-		}
-	}
-	return sortedStringSet(set)
-}
-
-func declaredFeaturesForBackends(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) []string {
-	set := map[string]struct{}{}
-	for _, backend := range sortedBackendNames(runners) {
-		definition, ok := catalog.Backend(backend)
-		if !ok {
-			continue
-		}
-		for _, feature := range definition.Capabilities.Features {
-			normalized := strings.TrimSpace(strings.ToLower(feature))
-			if normalized == "" {
-				continue
-			}
-			set[normalized] = struct{}{}
-		}
-	}
-	return sortedStringSet(set)
-}
-
-func credentialPresenceFlags(catalog codingagents.Catalog, runners map[string]contracts.AgentRunner) map[string]bool {
-	envVars := map[string]struct{}{
-		"GITHUB_TOKEN": {},
-	}
-	for _, backend := range sortedBackendNames(runners) {
-		definition, ok := catalog.Backend(backend)
-		if !ok {
-			continue
-		}
-		for _, required := range definition.RequiredCredentials {
-			envName := strings.TrimSpace(required)
-			if envName == "" {
-				continue
-			}
-			envVars[envName] = struct{}{}
-		}
-	}
-	flags := make(map[string]bool, len(envVars))
-	for envName := range envVars {
-		flags["has_env:"+envName] = strings.TrimSpace(os.Getenv(envName)) != ""
-	}
-	return flags
-}
-
-func sortedStringSet(values map[string]struct{}) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func hostName() string {
-	value, err := os.Hostname()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(value)
-}
-
-func backendMatchesCapabilities(definition codingagents.BackendDefinition, languages []string, features []string) bool {
-	if len(languages) > 0 {
-		for _, language := range languages {
-			if !containsStringIgnoreCase(definition.Capabilities.Languages, language) {
-				return false
-			}
-		}
-	}
-	if len(features) > 0 {
-		for _, feature := range features {
-			if !containsStringIgnoreCase(definition.Capabilities.Features, feature) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func containsStringIgnoreCase(values []string, raw string) bool {
-	target := strings.TrimSpace(strings.ToLower(raw))
-	for _, value := range values {
-		if strings.EqualFold(strings.TrimSpace(value), target) {
-			return true
-		}
-	}
-	return false
-}
-
-type distributedMastermindRunner struct {
-	mastermind *distributed.Mastermind
-}
-
-func (r distributedMastermindRunner) Run(ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
-	if r.mastermind == nil {
-		return contracts.RunnerResult{}, fmt.Errorf("mastermind runner unavailable")
-	}
-	return r.mastermind.DispatchTask(ctx, distributed.TaskDispatchRequest{
-		RunnerRequest: request,
-	})
-}
-
-func defaultServiceHandler(localRunner contracts.AgentRunner) distributed.ServiceHandler {
-	if localRunner == nil {
-		return nil
-	}
-
-	return func(ctx context.Context, request distributed.ServiceRequestPayload) (distributed.ServiceResponsePayload, error) {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		service := normalizeDistributedServiceName(request.Service)
-		mode, model, ok := serviceModeAndModel(service)
-		if !ok {
-			return distributed.ServiceResponsePayload{}, fmt.Errorf("unsupported service %q", strings.TrimSpace(request.Service))
-		}
-
-		runnerRequest := buildServiceRunnerRequest(request, mode, model)
-		result, err := localRunner.Run(ctx, runnerRequest)
-
-		response := distributed.ServiceResponsePayload{
-			RequestID:     request.RequestID,
-			CorrelationID: request.CorrelationID,
-			ExecutorID:    request.ExecutorID,
-			Service:       request.Service,
-			Artifacts:     copyStringMap(result.Artifacts),
-			Error:         "",
-		}
-		if result.Artifacts == nil {
-			response.Artifacts = map[string]string{}
-		}
-		if err != nil {
-			if strings.TrimSpace(err.Error()) != "" {
-				response.Error = err.Error()
-			}
-			return response, err
-		}
-		if result.Status != contracts.RunnerResultCompleted {
-			if strings.TrimSpace(result.Reason) == "" {
-				response.Error = fmt.Sprintf("service runner returned status %q", result.Status)
-				return response, fmt.Errorf("%s", response.Error)
-			}
-			response.Error = result.Reason
-			return response, fmt.Errorf("%s", response.Error)
-		}
-
-		if response.Artifacts == nil {
-			response.Artifacts = map[string]string{}
-		}
-		if _, ok := response.Artifacts["service"]; !ok {
-			response.Artifacts["service"] = strings.TrimSpace(request.Service)
-		}
-		if _, ok := response.Artifacts["mode"]; !ok {
-			response.Artifacts["mode"] = string(mode)
-		}
-		return response, nil
-	}
-}
-
-func mastermindServiceHandler(cfg runConfig, localRunner contracts.AgentRunner) distributed.ServiceHandler {
-	if localRunner == nil {
-		return nil
-	}
-
-	reviewHandler := distributed.NewMastermindReviewRequestHandler(distributed.MastermindReviewRequestHandlerOptions{
-		ReviewRunner:       localRunner,
-		DefaultReviewModel: strings.TrimSpace(cfg.distributedReviewDefaultModel),
-		LargerReviewModel:  strings.TrimSpace(cfg.distributedReviewLargerModel),
-		MaxRetries:         maxInt(0, cfg.retryBudget),
-		AttemptTimeout:     cfg.distributedRequestTimeout,
-		RetryDelay:         50 * time.Millisecond,
-		DecisionLogger: func(_ context.Context, entry distributed.ReviewDecisionLog) {
-			fmt.Fprintf(os.Stderr, "mastermind review request_id=%s correlation_id=%s task_id=%s service=%s model=%s policy=%s verdict=%s pass=%t attempts=%d failure=%q\n",
-				entry.RequestID,
-				entry.CorrelationID,
-				entry.TaskID,
-				entry.Service,
-				entry.SelectedModel,
-				entry.PolicyReason,
-				entry.Verdict,
-				entry.Pass,
-				entry.Attempts,
-				entry.Failure,
-			)
-		},
-	})
-	rewriteHandler := distributed.NewMastermindTaskRewriteRequestHandler(distributed.MastermindTaskRewriteRequestHandlerOptions{
-		RewriteRunner:       localRunner,
-		DefaultRewriteModel: strings.TrimSpace(cfg.distributedRewriteDefaultModel),
-		LargerRewriteModel:  strings.TrimSpace(cfg.distributedRewriteLargerModel),
-		MaxRetries:          maxInt(0, cfg.retryBudget),
-		AttemptTimeout:      cfg.distributedRequestTimeout,
-		RetryDelay:          50 * time.Millisecond,
-		DecisionLogger: func(_ context.Context, entry distributed.TaskRewriteDecisionLog) {
-			fmt.Fprintf(os.Stderr, "mastermind rewrite request_id=%s correlation_id=%s task_id=%s service=%s model=%s policy=%s attempts=%d failure=%q\n",
-				entry.RequestID,
-				entry.CorrelationID,
-				entry.TaskID,
-				entry.Service,
-				entry.SelectedModel,
-				entry.PolicyReason,
-				entry.Attempts,
-				entry.Failure,
-			)
-		},
-	})
-	fallbackHandler := defaultServiceHandler(localRunner)
-	return func(ctx context.Context, request distributed.ServiceRequestPayload) (distributed.ServiceResponsePayload, error) {
-		service := normalizeDistributedServiceName(request.Service)
-		if isReviewServiceName(service) {
-			return reviewHandler.Handle(ctx, request)
-		}
-		if isTaskRewriteServiceName(service) {
-			return rewriteHandler.Handle(ctx, request)
-		}
-		if fallbackHandler == nil {
-			return distributed.ServiceResponsePayload{}, fmt.Errorf("service handler unavailable")
-		}
-		return fallbackHandler(ctx, request)
-	}
-}
-
-func serviceModeAndModel(service string) (contracts.RunnerMode, string, bool) {
-	switch service {
-	case string(distributed.CapabilityLargerModel), "review-with-larger-model":
-		return contracts.RunnerModeReview, "", true
-	case string(distributed.CapabilityRewriteTask), "rewrite-task":
-		return contracts.RunnerModeImplement, "", true
-	case string(distributed.CapabilityReview):
-		return contracts.RunnerModeReview, "", true
-	case string(distributed.CapabilityImplement):
-		return contracts.RunnerModeImplement, "", true
-	default:
-		return "", "", false
-	}
-}
-
-func buildServiceRunnerRequest(request distributed.ServiceRequestPayload, mode contracts.RunnerMode, model string) contracts.RunnerRequest {
-	metadata := copyStringMap(request.Metadata)
-	if metadata == nil {
-		metadata = map[string]string{}
-	}
-	runnerRequest := contracts.RunnerRequest{
-		TaskID:   strings.TrimSpace(request.TaskID),
-		ParentID: strings.TrimSpace(metadata["parent_id"]),
-		Prompt:   strings.TrimSpace(metadata["prompt"]),
-		Mode:     mode,
-		Model:    strings.TrimSpace(metadata["model"]),
-		RepoRoot: strings.TrimSpace(metadata["repo_root"]),
-		Metadata: metadata,
-	}
-	if strings.TrimSpace(request.TaskID) == "" {
-		runnerRequest.TaskID = strings.TrimSpace(request.RequestID)
-	}
-	if model != "" && runnerRequest.Model == "" {
-		runnerRequest.Model = model
-	}
-	if timeoutRaw := strings.TrimSpace(metadata["timeout"]); timeoutRaw != "" {
-		if timeout, err := time.ParseDuration(timeoutRaw); err == nil {
-			runnerRequest.Timeout = timeout
-		}
-	}
-	return runnerRequest
-}
-
-func normalizeDistributedServiceName(raw string) string {
-	service := strings.TrimSpace(strings.ToLower(raw))
-	return strings.ReplaceAll(service, "_", "-")
-}
-
-func isReviewServiceName(service string) bool {
-	return service == distributed.ServiceNameReview ||
-		service == string(distributed.CapabilityLargerModel) ||
-		service == "review-with-larger-model"
-}
-
-func isTaskRewriteServiceName(service string) bool {
-	return service == distributed.ServiceNameTaskRewrite ||
-		service == string(distributed.CapabilityRewriteTask) ||
-		service == "rewrite-task"
-}
-
-func maxInt(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func copyStringMap(values map[string]string) map[string]string {
 	if len(values) == 0 {
 		return nil
@@ -1220,9 +508,6 @@ func resolveEventsPath(cfg runConfig) string {
 func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
-	if sink := monitorEventSink(cfg); sink != nil {
-		sinks = append(sinks, sink)
-	}
 	if cfg.stream {
 		streamWriter := io.Writer(os.Stdout)
 		if cfg.mode == agentModeUI {
@@ -1317,9 +602,6 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contracts.StorageBackend, taskEngine contracts.TaskEngine, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
-	if sink := monitorEventSink(cfg); sink != nil {
-		sinks = append(sinks, sink)
-	}
 	if cfg.stream {
 		streamWriter := io.Writer(os.Stdout)
 		if cfg.mode == agentModeUI {
@@ -1430,60 +712,6 @@ func resolveLandingMode(repoRoot string) (string, error) {
 	return landingCfg.Type, nil
 }
 
-func monitorEventSink(cfg runConfig) contracts.EventSink {
-	if cfg.distributedEventBus == nil {
-		return nil
-	}
-	busSource := strings.TrimSpace(cfg.distributedRoleID)
-	if busSource == "" {
-		busSource = defaultMonitorEventSource(cfg.role)
-	}
-	subjects := distributed.DefaultEventSubjects(cfg.distributedBusPrefix)
-	return newDistributedMonitorEventSink(cfg.distributedEventBus, subjects.MonitorEvent, busSource)
-}
-
-func defaultMonitorEventSource(role string) string {
-	switch strings.TrimSpace(role) {
-	case agentRoleMaster:
-		return "mastermind"
-	case agentRoleWorker:
-		return "worker"
-	default:
-		return "agent"
-	}
-}
-
-type distributedMonitorEventSink struct {
-	bus     distributed.Bus
-	subject string
-	source  string
-}
-
-func newDistributedMonitorEventSink(bus distributed.Bus, subject string, source string) contracts.EventSink {
-	if bus == nil {
-		return nil
-	}
-	subject = strings.TrimSpace(subject)
-	if subject == "" {
-		subject = distributed.DefaultEventSubjects("yolo").MonitorEvent
-	}
-	if strings.TrimSpace(source) == "" {
-		source = "agent"
-	}
-	return &distributedMonitorEventSink{bus: bus, subject: subject, source: source}
-}
-
-func (sink *distributedMonitorEventSink) Emit(ctx context.Context, event contracts.Event) error {
-	if sink == nil || sink.bus == nil {
-		return nil
-	}
-	envelope, err := distributed.NewEventEnvelope(distributed.EventTypeMonitorEvent, sink.source, "", distributed.MonitorEventPayload{Event: event})
-	if err != nil {
-		return err
-	}
-	return sink.bus.Publish(ctx, sink.subject, envelope)
-}
-
 func cloneScopedVCSFactory(cfg runConfig, vcs contracts.VCS) agent.VCSFactory {
 	if _, ok := vcs.(*gitvcs.VCSAdapter); !ok {
 		return nil
@@ -1567,122 +795,6 @@ func catalogBackendCapabilities(catalog codingagents.Catalog) map[string]backend
 		return defaultBackendCapabilityMatrix()
 	}
 	return capabilities
-}
-
-func distributedExecutorCapabilitiesForBackend(catalog codingagents.Catalog, backend string, explicitRaw string, explicit bool) ([]distributed.Capability, error) {
-	if explicit {
-		return parseDistributedExecutorCapabilities(explicitRaw)
-	}
-	caps, ok := catalog.DistributedCapabilities(backend)
-	if ok && len(caps) > 0 {
-		return caps, nil
-	}
-	return []distributed.Capability{
-		distributed.CapabilityImplement,
-		distributed.CapabilityReview,
-	}, nil
-}
-
-func normalizeDistributedRole(raw string) (string, error) {
-	role := strings.ToLower(strings.TrimSpace(raw))
-	if role == "" {
-		return agentRoleLocal, nil
-	}
-	switch role {
-	case agentRoleLocal, agentRoleMaster, agentRoleWorker:
-		return role, nil
-	}
-	return "", fmt.Errorf("invalid distributed role %q (supported: %s, %s, %s)", role, agentRoleLocal, agentRoleMaster, agentRoleWorker)
-}
-
-func normalizeDistributedBusBackend(raw string) (string, error) {
-	backend := strings.ToLower(strings.TrimSpace(raw))
-	switch backend {
-	case "", distributedBusNATS:
-		return distributedBusNATS, nil
-	default:
-		return "", fmt.Errorf("invalid distributed bus backend %q (supported: %s)", backend, distributedBusNATS)
-	}
-}
-
-func resolveAgentDistributedBusConfig(
-	repoRoot string,
-	flagBackend string,
-	flagAddress string,
-	flagPrefix string,
-	getenv func(string) string,
-) (distributed.DistributedBusConfig, error) {
-	configBus, err := distributed.LoadDistributedBusConfig(repoRoot)
-	if err != nil {
-		return distributed.DistributedBusConfig{}, err
-	}
-	configBus = configBus.ApplyDefaults(distributedBusNATS, "yolo")
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-
-	selectedBackend := strings.TrimSpace(flagBackend)
-	if selectedBackend == "" {
-		selectedBackend = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_BACKEND"))
-	}
-	if selectedBackend == "" {
-		selectedBackend = configBus.Backend
-	}
-	selectedBackend, err = normalizeDistributedBusBackend(selectedBackend)
-	if err != nil {
-		return distributed.DistributedBusConfig{}, err
-	}
-
-	selectedAddress := strings.TrimSpace(flagAddress)
-	if selectedAddress == "" {
-		selectedAddress = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_ADDRESS"))
-	}
-	if selectedAddress == "" {
-		selectedAddress = configBus.Address
-	}
-
-	selectedPrefix := strings.TrimSpace(flagPrefix)
-	if selectedPrefix == "" {
-		selectedPrefix = strings.TrimSpace(getenv("YOLO_DISTRIBUTED_BUS_PREFIX"))
-	}
-	if selectedPrefix == "" {
-		selectedPrefix = configBus.Prefix
-	}
-	if selectedPrefix == "" {
-		selectedPrefix = "yolo"
-	}
-
-	configBus.Backend = selectedBackend
-	configBus.Address = selectedAddress
-	configBus.Prefix = selectedPrefix
-	return configBus, nil
-}
-
-func parseDistributedExecutorCapabilities(raw string) ([]distributed.Capability, error) {
-	capabilityRaw := strings.TrimSpace(raw)
-	if capabilityRaw == "" {
-		capabilityRaw = "implement,review"
-	}
-	values := strings.Split(capabilityRaw, ",")
-	seen := map[distributed.Capability]struct{}{}
-	out := make([]distributed.Capability, 0, len(values))
-	for _, value := range values {
-		capability := strings.ToLower(strings.TrimSpace(string(distributed.Capability(value))))
-		switch distributed.Capability(capability) {
-		case distributed.CapabilityImplement, distributed.CapabilityReview, distributed.CapabilityRewriteTask, distributed.CapabilityLargerModel, distributed.CapabilityServiceProxy:
-			c := distributed.Capability(capability)
-			if _, ok := seen[c]; !ok {
-				seen[c] = struct{}{}
-				out = append(out, c)
-			}
-		default:
-			return nil, fmt.Errorf("invalid distributed capability %q", value)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("at least one distributed capability is required")
-	}
-	return out, nil
 }
 
 type mirrorEventSink struct {

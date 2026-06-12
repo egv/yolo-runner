@@ -37,6 +37,6 @@ sha256sum -c checksums-yolo-runner_linux_amd64.tar.gz.txt
 export TAG=v2.7.0
 curl -fsSL -o /tmp/yolo-runner-linux-amd64.tar.gz https://github.com/egv/yolo-runner/releases/download/${TAG}/yolo-runner_linux_amd64.tar.gz
 tar -xzf /tmp/yolo-runner-linux-amd64.tar.gz -C /tmp
-/tmp/yolo-task --version
+/tmp/yolo-agent --version
 /tmp/yolo-tui --version
 ```
