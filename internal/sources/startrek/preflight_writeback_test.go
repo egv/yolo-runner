@@ -173,10 +173,113 @@ func TestSourceHandlePreflightResultWritesNeedsInfoReplyAndRecordsState(t *testi
 	})
 }
 
+func TestSourceHandlePreflightReadySubmitsFollowUpAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	queueRoot := contracts.Task{
+		ID:     "VAY",
+		Title:  "Queue root",
+		Status: contracts.TaskStatusOpen,
+	}
+
+	tests := []struct {
+		name    string
+		task    contracts.Task
+		want    workitem.Kind
+		wantKey string
+	}{
+		{
+			name: "decomposable parent submits split",
+			task: contracts.Task{
+				ID:          "VAY-42",
+				Title:       "Split parent task",
+				Description: "Break the parent into executable subtasks.",
+				Status:      contracts.TaskStatusOpen,
+				ParentID:    "VAY",
+				Metadata:    map[string]string{"component": "sourcehost"},
+			},
+			want:    workitem.KindSplit,
+			wantKey: "st/VAY-42/split/rev7",
+		},
+		{
+			name: "leaf submits implement",
+			task: contracts.Task{
+				ID:          "VAY-43",
+				Title:       "Implement leaf task",
+				Description: "Implement the already split leaf task.",
+				Status:      contracts.TaskStatusOpen,
+				ParentID:    "VAY-42",
+				Metadata:    map[string]string{"component": "executor"},
+			},
+			want:    workitem.KindImplement,
+			wantKey: "st/VAY-43/implement/rev7",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, err := OpenState(filepath.Join(t.TempDir(), "source.db"))
+			if err != nil {
+				t.Fatalf("OpenState() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := state.Close(); err != nil {
+					t.Errorf("Close() error = %v", err)
+				}
+			})
+			tracker := &fakePreflightWritebackTracker{}
+			src := Source{
+				SourceName:      "startrek",
+				Tracker:         tracker,
+				State:           state,
+				ProcessingLabel: "yolo-agent-in-progress",
+			}
+
+			item := preflightWritebackItemWithQueueRoot(t, "item-ready-"+tt.task.ID, tt.task.ID, "st/"+tt.task.ID+"/preflight/rev7", tt.task, queueRoot)
+			item.Preset = "adapta"
+			item.Priority = 3
+			item.MaxAttempts = 4
+			result := preflightWritebackResult(t, item.ID, workitem.PreflightResult{
+				Verdict:    workitem.PreflightVerdictReady,
+				Confidence: 0.96,
+				Summary:    "Ready for the next stage.",
+			})
+
+			followUps, err := src.HandleResult(ctx, item, result)
+			if err != nil {
+				t.Fatalf("HandleResult(ready) error = %v", err)
+			}
+			assertReadyFollowUp(t, followUps, tt.want, tt.wantKey, item, tt.task, queueRoot)
+
+			wantOps := []string{
+				"remove " + tt.task.ID + " yolo-agent-in-progress",
+				"add " + tt.task.ID + " yolo-agent-ready",
+			}
+			if !reflect.DeepEqual(tracker.ops, wantOps) {
+				t.Fatalf("ready backend ops mismatch:\n got: %#v\nwant: %#v", tracker.ops, wantOps)
+			}
+
+			duplicate, err := src.HandleResult(ctx, item, result)
+			if err != nil {
+				t.Fatalf("HandleResult(ready duplicate) error = %v", err)
+			}
+			assertReadyFollowUp(t, duplicate, tt.want, tt.wantKey, item, tt.task, queueRoot)
+			if !reflect.DeepEqual(duplicate, followUps) {
+				t.Fatalf("duplicate ready follow-up mismatch:\n got: %#v\nwant: %#v", duplicate, followUps)
+			}
+		})
+	}
+}
+
 func preflightWritebackItem(t *testing.T, id string, sourceRef string, idempotencyKey string, task contracts.Task) workitem.Item {
 	t.Helper()
+	return preflightWritebackItemWithQueueRoot(t, id, sourceRef, idempotencyKey, task, contracts.Task{})
+}
+
+func preflightWritebackItemWithQueueRoot(t *testing.T, id string, sourceRef string, idempotencyKey string, task contracts.Task, queueRoot contracts.Task) workitem.Item {
+	t.Helper()
 	payload, err := json.Marshal(workitem.PreflightPayload{
-		Task: workitem.TaskPayloadFromTask(task),
+		Task:      workitem.TaskPayloadFromTask(task),
+		QueueRoot: workitem.TaskPayloadFromTask(queueRoot),
 	})
 	if err != nil {
 		t.Fatalf("marshal preflight payload: %v", err)
@@ -201,6 +304,59 @@ func preflightWritebackResult(t *testing.T, itemID string, result workitem.Prefl
 		ItemID:  itemID,
 		Status:  workqueue.ResultStatusCompleted,
 		Payload: payload,
+	}
+}
+
+func assertReadyFollowUp(t *testing.T, followUps []workqueue.Submission, wantKind workitem.Kind, wantKey string, sourceItem workitem.Item, task contracts.Task, queueRoot contracts.Task) {
+	t.Helper()
+	if len(followUps) != 1 {
+		t.Fatalf("ready follow-ups = %#v, want exactly one", followUps)
+	}
+	followUp := followUps[0]
+	if followUp.Kind != wantKind {
+		t.Fatalf("ready follow-up kind = %q, want %q", followUp.Kind, wantKind)
+	}
+	if followUp.Source != "startrek" {
+		t.Fatalf("ready follow-up source = %q, want startrek", followUp.Source)
+	}
+	if followUp.SourceRef != task.ID {
+		t.Fatalf("ready follow-up source ref = %q, want %q", followUp.SourceRef, task.ID)
+	}
+	if followUp.IdempotencyKey != wantKey {
+		t.Fatalf("ready follow-up idempotency key = %q, want %q", followUp.IdempotencyKey, wantKey)
+	}
+	if followUp.Preset != sourceItem.Preset || followUp.Priority != sourceItem.Priority || followUp.MaxAttempts != sourceItem.MaxAttempts {
+		t.Fatalf("ready follow-up queue fields = preset %q priority %d max attempts %d, want preset %q priority %d max attempts %d", followUp.Preset, followUp.Priority, followUp.MaxAttempts, sourceItem.Preset, sourceItem.Priority, sourceItem.MaxAttempts)
+	}
+
+	switch wantKind {
+	case workitem.KindSplit:
+		var payload workitem.SplitPayload
+		if err := json.Unmarshal(followUp.Payload, &payload); err != nil {
+			t.Fatalf("decode split follow-up payload: %v", err)
+		}
+		if !reflect.DeepEqual(payload.Task, workitem.TaskPayloadFromTask(task)) {
+			t.Fatalf("split follow-up task payload = %#v, want %#v", payload.Task, workitem.TaskPayloadFromTask(task))
+		}
+		if !reflect.DeepEqual(payload.QueueRoot, workitem.TaskPayloadFromTask(queueRoot)) {
+			t.Fatalf("split follow-up queue root payload = %#v, want %#v", payload.QueueRoot, workitem.TaskPayloadFromTask(queueRoot))
+		}
+	case workitem.KindImplement:
+		payload, err := workitem.DecodeImplementPayload(followUp.Payload)
+		if err != nil {
+			t.Fatalf("decode implement follow-up payload: %v", err)
+		}
+		if payload.TaskID != task.ID || payload.Title != task.Title || payload.Description != task.Description {
+			t.Fatalf("implement follow-up task payload = %#v, want task %#v", payload, task)
+		}
+		if payload.PromptContext.ParentID != task.ParentID {
+			t.Fatalf("implement follow-up parent ID = %q, want %q", payload.PromptContext.ParentID, task.ParentID)
+		}
+		if !reflect.DeepEqual(payload.PromptContext.Metadata, task.Metadata) {
+			t.Fatalf("implement follow-up metadata = %#v, want %#v", payload.PromptContext.Metadata, task.Metadata)
+		}
+	default:
+		t.Fatalf("unsupported expected follow-up kind %q", wantKind)
 	}
 }
 
