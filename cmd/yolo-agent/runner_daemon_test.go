@@ -19,10 +19,10 @@ func TestRunnerDaemonOnceClaimsStubHandlerAndWritesResult(t *testing.T) {
 	}
 
 	item, err := store.Submit(workitem.Submission{
-		Kind:           workitem.KindPreflight,
+		Kind:           workitem.KindSplit,
 		Source:         "test-source",
 		SourceRef:      "TASK-1",
-		IdempotencyKey: "test-source/TASK-1/preflight",
+		IdempotencyKey: "test-source/TASK-1/split",
 		Preset:         "linux",
 		Payload:        json.RawMessage(`{"task_id":"TASK-1"}`),
 	})
@@ -83,7 +83,7 @@ func TestRunnerDaemonOnceClaimsStubHandlerAndWritesResult(t *testing.T) {
 	if err := json.Unmarshal(got.Result.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal result payload %s: %v", got.Result.Payload, err)
 	}
-	if payload.Status != "stubbed" || payload.Kind != string(workitem.KindPreflight) || payload.ItemID != item.ID {
+	if payload.Status != "stubbed" || payload.Kind != string(workitem.KindSplit) || payload.ItemID != item.ID {
 		t.Fatalf("unexpected result payload: %#v", payload)
 	}
 
