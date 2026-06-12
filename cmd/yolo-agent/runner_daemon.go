@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -127,6 +128,7 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		store:              store,
 		runners:            runners,
 		handlers:           defaultRunnerKindRegistry(),
+		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
 		environmentPresets: environmentPresets,
 		materialize:        envpreset.Materialize,
 		cfg:                cfg,
@@ -138,6 +140,7 @@ type runnerDaemon struct {
 	store    *workqueue.Store
 	runners  *runnerRegistry
 	handlers runnerKindRegistry
+	events   contracts.EventSink
 	cfg      runnerDaemonCommandConfig
 
 	environmentPresets map[string]envpreset.Preset
@@ -152,6 +155,9 @@ type runnerDaemonItemResult struct {
 func (d runnerDaemon) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if d.events == nil {
+		d.events = defaultRunnerDaemonEventSink(d.cfg.runnerID)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -318,9 +324,13 @@ func waitRunnerDaemonItemResultOrPoll(ctx context.Context, results <-chan runner
 
 func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) error {
 	startedAt := time.Now().UTC()
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerStarted, item, "started", nil, startedAt)
+
 	handler, ok := d.handlers[item.Kind]
 	if !ok || handler == nil {
-		return d.failClaimedItem(item, startedAt, fmt.Errorf("no runner handler registered for kind %q", item.Kind))
+		cause := fmt.Errorf("no runner handler registered for kind %q", item.Kind)
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": cause.Error()}, time.Now().UTC())
+		return d.failClaimedItem(item, startedAt, cause)
 	}
 
 	itemCtx, cancel := context.WithCancel(ctx)
@@ -345,6 +355,7 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 		handlerErr = heartbeatErr
 	}
 	if handlerErr != nil {
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": handlerErr.Error()}, time.Now().UTC())
 		return d.failClaimedItem(item, startedAt, handlerErr)
 	}
 
@@ -354,7 +365,32 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now().UTC()
 	}
-	return d.store.Complete(item.ID, result)
+	if err := d.store.Complete(item.ID, result); err != nil {
+		return err
+	}
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusCompleted), nil, result.FinishedAt)
+	return nil
+}
+
+func (d runnerDaemon) emitClaimedItemEvent(ctx context.Context, eventType contracts.EventType, item workitem.Item, message string, metadata map[string]string, timestamp time.Time) {
+	if d.events == nil {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["kind"] = string(item.Kind)
+	metadata["preset"] = item.Preset
+	metadata["source"] = item.Source
+	metadata["source_ref"] = item.SourceRef
+	_ = d.events.Emit(ctx, contracts.Event{
+		Type:      eventType,
+		Proc:      d.cfg.runnerID,
+		ItemID:    item.ID,
+		Message:   message,
+		Metadata:  metadata,
+		Timestamp: timestamp,
+	})
 }
 
 func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {
@@ -555,6 +591,14 @@ func defaultRunnerDaemonLockPath(queuePath string, runnerID string) string {
 		return filepath.Join(os.TempDir(), "yolo-runner-"+safeRunnerIDForPath(runnerID)+".lock")
 	}
 	return filepath.Join(filepath.Dir(queuePath), "runner-"+safeRunnerIDForPath(runnerID)+".lock")
+}
+
+func defaultRunnerDaemonEventSink(runnerID string) contracts.EventSink {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return contracts.NewFileEventSink(filepath.Join(home, ".yolo-runner", "events", safeRunnerIDForPath(runnerID)+".jsonl"))
 }
 
 func safeRunnerIDForPath(runnerID string) string {

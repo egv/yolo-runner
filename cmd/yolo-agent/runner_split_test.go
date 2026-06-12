@@ -11,7 +11,6 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
-	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -74,14 +73,8 @@ func TestRunnerSplitHandlerWritesSplitResultRow(t *testing.T) {
 		handlers: runnerKindRegistry{
 			workitem.KindSplit: newRunnerSplitHandler(agent),
 		},
-		environmentPresets: map[string]envpreset.Preset{
-			"linux": {
-				Workspace: envpreset.Workspace{
-					Strategy: envpreset.WorkspaceStrategyPath,
-					Path:     t.TempDir(),
-				},
-			},
-		},
+		environmentPresets: runnerDaemonTestPresets("linux"),
+		materialize:        runnerDaemonNoopMaterializer,
 		cfg: runnerDaemonCommandConfig{
 			runnerID:          "runner-test",
 			heartbeatInterval: time.Hour,
