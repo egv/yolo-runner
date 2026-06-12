@@ -45,10 +45,13 @@ type Source struct {
 	SourceName      string
 	Tracker         PreflightWritebackTracker
 	State           *StateStore
+	Queue           *workqueue.Store
 	ReadyLabel      string
 	ProcessingLabel string
 	NeedsInfoLabel  string
 	Marker          string
+	SubtaskLabel    string
+	SplitVersion    string
 }
 
 func (s *Source) Name() string {
@@ -60,10 +63,14 @@ func (s *Source) Poll(context.Context) ([]workqueue.Submission, error) {
 }
 
 func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
-	if item.Kind != workitem.KindPreflight {
+	switch item.Kind {
+	case workitem.KindPreflight:
+		return s.handlePreflightResult(ctx, item, result)
+	case workitem.KindSplit:
+		return s.handleSplitResult(ctx, item, result)
+	default:
 		return nil, nil
 	}
-	return s.handlePreflightResult(ctx, item, result)
 }
 
 func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
@@ -491,6 +498,18 @@ CREATE TABLE IF NOT EXISTS preflight_writebacks (
 	comment_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS split_subtask_items (
+	parent_issue_id TEXT NOT NULL,
+	split_task_id TEXT NOT NULL,
+	subtask_issue_id TEXT NOT NULL,
+	implement_item_id TEXT NOT NULL,
+	implement_idempotency_key TEXT NOT NULL,
+	split_item_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (parent_issue_id, subtask_issue_id)
 );`
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("initialize startrek source state schema: %w", err)
