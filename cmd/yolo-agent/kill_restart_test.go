@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	stdexec "os/exec"
 	"path/filepath"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
-	yexec "github.com/egv/yolo-runner/v2/internal/exec"
 	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -257,12 +255,23 @@ type killRestartVCS struct {
 }
 
 func newKillRestartVCS(repoPath string, mode string, markerPath string) *killRestartVCS {
-	runner := yexec.NewCommandRunner(filepath.Join(repoPath, ".yolo-test-logs"), io.Discard)
 	return &killRestartVCS{
-		inner:      gitvcs.NewVCSAdapter(gitvcs.NewGitCommandAdapter(runner)),
+		inner:      gitvcs.NewVCSAdapter(killRestartGitRunner{dir: repoPath}),
 		mode:       mode,
 		markerPath: markerPath,
 	}
+}
+
+type killRestartGitRunner struct {
+	dir string
+}
+
+func (r killRestartGitRunner) Run(name string, args ...string) (string, error) {
+	cmd := stdexec.Command(name, args...)
+	cmd.Dir = r.dir
+	cmd.Env = append(os.Environ(), "GIT_MERGE_AUTOEDIT=no", "PAGER=cat")
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func (v *killRestartVCS) EnsureMain(ctx context.Context) error {
