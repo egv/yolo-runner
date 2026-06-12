@@ -67,6 +67,7 @@ type LoopOptions struct {
 	MergeOnSuccess       bool
 	CloneManager         CloneManager
 	VCSFactory           VCSFactory
+	Dispatcher           WorkDispatcher
 }
 
 type Loop struct {
@@ -93,6 +94,9 @@ type taskCompletionChecker interface {
 }
 
 func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events contracts.EventSink, options LoopOptions) *Loop {
+	if options.Dispatcher == nil {
+		options.Dispatcher = newInProcessDispatcher()
+	}
 	return &Loop{
 		tasks:           tasks,
 		runner:          runner,
@@ -327,7 +331,16 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		ClearTaskTerminalState:  l.clearTaskTerminalState,
 		ClearTaskInFlight:       l.clearTaskInFlight,
 	}
-	result, err := exec.Execute(ctx, implementPayloadFromTask(task, l.options))
+	payload := implementPayloadFromTask(task, l.options)
+	handle, err := l.options.Dispatcher.Submit(ctx, WorkDispatchRequest{
+		Task:     task,
+		Payload:  payload,
+		Executor: exec,
+	})
+	if err != nil {
+		return summary, err
+	}
+	result, err := l.options.Dispatcher.AwaitResult(ctx, handle)
 	if err != nil {
 		return summary, err
 	}
