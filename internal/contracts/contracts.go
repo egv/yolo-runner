@@ -237,7 +237,9 @@ const (
 
 type Event struct {
 	Type      EventType
+	Proc      string
 	TaskID    string
+	ItemID    string
 	TaskTitle string
 	WorkerID  string
 	ClonePath string
@@ -251,7 +253,9 @@ type Event struct {
 func MarshalEventJSONL(event Event) (string, error) {
 	payload := struct {
 		Type      EventType         `json:"type"`
+		Proc      string            `json:"proc,omitempty"`
 		TaskID    string            `json:"task_id"`
+		ItemID    string            `json:"item_id,omitempty"`
 		TaskTitle string            `json:"task_title,omitempty"`
 		WorkerID  string            `json:"worker_id,omitempty"`
 		ClonePath string            `json:"clone_path,omitempty"`
@@ -262,7 +266,9 @@ func MarshalEventJSONL(event Event) (string, error) {
 		TS        string            `json:"ts"`
 	}{
 		Type:      event.Type,
+		Proc:      event.Proc,
 		TaskID:    event.TaskID,
+		ItemID:    event.ItemID,
 		TaskTitle: event.TaskTitle,
 		WorkerID:  event.WorkerID,
 		ClonePath: event.ClonePath,

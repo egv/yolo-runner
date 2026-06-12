@@ -13,13 +13,14 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 const defaultRunnerDaemonPollInterval = time.Second
-const defaultRunnerEnvironmentsPath = "~/.yolo-runner/environments.yaml"
+const defaultRunnerDaemonEnvironmentsPath = "~/.yolo-runner/environments.yaml"
 
 var errRunnerDaemonLockHeld = errors.New("runner daemon lock held")
 
@@ -129,6 +130,7 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		store:              store,
 		runners:            runners,
 		handlers:           handlers,
+		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
 		environmentPresets: environmentPresets,
 		materialize:        envpreset.Materialize,
 		cfg:                cfg,
@@ -140,17 +142,63 @@ type runnerDaemon struct {
 	store    *workqueue.Store
 	runners  *runnerRegistry
 	handlers runnerKindRegistry
+	events   contracts.EventSink
 	cfg      runnerDaemonCommandConfig
 
 	environmentPresets map[string]envpreset.Preset
 	materialize        runnerWorkspaceMaterializer
 }
 
+type runnerDaemonItemResult struct {
+	item workitem.Item
+	err  error
+}
+
 func (d runnerDaemon) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if d.events == nil {
+		d.events = defaultRunnerDaemonEventSink(d.cfg.runnerID)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	capacity := d.cfg.capacity
+	if capacity <= 0 {
+		capacity = 1
+	}
+	pollInterval := d.cfg.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultRunnerDaemonPollInterval
+	}
+
+	results := make(chan runnerDaemonItemResult, capacity)
+	inFlightByPreset := map[string]int{}
+	active := 0
+	claimedOnce := false
+
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
 			return err
 		}
+		for {
+			select {
+			case result := <-results:
+				active--
+				decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+				if result.err != nil {
+					return result.err
+				}
+				if d.cfg.once {
+					return nil
+				}
+			default:
+				goto drainedResults
+			}
+		}
+
+	drainedResults:
 		if err := d.runners.Heartbeat(d.cfg.runnerID); err != nil {
 			return err
 		}
@@ -158,34 +206,133 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 			return err
 		}
 
-		item, err := d.store.Claim(d.cfg.runnerID, d.cfg.presets, d.cfg.leaseTTL)
-		if err != nil {
-			return err
+		for active < capacity && !(d.cfg.once && claimedOnce) {
+			claimPresets := d.claimableRunnerPresets(inFlightByPreset)
+			if len(claimPresets) == 0 {
+				break
+			}
+
+			item, err := d.store.Claim(d.cfg.runnerID, claimPresets, d.cfg.leaseTTL)
+			if err != nil {
+				return err
+			}
+			if item == nil {
+				break
+			}
+
+			active++
+			claimedOnce = true
+			incrementRunnerPresetInFlight(inFlightByPreset, item.Preset)
+			go func(item workitem.Item) {
+				results <- runnerDaemonItemResult{
+					item: item,
+					err:  d.runClaimedItem(runCtx, item),
+				}
+			}(*item)
 		}
-		if item == nil {
-			if d.cfg.once {
+
+		if d.cfg.once {
+			if !claimedOnce {
 				return nil
 			}
-			if err := waitRunnerDaemonPollInterval(ctx, d.cfg.pollInterval); err != nil {
+			result, err := waitRunnerDaemonItemResult(runCtx, results)
+			if err != nil {
+				return err
+			}
+			active--
+			decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+			return result.err
+		}
+
+		if active == 0 {
+			if err := waitRunnerDaemonPollInterval(runCtx, pollInterval); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := d.runClaimedItem(ctx, *item); err != nil {
+		result, err := waitRunnerDaemonItemResultOrPoll(runCtx, results, pollInterval)
+		if err != nil {
 			return err
 		}
-		if d.cfg.once {
-			return nil
+		if result == nil {
+			continue
 		}
+		active--
+		decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+		if result.err != nil {
+			return result.err
+		}
+	}
+}
+
+func (d runnerDaemon) claimableRunnerPresets(inFlightByPreset map[string]int) []string {
+	presets := normalizeRunnerPresets(d.cfg.presets)
+	claimable := make([]string, 0, len(presets))
+	for _, presetName := range presets {
+		limit := 0
+		if preset, ok := d.environmentPresets[presetName]; ok {
+			limit = preset.Limits.MaxConcurrent
+		}
+		if limit > 0 && inFlightByPreset[presetName] >= limit {
+			continue
+		}
+		claimable = append(claimable, presetName)
+	}
+	return claimable
+}
+
+func incrementRunnerPresetInFlight(inFlightByPreset map[string]int, preset string) {
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		return
+	}
+	inFlightByPreset[preset]++
+}
+
+func decrementRunnerPresetInFlight(inFlightByPreset map[string]int, preset string) {
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		return
+	}
+	inFlightByPreset[preset]--
+	if inFlightByPreset[preset] <= 0 {
+		delete(inFlightByPreset, preset)
+	}
+}
+
+func waitRunnerDaemonItemResult(ctx context.Context, results <-chan runnerDaemonItemResult) (runnerDaemonItemResult, error) {
+	select {
+	case result := <-results:
+		return result, nil
+	case <-ctx.Done():
+		return runnerDaemonItemResult{}, ctx.Err()
+	}
+}
+
+func waitRunnerDaemonItemResultOrPoll(ctx context.Context, results <-chan runnerDaemonItemResult, interval time.Duration) (*runnerDaemonItemResult, error) {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case result := <-results:
+		return &result, nil
+	case <-timer.C:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
 func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) error {
 	startedAt := time.Now().UTC()
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerStarted, item, "started", nil, startedAt)
+
 	handler, ok := d.handlers[item.Kind]
 	if !ok || handler == nil {
-		return d.failClaimedItem(item, startedAt, fmt.Errorf("no runner handler registered for kind %q", item.Kind))
+		cause := fmt.Errorf("no runner handler registered for kind %q", item.Kind)
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": cause.Error()}, time.Now().UTC())
+		return d.failClaimedItem(item, startedAt, cause)
 	}
 
 	itemCtx, cancel := context.WithCancel(ctx)
@@ -210,6 +357,7 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 		handlerErr = heartbeatErr
 	}
 	if handlerErr != nil {
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": handlerErr.Error()}, time.Now().UTC())
 		return d.failClaimedItem(item, startedAt, handlerErr)
 	}
 
@@ -219,14 +367,45 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now().UTC()
 	}
+
+	var finishErr error
+	status := workqueue.ResultStatusCompleted
 	switch result.Status {
 	case workqueue.ResultStatusBlocked:
-		return d.store.Block(item.ID, result)
+		status = workqueue.ResultStatusBlocked
+		finishErr = d.store.Block(item.ID, result)
 	case workqueue.ResultStatusFailed:
-		return d.store.Fail(item.ID, result)
+		status = workqueue.ResultStatusFailed
+		finishErr = d.store.Fail(item.ID, result)
 	default:
-		return d.store.Complete(item.ID, result)
+		finishErr = d.store.Complete(item.ID, result)
 	}
+	if finishErr != nil {
+		return finishErr
+	}
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(status), nil, result.FinishedAt)
+	return nil
+}
+
+func (d runnerDaemon) emitClaimedItemEvent(ctx context.Context, eventType contracts.EventType, item workitem.Item, message string, metadata map[string]string, timestamp time.Time) {
+	if d.events == nil {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["kind"] = string(item.Kind)
+	metadata["preset"] = item.Preset
+	metadata["source"] = item.Source
+	metadata["source_ref"] = item.SourceRef
+	_ = d.events.Emit(ctx, contracts.Event{
+		Type:      eventType,
+		Proc:      d.cfg.runnerID,
+		ItemID:    item.ID,
+		Message:   message,
+		Metadata:  metadata,
+		Timestamp: timestamp,
+	})
 }
 
 func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {
@@ -338,7 +517,7 @@ func stubRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Wo
 func loadRunnerEnvironmentPresets(path string, requiredPresets []string) (map[string]envpreset.Preset, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		path = defaultRunnerEnvironmentsPath
+		path = defaultRunnerDaemonEnvironmentsPath
 	}
 
 	presets, err := envpreset.Load(path)
@@ -427,6 +606,14 @@ func defaultRunnerDaemonLockPath(queuePath string, runnerID string) string {
 		return filepath.Join(os.TempDir(), "yolo-runner-"+safeRunnerIDForPath(runnerID)+".lock")
 	}
 	return filepath.Join(filepath.Dir(queuePath), "runner-"+safeRunnerIDForPath(runnerID)+".lock")
+}
+
+func defaultRunnerDaemonEventSink(runnerID string) contracts.EventSink {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return contracts.NewFileEventSink(filepath.Join(home, ".yolo-runner", "events", safeRunnerIDForPath(runnerID)+".jsonl"))
 }
 
 func safeRunnerIDForPath(runnerID string) string {

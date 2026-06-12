@@ -103,6 +103,7 @@ func TestRunnerPreflightHandlerWritesReadyAndNeedsInfoResultsThroughQueue(t *tes
 	daemon := runnerDaemon{
 		store:   store,
 		runners: runners,
+		events:  runnerDaemonNoopEventSink{},
 		handlers: runnerKindRegistry{
 			workitem.KindPreflight: newRunnerPreflightKindHandler(func(context.Context, workitem.Item) (runnerPreflightAgent, error) {
 				return runnerPreflightAgent{
@@ -116,14 +117,8 @@ func TestRunnerPreflightHandlerWritesReadyAndNeedsInfoResultsThroughQueue(t *tes
 				}, nil
 			}),
 		},
-		environmentPresets: map[string]envpreset.Preset{
-			"linux": {
-				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath},
-			},
-		},
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
-			return envpreset.Workspace{Path: t.TempDir(), Cleanup: func() error { return nil }}, nil
-		},
+		environmentPresets: runnerDaemonTestPresets("linux"),
+		materialize:        runnerDaemonNoopMaterializer,
 		cfg: runnerDaemonCommandConfig{
 			presets:           []string{"linux"},
 			runnerID:          "runner-preflight-test",

@@ -79,11 +79,11 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 }
 
 func defaultRunnerImplementExecutorResolver(_ context.Context, item workitem.Item, _ envpreset.Workspace) (runnerImplementExecutor, error) {
-	presets, err := envpreset.Load(defaultRunnerEnvironmentsPath)
+	presets, err := envpreset.Load(defaultRunnerDaemonEnvironmentsPath)
 	if err != nil {
 		return runnerImplementExecutor{}, err
 	}
-	return resolveRunnerImplementExecutorFromPresets(item, presets, defaultRunnerEnvironmentsPath)
+	return resolveRunnerImplementExecutorFromPresets(item, presets, defaultRunnerDaemonEnvironmentsPath)
 }
 
 func newRunnerImplementExecutorResolverForPresets(presets map[string]envpreset.Preset) runnerImplementExecutorResolver {

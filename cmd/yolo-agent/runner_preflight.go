@@ -59,7 +59,7 @@ func newRunnerPreflightKindHandler(resolve runnerPreflightAgentResolver) runnerK
 }
 
 func defaultRunnerPreflightAgentResolver(_ context.Context, item workitem.Item) (runnerPreflightAgent, error) {
-	environmentsPath := defaultRunnerEnvironmentsPath
+	environmentsPath := defaultRunnerDaemonEnvironmentsPath
 	presets, err := envpreset.Load(environmentsPath)
 	if err != nil {
 		return runnerPreflightAgent{}, err
