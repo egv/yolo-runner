@@ -1026,21 +1026,6 @@ func isDeferredPRLandingVCS(vcs contracts.VCS) bool {
 	return ok
 }
 
-func eventTypeForRunnerProgress(progressType string) contracts.EventType {
-	switch strings.TrimSpace(progressType) {
-	case "runner_cmd_started":
-		return contracts.EventTypeRunnerCommandStarted
-	case "runner_cmd_finished":
-		return contracts.EventTypeRunnerCommandFinished
-	case "runner_output":
-		return contracts.EventTypeRunnerOutput
-	case "runner_warning":
-		return contracts.EventTypeRunnerWarning
-	default:
-		return contracts.EventTypeRunnerProgress
-	}
-}
-
 func taskMonitoringMetadata(task contracts.Task, arcRoot string) map[string]string {
 	metadata := cloneStringMap(task.Metadata)
 	if metadata == nil {
@@ -1245,91 +1230,24 @@ func (l *Loop) emitParentPRCreatedEvents(ctx context.Context, before map[string]
 }
 
 func (l *Loop) runRunnerWithMonitoring(ctx context.Context, request contracts.RunnerRequest, taskID string, taskTitle string, worker string, clonePath string, queuePos int) (contracts.RunnerResult, error) {
-	heartbeatInterval := l.options.HeartbeatInterval
-	if heartbeatInterval <= 0 {
-		heartbeatInterval = 5 * time.Second
-	}
-	warningAfter := l.options.NoOutputWarningAfter
-	if warningAfter <= 0 {
-		warningAfter = 30 * time.Second
-	}
+	return executor.RunWithMonitoring(ctx, l.runner, loopMonitorEventSink{loop: l}, request, executor.MonitorEventContext{
+		TaskID:    taskID,
+		TaskTitle: taskTitle,
+		WorkerID:  worker,
+		ClonePath: clonePath,
+		QueuePos:  queuePos,
+	}, executor.MonitorOptions{
+		HeartbeatInterval:    l.options.HeartbeatInterval,
+		NoOutputWarningAfter: l.options.NoOutputWarningAfter,
+	})
+}
 
-	lastOutputAt := time.Now().UTC()
-	warned := false
-	var progressMu sync.Mutex
+type loopMonitorEventSink struct {
+	loop *Loop
+}
 
-	request.OnProgress = func(progress contracts.RunnerProgress) {
-		eventTime := progress.Timestamp
-		if eventTime.IsZero() {
-			eventTime = time.Now().UTC()
-		}
-		progressMu.Lock()
-		lastOutputAt = eventTime
-		warned = false
-		progressMu.Unlock()
-		_ = l.emit(ctx, contracts.Event{
-			Type:      eventTypeForRunnerProgress(progress.Type),
-			TaskID:    taskID,
-			TaskTitle: taskTitle,
-			WorkerID:  worker,
-			ClonePath: clonePath,
-			QueuePos:  queuePos,
-			Message:   progress.Message,
-			Metadata:  progress.Metadata,
-			Timestamp: eventTime,
-		})
-	}
-
-	monitorCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-monitorCtx.Done():
-				return
-			case now := <-ticker.C:
-				progressMu.Lock()
-				elapsed := now.Sub(lastOutputAt)
-				alreadyWarned := warned
-				if elapsed >= warningAfter {
-					warned = true
-				}
-				progressMu.Unlock()
-
-				_ = l.emit(ctx, contracts.Event{
-					Type:      contracts.EventTypeRunnerHeartbeat,
-					TaskID:    taskID,
-					TaskTitle: taskTitle,
-					WorkerID:  worker,
-					ClonePath: clonePath,
-					QueuePos:  queuePos,
-					Message:   "alive",
-					Metadata:  map[string]string{"last_output_age": elapsed.Round(time.Second).String()},
-					Timestamp: now.UTC(),
-				})
-
-				if elapsed >= warningAfter && !alreadyWarned {
-					_ = l.emit(ctx, contracts.Event{
-						Type:      contracts.EventTypeRunnerWarning,
-						TaskID:    taskID,
-						TaskTitle: taskTitle,
-						WorkerID:  worker,
-						ClonePath: clonePath,
-						QueuePos:  queuePos,
-						Message:   "no output threshold exceeded",
-						Metadata:  map[string]string{"last_output_age": elapsed.Round(time.Second).String()},
-						Timestamp: now.UTC(),
-					})
-				}
-			}
-		}
-	}()
-
-	result, err := l.runner.Run(ctx, request)
-	cancel()
-	return result, err
+func (s loopMonitorEventSink) Emit(ctx context.Context, event contracts.Event) error {
+	return s.loop.emit(ctx, event)
 }
 
 func (l *Loop) runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task, taskVCS contracts.VCS, taskBranch string, worker string, taskRepoRoot string, queuePos int, mergeFailureReason string, runtime taskRuntimeConfig) contracts.RunnerResult {
