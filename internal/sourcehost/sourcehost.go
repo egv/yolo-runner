@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -341,20 +340,20 @@ func acquireOptionalLock(path string) (*processLock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sourcehost lock %q: %w", path, err)
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockSourcehostFile(file); err != nil {
 		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		if errors.Is(err, ErrLockHeld) {
 			return nil, ErrLockHeld
 		}
 		return nil, fmt.Errorf("lock sourcehost %q: %w", path, err)
 	}
 	if err := file.Truncate(0); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockSourcehostFile(file)
 		_ = file.Close()
 		return nil, fmt.Errorf("truncate sourcehost lock %q: %w", path, err)
 	}
 	if _, err := fmt.Fprintf(file, "%d\n", os.Getpid()); err != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = unlockSourcehostFile(file)
 		_ = file.Close()
 		return nil, fmt.Errorf("write sourcehost lock %q: %w", path, err)
 	}
@@ -365,7 +364,7 @@ func (l *processLock) Release() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockSourcehostFile(l.file)
 	closeErr := l.file.Close()
 	l.file = nil
 	if unlockErr != nil {
