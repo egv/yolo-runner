@@ -17,6 +17,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	enginepkg "github.com/egv/yolo-runner/v2/internal/engine"
+	"github.com/egv/yolo-runner/v2/internal/executor"
 	"github.com/egv/yolo-runner/v2/internal/logging"
 )
 
@@ -1175,11 +1176,10 @@ func TestSum(t *testing.T) {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCTestSuiteValidation(context.Background(), repoRoot)
-	if result.Tool != qcGateToolTestRunner {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolTestRunner, result.Tool)
+	result := executor.RunQCTestSuiteValidation(context.Background(), repoRoot)
+	if result.Tool != executor.QCGateToolTestRunner {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolTestRunner, result.Tool)
 	}
 	if result.Status != "passed" {
 		t.Fatalf("expected passed status, got %q (reason=%q)", result.Status, result.Reason)
@@ -1218,11 +1218,10 @@ func TestIsValid(t *testing.T) {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCTestSuiteValidation(context.Background(), repoRoot)
-	if result.Tool != qcGateToolTestRunner {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolTestRunner, result.Tool)
+	result := executor.RunQCTestSuiteValidation(context.Background(), repoRoot)
+	if result.Tool != executor.QCGateToolTestRunner {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolTestRunner, result.Tool)
 	}
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status for failing tests, got %q", result.Status)
@@ -1253,11 +1252,10 @@ func Format(value int) string {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCLinterValidation(context.Background(), repoRoot)
-	if result.Tool != qcGateToolLinter {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolLinter, result.Tool)
+	result := executor.RunQCLinterValidation(context.Background(), repoRoot)
+	if result.Tool != executor.QCGateToolLinter {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolLinter, result.Tool)
 	}
 	if result.Status != "passed" {
 		t.Fatalf("expected passed status, got %q (reason=%q)", result.Status, result.Reason)
@@ -1296,11 +1294,10 @@ func BadValue() string {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCLinterValidation(context.Background(), repoRoot)
-	if result.Tool != qcGateToolLinter {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolLinter, result.Tool)
+	result := executor.RunQCLinterValidation(context.Background(), repoRoot)
+	if result.Tool != executor.QCGateToolLinter {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolLinter, result.Tool)
 	}
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status for linter warning, got %q", result.Status)
@@ -1343,11 +1340,10 @@ func TestCovered(t *testing.T) {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCCoverageValidation(context.Background(), repoRoot, 40)
-	if result.Tool != qcGateToolCoverageChecker {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolCoverageChecker, result.Tool)
+	result := executor.RunQCCoverageValidation(context.Background(), repoRoot, 40)
+	if result.Tool != executor.QCGateToolCoverageChecker {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolCoverageChecker, result.Tool)
 	}
 	if result.Status != "passed" {
 		t.Fatalf("expected passed status, got %q (reason=%q)", result.Status, result.Reason)
@@ -1390,11 +1386,10 @@ func TestCovered(t *testing.T) {
 }
 `,
 	})
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{})
 
-	result := loop.runQCCoverageValidation(context.Background(), repoRoot, 90)
-	if result.Tool != qcGateToolCoverageChecker {
-		t.Fatalf("expected tool=%q, got %q", qcGateToolCoverageChecker, result.Tool)
+	result := executor.RunQCCoverageValidation(context.Background(), repoRoot, 90)
+	if result.Tool != executor.QCGateToolCoverageChecker {
+		t.Fatalf("expected tool=%q, got %q", executor.QCGateToolCoverageChecker, result.Tool)
 	}
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status below threshold, got %q", result.Status)
@@ -1462,7 +1457,7 @@ func TestValue(t *testing.T) {
 		Title:  "QC Gate Review",
 	})
 	loop := NewLoop(mgr, &fakeRunner{}, nil, LoopOptions{
-		QCGateTools:   []string{qcGateToolTestRunner},
+		QCGateTools:   []string{executor.QCGateToolTestRunner},
 		RequireReview: true,
 		RepoRoot:      repoRoot,
 	})
@@ -1486,7 +1481,7 @@ func TestValue(t *testing.T) {
 	if strings.TrimSpace(reportJSON) == "" {
 		t.Fatalf("expected qc_gate_report to be written on block")
 	}
-	var report qcGateReport
+	var report executor.QCGateReport
 	if err := json.Unmarshal([]byte(reportJSON), &report); err != nil {
 		t.Fatalf("expected valid qc_gate_report json, got %q", reportJSON)
 	}
@@ -1552,7 +1547,7 @@ func TestValue(t *testing.T) {
 	if strings.TrimSpace(reportJSON) == "" {
 		t.Fatalf("expected qc_gate_report to be written on block")
 	}
-	var report qcGateReport
+	var report executor.QCGateReport
 	if err := json.Unmarshal([]byte(reportJSON), &report); err != nil {
 		t.Fatalf("expected valid qc_gate_report json, got %q", reportJSON)
 	}
@@ -1568,9 +1563,6 @@ func TestValue(t *testing.T) {
 }
 
 func TestRunQCReviewApprovalPassesForExplicitPassVerdict(t *testing.T) {
-	loop := NewLoop(newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen}), &fakeRunner{}, nil, LoopOptions{
-		RequireReview: true,
-	})
 	result := contracts.RunnerResult{
 		Status:      contracts.RunnerResultCompleted,
 		ReviewReady: true,
@@ -1579,7 +1571,7 @@ func TestRunQCReviewApprovalPassesForExplicitPassVerdict(t *testing.T) {
 		},
 	}
 
-	outcome := loop.runQCReviewApproval(result)
+	outcome := executor.RunQCReviewApproval(true, result)
 	if outcome.Tool != "review_approval" {
 		t.Fatalf("expected review_approval tool, got %q", outcome.Tool)
 	}
@@ -1622,7 +1614,7 @@ func TestValue(t *testing.T) {
 	})
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen})
 	loop := NewLoop(mgr, &fakeRunner{}, nil, LoopOptions{
-		QCGateTools: []string{qcGateToolTestRunner},
+		QCGateTools: []string{executor.QCGateToolTestRunner},
 		RepoRoot:    repoRoot,
 	})
 	blocked, err := loop.runQCGate(context.Background(), contracts.Task{ID: "t-1"}, contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, "", 1, repoRoot)
@@ -1636,14 +1628,14 @@ func TestValue(t *testing.T) {
 	if strings.TrimSpace(reportJSON) == "" {
 		t.Fatalf("expected qc_gate_report to be set on passing qc gate")
 	}
-	var report qcGateReport
+	var report executor.QCGateReport
 	if err := json.Unmarshal([]byte(reportJSON), &report); err != nil {
 		t.Fatalf("expected valid qc gate report json, got %q", reportJSON)
 	}
 	if report.Status != "passed" {
 		t.Fatalf("expected report status passed, got %q", report.Status)
 	}
-	if len(report.Tools) == 0 || report.Tools[0].Tool != qcGateToolTestRunner {
+	if len(report.Tools) == 0 || report.Tools[0].Tool != executor.QCGateToolTestRunner {
 		t.Fatalf("expected test_runner entry in report tools, got %#v", report.Tools)
 	}
 }
@@ -1663,7 +1655,7 @@ func Value() int {
 	})
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Status: contracts.TaskStatusOpen})
 	loop := NewLoop(mgr, &fakeRunner{}, nil, LoopOptions{
-		QCGateTools: []string{qcGateToolTestRunner},
+		QCGateTools: []string{executor.QCGateToolTestRunner},
 		RepoRoot:    repoRoot,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
