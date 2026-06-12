@@ -73,6 +73,8 @@ func TestRunnerSplitHandlerWritesSplitResultRow(t *testing.T) {
 		handlers: runnerKindRegistry{
 			workitem.KindSplit: newRunnerSplitHandler(agent),
 		},
+		environmentPresets: runnerDaemonTestPresets("linux"),
+		materialize:        runnerDaemonNoopMaterializer,
 		cfg: runnerDaemonCommandConfig{
 			runnerID:          "runner-test",
 			heartbeatInterval: time.Hour,
