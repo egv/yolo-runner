@@ -19,7 +19,7 @@ import (
 )
 
 const defaultRunnerDaemonPollInterval = time.Second
-const defaultRunnerEnvironmentsPath = "~/.yolo-runner/environments.yaml"
+const defaultRunnerDaemonEnvironmentsPath = "~/.yolo-runner/environments.yaml"
 
 var errRunnerDaemonLockHeld = errors.New("runner daemon lock held")
 
@@ -144,11 +144,53 @@ type runnerDaemon struct {
 	materialize        runnerWorkspaceMaterializer
 }
 
+type runnerDaemonItemResult struct {
+	item workitem.Item
+	err  error
+}
+
 func (d runnerDaemon) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	capacity := d.cfg.capacity
+	if capacity <= 0 {
+		capacity = 1
+	}
+	pollInterval := d.cfg.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultRunnerDaemonPollInterval
+	}
+
+	results := make(chan runnerDaemonItemResult, capacity)
+	inFlightByPreset := map[string]int{}
+	active := 0
+	claimedOnce := false
+
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := runCtx.Err(); err != nil {
 			return err
 		}
+		for {
+			select {
+			case result := <-results:
+				active--
+				decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+				if result.err != nil {
+					return result.err
+				}
+				if d.cfg.once {
+					return nil
+				}
+			default:
+				goto drainedResults
+			}
+		}
+
+	drainedResults:
 		if err := d.runners.Heartbeat(d.cfg.runnerID); err != nil {
 			return err
 		}
@@ -156,26 +198,121 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 			return err
 		}
 
-		item, err := d.store.Claim(d.cfg.runnerID, d.cfg.presets, d.cfg.leaseTTL)
-		if err != nil {
-			return err
+		for active < capacity && !(d.cfg.once && claimedOnce) {
+			claimPresets := d.claimableRunnerPresets(inFlightByPreset)
+			if len(claimPresets) == 0 {
+				break
+			}
+
+			item, err := d.store.Claim(d.cfg.runnerID, claimPresets, d.cfg.leaseTTL)
+			if err != nil {
+				return err
+			}
+			if item == nil {
+				break
+			}
+
+			active++
+			claimedOnce = true
+			incrementRunnerPresetInFlight(inFlightByPreset, item.Preset)
+			go func(item workitem.Item) {
+				results <- runnerDaemonItemResult{
+					item: item,
+					err:  d.runClaimedItem(runCtx, item),
+				}
+			}(*item)
 		}
-		if item == nil {
-			if d.cfg.once {
+
+		if d.cfg.once {
+			if !claimedOnce {
 				return nil
 			}
-			if err := waitRunnerDaemonPollInterval(ctx, d.cfg.pollInterval); err != nil {
+			result, err := waitRunnerDaemonItemResult(runCtx, results)
+			if err != nil {
+				return err
+			}
+			active--
+			decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+			return result.err
+		}
+
+		if active == 0 {
+			if err := waitRunnerDaemonPollInterval(runCtx, pollInterval); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := d.runClaimedItem(ctx, *item); err != nil {
+		result, err := waitRunnerDaemonItemResultOrPoll(runCtx, results, pollInterval)
+		if err != nil {
 			return err
 		}
-		if d.cfg.once {
-			return nil
+		if result == nil {
+			continue
 		}
+		active--
+		decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+		if result.err != nil {
+			return result.err
+		}
+	}
+}
+
+func (d runnerDaemon) claimableRunnerPresets(inFlightByPreset map[string]int) []string {
+	presets := normalizeRunnerPresets(d.cfg.presets)
+	claimable := make([]string, 0, len(presets))
+	for _, presetName := range presets {
+		limit := 0
+		if preset, ok := d.environmentPresets[presetName]; ok {
+			limit = preset.Limits.MaxConcurrent
+		}
+		if limit > 0 && inFlightByPreset[presetName] >= limit {
+			continue
+		}
+		claimable = append(claimable, presetName)
+	}
+	return claimable
+}
+
+func incrementRunnerPresetInFlight(inFlightByPreset map[string]int, preset string) {
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		return
+	}
+	inFlightByPreset[preset]++
+}
+
+func decrementRunnerPresetInFlight(inFlightByPreset map[string]int, preset string) {
+	preset = strings.TrimSpace(preset)
+	if preset == "" {
+		return
+	}
+	inFlightByPreset[preset]--
+	if inFlightByPreset[preset] <= 0 {
+		delete(inFlightByPreset, preset)
+	}
+}
+
+func waitRunnerDaemonItemResult(ctx context.Context, results <-chan runnerDaemonItemResult) (runnerDaemonItemResult, error) {
+	select {
+	case result := <-results:
+		return result, nil
+	case <-ctx.Done():
+		return runnerDaemonItemResult{}, ctx.Err()
+	}
+}
+
+func waitRunnerDaemonItemResultOrPoll(ctx context.Context, results <-chan runnerDaemonItemResult, interval time.Duration) (*runnerDaemonItemResult, error) {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	select {
+	case result := <-results:
+		return &result, nil
+	case <-timer.C:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -329,7 +466,7 @@ func stubRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Wo
 func loadRunnerEnvironmentPresets(path string, requiredPresets []string) (map[string]envpreset.Preset, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		path = defaultRunnerEnvironmentsPath
+		path = defaultRunnerDaemonEnvironmentsPath
 	}
 
 	presets, err := envpreset.Load(path)

@@ -7,12 +7,13 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 func newRunnerSplitHandler(agent contracts.AgentRunner) runnerKindHandler {
-	return func(ctx context.Context, item workitem.Item) (workqueue.Result, error) {
+	return func(ctx context.Context, item workitem.Item, _ envpreset.Workspace) (workqueue.Result, error) {
 		return runRunnerSplit(ctx, agent, item)
 	}
 }

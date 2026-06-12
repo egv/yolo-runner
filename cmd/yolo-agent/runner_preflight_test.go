@@ -116,6 +116,14 @@ func TestRunnerPreflightHandlerWritesReadyAndNeedsInfoResultsThroughQueue(t *tes
 				}, nil
 			}),
 		},
+		environmentPresets: map[string]envpreset.Preset{
+			"linux": {
+				Workspace: envpreset.Workspace{
+					Strategy: envpreset.WorkspaceStrategyPath,
+					Path:     t.TempDir(),
+				},
+			},
+		},
 		cfg: runnerDaemonCommandConfig{
 			presets:           []string{"linux"},
 			runnerID:          "runner-preflight-test",
