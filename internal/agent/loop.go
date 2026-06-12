@@ -15,6 +15,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/executor"
 	"github.com/egv/yolo-runner/v2/internal/scheduler"
 	"github.com/egv/yolo-runner/v2/internal/tk"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
 )
 
 type taskRuntimeConfig struct {
@@ -287,562 +288,91 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 	}
 	metadata := taskMonitoringMetadata(task, l.options.RepoRoot)
 	l.rememberTaskEventMetadata(task.ID, metadata)
-	_ = l.emit(ctx, contracts.Event{
-		Type:      contracts.EventTypeTaskStarted,
-		TaskID:    task.ID,
-		TaskTitle: task.Title,
-		WorkerID:  worker,
-		QueuePos:  queuePos,
-		Priority:  taskPriority,
-		Message:   task.Title,
-		Metadata:  metadata,
-		Timestamp: time.Now().UTC(),
-	})
 
-	taskRuntime, err := resolveTaskRuntimeConfig(task, l.options)
+	var vcsFactory executor.VCSFactory
+	if l.options.VCSFactory != nil {
+		vcsFactory = executor.VCSFactory(l.options.VCSFactory)
+	}
+	exec := &executor.Executor{
+		Tasks:                   loopExecutorTaskManager{TaskManager: l.tasks, loop: l},
+		Runner:                  l.runner,
+		Events:                  loopMonitorEventSink{loop: l},
+		VCS:                     l.options.VCS,
+		VCSFactory:              vcsFactory,
+		CloneManager:            l.cloneManager,
+		LandingLock:             l.landingLock,
+		RepoRoot:                l.options.RepoRoot,
+		ParentID:                l.options.ParentID,
+		Backend:                 l.options.Backend,
+		Model:                   l.options.Model,
+		FallbackModel:           l.options.FallbackModel,
+		MaxRetries:              l.options.MaxRetries,
+		RunnerTimeout:           l.options.RunnerTimeout,
+		WatchdogTimeout:         l.options.WatchdogTimeout,
+		WatchdogInterval:        l.options.WatchdogInterval,
+		HeartbeatInterval:       l.options.HeartbeatInterval,
+		NoOutputWarningAfter:    l.options.NoOutputWarningAfter,
+		TDDMode:                 l.options.TDDMode,
+		QualityGateThreshold:    l.options.QualityGateThreshold,
+		QualityGateTools:        append([]string{}, l.options.QualityGateTools...),
+		QCGateTools:             append([]string{}, l.options.QCGateTools...),
+		AllowLowQuality:         l.options.AllowLowQuality,
+		RequireReview:           l.options.RequireReview,
+		MergeOnSuccess:          l.options.MergeOnSuccess,
+		WorkerID:                worker,
+		QueuePos:                queuePos,
+		Priority:                taskPriority,
+		MarkTaskBlockedWithData: l.markTaskBlockedWithData,
+		ClearTaskTerminalState:  l.clearTaskTerminalState,
+		ClearTaskInFlight:       l.clearTaskInFlight,
+	}
+	result, err := exec.Execute(ctx, implementPayloadFromTask(task, l.options))
 	if err != nil {
 		return summary, err
 	}
 
-	epicID := strings.TrimSpace(task.ParentID)
-	if epicID == "" {
-		epicID = strings.TrimSpace(l.options.ParentID)
-	}
-
-	if blocked, err := l.runQualityGate(ctx, task, worker, queuePos); err != nil {
-		return summary, err
-	} else if blocked {
+	switch contracts.RunnerResultStatus(strings.TrimSpace(result.Status)) {
+	case contracts.RunnerResultCompleted:
+		summary.Completed++
+	case contracts.RunnerResultBlocked:
 		summary.Blocked++
-		return summary, nil
+	case contracts.RunnerResultFailed:
+		summary.Failed++
+	default:
+		summary.Failed++
 	}
+	return summary, nil
+}
 
-	taskRepoRoot := l.options.RepoRoot
-	if l.options.TDDMode {
-		testsPresent, testsFailing, err := hasTestsForTDDMode(l.options.RepoRoot)
-		if err != nil {
-			return summary, err
-		}
-		if !testsFailing {
-			reason := "tdd mode tests-first gate requires tests to be present and currently failing before implementation"
-			if !testsPresent {
-				reason = "tdd mode tests-first gate requires adding tests before implementation"
-			}
-			blockedData := map[string]string{
-				"triage_status": "blocked",
-				"triage_reason": reason,
-				"tdd_mode":      "true",
-				"tests_present": strconv.FormatBool(testsPresent),
-				"tests_failing": strconv.FormatBool(testsFailing),
-			}
-			blockedData = appendDecisionMetadata(blockedData, "blocked", reason)
-			if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
-				return summary, err
-			}
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
-				return summary, err
-			}
-			finishedMetadata := map[string]string{
-				"triage_status": "blocked",
-				"triage_reason": reason,
-				"tdd_mode":      "true",
-				"tests_present": strconv.FormatBool(testsPresent),
-				"tests_failing": strconv.FormatBool(testsFailing),
-			}
-			finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", reason)
-			_ = l.emit(ctx, contracts.Event{
-				Type:      contracts.EventTypeTaskFinished,
-				TaskID:    task.ID,
-				TaskTitle: task.Title,
-				WorkerID:  worker,
-				ClonePath: taskRepoRoot,
-				QueuePos:  queuePos,
-				Message:   string(contracts.TaskStatusBlocked),
-				Metadata:  finishedMetadata,
-				Timestamp: time.Now().UTC(),
-			})
-			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
-				return summary, err
-			}
-			_ = l.emit(ctx, contracts.Event{
-				Type:      contracts.EventTypeTaskDataUpdated,
-				TaskID:    task.ID,
-				TaskTitle: task.Title,
-				WorkerID:  worker,
-				ClonePath: taskRepoRoot,
-				QueuePos:  queuePos,
-				Metadata:  blockedData,
-				Timestamp: time.Now().UTC(),
-			})
-			if err := l.clearTaskTerminalState(task.ID); err != nil {
-				return summary, err
-			}
-			summary.Blocked++
-			return summary, nil
+type loopExecutorTaskManager struct {
+	contracts.TaskManager
+	loop *Loop
+}
+
+func (m loopExecutorTaskManager) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
+	if status == contracts.TaskStatusClosed && m.loop != nil {
+		if err := m.loop.markTaskCompleted(taskID); err != nil {
+			return err
 		}
 	}
+	return m.TaskManager.SetTaskStatus(ctx, taskID, status)
+}
 
-	if l.cloneManager != nil {
-		clonePath, cloneErr := l.cloneManager.CloneForTask(ctx, task.ID, l.options.RepoRoot)
-		if cloneErr != nil {
-			return summary, cloneErr
-		}
-		taskRepoRoot = clonePath
-		defer func() {
-			if cleanupErr := l.cloneManager.Cleanup(task.ID); cleanupErr != nil && err == nil {
-				err = cleanupErr
-			}
-		}()
+func implementPayloadFromTask(task contracts.Task, options LoopOptions) workitem.ImplementPayload {
+	parentID := strings.TrimSpace(task.ParentID)
+	if parentID == "" {
+		parentID = strings.TrimSpace(options.ParentID)
 	}
-
-	taskBranch := ""
-	taskVCS := l.vcsForRepo(taskRepoRoot)
-	if taskVCS != nil {
-		if err := taskVCS.EnsureMain(ctx); err != nil {
-			return summary, err
-		}
-		branch, err := taskVCS.CreateTaskBranch(ctx, task.ID)
-		if err != nil {
-			return summary, err
-		}
-		taskBranch = branch
-		if err := taskVCS.Checkout(ctx, branch); err != nil {
-			return summary, err
-		}
-	}
-
-	reviewRetries := 0
-	if count, err := metadataRetryCount(task.Metadata, "review_retry_count"); err == nil {
-		reviewRetries = count
-	}
-	reviewRetryFeedback := ""
-	if feedback := executor.ReviewRetryBlockersFromMetadata(task.Metadata); feedback != "" {
-		reviewRetryFeedback = feedback
-	}
-	completionRetries := 0
-	if count, err := metadataRetryCount(task.Metadata, "completion_retry_count"); err == nil {
-		completionRetries = count
-	}
-	completionAddendum := strings.TrimSpace(task.Metadata["completion_addendum"])
-	implementModel := taskRuntime.model
-	if implementModel == "" {
-		implementModel = strings.TrimSpace(l.options.Model)
-	}
-	fallbackModel := strings.TrimSpace(l.options.FallbackModel)
-	usedModelFallback := false
-	modelBeforeFallback := ""
-	modelFallbackReason := ""
-	taskBackend := taskRuntime.backend
-	if taskBackend == "" {
-		taskBackend = strings.TrimSpace(l.options.Backend)
-	}
-	for {
-		reviewFailed := false
-		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusInProgress); err != nil {
-			return summary, err
-		}
-		implementLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID, epicID, taskBackend)
-		if err := ensureRunnerLogDirectory(taskRepoRoot, implementLogPath); err != nil {
-			return summary, err
-		}
-		implementStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, taskBackend, implementModel, taskRepoRoot, implementLogPath, time.Now().UTC())
-		appendTaskRuntimeMetadata(implementStartMeta, taskRuntime)
-		if usedModelFallback {
-			implementStartMeta = appendDecisionMetadata(implementStartMeta, "model_fallback", modelFallbackReason)
-			implementStartMeta["model_previous"] = modelBeforeFallback
-			if fallbackModel != "" {
-				implementStartMeta["model_fallback"] = fallbackModel
-			}
-		}
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeImplement), Metadata: implementStartMeta, Timestamp: time.Now().UTC()})
-		requestMetadata := map[string]string{"log_path": implementLogPath, "clone_path": taskRepoRoot}
-		appendTaskRuntimeMetadata(requestMetadata, taskRuntime)
-		if l.options.WatchdogTimeout > 0 {
-			requestMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
-		}
-		if l.options.WatchdogInterval > 0 {
-			requestMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
-		}
-
-		result, err := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
-			TaskID:   task.ID,
-			ParentID: l.options.ParentID,
-			Mode:     contracts.RunnerModeImplement,
-			RepoRoot: taskRepoRoot,
-			Model:    implementModel,
-			Timeout:  taskRuntime.timeout,
-			Prompt: executor.BuildImplementPrompt(
-				task,
-				reviewRetryFeedback,
-				reviewRetries,
-				completionAddendum,
-				completionRetries,
-				l.options.TDDMode,
-			),
-			Metadata: requestMetadata,
-		}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
-		if err != nil {
-			return summary, err
-		}
-		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(result.Status), Metadata: buildRunnerFinishedMetadata(result), Timestamp: time.Now().UTC()})
-
-		if result.Status == contracts.RunnerResultCompleted && l.options.RequireReview {
-			reviewAttempt := reviewRetries + 1
-			reviewTelemetry := map[string]string{
-				"review_attempt":     fmt.Sprintf("%d", reviewAttempt),
-				"review_retry_count": fmt.Sprintf("%d", reviewRetries),
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: reviewTelemetry, Timestamp: time.Now().UTC()})
-			reviewLogPath := defaultRunnerLogPath(taskRepoRoot, task.ID, epicID, taskBackend)
-			if err := ensureRunnerLogDirectory(taskRepoRoot, reviewLogPath); err != nil {
-				return summary, err
-			}
-			reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, taskBackend, implementModel, taskRepoRoot, reviewLogPath, time.Now().UTC())
-			appendTaskRuntimeMetadata(reviewStartMeta, taskRuntime)
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: reviewStartMeta, Timestamp: time.Now().UTC()})
-			reviewMetadata := map[string]string{"log_path": reviewLogPath, "clone_path": taskRepoRoot}
-			appendTaskRuntimeMetadata(reviewMetadata, taskRuntime)
-			if l.options.WatchdogTimeout > 0 {
-				reviewMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
-			}
-			if l.options.WatchdogInterval > 0 {
-				reviewMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
-			}
-
-			reviewResult, reviewErr := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
-				TaskID:   task.ID,
-				ParentID: l.options.ParentID,
-				Mode:     contracts.RunnerModeReview,
-				RepoRoot: taskRepoRoot,
-				Model:    implementModel,
-				Timeout:  taskRuntime.timeout,
-				Prompt:   executor.BuildPrompt(task, contracts.RunnerModeReview, false),
-				Metadata: reviewMetadata,
-			}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
-			if reviewErr != nil {
-				return summary, reviewErr
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(reviewResult.Status), Metadata: buildRunnerFinishedMetadata(reviewResult), Timestamp: time.Now().UTC()})
-
-			finalReviewResult := reviewResult
-			if reviewResult.Status == contracts.RunnerResultCompleted && !reviewResult.ReviewReady && reviewVerdictFromArtifacts(reviewResult) == "" {
-				verdictMetadata := map[string]string{
-					"log_path":     reviewLogPath,
-					"clone_path":   taskRepoRoot,
-					"review_phase": "verdict_retry",
-				}
-				if l.options.WatchdogTimeout > 0 {
-					verdictMetadata["watchdog_timeout"] = l.options.WatchdogTimeout.String()
-				}
-				if l.options.WatchdogInterval > 0 {
-					verdictMetadata["watchdog_interval"] = l.options.WatchdogInterval.String()
-				}
-				verdictStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, taskBackend, implementModel, taskRepoRoot, reviewLogPath, time.Now().UTC())
-				appendTaskRuntimeMetadata(verdictStartMeta, taskRuntime)
-				verdictStartMeta["review_phase"] = "verdict_retry"
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.RunnerModeReview), Metadata: verdictStartMeta, Timestamp: time.Now().UTC()})
-
-				verdictResult, verdictErr := l.runRunnerWithMonitoring(ctx, contracts.RunnerRequest{
-					TaskID:   task.ID,
-					ParentID: l.options.ParentID,
-					Mode:     contracts.RunnerModeReview,
-					RepoRoot: taskRepoRoot,
-					Model:    implementModel,
-					Timeout:  taskRuntime.timeout,
-					Prompt:   executor.BuildReviewVerdictPrompt(task),
-					Metadata: verdictMetadata,
-				}, task.ID, task.Title, worker, taskRepoRoot, queuePos)
-				if verdictErr != nil {
-					return summary, verdictErr
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(verdictResult.Status), Metadata: buildRunnerFinishedMetadata(verdictResult), Timestamp: time.Now().UTC()})
-				finalReviewResult = verdictResult
-			}
-
-			if finalReviewResult.Status == contracts.RunnerResultCompleted && !finalReviewResult.ReviewReady {
-				finalReviewResult.Status = contracts.RunnerResultFailed
-				if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict == "fail" {
-					finalReviewResult.Reason = buildReviewFailReason(finalReviewResult)
-				} else {
-					finalReviewResult.Reason = "review verdict missing explicit pass"
-				}
-			}
-			if finalReviewResult.Status == contracts.RunnerResultFailed {
-				finalReviewResult.Reason = resolveReviewFailureReason(finalReviewResult.Reason, task.Metadata)
-			}
-			reviewFinishedMetadata := map[string]string{
-				"review_attempt":     fmt.Sprintf("%d", reviewAttempt),
-				"review_retry_count": fmt.Sprintf("%d", reviewRetries),
-			}
-			if strings.TrimSpace(finalReviewResult.Reason) != "" {
-				reviewFinishedMetadata["reason"] = strings.TrimSpace(finalReviewResult.Reason)
-			}
-			if verdict := reviewVerdictFromArtifacts(finalReviewResult); verdict != "" {
-				reviewFinishedMetadata["review_verdict"] = verdict
-			}
-			if feedback := reviewFailFeedbackFromArtifacts(finalReviewResult); feedback != "" {
-				reviewFinishedMetadata["review_fail_feedback"] = feedback
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(finalReviewResult.Status), Metadata: reviewFinishedMetadata, Timestamp: time.Now().UTC()})
-			if finalReviewResult.Status != contracts.RunnerResultCompleted {
-				result = finalReviewResult
-				if finalReviewResult.Status == contracts.RunnerResultFailed {
-					reviewFailed = true
-				}
-			}
-		}
-
-		switch result.Status {
-		case contracts.RunnerResultCompleted:
-			if blocked, err := l.runQCGate(ctx, task, result, worker, queuePos, taskRepoRoot); err != nil {
-				return summary, err
-			} else if blocked {
-				summary.Blocked++
-				return summary, nil
-			}
-
-			if err := l.markTaskCompleted(task.ID); err != nil {
-				return summary, err
-			}
-			if l.options.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
-				blocked, err := executor.RunLanding(ctx, task, executor.LandingDependencies{
-					Tasks:                   l.tasks,
-					Runner:                  l.runner,
-					Events:                  loopMonitorEventSink{loop: l},
-					VCS:                     taskVCS,
-					LandingLock:             l.landingLock,
-					MarkTaskBlockedWithData: l.markTaskBlockedWithData,
-					ClearTaskTerminalState:  l.clearTaskTerminalState,
-				}, executor.LandingOptions{
-					ParentID:             l.options.ParentID,
-					Backend:              l.options.Backend,
-					Model:                l.options.Model,
-					WatchdogTimeout:      l.options.WatchdogTimeout,
-					WatchdogInterval:     l.options.WatchdogInterval,
-					HeartbeatInterval:    l.options.HeartbeatInterval,
-					NoOutputWarningAfter: l.options.NoOutputWarningAfter,
-					Runtime: executor.TaskRuntimeConfig{
-						Backend:   taskRuntime.backend,
-						Model:     taskRuntime.model,
-						Skillset:  taskRuntime.skillset,
-						Tools:     append([]string{}, taskRuntime.tools...),
-						Mode:      taskRuntime.mode,
-						Timeout:   taskRuntime.timeout,
-						UseConfig: taskRuntime.useConfig,
-					},
-				}, executor.LandingEventContext{
-					TaskBranch: taskBranch,
-					WorkerID:   worker,
-					ClonePath:  taskRepoRoot,
-					QueuePos:   queuePos,
-				})
-				if err != nil {
-					return summary, err
-				}
-				if blocked {
-					summary.Blocked++
-					return summary, nil
-				}
-			}
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
-				return summary, err
-			}
-			if err := l.clearTaskTerminalState(task.ID); err != nil {
-				return summary, err
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
-			summary.Completed++
-			return summary, nil
-		case contracts.RunnerResultBlocked:
-			blockedData := map[string]string{"triage_status": "blocked"}
-			if result.Reason != "" {
-				blockedData["triage_reason"] = result.Reason
-			}
-			blockedData = appendDecisionMetadata(blockedData, "blocked", result.Reason)
-			blockedData = appendReviewOutcomeMetadata(blockedData, result)
-			if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
-				return summary, err
-			}
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
-				return summary, err
-			}
-			finishedMetadata := map[string]string{"triage_status": "blocked"}
-			if result.Reason != "" {
-				finishedMetadata["triage_reason"] = result.Reason
-			}
-			finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", result.Reason)
-			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
-			if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
-				return summary, err
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
-			if err := l.clearTaskTerminalState(task.ID); err != nil {
-				return summary, err
-			}
-			summary.Blocked++
-			return summary, nil
-		case contracts.RunnerResultFailed:
-			if !reviewFailed && !usedModelFallback && shouldUseModelFallbackForFailure(result, implementModel, fallbackModel) {
-				usedModelFallback = true
-				modelFallbackReason = strings.TrimSpace(result.Reason)
-				modelBeforeFallback = implementModel
-				implementModel = fallbackModel
-				continue
-			}
-
-			reviewFail := reviewFailed || isReviewFailResult(result)
-			if reviewFail {
-				feedback := strings.TrimSpace(reviewFailFeedbackFromArtifacts(result))
-				if feedback == "" {
-					feedback = strings.TrimSpace(result.Reason)
-				}
-				reviewRetryFeedback = feedback
-				if reviewRetries < l.options.MaxRetries {
-					reviewRetries++
-					retryData := map[string]string{"review_retry_count": fmt.Sprintf("%d", reviewRetries)}
-					if reviewRetryFeedback != "" {
-						retryData["review_feedback"] = reviewRetryFeedback
-					}
-					retryData = appendReviewOutcomeMetadata(retryData, result)
-					if strings.TrimSpace(result.Reason) != "" {
-						retryData["triage_reason"] = strings.TrimSpace(result.Reason)
-					}
-					retryData = appendDecisionMetadata(retryData, "retry", result.Reason)
-					if err := l.tasks.SetTaskData(ctx, task.ID, retryData); err != nil {
-						return summary, err
-					}
-					if task.Metadata == nil {
-						task.Metadata = map[string]string{}
-					}
-					for key, value := range retryData {
-						task.Metadata[key] = value
-					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: retryData, Timestamp: time.Now().UTC()})
-					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusOpen); err != nil {
-						return summary, err
-					}
-					continue
-				}
-			}
-
-			if !reviewFail {
-				completionReason := strings.TrimSpace(result.Reason)
-				if completionReason == "" {
-					completionReason = "implementation completion failed"
-				}
-				if completionRetries < l.options.MaxRetries {
-					completionRetries++
-					completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries, completionReason)
-					retryData := map[string]string{"completion_retry_count": fmt.Sprintf("%d", completionRetries)}
-					retryData["completion_addendum"] = completionAddendum
-					retryData = appendDecisionMetadata(retryData, "retry", completionReason)
-					retryData = appendReviewOutcomeMetadata(retryData, result)
-					retryData["triage_reason"] = completionReason
-					if err := l.tasks.SetTaskData(ctx, task.ID, retryData); err != nil {
-						return summary, err
-					}
-					if task.Metadata == nil {
-						task.Metadata = map[string]string{}
-					}
-					for key, value := range retryData {
-						task.Metadata[key] = value
-					}
-					_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: retryData, Timestamp: time.Now().UTC()})
-					if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusOpen); err != nil {
-						return summary, err
-					}
-					continue
-				}
-
-				completionAddendum = appendCompletionAddendum(completionAddendum, completionRetries+1, completionReason)
-				blockedData := map[string]string{
-					"triage_status":          "blocked",
-					"completion_retry_count": fmt.Sprintf("%d", completionRetries),
-					"completion_addendum":    completionAddendum,
-					"triage_reason":          completionReason,
-				}
-				blockedData = appendDecisionMetadata(blockedData, "blocked", completionReason)
-				blockedData = appendReviewOutcomeMetadata(blockedData, result)
-				if err := l.markTaskBlockedWithData(task.ID, blockedData); err != nil {
-					return summary, err
-				}
-				if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
-					return summary, err
-				}
-				finishedMetadata := map[string]string{
-					"triage_status":          "blocked",
-					"triage_reason":          completionReason,
-					"completion_retry_count": fmt.Sprintf("%d", completionRetries),
-					"completion_addendum":    completionAddendum,
-				}
-				finishedMetadata = appendDecisionMetadata(finishedMetadata, "blocked", completionReason)
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusBlocked), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
-				if err := l.tasks.SetTaskData(ctx, task.ID, blockedData); err != nil {
-					return summary, err
-				}
-				_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: blockedData, Timestamp: time.Now().UTC()})
-				if err := l.clearTaskTerminalState(task.ID); err != nil {
-					return summary, err
-				}
-				summary.Blocked++
-				return summary, nil
-			}
-
-			failedData := map[string]string{"triage_status": "failed"}
-			if result.Reason != "" {
-				failedData["triage_reason"] = result.Reason
-			}
-			failedData = appendDecisionMetadata(failedData, "failed", result.Reason)
-			if reviewFail || reviewRetries > 0 {
-				failedData["review_retry_count"] = fmt.Sprintf("%d", reviewRetries)
-			}
-			failedData = appendReviewOutcomeMetadata(failedData, result)
-			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
-				return summary, err
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
-				return summary, err
-			}
-			if err := l.clearTaskInFlight(task.ID); err != nil {
-				return summary, err
-			}
-			finishedMetadata := map[string]string{"triage_status": "failed"}
-			if result.Reason != "" {
-				finishedMetadata["triage_reason"] = result.Reason
-			}
-			finishedMetadata = appendDecisionMetadata(finishedMetadata, "failed", result.Reason)
-			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
-			summary.Failed++
-			return summary, nil
-		default:
-			failedData := map[string]string{"triage_status": "failed"}
-			if result.Reason != "" {
-				failedData["triage_reason"] = result.Reason
-			}
-			failedData = appendDecisionMetadata(failedData, "failed", result.Reason)
-			failedData = appendReviewOutcomeMetadata(failedData, result)
-			if err := l.tasks.SetTaskData(ctx, task.ID, failedData); err != nil {
-				return summary, err
-			}
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
-			if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
-				return summary, err
-			}
-			if err := l.clearTaskInFlight(task.ID); err != nil {
-				return summary, err
-			}
-			finishedMetadata := map[string]string{"triage_status": "failed"}
-			if result.Reason != "" {
-				finishedMetadata["triage_reason"] = result.Reason
-			}
-			finishedMetadata = appendDecisionMetadata(finishedMetadata, "failed", result.Reason)
-			finishedMetadata = appendReviewOutcomeMetadata(finishedMetadata, result)
-			_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: taskRepoRoot, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: finishedMetadata, Timestamp: time.Now().UTC()})
-			summary.Failed++
-			return summary, nil
-		}
+	return workitem.ImplementPayload{
+		TaskID:      task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		PromptContext: workitem.ImplementPromptContext{
+			ParentID: parentID,
+			Metadata: cloneStringMap(task.Metadata),
+		},
+		TDD:         options.TDDMode,
+		QualityGate: true,
 	}
 }
 

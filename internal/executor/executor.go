@@ -252,7 +252,9 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				return workitem.ImplementResult{}, err
 			}
 			if reviewResult.Status == contracts.RunnerResultCompleted && reviewResult.ReviewReady {
-				runnerResult.ReviewReady = true
+				if ReviewVerdictFromArtifacts(reviewResult) == "pass" {
+					runnerResult.ReviewReady = true
+				}
 				runnerResult.Artifacts = mergeStringMaps(runnerResult.Artifacts, reviewResult.Artifacts)
 				if reviewResult.LogPath != "" {
 					runnerResult.Artifacts = ensureStringMap(runnerResult.Artifacts)

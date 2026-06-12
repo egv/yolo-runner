@@ -2928,6 +2928,35 @@ func TestLoopEmitsLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestLoopRunTaskDelegatesToExecutorWhilePreservingEventTypeSequence(t *testing.T) {
+	repoRoot := t.TempDir()
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", ParentID: "root", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	sink := &recordingSink{}
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", RepoRoot: repoRoot, Backend: "codex", Model: "gpt-test"})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Completed != 1 {
+		t.Fatalf("expected completed summary, got %#v", summary)
+	}
+
+	wantTypes := []contracts.EventType{
+		contracts.EventTypeTaskStarted,
+		contracts.EventTypeRunnerStarted,
+		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeTaskFinished,
+	}
+	if gotTypes := eventTypes(sink.events); !equalEventTypes(gotTypes, wantTypes) {
+		t.Fatalf("event type sequence changed:\n got: %v\nwant: %v", gotTypes, wantTypes)
+	}
+	if got := sink.events[0].Metadata["repo_root"]; got != repoRoot {
+		t.Fatalf("expected task_started metadata from executor with repo_root=%q, got %#v", repoRoot, sink.events[0].Metadata)
+	}
+}
+
 func TestLoopEmitsParallelContextInRunnerStartedEvent(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
@@ -4439,6 +4468,26 @@ func eventsByType(events []contracts.Event, eventType contracts.EventType) []con
 		}
 	}
 	return result
+}
+
+func eventTypes(events []contracts.Event) []contracts.EventType {
+	result := make([]contracts.EventType, 0, len(events))
+	for _, event := range events {
+		result = append(result, event.Type)
+	}
+	return result
+}
+
+func equalEventTypes(left []contracts.EventType, right []contracts.EventType) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func indexOfEventType(events []contracts.Event, eventType contracts.EventType) int {
