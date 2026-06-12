@@ -57,6 +57,7 @@ type Executor struct {
 	Priority int
 
 	MarkTaskBlockedWithData func(taskID string, taskData map[string]string) error
+	MarkTaskCompleted       func(taskID string) error
 	ClearTaskTerminalState  func(taskID string) error
 	ClearTaskInFlight       func(taskID string) error
 }
@@ -252,7 +253,9 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				return workitem.ImplementResult{}, err
 			}
 			if reviewResult.Status == contracts.RunnerResultCompleted && reviewResult.ReviewReady {
-				runnerResult.ReviewReady = true
+				if ReviewVerdictFromArtifacts(reviewResult) == "pass" {
+					runnerResult.ReviewReady = true
+				}
 				runnerResult.Artifacts = mergeStringMaps(runnerResult.Artifacts, reviewResult.Artifacts)
 				if reviewResult.LogPath != "" {
 					runnerResult.Artifacts = ensureStringMap(runnerResult.Artifacts)
@@ -282,6 +285,9 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			}
 
 			if e.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
+				if err := markExecutorTaskCompleted(e, task.ID); err != nil {
+					return workitem.ImplementResult{}, err
+				}
 				blocked, err := RunLanding(ctx, task, LandingDependencies{
 					Tasks:                   taskManager,
 					Runner:                  e.Runner,
@@ -470,7 +476,22 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			if reason == "" {
 				reason = fmt.Sprintf("invalid runner result status %q", runnerResult.Status)
 			}
-			return e.resultFromRunnerResult(contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason, Artifacts: runnerResult.Artifacts}, taskBranch), nil
+			failedResult := contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason, Artifacts: runnerResult.Artifacts}
+			failedData := map[string]string{"triage_status": "failed", "triage_reason": reason}
+			failedData = appendExecutorDecisionMetadata(failedData, "failed", reason)
+			failedData = appendExecutorReviewOutcomeMetadata(failedData, failedResult)
+			if err := setExecutorTaskData(ctx, taskManager, task.ID, failedData); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusFailed); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			if err := clearExecutorInFlight(e, task.ID); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: failedData, Timestamp: time.Now().UTC()})
+			_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.TaskStatusFailed), Metadata: failedData, Timestamp: time.Now().UTC()})
+			return e.resultFromRunnerResult(failedResult, taskBranch), nil
 		}
 	}
 }
@@ -1010,6 +1031,13 @@ func markExecutorTaskBlockedWithData(e *Executor, taskID string, taskData map[st
 		return nil
 	}
 	return e.MarkTaskBlockedWithData(taskID, taskData)
+}
+
+func markExecutorTaskCompleted(e *Executor, taskID string) error {
+	if e == nil || e.MarkTaskCompleted == nil {
+		return nil
+	}
+	return e.MarkTaskCompleted(taskID)
 }
 
 func clearExecutorTerminalState(e *Executor, taskID string) error {
