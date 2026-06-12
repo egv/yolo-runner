@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -115,5 +118,113 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	}
 	if startedAt == "" || heartbeatAt == "" {
 		t.Fatalf("runner timestamps not populated: started_at=%q heartbeat_at=%q", startedAt, heartbeatAt)
+	}
+}
+
+func TestRunnerDaemonMaterializesEachPresetStrategyAndCleansUp(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	presets := map[string]envpreset.Preset{
+		"git": {
+			Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyGitClone},
+		},
+		"arc": {
+			Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyArcShared},
+		},
+		"path": {
+			Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath},
+		},
+	}
+	presetOrder := []string{"git", "arc", "path"}
+	for _, presetName := range presetOrder {
+		if _, err := store.Submit(workitem.Submission{
+			Kind:           workitem.KindPreflight,
+			Source:         "test-source",
+			SourceRef:      "TASK-" + presetName,
+			IdempotencyKey: "test-source/TASK-" + presetName + "/preflight",
+			Preset:         presetName,
+			Payload:        json.RawMessage(`{"task_id":"TASK"}`),
+		}); err != nil {
+			t.Fatalf("Submit(%s) error = %v", presetName, err)
+		}
+	}
+
+	workspaceRoot := t.TempDir()
+	materializedByStrategy := map[string]string{}
+	cleanedByStrategy := map[string]bool{}
+	handlerWorkspaceByPreset := map[string]string{}
+	materializer := func(_ context.Context, preset envpreset.Preset, itemID string) (envpreset.Workspace, error) {
+		strategy := string(preset.Workspace.Strategy)
+		path := filepath.Join(workspaceRoot, strategy, itemID)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return envpreset.Workspace{}, err
+		}
+		materializedByStrategy[strategy] = path
+		return envpreset.Workspace{
+			Path: path,
+			Cleanup: func() error {
+				cleanedByStrategy[strategy] = true
+				return os.RemoveAll(path)
+			},
+		}, nil
+	}
+
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPreflight: func(_ context.Context, item workitem.Item, workspace envpreset.Workspace) (workqueue.Result, error) {
+				if _, err := os.Stat(workspace.Path); err != nil {
+					t.Fatalf("handler received unavailable workspace %q: %v", workspace.Path, err)
+				}
+				handlerWorkspaceByPreset[item.Preset] = workspace.Path
+				return workqueue.Result{Payload: json.RawMessage(`{"ok":true}`)}, nil
+			},
+		},
+		environmentPresets: presets,
+		materialize:        materializer,
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-test",
+			heartbeatInterval: time.Hour,
+		},
+	}
+
+	for range presetOrder {
+		item, err := store.Claim("runner-test", presetOrder, time.Minute)
+		if err != nil {
+			t.Fatalf("Claim() error = %v", err)
+		}
+		if item == nil {
+			t.Fatal("Claim() returned nil item")
+		}
+		if err := daemon.runClaimedItem(ctx, *item); err != nil {
+			t.Fatalf("runClaimedItem(%s) error = %v", item.Preset, err)
+		}
+	}
+
+	for _, presetName := range presetOrder {
+		strategy := string(presets[presetName].Workspace.Strategy)
+		path := materializedByStrategy[strategy]
+		if path == "" {
+			t.Fatalf("strategy %s was not materialized", strategy)
+		}
+		if handlerWorkspaceByPreset[presetName] != path {
+			t.Fatalf("handler workspace for preset %s = %q, want %q", presetName, handlerWorkspaceByPreset[presetName], path)
+		}
+		if !cleanedByStrategy[strategy] {
+			t.Fatalf("strategy %s cleanup was not called", strategy)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("strategy %s workspace should be cleaned up, stat error = %v", strategy, err)
+		}
 	}
 }
