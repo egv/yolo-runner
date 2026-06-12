@@ -335,6 +335,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 	handle, err := l.options.Dispatcher.Submit(ctx, WorkDispatchRequest{
 		Task:     task,
 		Payload:  payload,
+		Priority: taskPriority,
 		Executor: exec,
 	})
 	if err != nil {
