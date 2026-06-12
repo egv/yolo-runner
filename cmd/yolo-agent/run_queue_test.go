@@ -19,6 +19,23 @@ func TestRunQueueWithRunnerOnceCompletesTaskEndToEnd(t *testing.T) {
 	repo := initSeededRepo(t)
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	taskID := "TASK-queue"
+	seedStore, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open(seed) error = %v", err)
+	}
+	if err := seedStore.Close(); err != nil {
+		t.Fatalf("Close(seed) error = %v", err)
+	}
+	seedRunners, err := openRunnerRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("openRunnerRegistry(seed) error = %v", err)
+	}
+	if err := seedRunners.Register("runner-once-test", []string{"linux"}, 1); err != nil {
+		t.Fatalf("Register(seed) error = %v", err)
+	}
+	if err := seedRunners.Close(); err != nil {
+		t.Fatalf("runner registry Close(seed) error = %v", err)
+	}
 	taskManager := newInMemoryTaskManager(contracts.Task{
 		ID:          taskID,
 		Title:       "Queued run task",
@@ -127,6 +144,78 @@ func TestRunQueueWithRunnerOnceCompletesTaskEndToEnd(t *testing.T) {
 	}
 	if len(producerRunner.requests) != 0 {
 		t.Fatalf("producer runner should not run locally when --queue is set, got %d requests", len(producerRunner.requests))
+	}
+}
+
+func TestEmbeddedRunnerForRunQueueCompletesTaskEndToEnd(t *testing.T) {
+	repo := initSeededRepo(t)
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	taskID := "TASK-embedded-queue"
+	taskManager := newInMemoryTaskManager(contracts.Task{
+		ID:          taskID,
+		Title:       "Embedded queued run task",
+		Description: "Run through the queue path without an external runner process.",
+		ParentID:    "root",
+		Status:      contracts.TaskStatusOpen,
+	})
+	fakeAgent := &fakeAgentRunner{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"commit_sha": "embedded-sha"}},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true, Artifacts: map[string]string{"review_verdict": "pass"}},
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := runWithComponents(ctx, runConfig{
+		repoRoot:           repo,
+		rootID:             "root",
+		profile:            "linux",
+		queuePath:          dbPath,
+		maxTasks:           1,
+		retryBudget:        1,
+		watchdogTimeout:    time.Minute,
+		watchdogInterval:   time.Second,
+		streamOutputBuffer: 64,
+	}, taskManager, fakeAgent, &fakeVCS{})
+	if err != nil {
+		t.Fatalf("runWithComponents() error = %v", err)
+	}
+
+	if got := taskManager.statusOf(taskID); got != contracts.TaskStatusClosed {
+		t.Fatalf("task status = %q, want %q", got, contracts.TaskStatusClosed)
+	}
+	if len(fakeAgent.requests) != 2 {
+		t.Fatalf("embedded runner requests = %d, want implement+review", len(fakeAgent.requests))
+	}
+
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("store Close() error = %v", err)
+		}
+	})
+	results, err := store.ListUnconsumedResults("yolo-agent-run")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("queued result should be consumed by run, got %#v", results)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	var embeddedRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runners WHERE id LIKE 'embedded-%'`).Scan(&embeddedRows); err != nil {
+		t.Fatalf("count embedded runner rows: %v", err)
+	}
+	if embeddedRows != 0 {
+		t.Fatalf("embedded runner rows after run = %d, want 0", embeddedRows)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,9 +18,12 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/codingagents"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/engine"
+	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
 	"github.com/egv/yolo-runner/v2/internal/version"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 const (
@@ -32,6 +36,11 @@ const (
 	backendGemini      = "gemini"
 	agentModeStream    = "stream"
 	agentModeUI        = "ui"
+
+	embeddedQueueRunnerPollInterval      = 50 * time.Millisecond
+	embeddedQueueRunnerHeartbeatInterval = 5 * time.Second
+	embeddedQueueRunnerLeaseTTL          = 10 * time.Minute
+	embeddedQueueRunnerLiveAfter         = 15 * time.Second
 )
 
 type runConfig struct {
@@ -524,6 +533,8 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	cloneManager, err := runCloneManager(cfg)
 	if err != nil {
 		return err
@@ -538,6 +549,13 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		})
 	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
+	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, vcs, eventSink)
+	if err != nil {
+		return err
+	}
+	if embeddedRunner != nil {
+		go embeddedRunner.cancelRunOnError(cancelRun)
+	}
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
 		MaxRetries:           cfg.retryBudget,
@@ -564,7 +582,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		Dispatcher:           dispatcher,
 	})
 	if eventSink != nil {
-		_ = eventSink.Emit(ctx, contracts.Event{
+		_ = eventSink.Emit(runCtx, contracts.Event{
 			Type:      contracts.EventTypeRunStarted,
 			TaskID:    cfg.rootID,
 			TaskTitle: "run",
@@ -573,9 +591,15 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		})
 	}
 
-	summary, err := loop.Run(ctx)
+	summary, err := loop.Run(runCtx)
+	if embeddedRunner != nil {
+		cancelRun()
+		if stopErr := embeddedRunner.Stop(); stopErr != nil && (err == nil || errors.Is(err, context.Canceled)) {
+			err = stopErr
+		}
+	}
 	if eventSink != nil {
-		_ = eventSink.Emit(ctx, contracts.Event{
+		_ = eventSink.Emit(context.Background(), contracts.Event{
 			Type:      contracts.EventTypeRunFinished,
 			TaskID:    cfg.rootID,
 			TaskTitle: "run",
@@ -628,6 +652,8 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	cloneManager, err := runCloneManager(cfg)
 	if err != nil {
 		return err
@@ -642,6 +668,13 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		})
 	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
+	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, vcs, eventSink)
+	if err != nil {
+		return err
+	}
+	if embeddedRunner != nil {
+		go embeddedRunner.cancelRunOnError(cancelRun)
+	}
 	loop := agent.NewLoopWithTaskEngine(storage, taskEngine, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
 		MaxRetries:           cfg.retryBudget,
@@ -668,7 +701,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		Dispatcher:           dispatcher,
 	})
 	if eventSink != nil {
-		_ = eventSink.Emit(ctx, contracts.Event{
+		_ = eventSink.Emit(runCtx, contracts.Event{
 			Type:      contracts.EventTypeRunStarted,
 			TaskID:    cfg.rootID,
 			TaskTitle: "run",
@@ -677,9 +710,15 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		})
 	}
 
-	summary, err := loop.Run(ctx)
+	summary, err := loop.Run(runCtx)
+	if embeddedRunner != nil {
+		cancelRun()
+		if stopErr := embeddedRunner.Stop(); stopErr != nil && (err == nil || errors.Is(err, context.Canceled)) {
+			err = stopErr
+		}
+	}
 	if eventSink != nil {
-		_ = eventSink.Emit(ctx, contracts.Event{
+		_ = eventSink.Emit(context.Background(), contracts.Event{
 			Type:      contracts.EventTypeRunFinished,
 			TaskID:    cfg.rootID,
 			TaskTitle: "run",
@@ -701,6 +740,241 @@ func runWorkDispatcher(cfg runConfig) (agent.WorkDispatcher, func() error, error
 		return nil, nil, err
 	}
 	return dispatcher, dispatcher.Close, nil
+}
+
+type embeddedQueueRunnerHandle struct {
+	cancel  context.CancelFunc
+	done    chan error
+	wait    sync.Once
+	waitErr error
+}
+
+func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner contracts.AgentRunner, vcs contracts.VCS, events contracts.EventSink) (*embeddedQueueRunnerHandle, error) {
+	if strings.TrimSpace(cfg.queuePath) == "" {
+		return nil, nil
+	}
+	preset := queuePresetForRun(cfg)
+	if preset == "" {
+		return nil, nil
+	}
+	live, err := queueHasLiveRunnerForPreset(cfg.queuePath, preset, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if live {
+		return nil, nil
+	}
+
+	store, err := workqueue.Open(cfg.queuePath)
+	if err != nil {
+		return nil, err
+	}
+	runners, err := openRunnerRegistry(cfg.queuePath)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+
+	runnerID := embeddedQueueRunnerID(preset)
+	capacity := cfg.concurrency
+	if capacity <= 0 {
+		capacity = 1
+	}
+	if err := runners.Register(runnerID, []string{preset}, capacity); err != nil {
+		_ = runners.Close()
+		_ = store.Close()
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	daemon := runnerDaemon{
+		store:   store,
+		runners: runners,
+		events:  embeddedQueueRunnerEventSink(events),
+		handlers: runnerKindRegistry{
+			workitem.KindImplement: newRunnerImplementKindHandler(embeddedQueueRunnerExecutorResolver(cfg, runner, events)),
+		},
+		environmentPresets: map[string]envpreset.Preset{
+			preset: {
+				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath, Path: cfg.repoRoot},
+				Landing:   envpreset.Landing{Type: embeddedQueueRunnerLanding(cfg)},
+			},
+		},
+		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+			return envpreset.Workspace{
+				Path: cfg.repoRoot,
+				VCS:  vcs,
+				Cleanup: func() error {
+					return nil
+				},
+			}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			presets:           []string{preset},
+			runnerID:          runnerID,
+			capacity:          capacity,
+			pollInterval:      embeddedQueueRunnerPollInterval,
+			heartbeatInterval: embeddedQueueRunnerHeartbeatInterval,
+			leaseTTL:          embeddedQueueRunnerLeaseTTL,
+		},
+	}
+
+	go func() {
+		runErr := daemon.Run(runCtx)
+		if err := unregisterQueueRunner(runners, runnerID); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
+			runErr = err
+		}
+		if err := runners.Close(); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
+			runErr = err
+		}
+		if err := store.Close(); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
+			runErr = err
+		}
+		done <- runErr
+	}()
+
+	return &embeddedQueueRunnerHandle{cancel: cancel, done: done}, nil
+}
+
+func (h *embeddedQueueRunnerHandle) Stop() error {
+	if h == nil {
+		return nil
+	}
+	h.cancel()
+	err := h.Wait()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func (h *embeddedQueueRunnerHandle) Wait() error {
+	if h == nil {
+		return nil
+	}
+	h.wait.Do(func() {
+		h.waitErr = <-h.done
+	})
+	return h.waitErr
+}
+
+func (h *embeddedQueueRunnerHandle) cancelRunOnError(cancel context.CancelFunc) {
+	if h == nil || cancel == nil {
+		return
+	}
+	if err := h.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		cancel()
+	}
+}
+
+func queueHasLiveRunnerForPreset(queuePath string, preset string, now time.Time) (bool, error) {
+	runners, err := openRunnerRegistry(queuePath)
+	if err != nil {
+		return false, err
+	}
+	defer runners.Close()
+
+	rows, err := runners.db.Query(`
+SELECT presets, capacity, heartbeat_at
+FROM runners`)
+	if err != nil {
+		return false, fmt.Errorf("list queue runners: %w", err)
+	}
+	defer rows.Close()
+
+	liveAfter := now.Add(-embeddedQueueRunnerLiveAfter)
+	for rows.Next() {
+		var rawPresets string
+		var capacity int
+		var heartbeatAt string
+		if err := rows.Scan(&rawPresets, &capacity, &heartbeatAt); err != nil {
+			return false, fmt.Errorf("scan queue runner: %w", err)
+		}
+		if capacity <= 0 || !runnerPresetMatches(rawPresets, preset) {
+			continue
+		}
+		heartbeat, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(heartbeatAt))
+		if err != nil {
+			return false, fmt.Errorf("parse queue runner heartbeat %q: %w", heartbeatAt, err)
+		}
+		if !heartbeat.Before(liveAfter) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read queue runners: %w", err)
+	}
+	return false, nil
+}
+
+func runnerPresetMatches(rawPresets string, preset string) bool {
+	preset = strings.TrimSpace(preset)
+	for _, candidate := range parseRunnerPresets(rawPresets) {
+		if candidate == preset {
+			return true
+		}
+	}
+	return false
+}
+
+func unregisterQueueRunner(runners *runnerRegistry, runnerID string) error {
+	if runners == nil || runners.db == nil {
+		return nil
+	}
+	runnerID = strings.TrimSpace(runnerID)
+	if runnerID == "" {
+		return nil
+	}
+	if _, err := runners.db.Exec(`DELETE FROM runners WHERE id = ?`, runnerID); err != nil {
+		return fmt.Errorf("unregister embedded queue runner %q: %w", runnerID, err)
+	}
+	return nil
+}
+
+func embeddedQueueRunnerID(preset string) string {
+	return fmt.Sprintf("embedded-%d-%d-%s", os.Getpid(), time.Now().UnixNano(), safeRunnerIDForPath(preset))
+}
+
+func embeddedQueueRunnerExecutorResolver(cfg runConfig, runner contracts.AgentRunner, events contracts.EventSink) runnerImplementExecutorResolver {
+	return func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+		return runnerImplementExecutor{
+			Runner: runner,
+			Agent: envpreset.ResolvedAgent{
+				Backend:          cfg.backend,
+				Model:            cfg.model,
+				RunnerTimeout:    cfg.runnerTimeout,
+				WatchdogTimeout:  cfg.watchdogTimeout,
+				WatchdogInterval: cfg.watchdogInterval,
+			},
+			Landing: embeddedQueueRunnerLanding(cfg),
+			Events:  events,
+		}, nil
+	}
+}
+
+func embeddedQueueRunnerLanding(cfg runConfig) envpreset.LandingType {
+	landingMode, err := resolveLandingMode(cfg.repoRoot)
+	if err != nil {
+		return envpreset.LandingTypeGitMerge
+	}
+	if landingMode == landingTypeArcPR {
+		return envpreset.LandingTypeArcPR
+	}
+	return envpreset.LandingTypeGitMerge
+}
+
+type embeddedQueueDiscardEventSink struct{}
+
+func embeddedQueueRunnerEventSink(sink contracts.EventSink) contracts.EventSink {
+	if sink != nil {
+		return sink
+	}
+	return embeddedQueueDiscardEventSink{}
+}
+
+func (embeddedQueueDiscardEventSink) Emit(context.Context, contracts.Event) error {
+	return nil
 }
 
 func queuePresetForRun(cfg runConfig) string {
