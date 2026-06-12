@@ -323,6 +323,7 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		QueuePos:                queuePos,
 		Priority:                taskPriority,
 		MarkTaskBlockedWithData: l.markTaskBlockedWithData,
+		MarkTaskCompleted:       l.markTaskCompleted,
 		ClearTaskTerminalState:  l.clearTaskTerminalState,
 		ClearTaskInFlight:       l.clearTaskInFlight,
 	}

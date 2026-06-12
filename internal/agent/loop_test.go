@@ -3743,6 +3743,39 @@ func TestLoopUsesLandingLockAroundMergeAndPush(t *testing.T) {
 	}
 }
 
+func TestLoopPersistsTaskCompletedBeforeLandingInterruptionWindow(t *testing.T) {
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, "scheduler-state.json")
+	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}}
+	vcs := &fakeVCS{pushErr: errors.New("simulated landing interruption")}
+	landing := &stateCapturingLandingLock{store: newSchedulerStateStore(statePath, "root")}
+	loop := NewLoop(mgr, run, nil, LoopOptions{ParentID: "root", SchedulerStatePath: statePath, VCS: vcs, MergeOnSuccess: true})
+	loop.landingLock = landing
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		t.Fatalf("loop failed: %v", err)
+	}
+	if summary.Blocked != 1 {
+		t.Fatalf("expected landing failure to block task, got %#v", summary)
+	}
+	if landing.lockCalls != 1 {
+		t.Fatalf("expected landing lock to capture state once, got %d", landing.lockCalls)
+	}
+	if landing.err != nil {
+		t.Fatalf("capture scheduler state at landing start: %v", landing.err)
+	}
+	if _, ok := landing.snapshot.Completed["t-1"]; !ok {
+		t.Fatalf("expected task completed before landing starts, got completed=%v in_flight=%v blocked=%v",
+			landing.snapshot.Completed, landing.snapshot.InFlight, landing.snapshot.Blocked)
+	}
+	if _, ok := landing.snapshot.InFlight["t-1"]; ok {
+		t.Fatalf("expected task removed from in-flight before landing starts, got completed=%v in_flight=%v",
+			landing.snapshot.Completed, landing.snapshot.InFlight)
+	}
+}
+
 func TestLoopEmitsLandingQueueLifecycleEventsOnAutoLandSuccess(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
 	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}, {Status: contracts.RunnerResultCompleted, ReviewReady: true}}}
@@ -4730,6 +4763,23 @@ func (l *recordingLandingLock) Lock() {
 }
 
 func (l *recordingLandingLock) Unlock() {
+	l.unlockCalls++
+}
+
+type stateCapturingLandingLock struct {
+	store       *schedulerStateStore
+	snapshot    schedulerStateSnapshot
+	err         error
+	lockCalls   int
+	unlockCalls int
+}
+
+func (l *stateCapturingLandingLock) Lock() {
+	l.lockCalls++
+	l.snapshot, l.err = l.store.Load()
+}
+
+func (l *stateCapturingLandingLock) Unlock() {
 	l.unlockCalls++
 }
 

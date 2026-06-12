@@ -57,6 +57,7 @@ type Executor struct {
 	Priority int
 
 	MarkTaskBlockedWithData func(taskID string, taskData map[string]string) error
+	MarkTaskCompleted       func(taskID string) error
 	ClearTaskTerminalState  func(taskID string) error
 	ClearTaskInFlight       func(taskID string) error
 }
@@ -284,6 +285,9 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			}
 
 			if e.MergeOnSuccess && taskVCS != nil && taskBranch != "" {
+				if err := markExecutorTaskCompleted(e, task.ID); err != nil {
+					return workitem.ImplementResult{}, err
+				}
 				blocked, err := RunLanding(ctx, task, LandingDependencies{
 					Tasks:                   taskManager,
 					Runner:                  e.Runner,
@@ -1027,6 +1031,13 @@ func markExecutorTaskBlockedWithData(e *Executor, taskID string, taskData map[st
 		return nil
 	}
 	return e.MarkTaskBlockedWithData(taskID, taskData)
+}
+
+func markExecutorTaskCompleted(e *Executor, taskID string) error {
+	if e == nil || e.MarkTaskCompleted == nil {
+		return nil
+	}
+	return e.MarkTaskCompleted(taskID)
 }
 
 func clearExecutorTerminalState(e *Executor, taskID string) error {
