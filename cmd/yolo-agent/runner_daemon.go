@@ -1,0 +1,512 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/agent"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
+)
+
+const defaultRunnerDaemonPollInterval = time.Second
+
+var errRunnerDaemonLockHeld = errors.New("runner daemon lock held")
+
+var runRunnerDaemon = defaultRunRunnerDaemon
+
+type runnerDaemonCommandConfig struct {
+	queuePath         string
+	presets           []string
+	runnerID          string
+	lockPath          string
+	once              bool
+	capacity          int
+	pollInterval      time.Duration
+	heartbeatInterval time.Duration
+	leaseTTL          time.Duration
+}
+
+type runnerKindHandler func(context.Context, workitem.Item) (workqueue.Result, error)
+
+type runnerKindRegistry map[workitem.Kind]runnerKindHandler
+
+func runnerDaemonCommand(args []string) int {
+	fs := flag.NewFlagSet("yolo-agent runner", flag.ContinueOnError)
+	queuePath := fs.String("queue", "", "Path to the SQLite work queue database")
+	presets := fs.String("presets", "", "Comma-separated environment preset names this runner serves")
+	runnerID := fs.String("runner-id", "", "Stable runner ID for registration and singleton locking")
+	once := fs.Bool("once", false, "Claim and run at most one item, then exit")
+	capacity := fs.Int("capacity", 1, "Runner capacity to register in the queue")
+	pollInterval := fs.Duration("poll-interval", defaultRunnerDaemonPollInterval, "Delay between empty claim attempts")
+	heartbeatInterval := fs.Duration("heartbeat-interval", 5*time.Second, "Interval for item and runner heartbeats")
+	leaseTTL := fs.Duration("lease-ttl", 10*time.Minute, "Claim lease duration")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected runner argument: %s\n", fs.Arg(0))
+		return 1
+	}
+
+	handler := runRunnerDaemon
+	if handler == nil {
+		handler = defaultRunRunnerDaemon
+	}
+	if err := handler(context.Background(), runnerDaemonCommandConfig{
+		queuePath:         *queuePath,
+		presets:           parseRunnerPresets(*presets),
+		runnerID:          *runnerID,
+		once:              *once,
+		capacity:          *capacity,
+		pollInterval:      *pollInterval,
+		heartbeatInterval: *heartbeatInterval,
+		leaseTTL:          *leaseTTL,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, agent.FormatActionableError(err))
+		return 1
+	}
+	return 0
+}
+
+func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	normalized, err := normalizeRunnerDaemonConfig(cfg)
+	if err != nil {
+		return err
+	}
+	cfg = normalized
+
+	lock, err := acquireRunnerDaemonLock(cfg.lockPath, cfg.runnerID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = lock.Release()
+	}()
+
+	store, err := workqueue.Open(cfg.queuePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	runners, err := openRunnerRegistry(cfg.queuePath)
+	if err != nil {
+		return err
+	}
+	defer runners.Close()
+
+	if err := runners.Register(cfg.runnerID, cfg.presets, cfg.capacity); err != nil {
+		return err
+	}
+
+	daemon := runnerDaemon{
+		store:    store,
+		runners:  runners,
+		handlers: defaultRunnerKindRegistry(),
+		cfg:      cfg,
+	}
+	return daemon.Run(ctx)
+}
+
+type runnerDaemon struct {
+	store    *workqueue.Store
+	runners  *runnerRegistry
+	handlers runnerKindRegistry
+	cfg      runnerDaemonCommandConfig
+}
+
+func (d runnerDaemon) Run(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := d.runners.Heartbeat(d.cfg.runnerID); err != nil {
+			return err
+		}
+		if _, err := d.store.RequeueStale(time.Now().UTC()); err != nil {
+			return err
+		}
+
+		item, err := d.store.Claim(d.cfg.runnerID, d.cfg.presets, d.cfg.leaseTTL)
+		if err != nil {
+			return err
+		}
+		if item == nil {
+			if d.cfg.once {
+				return nil
+			}
+			if err := waitRunnerDaemonPollInterval(ctx, d.cfg.pollInterval); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := d.runClaimedItem(ctx, *item); err != nil {
+			return err
+		}
+		if d.cfg.once {
+			return nil
+		}
+	}
+}
+
+func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) error {
+	startedAt := time.Now().UTC()
+	handler, ok := d.handlers[item.Kind]
+	if !ok || handler == nil {
+		return d.failClaimedItem(item, startedAt, fmt.Errorf("no runner handler registered for kind %q", item.Kind))
+	}
+
+	itemCtx, cancel := context.WithCancel(ctx)
+	heartbeatDone, heartbeatErrs := startRunnerItemHeartbeat(itemCtx, d.store, item.ID, d.cfg.runnerID, d.cfg.heartbeatInterval)
+	result, handlerErr := handler(itemCtx, item)
+	cancel()
+	<-heartbeatDone
+
+	var heartbeatErr error
+	if err, ok := <-heartbeatErrs; ok {
+		heartbeatErr = err
+	}
+	if heartbeatErr != nil && handlerErr == nil {
+		handlerErr = heartbeatErr
+	}
+	if handlerErr != nil {
+		return d.failClaimedItem(item, startedAt, handlerErr)
+	}
+
+	if result.StartedAt.IsZero() {
+		result.StartedAt = startedAt
+	}
+	if result.FinishedAt.IsZero() {
+		result.FinishedAt = time.Now().UTC()
+	}
+	return d.store.Complete(item.ID, result)
+}
+
+func (d runnerDaemon) failClaimedItem(item workitem.Item, startedAt time.Time, cause error) error {
+	payload, err := json.Marshal(map[string]any{
+		"status":  string(workqueue.ResultStatusFailed),
+		"kind":    string(item.Kind),
+		"item_id": item.ID,
+		"reason":  cause.Error(),
+	})
+	if err != nil {
+		return err
+	}
+	return d.store.Fail(item.ID, workqueue.Result{
+		Payload:    payload,
+		StartedAt:  startedAt,
+		FinishedAt: time.Now().UTC(),
+	})
+}
+
+func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemID string, runnerID string, interval time.Duration) (<-chan struct{}, <-chan error) {
+	done := make(chan struct{})
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(done)
+		defer close(errs)
+		if err := store.Heartbeat(itemID, runnerID); err != nil {
+			errs <- err
+			return
+		}
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := store.Heartbeat(itemID, runnerID); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}
+	}()
+
+	return done, errs
+}
+
+func defaultRunnerKindRegistry() runnerKindRegistry {
+	registry := runnerKindRegistry{}
+	for _, kind := range []workitem.Kind{
+		workitem.KindImplement,
+		workitem.KindReview,
+		workitem.KindPreflight,
+		workitem.KindSplit,
+		workitem.KindPRReview,
+		workitem.KindFinalize,
+	} {
+		registry[kind] = stubRunnerKindHandler
+	}
+	return registry
+}
+
+func stubRunnerKindHandler(_ context.Context, item workitem.Item) (workqueue.Result, error) {
+	payload, err := json.Marshal(map[string]any{
+		"status":  "stubbed",
+		"kind":    string(item.Kind),
+		"item_id": item.ID,
+	})
+	if err != nil {
+		return workqueue.Result{}, err
+	}
+	return workqueue.Result{Payload: payload}, nil
+}
+
+func normalizeRunnerDaemonConfig(cfg runnerDaemonCommandConfig) (runnerDaemonCommandConfig, error) {
+	cfg.queuePath = strings.TrimSpace(cfg.queuePath)
+	if cfg.queuePath == "" {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--queue is required")
+	}
+	if !strings.HasPrefix(cfg.queuePath, "file:") && cfg.queuePath != ":memory:" {
+		abs, err := filepath.Abs(cfg.queuePath)
+		if err != nil {
+			return runnerDaemonCommandConfig{}, fmt.Errorf("resolve queue path %q: %w", cfg.queuePath, err)
+		}
+		cfg.queuePath = abs
+	}
+
+	cfg.presets = normalizeRunnerPresets(cfg.presets)
+	if len(cfg.presets) == 0 {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--presets is required")
+	}
+	cfg.runnerID = strings.TrimSpace(cfg.runnerID)
+	if cfg.runnerID == "" {
+		cfg.runnerID = defaultRunnerID(cfg.presets)
+	}
+	if cfg.capacity <= 0 {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--capacity must be greater than 0")
+	}
+	if cfg.pollInterval <= 0 {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--poll-interval must be greater than 0")
+	}
+	if cfg.heartbeatInterval <= 0 {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--heartbeat-interval must be greater than 0")
+	}
+	if cfg.leaseTTL <= 0 {
+		return runnerDaemonCommandConfig{}, fmt.Errorf("--lease-ttl must be greater than 0")
+	}
+	cfg.lockPath = strings.TrimSpace(cfg.lockPath)
+	if cfg.lockPath == "" {
+		cfg.lockPath = defaultRunnerDaemonLockPath(cfg.queuePath, cfg.runnerID)
+	}
+	return cfg, nil
+}
+
+func parseRunnerPresets(raw string) []string {
+	return normalizeRunnerPresets(strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}))
+}
+
+func normalizeRunnerPresets(presets []string) []string {
+	seen := map[string]bool{}
+	normalized := make([]string, 0, len(presets))
+	for _, preset := range presets {
+		preset = strings.TrimSpace(preset)
+		if preset == "" || seen[preset] {
+			continue
+		}
+		seen[preset] = true
+		normalized = append(normalized, preset)
+	}
+	return normalized
+}
+
+func defaultRunnerID(presets []string) string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		host = "local"
+	}
+	return host + "-" + strings.Join(presets, "-")
+}
+
+func defaultRunnerDaemonLockPath(queuePath string, runnerID string) string {
+	if strings.HasPrefix(queuePath, "file:") || queuePath == ":memory:" {
+		return filepath.Join(os.TempDir(), "yolo-runner-"+safeRunnerIDForPath(runnerID)+".lock")
+	}
+	return filepath.Join(filepath.Dir(queuePath), "runner-"+safeRunnerIDForPath(runnerID)+".lock")
+}
+
+func safeRunnerIDForPath(runnerID string) string {
+	var b strings.Builder
+	for _, r := range runnerID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "runner"
+	}
+	return b.String()
+}
+
+func waitRunnerDaemonPollInterval(ctx context.Context, interval time.Duration) error {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+type runnerDaemonLock struct {
+	path string
+	file *os.File
+}
+
+func acquireRunnerDaemonLock(lockPath string, runnerID string) (*runnerDaemonLock, error) {
+	lockPath = strings.TrimSpace(lockPath)
+	if lockPath == "" {
+		return nil, errors.New("runner daemon lock path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("cannot create runner daemon lock directory for %s: %w", lockPath, err)
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open runner daemon lock at %s: %w", lockPath, err)
+	}
+	if err := lockTrackerWatchFile(file); err != nil {
+		_ = file.Close()
+		if errors.Is(err, errTrackerWatchLockHeld) {
+			return nil, fmt.Errorf("%w at %s", errRunnerDaemonLockHeld, lockPath)
+		}
+		return nil, fmt.Errorf("cannot acquire runner daemon lock at %s: %w", lockPath, err)
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = unlockTrackerWatchFile(file)
+		_ = file.Close()
+		return nil, fmt.Errorf("cannot update runner daemon lock at %s: %w", lockPath, err)
+	}
+	if _, err := fmt.Fprintf(file, "runner_id=%s\npid=%d\n", runnerID, os.Getpid()); err != nil {
+		_ = unlockTrackerWatchFile(file)
+		_ = file.Close()
+		return nil, fmt.Errorf("cannot update runner daemon lock at %s: %w", lockPath, err)
+	}
+	return &runnerDaemonLock{path: lockPath, file: file}, nil
+}
+
+func (l *runnerDaemonLock) Release() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	file := l.file
+	l.file = nil
+	unlockErr := unlockTrackerWatchFile(file)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("cannot release runner daemon lock at %s: %w", l.path, unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("cannot close runner daemon lock at %s: %w", l.path, closeErr)
+	}
+	return nil
+}
+
+type runnerRegistry struct {
+	db *sql.DB
+}
+
+func openRunnerRegistry(queuePath string) (*runnerRegistry, error) {
+	db, err := sql.Open("sqlite", queuePath)
+	if err != nil {
+		return nil, fmt.Errorf("open runner registry: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure runner registry busy_timeout: %w", err)
+	}
+	return &runnerRegistry{db: db}, nil
+}
+
+func (r *runnerRegistry) Close() error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	return r.db.Close()
+}
+
+func (r *runnerRegistry) Register(runnerID string, presets []string, capacity int) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("runner registry is not open")
+	}
+	now := formatRunnerDaemonTime(time.Now().UTC())
+	_, err := r.db.Exec(`
+INSERT INTO runners (id, pid, presets, capacity, started_at, heartbeat_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	pid = excluded.pid,
+	presets = excluded.presets,
+	capacity = excluded.capacity,
+	started_at = excluded.started_at,
+	heartbeat_at = excluded.heartbeat_at`,
+		runnerID,
+		os.Getpid(),
+		strings.Join(presets, ","),
+		capacity,
+		now,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("register runner %q: %w", runnerID, err)
+	}
+	return nil
+}
+
+func (r *runnerRegistry) Heartbeat(runnerID string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("runner registry is not open")
+	}
+	result, err := r.db.Exec(`
+UPDATE runners
+SET pid = ?, heartbeat_at = ?
+WHERE id = ?`,
+		os.Getpid(),
+		formatRunnerDaemonTime(time.Now().UTC()),
+		runnerID,
+	)
+	if err != nil {
+		return fmt.Errorf("heartbeat runner %q: %w", runnerID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("heartbeat runner %q rows affected: %w", runnerID, err)
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func formatRunnerDaemonTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
