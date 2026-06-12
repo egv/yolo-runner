@@ -7,21 +7,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
-
-type arcPRReviewModelInput struct {
-	State      arcreview.PRRuntimeState
-	Model      string
-	RepoRoot   string
-	Timeout    time.Duration
-	MaxRetries int
-	Metadata   map[string]string
-	OnProgress func(contracts.RunnerProgress)
-}
 
 func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, input arcPRReviewModelInput) ([]byte, error) {
 	if ctx == nil {
