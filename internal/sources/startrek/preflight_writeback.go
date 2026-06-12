@@ -68,6 +68,10 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 		return s.handlePreflightResult(ctx, item, result)
 	case workitem.KindSplit:
 		return s.handleSplitResult(ctx, item, result)
+	case workitem.KindImplement:
+		return s.handleImplementResult(ctx, item, result)
+	case workitem.KindFinalize:
+		return s.handleFinalizeResult(ctx, item, result)
 	default:
 		return nil, nil
 	}
