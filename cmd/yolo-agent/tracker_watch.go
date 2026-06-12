@@ -15,6 +15,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/engine"
+	startreksource "github.com/egv/yolo-runner/v2/internal/sources/startrek"
 	"github.com/egv/yolo-runner/v2/internal/startrek"
 	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
@@ -297,13 +298,8 @@ type trackerWatchStartrekBackend interface {
 	CreateIssueComment(ctx context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error)
 }
 
-type trackerWatchStartrekTaskCycleAction string
-
 const (
-	trackerWatchStartrekTaskCycleWait      trackerWatchStartrekTaskCycleAction = "wait"
-	trackerWatchStartrekTaskCycleSplit     trackerWatchStartrekTaskCycleAction = "split"
-	trackerWatchStartrekTaskCycleImplement trackerWatchStartrekTaskCycleAction = "implement"
-	trackerWatchStartrekSplitVersion                                           = "strict-v1"
+	trackerWatchStartrekSplitVersion = "strict-v1"
 )
 
 func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend trackerWatchStartrekBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, tasks map[string]contracts.Task, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
@@ -315,7 +311,7 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		if strings.TrimSpace(summary.ID) == strings.TrimSpace(queueRoot.ID) {
 			continue
 		}
-		task := trackerWatchStartrekTaskFromTree(summary, tasks)
+		task := startreksource.TrackerWatchStartrekTaskFromTree(summary, tasks)
 		preflightQueueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, backend, queueRoot, task, tasks, parentCache)
 		if err != nil {
 			return err
@@ -334,8 +330,8 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		if err != nil {
 			return err
 		}
-		switch planTrackerWatchStartrekTaskCycle(queueRoot, task, ready) {
-		case trackerWatchStartrekTaskCycleSplit:
+		switch startreksource.PlanTrackerWatchStartrekTaskCycle(queueRoot, task, ready) {
+		case startreksource.TaskCycleSplit:
 			if err := runTrackerWatchStartrekSplit(ctx, backend, runner, trackerWatchStartrekSplitInput{
 				TaskSummary:      summary,
 				QueueRoot:        queueRoot,
@@ -350,7 +346,7 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 			}); err != nil {
 				return err
 			}
-		case trackerWatchStartrekTaskCycleImplement:
+		case startreksource.TaskCycleImplement:
 			hasReadyTask = true
 		}
 	}
@@ -358,20 +354,6 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 		return nil
 	}
 	return runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, queueRootPath, trackerAgentConfig)
-}
-
-func trackerWatchStartrekTaskFromTree(summary contracts.TaskSummary, tasks map[string]contracts.Task) contracts.Task {
-	taskID := strings.TrimSpace(summary.ID)
-	if taskID != "" {
-		if task, ok := tasks[taskID]; ok {
-			return task
-		}
-	}
-	return contracts.Task{
-		ID:     taskID,
-		Title:  strings.TrimSpace(summary.Title),
-		Status: contracts.TaskStatusOpen,
-	}
 }
 
 func trackerWatchStartrekPreflightQueueRoot(ctx context.Context, backend trackerWatchStartrekBackend, queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task, parentCache map[string]contracts.Task) (contracts.Task, error) {
@@ -466,21 +448,6 @@ func appendUniqueTrackerWatchStartrekDependencyID(ids []string, seen map[string]
 	}
 	seen[key] = struct{}{}
 	return append(ids, id)
-}
-
-func planTrackerWatchStartrekTaskCycle(queueRoot contracts.Task, task contracts.Task, preflightReady bool) trackerWatchStartrekTaskCycleAction {
-	if !preflightReady {
-		return trackerWatchStartrekTaskCycleWait
-	}
-	taskID := strings.TrimSpace(task.ID)
-	if taskID == "" || strings.EqualFold(taskID, strings.TrimSpace(queueRoot.ID)) {
-		return trackerWatchStartrekTaskCycleWait
-	}
-	parentID := strings.TrimSpace(task.ParentID)
-	if parentID == "" || strings.EqualFold(parentID, strings.TrimSpace(queueRoot.ID)) {
-		return trackerWatchStartrekTaskCycleSplit
-	}
-	return trackerWatchStartrekTaskCycleImplement
 }
 
 type trackerWatchStartrekSplitInput struct {
