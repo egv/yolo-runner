@@ -40,17 +40,21 @@ func (f PRStateFetcherFunc) FetchPRRuntimeState(ctx context.Context, workspace s
 }
 
 type Source struct {
-	SourceName   string
-	Preset       string
-	Reviewer     string
-	Workspaces   []string
-	Branches     []string
-	AllowShip    bool
-	Priority     int
-	MaxAttempts  int
-	State        *arcreviewstate.Store
-	Lister       PRLister
-	StateFetcher PRStateFetcher
+	SourceName    string
+	Preset        string
+	Reviewer      string
+	Workspaces    []string
+	Branches      []string
+	AllowShip     bool
+	Priority      int
+	MaxAttempts   int
+	State         *arcreviewstate.Store
+	Lister        PRLister
+	StateFetcher  PRStateFetcher
+	APIClient     *arcanum.APIClient
+	ReplyApplier  arcreview.PRReviewCycleReplyApplier
+	ReviewApplier arcreview.PRReviewCycleReviewApplier
+	ShipGate      arcreview.PRReviewCycleShipGate
 }
 
 type discoveredPR struct {
@@ -147,51 +151,6 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 	return submissions, nil
 }
 
-func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if item.Kind != workitem.KindPRReview {
-		return nil, nil
-	}
-	if s == nil {
-		return nil, errors.New("arcpr source is required")
-	}
-	if s.State == nil {
-		return nil, errors.New("arcpr source state store is required")
-	}
-	if result.Status != "" && result.Status != workqueue.ResultStatusCompleted {
-		return nil, nil
-	}
-
-	payload, err := workitem.DecodePRReviewPayload(item.Payload)
-	if err != nil {
-		return nil, err
-	}
-	resultPayload, err := workitem.DecodePRReviewResult(result.Payload)
-	if err != nil {
-		return nil, err
-	}
-
-	prID := fallbackText(payload.PRID, strings.TrimPrefix(strings.TrimSpace(item.SourceRef), "pr:"))
-	if prID == "" {
-		return nil, errors.New("arc PR ID is required")
-	}
-	if revision := strings.TrimSpace(resultPayload.RevisionReviewed); revision != "" {
-		if err := s.State.StoreReviewedRevision(ctx, prID, revision); err != nil {
-			return nil, err
-		}
-	}
-
-	repliedCommentIDs := resultReplyCommentIDs(resultPayload.Replies)
-	if len(repliedCommentIDs) > 0 {
-		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, repliedCommentIDs); err != nil {
-			return nil, err
-		}
-	}
-	return nil, nil
-}
-
 func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 	seen := map[string]bool{}
 	var discovered []discoveredPR
@@ -277,16 +236,6 @@ func commentSetHash(commentIDs []string) string {
 		hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func resultReplyCommentIDs(replies []workitem.PRReviewReply) []string {
-	ids := make([]string, 0, len(replies))
-	for _, reply := range replies {
-		if id := strings.TrimSpace(reply.CommentID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	return normalizeStrings(ids)
 }
 
 func normalizeStrings(values []string) []string {
