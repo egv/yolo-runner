@@ -1126,7 +1126,7 @@ func (s *mirrorEventSink) Emit(_ context.Context, event contracts.Event) error {
 		return nil
 	}
 	select {
-	case s.ch <- event:
+	case s.ch <- event.WithClonedMetadata():
 	default:
 	}
 	return nil

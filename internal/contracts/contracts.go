@@ -250,6 +250,23 @@ type Event struct {
 	Timestamp time.Time
 }
 
+// WithClonedMetadata returns a copy of the event whose Metadata map is
+// private. Sinks that buffer events for asynchronous or deferred marshaling
+// must call this: producers may keep mutating the map they attached after
+// Emit returns, and a concurrent map iteration during JSON marshal is a
+// runtime-fatal error.
+func (e Event) WithClonedMetadata() Event {
+	if len(e.Metadata) == 0 {
+		return e
+	}
+	cloned := make(map[string]string, len(e.Metadata))
+	for key, value := range e.Metadata {
+		cloned[key] = value
+	}
+	e.Metadata = cloned
+	return e
+}
+
 func MarshalEventJSONL(event Event) (string, error) {
 	payload := struct {
 		Type      EventType         `json:"type"`

@@ -82,7 +82,7 @@ func (s *StreamEventSink) Emit(_ context.Context, event Event) error {
 }
 
 func (s *StreamEventSink) queueRunnerOutputLocked(event Event) {
-	eventCopy := event
+	eventCopy := event.WithClonedMetadata()
 	s.pendingOutput = &eventCopy
 	if s.pendingCount < s.maxPending {
 		s.pendingCount++
