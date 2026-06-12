@@ -21,6 +21,7 @@ import (
 
 const (
 	defaultSourceName            = "startrek"
+	defaultReadyLabel            = "yolo-agent-ready"
 	defaultPreflightProcessLabel = "yolo-agent-in-progress"
 	defaultNeedsInfoLabel        = "needs-info"
 	defaultNeedsInfoMarker       = "needs-info"
@@ -44,6 +45,7 @@ type Source struct {
 	SourceName      string
 	Tracker         PreflightWritebackTracker
 	State           *StateStore
+	ReadyLabel      string
 	ProcessingLabel string
 	NeedsInfoLabel  string
 	Marker          string
@@ -61,51 +63,43 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	if item.Kind != workitem.KindPreflight {
 		return nil, nil
 	}
-	if err := s.handlePreflightResult(ctx, item, result); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	return s.handlePreflightResult(ctx, item, result)
 }
 
-func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, result workqueue.Result) error {
+func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if s == nil {
-		return errors.New("startrek source is required")
+		return nil, errors.New("startrek source is required")
 	}
 	if s.Tracker == nil {
-		return errors.New("startrek preflight writeback tracker is required")
+		return nil, errors.New("startrek preflight writeback tracker is required")
 	}
 	if s.State == nil {
-		return errors.New("startrek source state store is required")
+		return nil, errors.New("startrek source state store is required")
 	}
 	if result.Status != "" && result.Status != workqueue.ResultStatusCompleted {
-		return fmt.Errorf("startrek preflight result for item %q has unsupported status %q", item.ID, result.Status)
+		return nil, fmt.Errorf("startrek preflight result for item %q has unsupported status %q", item.ID, result.Status)
 	}
 
 	idempotencyKey := strings.TrimSpace(item.IdempotencyKey)
 	if idempotencyKey == "" {
-		return errors.New("startrek preflight item idempotency key is required")
-	}
-	if _, ok, err := s.State.GetPreflightWriteback(ctx, idempotencyKey); err != nil {
-		return err
-	} else if ok {
-		return nil
+		return nil, errors.New("startrek preflight item idempotency key is required")
 	}
 
 	payload, err := decodePreflightPayload(item)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	preflightResult, err := decodePreflightResult(item, result)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	issueID := preflightIssueID(item, payload)
 	if issueID == "" {
-		return errors.New("startrek preflight issue id is required")
+		return nil, errors.New("startrek preflight issue id is required")
 	}
 	task := payload.Task.ToTask()
 	summoneeID := SummoneeIDFromTask(task)
@@ -113,6 +107,11 @@ func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, 
 	var comment trackerstartrek.IssueComment
 	switch preflightResult.Verdict {
 	case workitem.PreflightVerdictNeedsInfo:
+		if _, ok, err := s.State.GetPreflightWriteback(ctx, idempotencyKey); err != nil {
+			return nil, err
+		} else if ok {
+			return nil, nil
+		}
 		questions := preflightResult.Questions
 		if len(normalizedPreflightQuestions(questions)) == 0 {
 			questions = FallbackPreflightQuestions(task, preflightResult)
@@ -129,10 +128,15 @@ func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, 
 			SummoneeID: summoneeID,
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		comment = res.Comment
 	case workitem.PreflightVerdictReply:
+		if _, ok, err := s.State.GetPreflightWriteback(ctx, idempotencyKey); err != nil {
+			return nil, err
+		} else if ok {
+			return nil, nil
+		}
 		comment, err = ApplyPreflightReply(ctx, s.Tracker, PreflightReplyInput{
 			IssueID:         issueID,
 			ProcessingLabel: s.processingLabel(),
@@ -142,19 +146,38 @@ func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, 
 			SummoneeID:      summoneeID,
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
+	case workitem.PreflightVerdictReady:
+		if err := s.applyReadyTransition(ctx, issueID); err != nil {
+			return nil, err
+		}
+		followUp, ok, err := s.readyFollowUpSubmission(item, payload, task, issueID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, nil
+		}
+		return []workqueue.Submission{followUp}, nil
 	default:
-		return nil
+		return nil, nil
 	}
 
-	return s.State.RecordPreflightWriteback(ctx, PreflightWritebackRecord{
+	if err := s.State.RecordPreflightWriteback(ctx, PreflightWritebackRecord{
 		IdempotencyKey: idempotencyKey,
 		ItemID:         item.ID,
 		IssueID:        issueID,
 		Verdict:        preflightResult.Verdict,
 		CommentID:      strings.TrimSpace(comment.ID),
-	})
+	}); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (s *Source) readyLabel() string {
+	return fallbackSourceText(s.ReadyLabel, defaultReadyLabel)
 }
 
 func (s *Source) processingLabel() string {
@@ -167,6 +190,94 @@ func (s *Source) needsInfoLabel() string {
 
 func (s *Source) marker() string {
 	return fallbackSourceText(s.Marker, defaultNeedsInfoMarker)
+}
+
+func (s *Source) applyReadyTransition(ctx context.Context, issueID string) error {
+	if err := s.Tracker.RemoveLabel(ctx, issueID, s.processingLabel()); err != nil {
+		return fmt.Errorf("remove startrek processing label from ready issue %q: %w", issueID, err)
+	}
+	if err := s.Tracker.AddLabel(ctx, issueID, s.readyLabel()); err != nil {
+		return fmt.Errorf("add startrek ready label to issue %q after preflight ready: %w", issueID, err)
+	}
+	return nil
+}
+
+func (s *Source) readyFollowUpSubmission(item workitem.Item, payload workitem.PreflightPayload, task contracts.Task, issueID string) (workqueue.Submission, bool, error) {
+	action := PlanTrackerWatchStartrekTaskCycle(payload.QueueRoot.ToTask(), task, true)
+	var kind workitem.Kind
+	var submissionPayload json.RawMessage
+	switch action {
+	case TaskCycleSplit:
+		kind = workitem.KindSplit
+		raw, err := json.Marshal(workitem.SplitPayload{
+			Task:      workitem.TaskPayloadFromTask(task),
+			QueueRoot: payload.QueueRoot,
+		})
+		if err != nil {
+			return workqueue.Submission{}, false, fmt.Errorf("encode startrek split follow-up for issue %q: %w", issueID, err)
+		}
+		submissionPayload = raw
+	case TaskCycleImplement:
+		kind = workitem.KindImplement
+		raw, err := json.Marshal(workitem.ImplementPayload{
+			TaskID:      strings.TrimSpace(task.ID),
+			Title:       strings.TrimSpace(task.Title),
+			Description: task.Description,
+			PromptContext: workitem.ImplementPromptContext{
+				ParentID: strings.TrimSpace(task.ParentID),
+				Metadata: cloneStartrekStringMap(task.Metadata),
+			},
+		})
+		if err != nil {
+			return workqueue.Submission{}, false, fmt.Errorf("encode startrek implement follow-up for issue %q: %w", issueID, err)
+		}
+		submissionPayload = raw
+	default:
+		return workqueue.Submission{}, false, nil
+	}
+
+	key, err := preflightFollowUpIdempotencyKey(item.IdempotencyKey, issueID, string(kind))
+	if err != nil {
+		return workqueue.Submission{}, false, err
+	}
+	return workqueue.Submission{
+		Kind:           kind,
+		Source:         s.Name(),
+		SourceRef:      issueID,
+		IdempotencyKey: key,
+		Preset:         strings.TrimSpace(item.Preset),
+		Priority:       item.Priority,
+		Payload:        submissionPayload,
+		MaxAttempts:    item.MaxAttempts,
+	}, true, nil
+}
+
+func preflightFollowUpIdempotencyKey(preflightKey string, issueID string, stage string) (string, error) {
+	preflightKey = strings.TrimSpace(preflightKey)
+	issueID = strings.TrimSpace(issueID)
+	stage = strings.TrimSpace(stage)
+	parts := strings.SplitN(preflightKey, "/", 4)
+	if len(parts) != 4 || parts[0] != "st" || parts[2] != "preflight" || strings.TrimSpace(parts[3]) == "" {
+		return "", fmt.Errorf("startrek preflight idempotency key %q must match st/<issue>/preflight/<rev>", preflightKey)
+	}
+	if issueID == "" {
+		issueID = strings.TrimSpace(parts[1])
+	}
+	if issueID == "" || stage == "" {
+		return "", fmt.Errorf("startrek follow-up idempotency key requires issue id and stage")
+	}
+	return "st/" + issueID + "/" + stage + "/" + strings.TrimSpace(parts[3]), nil
+}
+
+func cloneStartrekStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 type PreflightReplyInput struct {
