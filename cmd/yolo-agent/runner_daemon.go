@@ -478,12 +478,12 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 		workitem.KindImplement,
 		workitem.KindReview,
 		workitem.KindSplit,
-		workitem.KindPRReview,
 		workitem.KindFinalize,
 	} {
 		registry[kind] = stubRunnerKindHandler
 	}
 	registry[workitem.KindPreflight] = newRunnerPreflightKindHandler(defaultRunnerPreflightAgentResolver)
+	registry[workitem.KindPRReview] = newRunnerPRReviewKindHandler(defaultRunnerPRReviewRuntimeResolver)
 	return registry
 }
 
