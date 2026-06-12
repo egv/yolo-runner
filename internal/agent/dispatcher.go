@@ -18,14 +18,17 @@ type WorkDispatcher interface {
 type WorkDispatchRequest struct {
 	Task     contracts.Task
 	Payload  workitem.ImplementPayload
+	Priority int
 	Executor *executor.Executor
 }
 
 type WorkHandle struct {
 	ID string
 
-	result workitem.ImplementResult
-	err    error
+	taskID   string
+	executor *executor.Executor
+	result   workitem.ImplementResult
+	err      error
 }
 
 type inProcessDispatcher struct{}
@@ -45,6 +48,7 @@ func (d *inProcessDispatcher) Submit(ctx context.Context, request WorkDispatchRe
 	}
 	return WorkHandle{
 		ID:     handleID,
+		taskID: handleID,
 		result: result,
 		err:    err,
 	}, nil

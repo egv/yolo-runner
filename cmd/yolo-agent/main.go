@@ -37,6 +37,7 @@ const (
 type runConfig struct {
 	repoRoot             string
 	rootID               string
+	queuePath            string
 	backend              string
 	profile              string
 	trackerType          string
@@ -154,6 +155,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	watchdogInterval := fs.Duration("watchdog-interval", 5*time.Second, "Polling interval used by the no-output watchdog")
 	retryBudget := fs.Int("retry-budget", 5, "Maximum retry attempts per task for remediation loop")
 	events := fs.String("events", "", "Path to JSONL events log")
+	queue := fs.String("queue", "", "Path to SQLite work queue database; when set, run submits implement work to queue runners")
 	var err error
 	if err = fs.Parse(args); err != nil {
 		return 1
@@ -283,6 +285,7 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if err := run(context.Background(), runConfig{
 		repoRoot:             *repo,
 		rootID:               *root,
+		queuePath:            *queue,
 		backend:              selectedBackend,
 		profile:              selectedProfile,
 		model:                selectedModel,
@@ -525,6 +528,15 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	if err != nil {
 		return err
 	}
+	dispatcher, closeDispatcher, err := runWorkDispatcher(cfg)
+	if err != nil {
+		return err
+	}
+	if closeDispatcher != nil {
+		closers = append(closers, func() {
+			_ = closeDispatcher()
+		})
+	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
@@ -549,6 +561,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		MergeOnSuccess:       true,
 		CloneManager:         cloneManager,
 		VCSFactory:           vcsFactory,
+		Dispatcher:           dispatcher,
 	})
 	if eventSink != nil {
 		_ = eventSink.Emit(ctx, contracts.Event{
@@ -619,6 +632,15 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	if err != nil {
 		return err
 	}
+	dispatcher, closeDispatcher, err := runWorkDispatcher(cfg)
+	if err != nil {
+		return err
+	}
+	if closeDispatcher != nil {
+		closers = append(closers, func() {
+			_ = closeDispatcher()
+		})
+	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
 	loop := agent.NewLoopWithTaskEngine(storage, taskEngine, runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
@@ -643,6 +665,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		MergeOnSuccess:       true,
 		CloneManager:         cloneManager,
 		VCSFactory:           vcsFactory,
+		Dispatcher:           dispatcher,
 	})
 	if eventSink != nil {
 		_ = eventSink.Emit(ctx, contracts.Event{
@@ -665,6 +688,37 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		})
 	}
 	return err
+}
+
+func runWorkDispatcher(cfg runConfig) (agent.WorkDispatcher, func() error, error) {
+	if strings.TrimSpace(cfg.queuePath) == "" {
+		return nil, nil, nil
+	}
+	dispatcher, err := agent.NewQueueDispatcher(cfg.queuePath, agent.QueueDispatcherOptions{
+		Preset: queuePresetForRun(cfg),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return dispatcher, dispatcher.Close, nil
+}
+
+func queuePresetForRun(cfg runConfig) string {
+	if profile := strings.TrimSpace(cfg.profile); profile != "" {
+		return profile
+	}
+	repoRoot := strings.TrimSpace(cfg.repoRoot)
+	if repoRoot == "" {
+		repoRoot = "."
+	}
+	if abs, err := filepath.Abs(repoRoot); err == nil {
+		repoRoot = abs
+	}
+	base := strings.TrimSpace(filepath.Base(repoRoot))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
 }
 
 func runCloneManager(cfg runConfig) (agent.CloneManager, error) {
@@ -847,6 +901,10 @@ func defaultConfigDir() string {
 		return ""
 	}
 	return filepath.Join(root, "opencode")
+}
+
+func defaultRunnerEnvironmentsPath() string {
+	return defaultRunnerDaemonEnvironmentsPath
 }
 
 func resolveRunConfigCodingAgents(cfg *runConfig) error {
