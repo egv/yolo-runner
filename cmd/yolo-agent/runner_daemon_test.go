@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +147,187 @@ func writeRunnerEnvironmentFile(t *testing.T, presetName string) string {
 		t.Fatalf("write environments file: %v", err)
 	}
 	return configPath
+}
+
+func TestRunnerConcurrencyRespectsPresetMaxConcurrent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	runners, err := openRunnerRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("openRunnerRegistry() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runners.Close(); err != nil {
+			t.Errorf("Close(runners) error = %v", err)
+		}
+	})
+	if err := runners.Register("runner-test", []string{"arc", "path"}, 2); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	submissions := []workitem.Submission{
+		{
+			Kind:           workitem.KindPreflight,
+			Source:         "test-source",
+			SourceRef:      "ARC-1",
+			IdempotencyKey: "test-source/ARC-1/preflight",
+			Preset:         "arc",
+			Priority:       100,
+			Payload:        json.RawMessage(`{"task_id":"ARC-1"}`),
+		},
+		{
+			Kind:           workitem.KindPreflight,
+			Source:         "test-source",
+			SourceRef:      "ARC-2",
+			IdempotencyKey: "test-source/ARC-2/preflight",
+			Preset:         "arc",
+			Priority:       90,
+			Payload:        json.RawMessage(`{"task_id":"ARC-2"}`),
+		},
+		{
+			Kind:           workitem.KindPreflight,
+			Source:         "test-source",
+			SourceRef:      "PATH-1",
+			IdempotencyKey: "test-source/PATH-1/preflight",
+			Preset:         "path",
+			Priority:       1,
+			Payload:        json.RawMessage(`{"task_id":"PATH-1"}`),
+		},
+	}
+	for _, submission := range submissions {
+		if _, err := store.Submit(submission); err != nil {
+			t.Fatalf("Submit(%s) error = %v", submission.SourceRef, err)
+		}
+	}
+
+	started := make(chan workitem.Item, len(submissions))
+	releaseArc := make(chan struct{})
+	var releaseArcOnce sync.Once
+	releaseArcItems := func() {
+		releaseArcOnce.Do(func() {
+			close(releaseArc)
+		})
+	}
+	defer releaseArcItems()
+
+	var mu sync.Mutex
+	activeByPreset := map[string]int{}
+	maxActiveByPreset := map[string]int{}
+	handler := func(ctx context.Context, item workitem.Item, _ envpreset.Workspace) (workqueue.Result, error) {
+		mu.Lock()
+		activeByPreset[item.Preset]++
+		if activeByPreset[item.Preset] > maxActiveByPreset[item.Preset] {
+			maxActiveByPreset[item.Preset] = activeByPreset[item.Preset]
+		}
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			activeByPreset[item.Preset]--
+			mu.Unlock()
+		}()
+
+		started <- item
+		if item.Preset == "arc" {
+			select {
+			case <-releaseArc:
+			case <-ctx.Done():
+				return workqueue.Result{}, ctx.Err()
+			}
+		}
+		return workqueue.Result{Payload: json.RawMessage(`{"ok":true}`)}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	daemon := runnerDaemon{
+		store:   store,
+		runners: runners,
+		events:  runnerDaemonNoopEventSink{},
+		handlers: runnerKindRegistry{
+			workitem.KindPreflight: handler,
+		},
+		environmentPresets: map[string]envpreset.Preset{
+			"arc": {
+				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyArcShared},
+				Limits:    envpreset.Limits{MaxConcurrent: 1},
+			},
+			"path": {
+				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath},
+			},
+		},
+		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+			return envpreset.Workspace{Path: t.TempDir()}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			presets:           []string{"arc", "path"},
+			runnerID:          "runner-test",
+			capacity:          2,
+			pollInterval:      10 * time.Millisecond,
+			heartbeatInterval: time.Hour,
+			leaseTTL:          time.Minute,
+		},
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- daemon.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case err := <-runDone:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("Run() cleanup error = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("Run() did not stop during cleanup")
+		}
+	}()
+
+	first := waitRunnerStartedItem(t, started)
+	if first.Preset != "arc" || first.SourceRef != "ARC-1" {
+		t.Fatalf("first started item = %s/%s, want arc/ARC-1", first.Preset, first.SourceRef)
+	}
+
+	second := waitRunnerStartedItem(t, started)
+	if second.Preset != "path" {
+		t.Fatalf("second started item = %s/%s, want path while arc is at max_concurrent", second.Preset, second.SourceRef)
+	}
+
+	mu.Lock()
+	maxArcActive := maxActiveByPreset["arc"]
+	mu.Unlock()
+	if maxArcActive > 1 {
+		t.Fatalf("arc preset ran concurrently: max active = %d, want 1", maxArcActive)
+	}
+
+	releaseArcItems()
+	third := waitRunnerStartedItem(t, started)
+	if third.Preset != "arc" || third.SourceRef != "ARC-2" {
+		t.Fatalf("third started item = %s/%s, want arc/ARC-2 after first arc finishes", third.Preset, third.SourceRef)
+	}
+}
+
+func waitRunnerStartedItem(t *testing.T, started <-chan workitem.Item) workitem.Item {
+	t.Helper()
+
+	select {
+	case item := <-started:
+		return item
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runner item to start")
+		return workitem.Item{}
+	}
 }
 
 func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) {
