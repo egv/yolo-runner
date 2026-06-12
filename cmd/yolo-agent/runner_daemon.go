@@ -14,11 +14,13 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 const defaultRunnerDaemonPollInterval = time.Second
+const defaultRunnerDaemonEnvironmentsPath = "~/.yolo-runner/environments.yaml"
 
 var errRunnerDaemonLockHeld = errors.New("runner daemon lock held")
 
@@ -26,6 +28,7 @@ var runRunnerDaemon = defaultRunRunnerDaemon
 
 type runnerDaemonCommandConfig struct {
 	queuePath         string
+	environmentsPath  string
 	presets           []string
 	runnerID          string
 	lockPath          string
@@ -36,13 +39,16 @@ type runnerDaemonCommandConfig struct {
 	leaseTTL          time.Duration
 }
 
-type runnerKindHandler func(context.Context, workitem.Item) (workqueue.Result, error)
+type runnerKindHandler func(context.Context, workitem.Item, envpreset.Workspace) (workqueue.Result, error)
 
 type runnerKindRegistry map[workitem.Kind]runnerKindHandler
+
+type runnerWorkspaceMaterializer func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error)
 
 func runnerDaemonCommand(args []string) int {
 	fs := flag.NewFlagSet("yolo-agent runner", flag.ContinueOnError)
 	queuePath := fs.String("queue", "", "Path to the SQLite work queue database")
+	environmentsPath := fs.String("environments", "", "Path to the environment presets file")
 	presets := fs.String("presets", "", "Comma-separated environment preset names this runner serves")
 	runnerID := fs.String("runner-id", "", "Stable runner ID for registration and singleton locking")
 	once := fs.Bool("once", false, "Claim and run at most one item, then exit")
@@ -64,6 +70,7 @@ func runnerDaemonCommand(args []string) int {
 	}
 	if err := handler(context.Background(), runnerDaemonCommandConfig{
 		queuePath:         *queuePath,
+		environmentsPath:  *environmentsPath,
 		presets:           parseRunnerPresets(*presets),
 		runnerID:          *runnerID,
 		once:              *once,
@@ -112,12 +119,19 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		return err
 	}
 
+	environmentPresets, err := loadRunnerEnvironmentPresets(cfg.environmentsPath, cfg.presets)
+	if err != nil {
+		return err
+	}
+
 	daemon := runnerDaemon{
-		store:    store,
-		runners:  runners,
-		handlers: defaultRunnerKindRegistry(),
-		events:   defaultRunnerDaemonEventSink(cfg.runnerID),
-		cfg:      cfg,
+		store:              store,
+		runners:            runners,
+		handlers:           defaultRunnerKindRegistry(),
+		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
+		environmentPresets: environmentPresets,
+		materialize:        envpreset.Materialize,
+		cfg:                cfg,
 	}
 	return daemon.Run(ctx)
 }
@@ -128,6 +142,9 @@ type runnerDaemon struct {
 	handlers runnerKindRegistry
 	events   contracts.EventSink
 	cfg      runnerDaemonCommandConfig
+
+	environmentPresets map[string]envpreset.Preset
+	materialize        runnerWorkspaceMaterializer
 }
 
 func (d runnerDaemon) Run(ctx context.Context) error {
@@ -181,13 +198,21 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 
 	itemCtx, cancel := context.WithCancel(ctx)
 	heartbeatDone, heartbeatErrs := startRunnerItemHeartbeat(itemCtx, d.store, item.ID, d.cfg.runnerID, d.cfg.heartbeatInterval)
-	result, handlerErr := handler(itemCtx, item)
+
+	workspace, handlerErr := d.materializeClaimedWorkspace(itemCtx, item)
+	var result workqueue.Result
+	if handlerErr == nil {
+		result, handlerErr = handler(itemCtx, item, workspace)
+	}
 	cancel()
 	<-heartbeatDone
 
 	var heartbeatErr error
 	if err, ok := <-heartbeatErrs; ok {
 		heartbeatErr = err
+	}
+	if cleanupErr := cleanupMaterializedWorkspace(workspace); cleanupErr != nil && handlerErr == nil {
+		handlerErr = cleanupErr
 	}
 	if heartbeatErr != nil && handlerErr == nil {
 		handlerErr = heartbeatErr
@@ -229,6 +254,38 @@ func (d runnerDaemon) emitClaimedItemEvent(ctx context.Context, eventType contra
 		Metadata:  metadata,
 		Timestamp: timestamp,
 	})
+}
+
+func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {
+	if len(d.environmentPresets) == 0 {
+		return envpreset.Workspace{}, fmt.Errorf("environment presets are required for runner dispatch")
+	}
+
+	presetName := strings.TrimSpace(item.Preset)
+	preset, ok := d.environmentPresets[presetName]
+	if !ok {
+		return envpreset.Workspace{}, fmt.Errorf("environment preset %q is not defined", presetName)
+	}
+
+	materialize := d.materialize
+	if materialize == nil {
+		materialize = envpreset.Materialize
+	}
+	workspace, err := materialize(ctx, preset, item.ID)
+	if err != nil {
+		return envpreset.Workspace{}, fmt.Errorf("materialize workspace for item %q preset %q: %w", item.ID, presetName, err)
+	}
+	if workspace.Cleanup == nil {
+		workspace.Cleanup = func() error { return nil }
+	}
+	return workspace, nil
+}
+
+func cleanupMaterializedWorkspace(workspace envpreset.Workspace) error {
+	if workspace.Cleanup == nil {
+		return nil
+	}
+	return workspace.Cleanup()
 }
 
 func (d runnerDaemon) failClaimedItem(item workitem.Item, startedAt time.Time, cause error) error {
@@ -293,7 +350,7 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 	return registry
 }
 
-func stubRunnerKindHandler(_ context.Context, item workitem.Item) (workqueue.Result, error) {
+func stubRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Workspace) (workqueue.Result, error) {
 	payload, err := json.Marshal(map[string]any{
 		"status":  "stubbed",
 		"kind":    string(item.Kind),
@@ -303,6 +360,25 @@ func stubRunnerKindHandler(_ context.Context, item workitem.Item) (workqueue.Res
 		return workqueue.Result{}, err
 	}
 	return workqueue.Result{Payload: payload}, nil
+}
+
+func loadRunnerEnvironmentPresets(path string, requiredPresets []string) (map[string]envpreset.Preset, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = defaultRunnerDaemonEnvironmentsPath
+	}
+
+	presets, err := envpreset.Load(path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, preset := range normalizeRunnerPresets(requiredPresets) {
+		if _, ok := presets[preset]; !ok {
+			return nil, fmt.Errorf("environment preset %q is not defined in %s", preset, path)
+		}
+	}
+	return presets, nil
 }
 
 func normalizeRunnerDaemonConfig(cfg runnerDaemonCommandConfig) (runnerDaemonCommandConfig, error) {

@@ -27,7 +27,7 @@ func newRunnerPreflightKindHandler(resolve runnerPreflightAgentResolver) runnerK
 	if resolve == nil {
 		resolve = defaultRunnerPreflightAgentResolver
 	}
-	return func(ctx context.Context, item workitem.Item) (workqueue.Result, error) {
+	return func(ctx context.Context, item workitem.Item, _ envpreset.Workspace) (workqueue.Result, error) {
 		var payload workitem.PreflightPayload
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
 			return workqueue.Result{}, fmt.Errorf("decode preflight payload for item %q: %w", item.ID, err)
