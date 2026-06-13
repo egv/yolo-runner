@@ -34,13 +34,28 @@ type trackerWatchPollIntervalProvider func() time.Duration
 type trackerWatchPollWait func(context.Context, time.Duration) error
 
 func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
+	if cfg.dryRun {
+		return errors.New("tracker-watch --dry-run is not supported by the source startrek compatibility shim")
+	}
+	cfg.repoRoot = strings.TrimSpace(cfg.repoRoot)
+	if cfg.repoRoot == "" {
+		cfg.repoRoot = "."
+	}
+	profile := strings.TrimSpace(cfg.profile)
+	if profile == "" {
+		resolved, err := resolveTrackerProfile(cfg.repoRoot, profile, "", os.Getenv)
+		if err != nil {
+			return err
+		}
+		profile = resolved.Name
+	}
 	handler := runSourceStartrek
 	if handler == nil {
 		handler = defaultRunSourceStartrek
 	}
 	return handler(ctx, sourceStartrekCommandConfig{
 		repoRoot:   cfg.repoRoot,
-		profile:    cfg.profile,
+		profile:    profile,
 		once:       true,
 		stream:     cfg.stream,
 		eventsPath: cfg.eventsPath,

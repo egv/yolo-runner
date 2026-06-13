@@ -279,6 +279,76 @@ func TestDefaultRunTrackerWatchDelegatesToSourceStartrekOnce(t *testing.T) {
 	}
 }
 
+func TestDefaultRunTrackerWatchResolvesDefaultProfileBeforeDelegating(t *testing.T) {
+	originalRunSourceStartrek := runSourceStartrek
+	t.Cleanup(func() {
+		runSourceStartrek = originalRunSourceStartrek
+	})
+
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+default_profile: st-default
+profiles:
+  st-default:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st.example.invalid/v3
+        token_env: STARTREK_TEST_TOKEN
+        queues:
+          - key: VAY
+            root: `+repoRoot+`
+`)
+	t.Setenv("STARTREK_TEST_TOKEN", "token")
+
+	var got sourceStartrekCommandConfig
+	runSourceStartrek = func(_ context.Context, cfg sourceStartrekCommandConfig) error {
+		got = cfg
+		return nil
+	}
+
+	if err := defaultRunTrackerWatch(context.Background(), trackerWatchConfig{
+		repoRoot: repoRoot,
+		stream:   true,
+	}); err != nil {
+		t.Fatalf("defaultRunTrackerWatch() error = %v", err)
+	}
+	if got.profile != "st-default" {
+		t.Fatalf("delegated profile = %q, want st-default", got.profile)
+	}
+	if !got.once {
+		t.Fatalf("once = false, want true")
+	}
+}
+
+func TestDefaultRunTrackerWatchRejectsDryRunBeforeDelegating(t *testing.T) {
+	originalRunSourceStartrek := runSourceStartrek
+	t.Cleanup(func() {
+		runSourceStartrek = originalRunSourceStartrek
+	})
+
+	called := false
+	runSourceStartrek = func(context.Context, sourceStartrekCommandConfig) error {
+		called = true
+		return nil
+	}
+
+	err := defaultRunTrackerWatch(context.Background(), trackerWatchConfig{
+		repoRoot: "/repo",
+		profile:  "st-dev",
+		dryRun:   true,
+	})
+	if err == nil {
+		t.Fatalf("expected dry-run to be rejected")
+	}
+	if !strings.Contains(err.Error(), "--dry-run is not supported") {
+		t.Fatalf("expected dry-run support error, got %q", err.Error())
+	}
+	if called {
+		t.Fatalf("expected dry-run not to delegate to source startrek")
+	}
+}
+
 func readTrackerWatchEvents(t *testing.T, path string) []contracts.Event {
 	t.Helper()
 	raw, err := os.ReadFile(path)
