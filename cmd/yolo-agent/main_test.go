@@ -317,55 +317,41 @@ func TestRunMainRoutesArcReviewWatchSubcommandAndParsesFlags(t *testing.T) {
 	}
 }
 
-func TestDefaultRunArcReviewWatchDryRunOnceEmitsStartAndFinishEvents(t *testing.T) {
+func TestDefaultRunArcReviewWatchDelegatesToSourceArcPR(t *testing.T) {
 	repoRoot := t.TempDir()
 	eventsPath := filepath.Join(repoRoot, "events.jsonl")
-	writeTrackerConfigYAML(t, repoRoot, `
-profiles:
-  default:
-    tracker:
-      type: tk
-arc_review_watch:
-  poll_interval: 1s
-`)
 
-	err := defaultRunArcReviewWatch(context.Background(), arcReviewWatchCommandConfig{
-		repoRoot:   repoRoot,
-		profile:    "default",
-		once:       true,
-		dryRun:     true,
-		eventsPath: eventsPath,
+	originalRunSource := runSourceArcPR
+	t.Cleanup(func() {
+		runSourceArcPR = originalRunSource
 	})
-	if err != nil {
-		t.Fatalf("defaultRunArcReviewWatch failed: %v", err)
+
+	var captured []sourceArcPRCommandConfig
+	runSourceArcPR = func(_ context.Context, cfg sourceArcPRCommandConfig) error {
+		captured = append(captured, cfg)
+		return nil
 	}
 
-	file, err := os.Open(eventsPath)
-	if err != nil {
-		t.Fatalf("open events log: %v", err)
+	stderrText := captureStderr(t, func() {
+		err := defaultRunArcReviewWatch(context.Background(), arcReviewWatchCommandConfig{
+			repoRoot:   repoRoot,
+			profile:    "default",
+			once:       true,
+			dryRun:     true,
+			eventsPath: eventsPath,
+		})
+		if err != nil {
+			t.Fatalf("defaultRunArcReviewWatch failed: %v", err)
+		}
+	})
+	if len(captured) != 1 {
+		t.Fatalf("source arcpr calls = %d, want 1", len(captured))
 	}
-	defer file.Close()
-
-	decoder := contracts.NewEventDecoder(file)
-	first, err := decoder.Next()
-	if err != nil {
-		t.Fatalf("decode first event: %v", err)
+	if got := captured[0]; got.repoRoot != repoRoot || got.profile != "default" || !got.once || got.eventsPath != eventsPath {
+		t.Fatalf("source arcpr config mismatch: %#v", got)
 	}
-	second, err := decoder.Next()
-	if err != nil {
-		t.Fatalf("decode second event: %v", err)
-	}
-	if first.Type != contracts.EventTypeRunStarted {
-		t.Fatalf("expected first event run_started, got %q", first.Type)
-	}
-	if second.Type != contracts.EventTypeRunFinished {
-		t.Fatalf("expected second event run_finished, got %q", second.Type)
-	}
-	if first.Metadata["command"] != "arc-review-watch" {
-		t.Fatalf("expected command metadata, got %#v", first.Metadata)
-	}
-	if second.Metadata["dry_run"] != "true" {
-		t.Fatalf("expected dry_run metadata, got %#v", second.Metadata)
+	if !strings.Contains(stderrText, "arc-review-watch is deprecated") || !strings.Contains(stderrText, "--dry-run is ignored") {
+		t.Fatalf("stderr missing shim warnings: %q", stderrText)
 	}
 }
 

@@ -16,6 +16,12 @@ type arcPRReviewCycleShipGate = arcreview.PRReviewCycleShipGate
 type arcPRReviewModelInput = arcreview.PRReviewModelInput
 type arcPRReviewCycleModelHelperFunc = arcreview.PRReviewCycleModelHelperFunc
 
+type arcPRReviewCycleStateFetcherFunc func(context.Context, string, string) (arcreview.PRRuntimeState, error)
+
+func (f arcPRReviewCycleStateFetcherFunc) FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error) {
+	return f(ctx, workspace, prID)
+}
+
 func runArcPRReviewCycle(ctx context.Context, cfg arcPRReviewCycleConfig) (arcreview.PRRunnerAction, error) {
 	return arcreview.RunPRReviewCycle(ctx, cfg)
 }
