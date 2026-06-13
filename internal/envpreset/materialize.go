@@ -2,6 +2,7 @@ package envpreset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -79,6 +80,9 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 	if err != nil {
 		return Workspace{}, err
 	}
+	if err := prepareMaterializeArcMount(ctx, mount); err != nil {
+		return Workspace{}, err
+	}
 	workspacePath := filepath.Join(mount, workspace.Subpath)
 	if stat, err := os.Stat(workspacePath); err != nil {
 		return Workspace{}, fmt.Errorf("arc workspace path %s is not available: %w", workspacePath, err)
@@ -103,6 +107,50 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 	workspace.VCS = vcs
 	workspace.Cleanup = cleanup
 	return workspace, nil
+}
+
+func prepareMaterializeArcMount(ctx context.Context, mountPath string) error {
+	runner := materializeCommandRunner{}
+	if mounted, err := materializeArcMountIsMounted(ctx, runner, mountPath); err != nil {
+		return err
+	} else if mounted {
+		return nil
+	}
+
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		return fmt.Errorf("create arc mount path %s: %w", mountPath, err)
+	}
+
+	if out, err := runner.Run("arc", "mount", "-m", mountPath); err != nil {
+		details := strings.TrimSpace(out)
+		if details == "" {
+			return fmt.Errorf("arc mount %s failed: %w", mountPath, err)
+		}
+		return fmt.Errorf("arc mount %s failed: %s: %w", mountPath, details, err)
+	}
+	return nil
+}
+
+type materializeArcMountEntry struct {
+	Status string `json:"status"`
+	Mount  string `json:"mount"`
+}
+
+func materializeArcMountIsMounted(_ context.Context, runner materializeCommandRunner, mountPath string) (bool, error) {
+	out, err := runner.Run("arc", "mount", "-l", "--json")
+	if err != nil {
+		return false, fmt.Errorf("list arc mounts: %s: %w", strings.TrimSpace(out), err)
+	}
+	var entries []materializeArcMountEntry
+	if err := json.Unmarshal([]byte(out), &entries); err != nil {
+		return false, fmt.Errorf("parse arc mount list: %w", err)
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Status) == "mounted" && filepath.Clean(strings.TrimSpace(entry.Mount)) == filepath.Clean(mountPath) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func materializePath(workspace Workspace) (Workspace, error) {

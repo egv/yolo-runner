@@ -95,6 +95,47 @@ func TestMaterializeCreatesWorkspaceForEachStrategyAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestMaterializeArcMountIfNeededBeforeBranchCreation(t *testing.T) {
+	ctx := context.Background()
+	itemID := "TASK-123"
+	arcLog := installFakeArcWithMountList(t, "[]")
+	mount := t.TempDir()
+	arcSubpath := filepath.Join("project", "service")
+	arcPath := filepath.Join(mount, arcSubpath)
+	if err := os.MkdirAll(arcPath, 0o755); err != nil {
+		t.Fatalf("create arc workspace: %v", err)
+	}
+
+	workspace, err := Materialize(ctx, Preset{Workspace: Workspace{
+		Strategy: WorkspaceStrategyArcShared,
+		Mount:    mount,
+		Subpath:  arcSubpath,
+	}}, itemID)
+	if err != nil {
+		t.Fatalf("Materialize(arc-shared) returned error: %v", err)
+	}
+	if workspace.Cleanup == nil {
+		t.Fatal("expected cleanup")
+	}
+	if err := workspace.Cleanup(); err != nil {
+		t.Fatalf("cleanup arc workspace: %v", err)
+	}
+
+	content, err := os.ReadFile(arcLog)
+	if err != nil {
+		t.Fatalf("read arc log: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(content)), "\n")
+	want := []string{
+		"mount -l --json",
+		"mount -m " + mount,
+		"checkout -b task/TASK-123",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected arc command order:\n got %q\nwant %q", got, want)
+	}
+}
+
 func initMaterializeGitRepo(t *testing.T) string {
 	t.Helper()
 
@@ -118,6 +159,28 @@ func installFakeArc(t *testing.T) string {
 	script := filepath.Join(binDir, "arc")
 	content := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$1\" = \"mount\" ] && [ \"$2\" = \"-l\" ] && [ \"$3\" = \"--json\" ]; then\n" +
+		"  printf '[]\\n'\n" +
+		"fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake arc: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
+func installFakeArcWithMountList(t *testing.T, mountList string) string {
+	t.Helper()
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "arc.log")
+	script := filepath.Join(binDir, "arc")
+	content := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$1\" = \"mount\" ] && [ \"$2\" = \"-l\" ] && [ \"$3\" = \"--json\" ]; then\n" +
+		"  printf '%s\\n' " + shellQuote(mountList) + "\n" +
+		"fi\n" +
 		"exit 0\n"
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatalf("write fake arc: %v", err)
