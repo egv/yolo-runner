@@ -332,18 +332,6 @@ func (s *Source) finalizeFollowUpIfSplitComplete(ctx context.Context, tracker Im
 	if err != nil {
 		return nil, fmt.Errorf("encode startrek finalize follow-up for parent %q: %w", parentID, err)
 	}
-	inserted, err := s.State.RecordFinalizeSubmission(ctx, FinalizeSubmissionRecord{
-		ParentIssueID:           parentID,
-		IdempotencyKey:          key,
-		ImplementItemID:         item.ID,
-		ImplementIdempotencyKey: item.IdempotencyKey,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if !inserted {
-		return nil, nil
-	}
 	return []workqueue.Submission{{
 		Kind:           workitem.KindFinalize,
 		Source:         s.Name(),

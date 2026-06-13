@@ -295,12 +295,32 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 			t.Fatalf("finalize child branches = %#v, want both child branches", finalizePayload.ChildBranches)
 		}
 
+		queue, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+		if err != nil {
+			t.Fatalf("workqueue.Open() error = %v", err)
+		}
+		t.Cleanup(func() {
+			if err := queue.Close(); err != nil {
+				t.Errorf("queue.Close() error = %v", err)
+			}
+		})
+		queuedFinalize, err := queue.Enqueue(finalize)
+		if err != nil {
+			t.Fatalf("enqueue finalize follow-up: %v", err)
+		}
 		duplicate, err := src.HandleResult(ctx, item, implementWritebackResult(t, item.ID, workqueue.ResultStatusCompleted, implementResult))
 		if err != nil {
 			t.Fatalf("HandleResult(implement duplicate) error = %v", err)
 		}
-		if len(duplicate) != 0 {
-			t.Fatalf("duplicate implement follow-ups = %#v, want none", duplicate)
+		if len(duplicate) != 1 {
+			t.Fatalf("duplicate implement follow-ups = %#v, want same finalize retry", duplicate)
+		}
+		duplicateQueuedFinalize, err := queue.Enqueue(duplicate[0])
+		if err != nil {
+			t.Fatalf("enqueue duplicate finalize follow-up: %v", err)
+		}
+		if duplicateQueuedFinalize.ID != queuedFinalize.ID {
+			t.Fatalf("duplicate finalize queued item ID = %q, want existing %q", duplicateQueuedFinalize.ID, queuedFinalize.ID)
 		}
 		if got := countCommentsWithMarker(tracker.comments, "implementation-completed"); got != 1 {
 			t.Fatalf("implementation completion comments = %d, want 1", got)
@@ -341,6 +361,112 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 		}
 		if got := countCommentsWithMarker(tracker.comments, "parent-pr-created"); got != 1 {
 			t.Fatalf("duplicate finalize posted parent PR comments = %d, want 1", got)
+		}
+
+		afterParentPR, err := src.HandleResult(ctx, item, implementWritebackResult(t, item.ID, workqueue.ResultStatusCompleted, implementResult))
+		if err != nil {
+			t.Fatalf("HandleResult(implement after parent PR) error = %v", err)
+		}
+		if len(afterParentPR) != 0 {
+			t.Fatalf("implement after parent PR follow-ups = %#v, want none", afterParentPR)
+		}
+	})
+
+	t.Run("finalize follow-up retry is not suppressed by stale submission record", func(t *testing.T) {
+		state := openStartrekSourceState(t)
+		tracker := &fakeImplementWritebackTracker{
+			tasks: map[string]contracts.Task{
+				"VAY-42": {
+					ID:          "VAY-42",
+					Title:       "Parent split task",
+					Description: "Ship all split children.",
+					Status:      contracts.TaskStatusInProgress,
+					Metadata:    map[string]string{},
+				},
+				"VAY-43": {
+					ID:       "VAY-43",
+					Title:    "First child",
+					Status:   contracts.TaskStatusClosed,
+					ParentID: "VAY-42",
+					Metadata: map[string]string{"branch": "task/VAY-43"},
+				},
+				"VAY-44": {
+					ID:       "VAY-44",
+					Title:    "Second child",
+					Status:   contracts.TaskStatusClosed,
+					ParentID: "VAY-42",
+					Metadata: map[string]string{"branch": "task/VAY-44"},
+				},
+			},
+		}
+		for _, record := range []SplitSubtaskItemRecord{
+			{
+				ParentIssueID:           "VAY-42",
+				SplitTaskID:             "T20",
+				SubtaskIssueID:          "VAY-43",
+				ImplementItemID:         "implement-43",
+				ImplementIdempotencyKey: "st/VAY-43/implement/rev7",
+				SplitItemID:             "split-item",
+			},
+			{
+				ParentIssueID:           "VAY-42",
+				SplitTaskID:             "T21",
+				SubtaskIssueID:          "VAY-44",
+				ImplementItemID:         "implement-44",
+				ImplementIdempotencyKey: "st/VAY-44/implement/rev7",
+				SplitItemID:             "split-item",
+			},
+		} {
+			if err := state.RecordSplitSubtaskItem(ctx, record); err != nil {
+				t.Fatalf("record split subtask item: %v", err)
+			}
+		}
+		if err := state.RecordImplementWriteback(ctx, ImplementWritebackRecord{
+			IdempotencyKey: "st/VAY-44/implement/rev7",
+			ItemID:         "implement-44",
+			IssueID:        "VAY-44",
+			ParentIssueID:  "VAY-42",
+			Status:         contracts.TaskStatusClosed,
+			Branch:         "task/VAY-44",
+			CommitSHA:      "def456",
+			PRURL:          "https://arc.example.test/review/44",
+		}); err != nil {
+			t.Fatalf("record implement writeback: %v", err)
+		}
+		if inserted, err := state.RecordFinalizeSubmission(ctx, FinalizeSubmissionRecord{
+			ParentIssueID:           "VAY-42",
+			IdempotencyKey:          "st/VAY-42/finalize/rev7",
+			ImplementItemID:         "implement-44",
+			ImplementIdempotencyKey: "st/VAY-44/implement/rev7",
+		}); err != nil {
+			t.Fatalf("record stale finalize submission: %v", err)
+		} else if !inserted {
+			t.Fatal("record stale finalize submission inserted = false, want true")
+		}
+
+		src := Source{
+			SourceName: "startrek",
+			Tracker:    tracker,
+			State:      state,
+		}
+		item := implementWritebackItem(t, "implement-44", "VAY-44", "st/VAY-44/implement/rev7", contracts.Task{
+			ID:       "VAY-44",
+			Title:    "Second child",
+			ParentID: "VAY-42",
+		})
+		item.Preset = "adapta"
+		item.Priority = 5
+		item.MaxAttempts = 4
+
+		followUps, err := src.HandleResult(ctx, item, implementWritebackResult(t, item.ID, workqueue.ResultStatusCompleted, workitem.ImplementResult{}))
+		if err != nil {
+			t.Fatalf("HandleResult(implement retry) error = %v", err)
+		}
+		if len(followUps) != 1 {
+			t.Fatalf("retry finalize follow-ups = %#v, want one", followUps)
+		}
+		if got := followUps[0].IdempotencyKey; got != "st/VAY-42/finalize/rev7" {
+			t.Fatalf("retry finalize key = %q, want st/VAY-42/finalize/rev7", got)
 		}
 	})
 }

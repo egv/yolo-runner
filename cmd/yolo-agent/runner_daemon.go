@@ -492,13 +492,13 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 	for _, kind := range []workitem.Kind{
 		workitem.KindReview,
 		workitem.KindSplit,
-		workitem.KindFinalize,
 	} {
 		registry[kind] = stubRunnerKindHandler
 	}
 	registry[workitem.KindImplement] = newRunnerImplementKindHandler(defaultRunnerImplementExecutorResolver)
 	registry[workitem.KindPreflight] = newRunnerPreflightKindHandler(defaultRunnerPreflightAgentResolver)
 	registry[workitem.KindPRReview] = newRunnerPRReviewKindHandler(defaultRunnerPRReviewRuntimeResolver)
+	registry[workitem.KindFinalize] = newRunnerFinalizeKindHandler()
 	return registry
 }
 

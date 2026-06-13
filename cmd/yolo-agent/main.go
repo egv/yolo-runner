@@ -791,13 +791,15 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
+	handlers := runnerKindRegistry{
+		workitem.KindImplement: newRunnerImplementKindHandler(embeddedQueueRunnerExecutorResolver(cfg, runner, events)),
+		workitem.KindFinalize:  newRunnerFinalizeKindHandler(),
+	}
 	daemon := runnerDaemon{
-		store:   store,
-		runners: runners,
-		events:  embeddedQueueRunnerEventSink(events),
-		handlers: runnerKindRegistry{
-			workitem.KindImplement: newRunnerImplementKindHandler(embeddedQueueRunnerExecutorResolver(cfg, runner, events)),
-		},
+		store:    store,
+		runners:  runners,
+		events:   embeddedQueueRunnerEventSink(events),
+		handlers: handlers,
 		environmentPresets: map[string]envpreset.Preset{
 			preset: {
 				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath, Path: cfg.repoRoot},
