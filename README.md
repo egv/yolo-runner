@@ -104,6 +104,39 @@ These UI dependencies are mandatory for GUI workflow evolution and should be tre
 - `yolo-agent` owns task selection, dependency-aware scheduling, retries, review, and event emission.
 - `yolo-tui` consumes the event stream for monitoring.
 
+### Queue-split runner topology
+
+Queue-split runs use separate source and runner processes around one local SQLite queue. Source processes poll external systems, enqueue typed work, and write results back. Runner processes claim queued work, materialize a workspace from an environment preset, execute the model pipeline, and record the result.
+
+Operator commands:
+
+- Source adapters: `yolo-agent source <arcpr|startrek> --profile <name> --queue ~/.yolo-runner/queue.db`
+- Runner daemons: `yolo-agent runner --queue ~/.yolo-runner/queue.db --environments ~/.yolo-runner/environments.yaml --presets <preset>[,<preset>]`
+- Queue operations: `yolo-agent queue <ls|submit|retry|cancel|gc>`
+- Merged event stream: `yolo-agent events follow --since 1h | yolo-tui --events-stdin`
+
+Environment presets live in `~/.yolo-runner/environments.yaml`. Work items carry only the preset name; runners resolve workspace strategy, landing policy, agent backend/model, concurrency limits, and environment passthrough at claim time.
+
+Example:
+
+```yaml
+presets:
+  yolo-runner:
+    workspace:
+      strategy: git-clone
+      origin: ~/yolo-runner
+      base_branch: main
+    landing:
+      type: git-merge
+    agent:
+      backend: codex
+      model: openai/gpt-5.3-codex
+    limits:
+      max_concurrent: 2
+```
+
+Each process writes JSONL to `~/.yolo-runner/events/<proc-id>.jsonl`. Use `yolo-agent events follow` to merge-tail those files by timestamp into the unchanged TUI stdin protocol. `tracker-watch` and `arc-review-watch` are deprecated compatibility shims; prefer `yolo-agent source startrek` and `yolo-agent source arcpr` for queue-backed runs.
+
 ## What It Does
 
 - Loads tasks from tracker/storage backends such as GitHub, Linear, TK, or beads/br.

@@ -14,6 +14,8 @@ import (
 
 func TestRunPollsAndConsumesResultsThroughWorkqueue(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
 	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)

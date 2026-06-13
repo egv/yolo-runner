@@ -18,6 +18,7 @@ import (
 
 func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
 	repoRoot := t.TempDir()
 	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
 	statePath := filepath.Join(repoRoot, "state", "arcpr.db")

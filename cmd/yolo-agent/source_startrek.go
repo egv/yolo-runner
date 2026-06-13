@@ -137,8 +137,7 @@ func defaultRunSourceStartrek(ctx context.Context, cfg sourceStartrekCommandConf
 	}
 	defer state.Close()
 
-	cfg.eventsPath = resolveSourceStartrekEventsPath(cfg)
-	eventSink, closeEventSink := watchEventSink(cfg.stream, cfg.eventsPath)
+	eventSink, closeEventSink := watchEventSink(cfg.stream, "")
 	defer closeEventSink()
 	if cfg.eventSink != nil {
 		if eventSink != nil {
@@ -173,6 +172,7 @@ func defaultRunSourceStartrek(ctx context.Context, cfg sourceStartrekCommandConf
 		Once:         cfg.once,
 		PollInterval: trackerAgentConfig.PollInterval,
 		LockPath:     sourceStartrekLockPath(cfg.repoRoot, cfg.profile),
+		EventsPath:   cfg.eventsPath,
 		EventSink:    eventSink,
 	})
 }
@@ -249,7 +249,7 @@ func (s *sourceStartrekRuntimeSource) clearReadyLabelForBlockingPreflightResult(
 }
 
 func resolveSourceStartrekEventsPath(cfg sourceStartrekCommandConfig) string {
-	return resolveWatchEventsPath(cfg.eventsPath, cfg.stream, cfg.repoRoot, "source-startrek.events.jsonl")
+	return resolveSourceEventsPath(cfg.eventsPath, sourceStartrekSourceName(cfg.profile))
 }
 
 func sourceStartrekQueues(queues []startrekQueueModel) []startreksource.Queue {

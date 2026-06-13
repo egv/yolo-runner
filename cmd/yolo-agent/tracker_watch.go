@@ -111,6 +111,17 @@ func resolveWatchEventsPath(eventsPath string, stream bool, repoRoot string, def
 	return filepath.Join(repoRoot, "runner-logs", defaultName)
 }
 
+func resolveSourceEventsPath(eventsPath string, procID string) string {
+	if strings.TrimSpace(eventsPath) != "" {
+		return eventsPath
+	}
+	eventsDir := defaultYoloRunnerEventsDirOrEmpty()
+	if eventsDir == "" {
+		return ""
+	}
+	return filepath.Join(eventsDir, safeRunnerIDForPath(procID)+".jsonl")
+}
+
 func watchEventSink(stream bool, eventsPath string) (contracts.EventSink, func()) {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}

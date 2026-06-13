@@ -271,10 +271,22 @@ func resolveEventsPath(opts Options, procID string) string {
 	if path := strings.TrimSpace(opts.EventsPath); path != "" {
 		return path
 	}
-	if dir := strings.TrimSpace(opts.EventsDir); dir != "" {
+	dir := strings.TrimSpace(opts.EventsDir)
+	if dir == "" {
+		dir = defaultEventsDir()
+	}
+	if dir != "" {
 		return filepath.Join(dir, sanitizeProcID(procID)+".jsonl")
 	}
 	return ""
+}
+
+func defaultEventsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".yolo-runner", "events")
 }
 
 func sanitizeProcID(procID string) string {
