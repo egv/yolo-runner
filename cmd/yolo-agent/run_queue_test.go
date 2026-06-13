@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -186,6 +188,9 @@ func TestEmbeddedRunnerForRunQueueCompletesTaskEndToEnd(t *testing.T) {
 	}
 	if len(fakeAgent.requests) != 2 {
 		t.Fatalf("embedded runner requests = %d, want implement+review", len(fakeAgent.requests))
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".yolo-runner", "scheduler-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scheduler-state.json exists after embedded queue run: stat err=%v", err)
 	}
 
 	store, err := workqueue.Open(dbPath)

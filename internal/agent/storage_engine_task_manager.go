@@ -73,10 +73,9 @@ func (m *storageEngineTaskManager) SetTaskStatus(ctx context.Context, taskID str
 	defer m.mu.Unlock()
 	// The cached graph can be a filtered view of storage (tracker backends
 	// only load issues carrying agent status labels), so a task that exists
-	// in storage may legitimately be absent here — e.g. scheduler-state
-	// recovery resetting a task that was demoted to needs_info since the
-	// last run. The storage update above is the source of truth; only sync
-	// the in-memory view when it actually tracks the task.
+	// in storage may legitimately be absent here. The storage update above
+	// is the source of truth; only sync the in-memory view when it actually
+	// tracks the task.
 	if m.graph != nil && m.graph.Nodes[taskID] != nil {
 		if err := m.engine.UpdateTaskStatus(m.graph, taskID, status); err != nil {
 			return err

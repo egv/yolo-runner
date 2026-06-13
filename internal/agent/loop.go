@@ -45,7 +45,6 @@ type LoopOptions struct {
 	MaxRetries           int
 	MaxTasks             int
 	Concurrency          int
-	SchedulerStatePath   string
 	DryRun               bool
 	Stop                 <-chan struct{}
 	RepoRoot             string
@@ -78,7 +77,6 @@ type Loop struct {
 	taskLock        taskLock
 	landingLock     executor.LandingLock
 	cloneManager    CloneManager
-	schedulerState  *schedulerStateStore
 	parentFinalizer *parentFinalizer
 	eventMetadataMu sync.Mutex
 	eventMetadata   map[string]map[string]string
@@ -105,7 +103,6 @@ func NewLoop(tasks contracts.TaskManager, runner contracts.AgentRunner, events c
 		taskLock:        scheduler.NewTaskLock(),
 		landingLock:     scheduler.NewLandingLock(),
 		cloneManager:    options.CloneManager,
-		schedulerState:  newSchedulerStateStore(options.SchedulerStatePath, options.ParentID),
 		parentFinalizer: newParentFinalizer(tasks),
 	}
 }
@@ -155,10 +152,6 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: task.ID, TaskTitle: task.Title, Message: task.Title, Timestamp: time.Now().UTC()})
 		summary.Skipped++
 		return summary, nil
-	}
-
-	if err := l.recoverSchedulerState(ctx); err != nil {
-		return summary, err
 	}
 
 	type taskResult struct {
@@ -240,10 +233,6 @@ func (l *Loop) Run(ctx context.Context) (contracts.LoopSummary, error) {
 				break
 			}
 
-			if err := l.markTaskInFlight(taskID); err != nil {
-				return summary, err
-			}
-
 			queueCounter++
 			inFlight[taskID] = struct{}{}
 			tasksCh <- taskJob{taskID: taskID, queuePos: queueCounter, priority: taskPriority}
@@ -298,38 +287,34 @@ func (l *Loop) runTask(ctx context.Context, taskID string, workerID int, queuePo
 		vcsFactory = executor.VCSFactory(l.options.VCSFactory)
 	}
 	exec := &executor.Executor{
-		Tasks:                   loopExecutorTaskManager{TaskManager: l.tasks, loop: l},
-		Runner:                  l.runner,
-		Events:                  loopMonitorEventSink{loop: l},
-		VCS:                     l.options.VCS,
-		VCSFactory:              vcsFactory,
-		CloneManager:            l.cloneManager,
-		LandingLock:             l.landingLock,
-		RepoRoot:                l.options.RepoRoot,
-		ParentID:                l.options.ParentID,
-		Backend:                 l.options.Backend,
-		Model:                   l.options.Model,
-		FallbackModel:           l.options.FallbackModel,
-		MaxRetries:              l.options.MaxRetries,
-		RunnerTimeout:           l.options.RunnerTimeout,
-		WatchdogTimeout:         l.options.WatchdogTimeout,
-		WatchdogInterval:        l.options.WatchdogInterval,
-		HeartbeatInterval:       l.options.HeartbeatInterval,
-		NoOutputWarningAfter:    l.options.NoOutputWarningAfter,
-		TDDMode:                 l.options.TDDMode,
-		QualityGateThreshold:    l.options.QualityGateThreshold,
-		QualityGateTools:        append([]string{}, l.options.QualityGateTools...),
-		QCGateTools:             append([]string{}, l.options.QCGateTools...),
-		AllowLowQuality:         l.options.AllowLowQuality,
-		RequireReview:           l.options.RequireReview,
-		MergeOnSuccess:          l.options.MergeOnSuccess,
-		WorkerID:                worker,
-		QueuePos:                queuePos,
-		Priority:                taskPriority,
-		MarkTaskBlockedWithData: l.markTaskBlockedWithData,
-		MarkTaskCompleted:       l.markTaskCompleted,
-		ClearTaskTerminalState:  l.clearTaskTerminalState,
-		ClearTaskInFlight:       l.clearTaskInFlight,
+		Tasks:                l.tasks,
+		Runner:               l.runner,
+		Events:               loopMonitorEventSink{loop: l},
+		VCS:                  l.options.VCS,
+		VCSFactory:           vcsFactory,
+		CloneManager:         l.cloneManager,
+		LandingLock:          l.landingLock,
+		RepoRoot:             l.options.RepoRoot,
+		ParentID:             l.options.ParentID,
+		Backend:              l.options.Backend,
+		Model:                l.options.Model,
+		FallbackModel:        l.options.FallbackModel,
+		MaxRetries:           l.options.MaxRetries,
+		RunnerTimeout:        l.options.RunnerTimeout,
+		WatchdogTimeout:      l.options.WatchdogTimeout,
+		WatchdogInterval:     l.options.WatchdogInterval,
+		HeartbeatInterval:    l.options.HeartbeatInterval,
+		NoOutputWarningAfter: l.options.NoOutputWarningAfter,
+		TDDMode:              l.options.TDDMode,
+		QualityGateThreshold: l.options.QualityGateThreshold,
+		QualityGateTools:     append([]string{}, l.options.QualityGateTools...),
+		QCGateTools:          append([]string{}, l.options.QCGateTools...),
+		AllowLowQuality:      l.options.AllowLowQuality,
+		RequireReview:        l.options.RequireReview,
+		MergeOnSuccess:       l.options.MergeOnSuccess,
+		WorkerID:             worker,
+		QueuePos:             queuePos,
+		Priority:             taskPriority,
 	}
 	payload := implementPayloadFromTask(task, l.options)
 	handle, err := l.options.Dispatcher.Submit(ctx, WorkDispatchRequest{
@@ -369,20 +354,11 @@ func (l *Loop) writeResultTaskUpdate(ctx context.Context, task contracts.Task, w
 
 	switch taskStatus {
 	case contracts.TaskStatusClosed:
-		if err := l.markTaskCompleted(task.ID); err != nil {
-			return taskStatus, taskData, err
-		}
 		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusClosed); err != nil {
-			return taskStatus, taskData, err
-		}
-		if err := l.clearTaskTerminalState(task.ID); err != nil {
 			return taskStatus, taskData, err
 		}
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Message: string(contracts.TaskStatusClosed), Timestamp: time.Now().UTC()})
 	case contracts.TaskStatusBlocked:
-		if err := l.markTaskBlockedWithData(task.ID, taskData); err != nil {
-			return taskStatus, taskData, err
-		}
 		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusBlocked); err != nil {
 			return taskStatus, taskData, err
 		}
@@ -391,9 +367,6 @@ func (l *Loop) writeResultTaskUpdate(ctx context.Context, task contracts.Task, w
 			return taskStatus, taskData, err
 		}
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Metadata: taskData, Timestamp: time.Now().UTC()})
-		if err := l.clearTaskTerminalState(task.ID); err != nil {
-			return taskStatus, taskData, err
-		}
 	case contracts.TaskStatusFailed:
 		if err := l.tasks.SetTaskData(ctx, task.ID, taskData); err != nil {
 			return taskStatus, taskData, err
@@ -402,29 +375,12 @@ func (l *Loop) writeResultTaskUpdate(ctx context.Context, task contracts.Task, w
 		if err := l.tasks.SetTaskStatus(ctx, task.ID, contracts.TaskStatusFailed); err != nil {
 			return taskStatus, taskData, err
 		}
-		if err := l.clearTaskInFlight(task.ID); err != nil {
-			return taskStatus, taskData, err
-		}
 		_ = l.emit(ctx, contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: worker, ClonePath: clonePath, QueuePos: queuePos, Message: string(contracts.TaskStatusFailed), Metadata: taskData, Timestamp: time.Now().UTC()})
 	default:
 		return taskStatus, taskData, fmt.Errorf("unsupported task status %q from implement result", taskStatus)
 	}
 
 	return taskStatus, taskData, nil
-}
-
-type loopExecutorTaskManager struct {
-	contracts.TaskManager
-	loop *Loop
-}
-
-func (m loopExecutorTaskManager) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
-	if status == contracts.TaskStatusClosed && m.loop != nil {
-		if err := m.loop.markTaskCompleted(taskID); err != nil {
-			return err
-		}
-	}
-	return m.TaskManager.SetTaskStatus(ctx, taskID, status)
 }
 
 func implementPayloadFromTask(task contracts.Task, options LoopOptions) workitem.ImplementPayload {
@@ -863,10 +819,8 @@ func (l *Loop) gateOptions() executor.GateOptions {
 
 func (l *Loop) gateDependencies() executor.GateDependencies {
 	return executor.GateDependencies{
-		Tasks:                   l.tasks,
-		Events:                  loopMonitorEventSink{loop: l},
-		MarkTaskBlockedWithData: l.markTaskBlockedWithData,
-		ClearTaskTerminalState:  l.clearTaskTerminalState,
+		Tasks:  l.tasks,
+		Events: loopMonitorEventSink{loop: l},
 	}
 }
 
