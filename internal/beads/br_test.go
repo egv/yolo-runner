@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"errors"
 	"context"
 	"os"
 	"path/filepath"
@@ -180,5 +181,30 @@ func TestGetTaskTreeFromJSONLBlocksUnclosedExternalDependencies(t *testing.T) {
 	ready := engine.NewTaskEngine().GetNextAvailable(graph)
 	if len(ready) != 1 || ready[0].ID != "root.ready" {
 		t.Fatalf("expected only task with closed external dependency to be ready, got %#v", ready)
+	}
+}
+
+func TestCloseTreatsAlreadyClosedAsSuccess(t *testing.T) {
+	// br exits non-zero when the task is already closed; closing an
+	// already-closed task must be a no-op success so a double-close (queue
+	// dispatcher + loop both applying a completed result) does not fail the run.
+	runner := &fakeRunner{
+		output: "Warning: Skipped X: already closed\nError: Nothing to do: all 1 issue(s) skipped\n",
+		err:    errors.New("exit status 3"),
+	}
+	adapter := NewRustAdapter(runner)
+	if err := adapter.Close("yolo-x"); err != nil {
+		t.Fatalf("Close on already-closed task should succeed, got: %v", err)
+	}
+}
+
+func TestCloseSurfacesRealErrors(t *testing.T) {
+	runner := &fakeRunner{
+		output: "Error: database is locked\n",
+		err:    errors.New("exit status 1"),
+	}
+	adapter := NewRustAdapter(runner)
+	if err := adapter.Close("yolo-x"); err == nil {
+		t.Fatal("Close should surface a genuine failure")
 	}
 }

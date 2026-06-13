@@ -3,6 +3,7 @@ package beads
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // RustAdapter provides beads_rust (br) CLI integration
@@ -191,8 +192,24 @@ func (a *RustAdapter) UpdateStatusWithReason(id string, status string, reason st
 
 // Close closes an issue
 func (a *RustAdapter) Close(id string) error {
-	_, err := a.run("close", id)
+	output, err := a.run("close", id)
+	if err != nil && brAlreadyClosed(output) {
+		// Closing an already-closed task is a no-op success. br exits non-zero
+		// ("Nothing to do: all issue(s) already closed") in that case, which
+		// would otherwise fail a run that legitimately closed the task through
+		// more than one path (e.g. the queue dispatcher and the loop both
+		// applying one completed result).
+		return nil
+	}
 	return err
+}
+
+// brAlreadyClosed reports whether a non-zero `br close` is only the
+// already-closed / nothing-to-do condition rather than a real failure.
+func brAlreadyClosed(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "already closed") ||
+		strings.Contains(lower, "nothing to do")
 }
 
 // CloseEligible closes epics that have all children closed
