@@ -129,13 +129,13 @@ br update <task-id> --status open
 br sync --flush-only
 ```
 
-6. Remove stale runner clones and scheduler state for interrupted tasks:
+6. Remove stale runner clones for interrupted tasks:
 
 ```bash
 rm -rf .yolo-runner/clones/<task-id>
 ```
 
-If `.yolo-runner/scheduler-state.json` exists and contains a stale `in_flight` entry for the interrupted task, remove only that entry.
+Queue-backed runs recover from queue leases, and the tracker source reconciles from Startrek labels on restart. `scheduler-state.json` is no longer written.
 
 ## Known Limitations
 

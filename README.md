@@ -371,7 +371,7 @@ If a run is interrupted, reset state before restarting:
 1. Stop `yolo-agent`.
 2. Move interrupted tasks back to `open`.
 3. Remove stale clone directories under `.yolo-runner/clones/<task-id>`.
-4. Remove stale `in_flight` entries from `.yolo-runner/scheduler-state.json`.
+4. Do not edit `scheduler-state.json`; it is no longer written. Queue-backed runs recover from queue leases, and source adapters reconcile from tracker/source truth on restart.
 
 ### Tracker agent PoC runbook
 
@@ -662,8 +662,8 @@ tk status <task-id> open
 # Remove stale clone
 rm -rf .yolo-runner/clones/<task-id>
 
-# Clear scheduler state
-# Edit .yolo-runner/scheduler-state.json and remove stale entries
+# scheduler-state.json is obsolete; queue leases and source reconciliation
+# recover interrupted work.
 ```
 
 ### Review Failures (TDD Mode)
