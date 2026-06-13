@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
@@ -499,6 +501,7 @@ func resolveEventsPath(cfg runConfig) string {
 func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
+	var signalFileSink contracts.EventSink
 	if cfg.stream {
 		streamWriter := io.Writer(os.Stdout)
 		if cfg.mode == agentModeUI {
@@ -520,6 +523,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	if cfg.eventsPath != "" {
 		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
 		if cfg.stream {
+			signalFileSink = fileSink
 			mirror := newMirrorEventSink(fileSink, cfg.streamOutputBuffer)
 			closers = append(closers, mirror.Close)
 			sinks = append(sinks, mirror)
@@ -538,8 +542,13 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	terminalEvents := newRunTerminalEventEmitter(cfg, eventSink, signalFileSink)
+	defer terminalEvents.recoverPanic()
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+	stopSignalHandler := terminalEvents.installSignalHandler(cancelRun)
+	defer stopSignalHandler()
+	runner = terminalEvents.wrapRunner(runner)
 	cloneManager, err := runCloneManager(cfg)
 	if err != nil {
 		return err
@@ -602,21 +611,14 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 			err = stopErr
 		}
 	}
-	if eventSink != nil {
-		_ = eventSink.Emit(context.Background(), contracts.Event{
-			Type:      contracts.EventTypeRunFinished,
-			TaskID:    cfg.rootID,
-			TaskTitle: "run",
-			Metadata:  buildRunFinishedMetadata(cfg, summary, err),
-			Timestamp: time.Now().UTC(),
-		})
-	}
+	terminalEvents.emitFinished(summary, err)
 	return err
 }
 
 func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contracts.StorageBackend, taskEngine contracts.TaskEngine, runner contracts.AgentRunner, vcs contracts.VCS) error {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
+	var signalFileSink contracts.EventSink
 	if cfg.stream {
 		streamWriter := io.Writer(os.Stdout)
 		if cfg.mode == agentModeUI {
@@ -638,6 +640,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	if cfg.eventsPath != "" {
 		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
 		if cfg.stream {
+			signalFileSink = fileSink
 			mirror := newMirrorEventSink(fileSink, cfg.streamOutputBuffer)
 			closers = append(closers, mirror.Close)
 			sinks = append(sinks, mirror)
@@ -656,8 +659,13 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	} else if len(sinks) > 1 {
 		eventSink = contracts.NewFanoutEventSink(sinks...)
 	}
+	terminalEvents := newRunTerminalEventEmitter(cfg, eventSink, signalFileSink)
+	defer terminalEvents.recoverPanic()
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+	stopSignalHandler := terminalEvents.installSignalHandler(cancelRun)
+	defer stopSignalHandler()
+	runner = terminalEvents.wrapRunner(runner)
 	cloneManager, err := runCloneManager(cfg)
 	if err != nil {
 		return err
@@ -720,16 +728,126 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 			err = stopErr
 		}
 	}
-	if eventSink != nil {
-		_ = eventSink.Emit(context.Background(), contracts.Event{
+	terminalEvents.emitFinished(summary, err)
+	return err
+}
+
+type runTerminalEventEmitter struct {
+	cfg            runConfig
+	sink           contracts.EventSink
+	signalFileSink contracts.EventSink
+	once           sync.Once
+}
+
+// runTerminalEventEmitter owns the one terminal run_finished event emitted by a
+// run. It covers ordinary completion, recoverable panics at the run/runner
+// boundary, and SIGINT/SIGTERM. Runtime-fatal errors thrown by the Go runtime
+// cannot be recovered in-process; supervisors must synthesize this terminal
+// event when a child exits non-zero without writing one.
+func newRunTerminalEventEmitter(cfg runConfig, sink contracts.EventSink, signalFileSink contracts.EventSink) *runTerminalEventEmitter {
+	return &runTerminalEventEmitter{cfg: cfg, sink: sink, signalFileSink: signalFileSink}
+}
+
+func (e *runTerminalEventEmitter) emitFinished(summary contracts.LoopSummary, runErr error) {
+	if e == nil || e.sink == nil {
+		return
+	}
+	e.once.Do(func() {
+		_ = e.sink.Emit(context.Background(), contracts.Event{
 			Type:      contracts.EventTypeRunFinished,
-			TaskID:    cfg.rootID,
+			TaskID:    e.cfg.rootID,
 			TaskTitle: "run",
-			Metadata:  buildRunFinishedMetadata(cfg, summary, err),
+			Metadata:  buildRunFinishedMetadata(e.cfg, summary, runErr),
 			Timestamp: time.Now().UTC(),
 		})
+	})
+}
+
+func (e *runTerminalEventEmitter) emitFatal(reason string, alsoWriteSignalFile bool) {
+	if e == nil || e.sink == nil {
+		return
 	}
-	return err
+	e.once.Do(func() {
+		event := contracts.Event{
+			Type:      contracts.EventTypeRunFinished,
+			TaskID:    e.cfg.rootID,
+			TaskTitle: "run",
+			Metadata:  buildFatalRunFinishedMetadata(e.cfg, reason),
+			Timestamp: time.Now().UTC(),
+		}
+		_ = e.sink.Emit(context.Background(), event)
+		if alsoWriteSignalFile && e.signalFileSink != nil {
+			_ = e.signalFileSink.Emit(context.Background(), event)
+		}
+	})
+}
+
+func (e *runTerminalEventEmitter) recoverPanic() {
+	if recovered := recover(); recovered != nil {
+		e.emitFatal(fmt.Sprintf("panic: %v", recovered), false)
+		panic(recovered)
+	}
+}
+
+func (e *runTerminalEventEmitter) wrapRunner(runner contracts.AgentRunner) contracts.AgentRunner {
+	if e == nil || runner == nil {
+		return runner
+	}
+	return terminalPanicRecoveringRunner{inner: runner, emitFatal: e.emitFatal}
+}
+
+func (e *runTerminalEventEmitter) installSignalHandler(cancel context.CancelFunc) func() {
+	if e == nil || e.sink == nil {
+		return func() {}
+	}
+	signals := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			signal.Stop(signals)
+			close(done)
+		})
+	}
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-signals:
+			if cancel != nil {
+				cancel()
+			}
+			e.emitFatal(fmt.Sprintf("signal: %s", sig), true)
+			stop()
+			os.Exit(1)
+		case <-done:
+		}
+	}()
+	return stop
+}
+
+func buildFatalRunFinishedMetadata(cfg runConfig, reason string) map[string]string {
+	metadata := buildRunFinishedMetadata(cfg, contracts.LoopSummary{}, errors.New(reason))
+	metadata["reason"] = reason
+	return metadata
+}
+
+type terminalPanicRecoveringRunner struct {
+	inner     contracts.AgentRunner
+	emitFatal func(reason string, alsoWriteSignalFile bool)
+}
+
+func (r terminalPanicRecoveringRunner) Run(ctx context.Context, request contracts.RunnerRequest) (result contracts.RunnerResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			reason := fmt.Sprintf("panic: %v", recovered)
+			if r.emitFatal != nil {
+				r.emitFatal(reason, false)
+			}
+			result = contracts.RunnerResult{Status: contracts.RunnerResultFailed, Reason: reason}
+			err = errors.New(reason)
+		}
+	}()
+	return r.inner.Run(ctx, request)
 }
 
 func runWorkDispatcher(cfg runConfig) (agent.WorkDispatcher, func() error, error) {

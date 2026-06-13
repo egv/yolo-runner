@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1649,6 +1650,65 @@ func TestRunWithComponentsModeUILaunchesYoloTUIAndRoutesOutput(t *testing.T) {
 	}
 }
 
+func TestRunWithComponentsTerminalEventOnFatalExit(t *testing.T) {
+	if mode := os.Getenv("YOLO_AGENT_TERMINAL_EVENT_CHILD"); mode != "" {
+		runTerminalEventChild(t, mode, os.Getenv("YOLO_AGENT_TERMINAL_EVENT_PATH"))
+		return
+	}
+
+	for _, tc := range []struct {
+		name           string
+		mode           string
+		sendSignal     bool
+		expectedReason string
+	}{
+		{name: "panic", mode: "panic", expectedReason: "panic: terminal event test panic"},
+		{name: "sigterm", mode: "sigterm", sendSignal: true, expectedReason: "signal: terminated"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eventsPath := filepath.Join(t.TempDir(), "events.jsonl")
+			exe, err := os.Executable()
+			if err != nil {
+				t.Fatalf("test executable: %v", err)
+			}
+			cmd := exec.Command(exe, "-test.run", "^TestRunWithComponentsTerminalEventOnFatalExit$")
+			cmd.Env = append(os.Environ(),
+				"YOLO_AGENT_TERMINAL_EVENT_CHILD="+tc.mode,
+				"YOLO_AGENT_TERMINAL_EVENT_PATH="+eventsPath,
+			)
+			var output strings.Builder
+			cmd.Stdout = &output
+			cmd.Stderr = &output
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start child: %v", err)
+			}
+
+			if tc.sendSignal {
+				waitForEventType(t, eventsPath, contracts.EventTypeRunStarted)
+				if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+					t.Fatalf("signal child: %v", err)
+				}
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.Wait()
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("expected child to exit non-zero")
+				}
+			case <-time.After(5 * time.Second):
+				_ = cmd.Process.Kill()
+				t.Fatalf("child did not exit; output=%s", output.String())
+			}
+
+			assertTerminalRunFinishedEvent(t, eventsPath, tc.expectedReason)
+		})
+	}
+}
+
 func TestRunWithComponentsStreamKeepsRunningWhenMirrorSinkFails(t *testing.T) {
 	originalStdout := os.Stdout
 	r, w, err := os.Pipe()
@@ -1786,6 +1846,112 @@ func (r *progressRunner) Run(_ context.Context, request contracts.RunnerRequest)
 		return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 	}
 	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted, ReviewReady: true}, nil
+}
+
+type terminalEventPanicRunner struct{}
+
+func (terminalEventPanicRunner) Run(context.Context, contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	panic("terminal event test panic")
+}
+
+type terminalEventBlockingRunner struct{}
+
+func (terminalEventBlockingRunner) Run(ctx context.Context, _ contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	<-ctx.Done()
+	return contracts.RunnerResult{Status: contracts.RunnerResultFailed}, ctx.Err()
+}
+
+func runTerminalEventChild(t *testing.T, mode, eventsPath string) {
+	t.Helper()
+	if strings.TrimSpace(eventsPath) == "" {
+		t.Fatalf("missing terminal event path")
+	}
+	repoRoot := initGitRepo(t)
+	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
+	var runner contracts.AgentRunner
+	switch mode {
+	case "panic":
+		runner = terminalEventPanicRunner{}
+	case "sigterm":
+		runner = terminalEventBlockingRunner{}
+	default:
+		t.Fatalf("unknown terminal event child mode %q", mode)
+	}
+	cfg := runConfig{
+		repoRoot:             repoRoot,
+		rootID:               "root",
+		eventsPath:           eventsPath,
+		concurrency:          1,
+		watchdogTimeout:      10 * time.Minute,
+		watchdogInterval:     5 * time.Second,
+		streamOutputBuffer:   64,
+		streamOutputInterval: 150 * time.Millisecond,
+	}
+	if err := runWithComponents(context.Background(), cfg, mgr, runner, nil); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func waitForEventType(t *testing.T, path string, eventType contracts.EventType) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventLogContainsType(path, eventType) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	raw, _ := os.ReadFile(path)
+	t.Fatalf("timed out waiting for %s in %s; log=%q", eventType, path, string(raw))
+}
+
+func eventLogContainsType(path string, eventType contracts.EventType) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		event, err := contracts.ParseEventJSONLLine([]byte(line))
+		if err != nil {
+			continue
+		}
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func assertTerminalRunFinishedEvent(t *testing.T, path string, expectedReason string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		event, err := contracts.ParseEventJSONLLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parse event line %q: %v", line, err)
+		}
+		if event.Type != contracts.EventTypeRunFinished {
+			continue
+		}
+		if got := event.Metadata["status"]; got != "failed" {
+			t.Fatalf("run_finished status = %q, want failed; event=%+v", got, event)
+		}
+		if got := event.Metadata["reason"]; !strings.Contains(got, expectedReason) {
+			t.Fatalf("run_finished reason = %q, want substring %q; event=%+v", got, expectedReason, event)
+		}
+		return
+	}
+	t.Fatalf("expected terminal run_finished event in %s, got %q", path, string(raw))
 }
 
 type testStorageBackend struct {
