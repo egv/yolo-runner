@@ -132,6 +132,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if len(args) > 0 && args[0] == "arc-review-watch" {
 		return arcReviewWatchCommand(args[1:])
 	}
+	if len(args) > 0 && args[0] == "source" {
+		return sourceCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "runner" {
 		return runnerDaemonCommand(args[1:])
 	}

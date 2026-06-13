@@ -180,9 +180,21 @@ func (s *Source) enqueuePlanned(planned []plannedSubmission, terminalItems map[s
 			return nil, fmt.Errorf("enqueue beads task %q: %w", plan.taskID, err)
 		}
 		itemIDsByTaskID[plan.taskID] = queued.ID
+		if isTerminalQueueState(queued.State) {
+			continue
+		}
 		submissions = append(submissions, plan.submission)
 	}
 	return submissions, nil
+}
+
+func isTerminalQueueState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "done", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Source) terminalQueueItemIDsByTaskID() (map[string]string, error) {

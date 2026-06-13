@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -35,6 +36,9 @@ const (
 func TestKillRestartRequeuesAfterLandedProcessDiesWithoutDuplicateOriginMerge(t *testing.T) {
 	if os.Getenv(killRestartHelperEnv) == "1" {
 		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("SIGKILL restart integration test uses Unix process-kill semantics")
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git is required for kill/restart integration test: %v", err)

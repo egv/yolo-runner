@@ -106,6 +106,82 @@ func TestReconcileRestartResumesBlockedTaskWithoutDuplicatingCompletedWork(t *te
 	}
 }
 
+func TestReconcileSkipsConsumedTerminalResultWithoutDuplicatingCompletedWork(t *testing.T) {
+	ctx := context.Background()
+	queuePath := filepath.Join(t.TempDir(), "queue.db")
+	store := openBeadsSourceQueue(t, queuePath)
+
+	storage := &fakeBeadsStorage{
+		tree: &contracts.TaskTree{
+			Root: contracts.Task{ID: "epic-1", Title: "Epic", Status: contracts.TaskStatusOpen},
+			Tasks: map[string]contracts.Task{
+				"epic-1": {ID: "epic-1", Title: "Epic", Status: contracts.TaskStatusOpen},
+				"task-a": {ID: "task-a", Title: "Task A", Description: "first", Status: contracts.TaskStatusOpen, ParentID: "epic-1"},
+				"task-b": {ID: "task-b", Title: "Task B", Description: "second", Status: contracts.TaskStatusOpen, ParentID: "epic-1"},
+			},
+			Relations: []contracts.TaskRelation{
+				{FromID: "epic-1", ToID: "task-a", Type: contracts.RelationParent},
+				{FromID: "epic-1", ToID: "task-b", Type: contracts.RelationParent},
+				{FromID: "task-b", ToID: "task-a", Type: contracts.RelationDependsOn},
+			},
+		},
+	}
+
+	src := &Source{
+		SourceName: "beads-test",
+		RootID:     "epic-1",
+		Preset:     "yolo-runner",
+		Storage:    storage,
+		Queue:      store,
+	}
+	if _, err := src.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile(first) error = %v", err)
+	}
+
+	first, err := store.Claim("runner-a", []string{"yolo-runner"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(first) error = %v", err)
+	}
+	if first == nil || first.SourceRef != "task-a" {
+		t.Fatalf("Claim(first) = %#v, want task-a", first)
+	}
+
+	resultPayload, err := json.Marshal(workitem.ImplementResult{Status: string(contracts.RunnerResultCompleted)})
+	if err != nil {
+		t.Fatalf("marshal implement result: %v", err)
+	}
+	if err := store.Complete(first.ID, workqueue.Result{Payload: resultPayload}); err != nil {
+		t.Fatalf("Complete(task-a) error = %v", err)
+	}
+	if err := store.MarkConsumed(first.ID, "beads-test"); err != nil {
+		t.Fatalf("MarkConsumed(task-a) error = %v", err)
+	}
+
+	restartedStore := openBeadsSourceQueue(t, queuePath)
+	restarted := &Source{
+		SourceName: "beads-test",
+		RootID:     "epic-1",
+		Preset:     "yolo-runner",
+		Storage:    storage,
+		Queue:      restartedStore,
+	}
+	restartedSubmissions, err := restarted.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile(restart) error = %v", err)
+	}
+	if got, want := submissionRefs(restartedSubmissions), []string{"task-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile(restart) source refs = %#v, want %#v", got, want)
+	}
+
+	resumed, err := restartedStore.Claim("runner-b", []string{"yolo-runner"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(after restart) error = %v", err)
+	}
+	if resumed == nil || resumed.SourceRef != "task-b" {
+		t.Fatalf("Claim(after restart) = %#v, want task-b without reclaiming consumed task-a", resumed)
+	}
+}
+
 func TestHandleResultWritesBeadsTerminalStatuses(t *testing.T) {
 	ctx := context.Background()
 	storage := &fakeBeadsStorage{}
