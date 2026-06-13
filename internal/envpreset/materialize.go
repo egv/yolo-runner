@@ -80,21 +80,24 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 	if err != nil {
 		return Workspace{}, err
 	}
-	if err := prepareMaterializeArcMount(ctx, mount); err != nil {
-		return Workspace{}, err
-	}
-	workspacePath := filepath.Join(mount, workspace.Subpath)
-	if stat, err := os.Stat(workspacePath); err != nil {
-		return Workspace{}, fmt.Errorf("arc workspace path %s is not available: %w", workspacePath, err)
-	} else if !stat.IsDir() {
-		return Workspace{}, fmt.Errorf("arc workspace path %s is not a directory", workspacePath)
-	}
-
 	lock, err := acquireMaterializeLock(materializeLockKey(mount, workspace.Subpath))
 	if err != nil {
 		return Workspace{}, err
 	}
 	cleanup := onceCleanup(lock.Release)
+
+	if err := prepareMaterializeArcMount(ctx, mount); err != nil {
+		_ = cleanup()
+		return Workspace{}, err
+	}
+	workspacePath := filepath.Join(mount, workspace.Subpath)
+	if stat, err := os.Stat(workspacePath); err != nil {
+		_ = cleanup()
+		return Workspace{}, fmt.Errorf("arc workspace path %s is not available: %w", workspacePath, err)
+	} else if !stat.IsDir() {
+		_ = cleanup()
+		return Workspace{}, fmt.Errorf("arc workspace path %s is not a directory", workspacePath)
+	}
 
 	vcs := arcvcs.New(materializeCommandRunner{dir: workspacePath})
 	if _, err := vcs.CreateTaskBranch(ctx, itemID); err != nil {
