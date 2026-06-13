@@ -120,8 +120,7 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 	}
 	defer state.Close()
 
-	cfg.eventsPath = resolveSourceArcPREventsPath(cfg)
-	eventSink, closeEventSink := watchEventSink(cfg.stream, cfg.eventsPath)
+	eventSink, closeEventSink := watchEventSink(cfg.stream, "")
 	defer closeEventSink()
 	if cfg.eventSink != nil {
 		if eventSink != nil {
@@ -146,12 +145,13 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		Once:         cfg.once,
 		PollInterval: reviewWatchConfig.PollInterval,
 		LockPath:     reviewWatchConfig.LockPath,
+		EventsPath:   cfg.eventsPath,
 		EventSink:    eventSink,
 	})
 }
 
 func resolveSourceArcPREventsPath(cfg sourceArcPRCommandConfig) string {
-	return resolveWatchEventsPath(cfg.eventsPath, cfg.stream, cfg.repoRoot, "source-arcpr.events.jsonl")
+	return resolveSourceEventsPath(cfg.eventsPath, sourceArcPRSourceName(cfg.profile))
 }
 
 func sourceArcPRSourceName(profile string) string {

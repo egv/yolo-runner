@@ -609,11 +609,11 @@ func defaultRunnerDaemonLockPath(queuePath string, runnerID string) string {
 }
 
 func defaultRunnerDaemonEventSink(runnerID string) contracts.EventSink {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
+	eventsDir := defaultYoloRunnerEventsDirOrEmpty()
+	if eventsDir == "" {
 		return nil
 	}
-	return contracts.NewFileEventSink(filepath.Join(home, ".yolo-runner", "events", safeRunnerIDForPath(runnerID)+".jsonl"))
+	return contracts.NewFileEventSink(filepath.Join(eventsDir, safeRunnerIDForPath(runnerID)+".jsonl"))
 }
 
 func safeRunnerIDForPath(runnerID string) string {

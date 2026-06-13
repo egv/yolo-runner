@@ -138,6 +138,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if len(args) > 0 && args[0] == "runner" {
 		return runnerDaemonCommand(args[1:])
 	}
+	if len(args) > 0 && args[0] == "events" {
+		return eventsCommand(args[1:])
+	}
 
 	fs := flag.NewFlagSet("yolo-agent", flag.ContinueOnError)
 	repo := fs.String("repo", ".", "Repository root")

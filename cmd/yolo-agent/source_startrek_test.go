@@ -20,6 +20,7 @@ import (
 )
 
 func TestSourceStartrekOnceSubmitsPreflightAndConsumesResult(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	repoRoot := t.TempDir()
 	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
 
@@ -207,6 +208,7 @@ tracker_agent:
 }
 
 func TestSourceStartrekNeedsInfoHumanReplyResumesExactlyOneFreshPreflight(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	repoRoot := t.TempDir()
 	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
 
@@ -372,6 +374,7 @@ func TestSourceStartrekPollSkipsReadyIssueWithOpenQueueItemAfterRevisionChange(t
 }
 
 func TestSourceStartrekPollDoesNotClaimIssueWhenEnqueueFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	store, err := workqueue.Open(dbPath)
