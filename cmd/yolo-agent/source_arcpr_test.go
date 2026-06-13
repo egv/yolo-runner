@@ -41,9 +41,17 @@ arc_review_watch:
 
 	originalLister := sourceArcPRLister
 	originalStateFetcher := sourceArcPRStateFetcher
+	originalReplyApplier := sourceArcPRReplyApplier
 	t.Cleanup(func() {
 		sourceArcPRLister = originalLister
 		sourceArcPRStateFetcher = originalStateFetcher
+		sourceArcPRReplyApplier = originalReplyApplier
+	})
+
+	// Stub the reply applier so result consumption stays offline instead of
+	// reaching the live Arcanum API.
+	sourceArcPRReplyApplier = arcPRReplyApplierFunc(func(_ context.Context, _ arcreview.PRRuntimeState, _ []byte) (arcreview.ReplyResult, error) {
+		return arcreview.ReplyResult{}, nil
 	})
 
 	var listedWorkspaces []string
@@ -183,4 +191,10 @@ arc_review_watch:
 	if next != nil {
 		t.Fatalf("expected no duplicate PR review item after writeback, got %#v", next)
 	}
+}
+
+type arcPRReplyApplierFunc func(context.Context, arcreview.PRRuntimeState, []byte) (arcreview.ReplyResult, error)
+
+func (f arcPRReplyApplierFunc) Apply(ctx context.Context, state arcreview.PRRuntimeState, payload []byte) (arcreview.ReplyResult, error) {
+	return f(ctx, state, payload)
 }

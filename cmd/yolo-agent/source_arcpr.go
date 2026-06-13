@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	arcreviewstate "github.com/egv/yolo-runner/v2/internal/arcreview/state"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/sourcehost"
@@ -29,6 +30,13 @@ type sourceArcPRCommandConfig struct {
 var runSourceArcPR = defaultRunSourceArcPR
 var sourceArcPRLister arcpr.PRLister
 var sourceArcPRStateFetcher arcpr.PRStateFetcher
+
+// Applier seams are nil in production: the arcpr source then builds real
+// Arcanum-backed appliers from the default API client. Tests inject fakes so
+// result consumption does not reach the live Arcanum API.
+var sourceArcPRReplyApplier arcreview.PRReviewCycleReplyApplier
+var sourceArcPRReviewApplier arcreview.PRReviewCycleReviewApplier
+var sourceArcPRShipGate arcreview.PRReviewCycleShipGate
 
 var newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 	return newTrackerConfigService()
@@ -138,8 +146,11 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		Branches:     reviewWatchConfig.Branches,
 		AllowShip:    reviewWatchConfig.AllowShip,
 		State:        state,
-		Lister:       sourceArcPRLister,
-		StateFetcher: sourceArcPRStateFetcher,
+		Lister:        sourceArcPRLister,
+		StateFetcher:  sourceArcPRStateFetcher,
+		ReplyApplier:  sourceArcPRReplyApplier,
+		ReviewApplier: sourceArcPRReviewApplier,
+		ShipGate:      sourceArcPRShipGate,
 	}
 	return sourcehost.Run(ctx, source, store, sourcehost.Options{
 		Once:         cfg.once,
