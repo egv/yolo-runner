@@ -239,6 +239,10 @@ func (s *sourceStartrekRuntimeSource) Poll(ctx context.Context) ([]workqueue.Sub
 			if err != nil {
 				return nil, err
 			}
+			task, err = s.preflightTaskDetails(ctx, task)
+			if err != nil {
+				return nil, err
+			}
 			submission, err := s.preflightSubmission(task, queueRoot, summary.Priority)
 			if err != nil {
 				return nil, err
@@ -258,6 +262,82 @@ func (s *sourceStartrekRuntimeSource) hasOpenQueueItem(sourceRef string) (bool, 
 		return false, errors.New("startrek source queue is required")
 	}
 	return s.Queue.HasOpenItem(s.Name(), sourceRef)
+}
+
+func (s *sourceStartrekRuntimeSource) preflightTaskDetails(ctx context.Context, task contracts.Task) (contracts.Task, error) {
+	taskID := strings.TrimSpace(task.ID)
+	if taskID == "" {
+		return task, nil
+	}
+	detailed, err := s.Backend.GetTask(ctx, taskID)
+	if err != nil {
+		return contracts.Task{}, fmt.Errorf("get startrek issue %q for preflight: %w", taskID, err)
+	}
+	if detailed == nil || strings.TrimSpace(detailed.ID) == "" {
+		return task, nil
+	}
+	out := *detailed
+	out.ParentID = task.ParentID
+	out.Status = task.Status
+	out.Metadata = mergeStartrekPreflightMetadata(task.Metadata, out.Metadata)
+	return out, nil
+}
+
+func mergeStartrekPreflightMetadata(primary map[string]string, secondary map[string]string) map[string]string {
+	if len(primary) == 0 && len(secondary) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(primary)+len(secondary))
+	for key, value := range secondary {
+		merged[key] = value
+	}
+	for key, value := range primary {
+		merged[key] = value
+	}
+	return merged
+}
+
+func (s *sourceStartrekRuntimeSource) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
+	if s == nil || s.Source == nil {
+		return nil, errors.New("startrek source is required")
+	}
+	if err := s.clearReadyLabelForBlockingPreflightResult(ctx, item, result); err != nil {
+		return nil, err
+	}
+	return s.Source.HandleResult(ctx, item, result)
+}
+
+func (s *sourceStartrekRuntimeSource) clearReadyLabelForBlockingPreflightResult(ctx context.Context, item workitem.Item, result workqueue.Result) error {
+	if item.Kind != workitem.KindPreflight {
+		return nil
+	}
+	if result.Status != "" && result.Status != workqueue.ResultStatusCompleted {
+		return nil
+	}
+	var preflightResult workitem.PreflightResult
+	if err := json.Unmarshal(result.Payload, &preflightResult); err != nil {
+		return fmt.Errorf("decode startrek preflight result for ready-label cleanup on item %q: %w", item.ID, err)
+	}
+	switch preflightResult.Verdict {
+	case workitem.PreflightVerdictNeedsInfo, workitem.PreflightVerdictReply:
+	default:
+		return nil
+	}
+	issueID := strings.TrimSpace(item.SourceRef)
+	if issueID == "" {
+		return nil
+	}
+	if s.Backend == nil {
+		return errors.New("startrek source backend is required")
+	}
+	readyLabel := strings.TrimSpace(s.ReadyLabel)
+	if readyLabel == "" {
+		readyLabel = defaultTrackerAgentReadyLabel
+	}
+	if err := s.Backend.RemoveLabel(ctx, issueID, readyLabel); err != nil {
+		return fmt.Errorf("remove startrek ready label from blocking preflight issue %q: %w", issueID, err)
+	}
+	return nil
 }
 
 func (s *sourceStartrekRuntimeSource) preflightSubmission(task contracts.Task, queueRoot contracts.Task, graphPriority *int) (workqueue.Submission, error) {
