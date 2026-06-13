@@ -17,6 +17,8 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent/preflight"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 func TestRunTrackerWatchPollLoopHonorsOnceAndContextCancel(t *testing.T) {
@@ -693,6 +695,104 @@ func TestRunTrackerWatchStartrekQueuePreflightUsesParentIssueContextForSubtask(t
 	}
 }
 
+func TestRunTrackerWatchStartrekQueueSubmitsReadyLeafToWorkQueue(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	queuePath := filepath.Join(home, ".yolo-runner", "queue.db")
+	repoRoot := t.TempDir()
+	storage := newTrackerWatchSplitPRStorage()
+
+	storage.mu.Lock()
+	storage.tasks["VAY-43"] = contracts.Task{
+		ID:          "VAY-43",
+		Title:       "Implement generated subtask",
+		Description: "Leaf task should be submitted to a queue runner.",
+		Status:      contracts.TaskStatusOpen,
+		ParentID:    "VAY-42",
+		Metadata:    map[string]string{"component": "messenger"},
+	}
+	storage.relations = append(storage.relations, contracts.TaskRelation{
+		FromID: "VAY-42",
+		ToID:   "VAY-43",
+		Type:   contracts.RelationParent,
+	})
+	storage.mu.Unlock()
+
+	tree, err := storage.GetTaskTree(ctx, "VAY")
+	if err != nil {
+		t.Fatalf("get task tree: %v", err)
+	}
+	runner := &trackerWatchReadyPreflightRunner{}
+	priority := 17
+	err = runTrackerWatchStartrekQueue(ctx, trackerWatchConfig{repoRoot: repoRoot, profile: "startrek-demo"}, storage, runner, preflight.NewRunner(runner), trackerWatchRunnerDefaults{
+		Config: yoloAgentConfigDefaults{
+			Backend: "fake-codex",
+			Model:   "fake-codex",
+		},
+	}, startrekQueueModel{Key: "VAY"}, tree.Root, []contracts.TaskSummary{
+		{ID: "VAY-43", Title: "Implement generated subtask", Priority: &priority},
+	}, tree.Tasks, repoRoot, trackerAgentConfig{
+		Labels: trackerAgentLabelNamesConfig{
+			Ready:      "yolo-agent-ready",
+			InProgress: "yolo-agent-in-progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run tracker-watch queue: %v", err)
+	}
+
+	requests := runner.requestSnapshots()
+	if len(requests) != 1 {
+		t.Fatalf("expected only inline preflight request, got %d requests: %#v", len(requests), requests)
+	}
+	if requests[0].Mode != contracts.RunnerModeReview {
+		t.Fatalf("expected local request to be preflight/review mode, got %q", requests[0].Mode)
+	}
+
+	store, err := workqueue.Open(queuePath)
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close(queue) error = %v", err)
+		}
+	})
+	item, err := store.Claim("runner-test", []string{"startrek-demo"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(queued implement) error = %v", err)
+	}
+	if item == nil {
+		t.Fatalf("expected queued implement item")
+	}
+	if item.Kind != workitem.KindImplement {
+		t.Fatalf("queued item kind = %q, want %q", item.Kind, workitem.KindImplement)
+	}
+	if item.Source != sourceStartrekSourceName("startrek-demo") {
+		t.Fatalf("queued item source = %q, want %q", item.Source, sourceStartrekSourceName("startrek-demo"))
+	}
+	if item.SourceRef != "VAY-43" {
+		t.Fatalf("queued item source ref = %q, want VAY-43", item.SourceRef)
+	}
+	if item.Priority != 17 {
+		t.Fatalf("queued item priority = %d, want 17", item.Priority)
+	}
+	payload, err := workitem.DecodeImplementPayload(item.Payload)
+	if err != nil {
+		t.Fatalf("DecodeImplementPayload(%s) error = %v", item.Payload, err)
+	}
+	if payload.TaskID != "VAY-43" || payload.Title != "Implement generated subtask" {
+		t.Fatalf("queued payload task = %#v", payload)
+	}
+	if payload.PromptContext.ParentID != "VAY-42" {
+		t.Fatalf("queued payload parent ID = %q, want VAY-42", payload.PromptContext.ParentID)
+	}
+	if payload.PromptContext.Metadata["component"] != "messenger" {
+		t.Fatalf("queued payload metadata = %#v", payload.PromptContext.Metadata)
+	}
+}
+
 func TestFallbackTrackerWatchPreflightQuestionsUseSummary(t *testing.T) {
 	questions := fallbackTrackerWatchPreflightQuestions(contracts.Task{
 		ID:    "ADAPTABOT-1",
@@ -784,6 +884,44 @@ func (r *trackerWatchNeedsInfoPreflightRunner) Run(_ context.Context, request co
 }
 
 func (r *trackerWatchNeedsInfoPreflightRunner) requestSnapshots() []contracts.RunnerRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]contracts.RunnerRequest(nil), r.requests...)
+}
+
+type trackerWatchReadyPreflightRunner struct {
+	mu       sync.Mutex
+	requests []contracts.RunnerRequest
+}
+
+func (r *trackerWatchReadyPreflightRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, contracts.RunnerRequest{
+		TaskID:   request.TaskID,
+		ParentID: request.ParentID,
+		Prompt:   request.Prompt,
+		Mode:     request.Mode,
+		Model:    request.Model,
+		RepoRoot: request.RepoRoot,
+		Metadata: cloneStringMapForTrackerWatchTest(request.Metadata),
+	})
+	r.mu.Unlock()
+
+	if !strings.Contains(request.Prompt, "evaluating whether a queued task is actionable") {
+		return contracts.RunnerResult{}, fmt.Errorf("tracker-watch should queue implementation instead of running local request mode %q", request.Mode)
+	}
+	if request.OnProgress != nil {
+		request.OnProgress(contracts.RunnerProgress{
+			Type:      string(contracts.EventTypeRunnerOutput),
+			Message:   `{"decision":"ready","confidence":0.96,"summary":"Ready for implementation.","questions":[]}`,
+			Metadata:  map[string]string{"source": "stdout"},
+			Timestamp: time.Now().UTC(),
+		})
+	}
+	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+}
+
+func (r *trackerWatchReadyPreflightRunner) requestSnapshots() []contracts.RunnerRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]contracts.RunnerRequest(nil), r.requests...)
