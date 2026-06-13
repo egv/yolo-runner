@@ -97,7 +97,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 			}),
 		},
 		environmentPresets: runnerDaemonTestPresets("arc"),
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 			return envpreset.Workspace{Path: workspacePath}, nil
 		},
 		cfg: runnerDaemonCommandConfig{

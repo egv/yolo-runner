@@ -14,6 +14,9 @@ import (
 
 func newRunnerFinalizeKindHandler() runnerKindHandler {
 	return func(ctx context.Context, item workitem.Item, workspace envpreset.Workspace) (workqueue.Result, error) {
+		if workspace.VCS == nil {
+			return workqueue.Result{}, fmt.Errorf("finalize item %q requires an isolated VCS-bearing workspace; preset %q materialized none (path strategy is not allowed for code-writing kinds)", item.ID, item.Preset)
+		}
 		payload, err := workitem.DecodeFinalizePayload(item.Payload)
 		if err != nil {
 			return workqueue.Result{}, fmt.Errorf("decode finalize payload for item %q: %w", item.ID, err)

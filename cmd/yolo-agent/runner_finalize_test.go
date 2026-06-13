@@ -62,7 +62,7 @@ func TestRunnerFinalizeHandlerCreatesParentPRResult(t *testing.T) {
 				Landing:   envpreset.Landing{Type: envpreset.LandingTypeArcPR},
 			},
 		},
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 			return envpreset.Workspace{
 				Path: t.TempDir(),
 				VCS:  vcs,

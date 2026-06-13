@@ -133,7 +133,21 @@ presets:
       model: openai/gpt-5.3-codex
     limits:
       max_concurrent: 2
+  adapta:
+    workspace:
+      strategy: arc-shared
+      mount: ~/arcadia
+      subpath: marvel/gena/adapta
+    landing:
+      type: arc-pr
+    agent:
+      backend: codex
+      model: gpt-5.5
+    limits:
+      max_concurrent: 1
 ```
+
+The runner isolates by work kind, not by a preset flag. Code-writing kinds (`implement`, `finalize`) always run in a fresh isolated, VCS-bearing workspace — a per-item git clone fast-forwarded to `base_branch`, or a per-item branch on the arc mount — and a code-writing item is rejected if it would have no VCS, so it can never mutate the source checkout. Read-only kinds (`preflight`, `split`, `pr-review`) get a lightweight parallel-safe read view (for arc, the mount with no per-item branch and no lock), so reviews and triage run concurrently. The single-command `yolo-agent --queue` path synthesizes a git-clone preset from the repo automatically; arc repos require an explicit `arc-shared` preset and a standalone `runner`.
 
 Each process writes JSONL to `~/.yolo-runner/events/<proc-id>.jsonl`. Use `yolo-agent events follow` to merge-tail those files by timestamp into the unchanged TUI stdin protocol. `tracker-watch` and `arc-review-watch` are deprecated compatibility shims; prefer `yolo-agent source startrek` and `yolo-agent source arcpr` for queue-backed runs.
 

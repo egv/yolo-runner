@@ -265,7 +265,7 @@ func TestRunnerConcurrencyRespectsPresetMaxConcurrent(t *testing.T) {
 				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath},
 			},
 		},
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 			return envpreset.Workspace{Path: t.TempDir()}, nil
 		},
 		cfg: runnerDaemonCommandConfig{
@@ -540,7 +540,7 @@ func TestRunnerDaemonMaterializesEachPresetStrategyAndCleansUp(t *testing.T) {
 	materializedByStrategy := map[string]string{}
 	cleanedByStrategy := map[string]bool{}
 	handlerWorkspaceByPreset := map[string]string{}
-	materializer := func(_ context.Context, preset envpreset.Preset, itemID string) (envpreset.Workspace, error) {
+	materializer := func(_ context.Context, preset envpreset.Preset, itemID string, _ bool) (envpreset.Workspace, error) {
 		strategy := string(preset.Workspace.Strategy)
 		path := filepath.Join(workspaceRoot, strategy, itemID)
 		if err := os.MkdirAll(path, 0o755); err != nil {
@@ -690,6 +690,6 @@ func runnerDaemonTestPresets(names ...string) map[string]envpreset.Preset {
 	return presets
 }
 
-func runnerDaemonNoopMaterializer(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+func runnerDaemonNoopMaterializer(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 	return envpreset.Workspace{}, nil
 }

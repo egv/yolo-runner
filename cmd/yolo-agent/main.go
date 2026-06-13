@@ -115,6 +115,11 @@ var launchYoloTUI = func() (io.WriteCloser, func() error, error) {
 
 var runConfigInitCommand = defaultRunConfigInitCommand
 var runTrackerWatch = defaultRunTrackerWatch
+
+// embeddedQueueMaterializer materializes the embedded queue runner's workspace.
+// Defaults to real isolated materialization; tests override it to inject a fake
+// isolated workspace without standing up a git remote.
+var embeddedQueueMaterializer = envpreset.MaterializeWorkspace
 var runArcReviewWatch = defaultRunArcReviewWatch
 
 func RunMain(args []string, run func(context.Context, runConfig) error) int {
@@ -549,7 +554,7 @@ func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts
 		})
 	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
-	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, vcs, eventSink)
+	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, eventSink)
 	if err != nil {
 		return err
 	}
@@ -667,7 +672,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 		})
 	}
 	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
-	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, vcs, eventSink)
+	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, eventSink)
 	if err != nil {
 		return err
 	}
@@ -747,7 +752,7 @@ type embeddedQueueRunnerHandle struct {
 	waitErr error
 }
 
-func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner contracts.AgentRunner, vcs contracts.VCS, events contracts.EventSink) (*embeddedQueueRunnerHandle, error) {
+func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner contracts.AgentRunner, events contracts.EventSink) (*embeddedQueueRunnerHandle, error) {
 	if strings.TrimSpace(cfg.queuePath) == "" {
 		return nil, nil
 	}
@@ -761,6 +766,11 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 	}
 	if live {
 		return nil, nil
+	}
+
+	embeddedPreset, err := synthesizeEmbeddedQueuePreset(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	store, err := workqueue.Open(cfg.queuePath)
@@ -796,20 +806,11 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 		events:   embeddedQueueRunnerEventSink(events),
 		handlers: handlers,
 		environmentPresets: map[string]envpreset.Preset{
-			preset: {
-				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath, Path: cfg.repoRoot},
-				Landing:   envpreset.Landing{Type: embeddedQueueRunnerLanding(cfg)},
-			},
+			preset: embeddedPreset,
 		},
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
-			return envpreset.Workspace{
-				Path: cfg.repoRoot,
-				VCS:  vcs,
-				Cleanup: func() error {
-					return nil
-				},
-			}, nil
-		},
+		// Isolated materialization: every implement item runs in a fresh clone
+		// (never the live working tree) and lands like the old loop.
+		materialize: embeddedQueueMaterializer,
 		cfg: runnerDaemonCommandConfig{
 			presets:           []string{preset},
 			runnerID:          runnerID,
@@ -962,6 +963,30 @@ func embeddedQueueRunnerLanding(cfg runConfig) envpreset.LandingType {
 		return envpreset.LandingTypeArcPR
 	}
 	return envpreset.LandingTypeGitMerge
+}
+
+// synthesizeEmbeddedQueuePreset builds the single-command embedded runner's
+// environment preset from the run config. Git repos clone per item from the
+// local checkout (CloneForTask rewrites the remote to the source origin, so
+// landing pushes to the real remote). Arc repos need an explicit mount/subpath
+// that the run config does not carry, so they must use a standalone runner with
+// an environments.yaml arc-shared preset.
+func synthesizeEmbeddedQueuePreset(cfg runConfig) (envpreset.Preset, error) {
+	if embeddedQueueRunnerLanding(cfg) == envpreset.LandingTypeArcPR {
+		return envpreset.Preset{}, fmt.Errorf(
+			"embedded queue runner does not support arc repos; start a standalone "+
+				"runner (yolo-agent runner --queue %s --presets %s) with an arc-shared "+
+				"preset in ~/.yolo-runner/environments.yaml",
+			cfg.queuePath, queuePresetForRun(cfg))
+	}
+	return envpreset.Preset{
+		Workspace: envpreset.Workspace{
+			Strategy:   envpreset.WorkspaceStrategyGitClone,
+			Origin:     cfg.repoRoot,
+			BaseBranch: "main",
+		},
+		Landing: envpreset.Landing{Type: envpreset.LandingTypeGitMerge},
+	}, nil
 }
 
 type embeddedQueueDiscardEventSink struct{}

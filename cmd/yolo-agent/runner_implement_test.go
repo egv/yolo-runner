@@ -95,7 +95,7 @@ func TestRunnerImplementHandlerWritesExecutorResultThroughQueue(t *testing.T) {
 				Landing:   envpreset.Landing{Type: envpreset.LandingTypeNone},
 			},
 		},
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 			return envpreset.Workspace{
 				Path: workspacePath,
 				VCS:  fakeVCS,
@@ -256,4 +256,27 @@ func (v *runnerImplementFakeVCS) PushBranch(context.Context, string) error {
 
 func (v *runnerImplementFakeVCS) PushMain(context.Context) error {
 	return nil
+}
+
+func TestRunnerImplementHandlerRejectsNonIsolatedWorkspace(t *testing.T) {
+	handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+		t.Fatal("resolver must not run when the workspace has no VCS")
+		return runnerImplementExecutor{}, nil
+	})
+
+	payload, err := json.Marshal(workitem.ImplementPayload{TaskID: "T-1"})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	item := workitem.Item{ID: "item-no-vcs", Kind: workitem.KindImplement, Preset: "linux", Payload: payload}
+
+	// Path-strategy / read-only workspaces have no VCS; a code-writing item must
+	// be rejected rather than silently run in the live tree without landing.
+	_, err = handler(context.Background(), item, envpreset.Workspace{Path: t.TempDir(), VCS: nil})
+	if err == nil {
+		t.Fatal("expected error for implement item with no VCS-bearing workspace")
+	}
+	if !strings.Contains(err.Error(), "isolated") {
+		t.Fatalf("error should explain the isolation requirement, got: %v", err)
+	}
 }

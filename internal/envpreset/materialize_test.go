@@ -138,6 +138,50 @@ func TestMaterializeArcMountIfNeededBeforeBranchCreation(t *testing.T) {
 	}
 }
 
+func TestMaterializeWorkspaceArcReadOnlyMountsWithoutBranchOrLock(t *testing.T) {
+	ctx := context.Background()
+	arcLog := installFakeArcWithMountList(t, "[]")
+	mount := t.TempDir()
+	arcSubpath := filepath.Join("project", "service")
+	if err := os.MkdirAll(filepath.Join(mount, arcSubpath), 0o755); err != nil {
+		t.Fatalf("create arc workspace: %v", err)
+	}
+
+	preset := Preset{Workspace: Workspace{
+		Strategy: WorkspaceStrategyArcShared,
+		Mount:    mount,
+		Subpath:  arcSubpath,
+	}}
+
+	// Read-only (isolated=false) materialization for kinds like pr-review:
+	// mount the workspace but take no per-item branch and no serializing lock,
+	// and return no VCS.
+	ws, err := MaterializeWorkspace(ctx, preset, "PR-1", false)
+	if err != nil {
+		t.Fatalf("MaterializeWorkspace(arc, read-only) error: %v", err)
+	}
+	if ws.VCS != nil {
+		t.Fatal("read-only arc workspace must have no VCS")
+	}
+	if ws.Cleanup != nil {
+		_ = ws.Cleanup()
+	}
+
+	content, err := os.ReadFile(arcLog)
+	if err != nil {
+		t.Fatalf("read arc log: %v", err)
+	}
+	if got := strings.TrimSpace(string(content)); strings.Contains(got, "checkout -b") {
+		t.Fatalf("read-only arc materialization must not create a branch; arc log:\n%s", got)
+	}
+
+	// A second read-only materialization for a different PR must not block on a
+	// lock held by the first (no serialization) — both return promptly.
+	if _, err := MaterializeWorkspace(ctx, preset, "PR-2", false); err != nil {
+		t.Fatalf("second read-only MaterializeWorkspace error: %v", err)
+	}
+}
+
 func TestMaterializeArcMountConcurrentColdStartDoesNotRaceBeforeBranchCreation(t *testing.T) {
 	ctx := context.Background()
 	arcLog := installRacingFakeArc(t)

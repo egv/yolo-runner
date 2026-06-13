@@ -43,7 +43,20 @@ type runnerKindHandler func(context.Context, workitem.Item, envpreset.Workspace)
 
 type runnerKindRegistry map[workitem.Kind]runnerKindHandler
 
-type runnerWorkspaceMaterializer func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error)
+type runnerWorkspaceMaterializer func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error)
+
+// runnerKindIsolated reports whether a work kind writes code and therefore
+// needs a fully isolated, VCS-bearing workspace. Read-only kinds (preflight,
+// split, pr-review) produce a decision and write back over the source API, so
+// they get a lightweight parallel-safe read view instead.
+func runnerKindIsolated(kind workitem.Kind) bool {
+	switch kind {
+	case workitem.KindImplement, workitem.KindFinalize:
+		return true
+	default:
+		return false
+	}
+}
 
 func runnerDaemonCommand(args []string) int {
 	fs := flag.NewFlagSet("yolo-agent runner", flag.ContinueOnError)
@@ -132,7 +145,7 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		handlers:           handlers,
 		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
 		environmentPresets: environmentPresets,
-		materialize:        envpreset.Materialize,
+		materialize:        envpreset.MaterializeWorkspace,
 		cfg:                cfg,
 	}
 	return daemon.Run(ctx)
@@ -421,9 +434,9 @@ func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item work
 
 	materialize := d.materialize
 	if materialize == nil {
-		materialize = envpreset.Materialize
+		materialize = envpreset.MaterializeWorkspace
 	}
-	workspace, err := materialize(ctx, preset, item.ID)
+	workspace, err := materialize(ctx, preset, item.ID, runnerKindIsolated(item.Kind))
 	if err != nil {
 		return envpreset.Workspace{}, fmt.Errorf("materialize workspace for item %q preset %q: %w", item.ID, presetName, err)
 	}

@@ -18,7 +18,21 @@ import (
 
 const materializePresetName = "materialize"
 
+// Materialize prepares a fully isolated, writable workspace. It is the
+// default for code-writing work; equivalent to MaterializeWorkspace with
+// isolated=true.
 func Materialize(ctx context.Context, preset Preset, itemID string) (Workspace, error) {
+	return MaterializeWorkspace(ctx, preset, itemID, true)
+}
+
+// MaterializeWorkspace prepares a workspace for a work item. When isolated is
+// true (code-writing kinds: implement/finalize) it produces a writable,
+// VCS-bearing workspace — a fresh git clone fast-forwarded to the base branch,
+// or a per-item branch on the arc mount. When isolated is false (read-only
+// kinds: preflight/split/pr-review) it produces a lightweight read view — for
+// arc the prepared mount with no per-item branch and no serializing lock, so
+// reads run in parallel; the returned VCS is nil.
+func MaterializeWorkspace(ctx context.Context, preset Preset, itemID string, isolated bool) (Workspace, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -34,9 +48,9 @@ func Materialize(ctx context.Context, preset Preset, itemID string) (Workspace, 
 
 	switch workspace.Strategy {
 	case WorkspaceStrategyGitClone:
-		return materializeGitClone(ctx, workspace, itemID)
+		return materializeGitClone(ctx, workspace, itemID, isolated)
 	case WorkspaceStrategyArcShared:
-		return materializeArcShared(ctx, workspace, itemID)
+		return materializeArcShared(ctx, workspace, itemID, isolated)
 	case WorkspaceStrategyPath:
 		return materializePath(workspace)
 	default:
@@ -44,7 +58,7 @@ func Materialize(ctx context.Context, preset Preset, itemID string) (Workspace, 
 	}
 }
 
-func materializeGitClone(ctx context.Context, workspace Workspace, itemID string) (Workspace, error) {
+func materializeGitClone(ctx context.Context, workspace Workspace, itemID string, isolated bool) (Workspace, error) {
 	origin, err := expandHome(workspace.Origin)
 	if err != nil {
 		return Workspace{}, err
@@ -66,6 +80,21 @@ func materializeGitClone(ctx context.Context, workspace Workspace, itemID string
 			_ = cleanup()
 			return Workspace{}, fmt.Errorf("checkout base branch %q: %s: %w", workspace.BaseBranch, strings.TrimSpace(output), err)
 		}
+		// Code-writing items must start from the current remote tip so
+		// sequential/parallel items do not branch off a stale base and
+		// collide at merge. Read-only items skip this (cheaper, and they
+		// never land).
+		if isolated {
+			runner := materializeCommandRunner{dir: clonePath}
+			if output, err := runner.Run("git", "fetch", "origin", workspace.BaseBranch); err != nil {
+				_ = cleanup()
+				return Workspace{}, fmt.Errorf("fetch base branch %q: %s: %w", workspace.BaseBranch, strings.TrimSpace(output), err)
+			}
+			if output, err := runner.Run("git", "reset", "--hard", "origin/"+workspace.BaseBranch); err != nil {
+				_ = cleanup()
+				return Workspace{}, fmt.Errorf("reset to origin/%s: %s: %w", workspace.BaseBranch, strings.TrimSpace(output), err)
+			}
+		}
 	}
 
 	workspace.Origin = origin
@@ -75,11 +104,30 @@ func materializeGitClone(ctx context.Context, workspace Workspace, itemID string
 	return workspace, nil
 }
 
-func materializeArcShared(ctx context.Context, workspace Workspace, itemID string) (Workspace, error) {
+func materializeArcShared(ctx context.Context, workspace Workspace, itemID string, isolated bool) (Workspace, error) {
 	mount, err := expandHome(workspace.Mount)
 	if err != nil {
 		return Workspace{}, err
 	}
+
+	// Read-only items (preflight/split/pr-review) only need the mount present
+	// to run read commands like `arc pr status`. They take no per-item branch
+	// and no serializing lock, so reviews on one mount run in parallel.
+	if !isolated {
+		if err := prepareMaterializeArcMount(ctx, mount); err != nil {
+			return Workspace{}, err
+		}
+		workspacePath, err := validateArcWorkspacePath(mount, workspace.Subpath)
+		if err != nil {
+			return Workspace{}, err
+		}
+		workspace.Mount = mount
+		workspace.Path = workspacePath
+		workspace.VCS = nil
+		workspace.Cleanup = func() error { return nil }
+		return workspace, nil
+	}
+
 	lock, err := acquireMaterializeLock(materializeLockKey(mount, workspace.Subpath))
 	if err != nil {
 		return Workspace{}, err
@@ -90,13 +138,10 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 		_ = cleanup()
 		return Workspace{}, err
 	}
-	workspacePath := filepath.Join(mount, workspace.Subpath)
-	if stat, err := os.Stat(workspacePath); err != nil {
+	workspacePath, err := validateArcWorkspacePath(mount, workspace.Subpath)
+	if err != nil {
 		_ = cleanup()
-		return Workspace{}, fmt.Errorf("arc workspace path %s is not available: %w", workspacePath, err)
-	} else if !stat.IsDir() {
-		_ = cleanup()
-		return Workspace{}, fmt.Errorf("arc workspace path %s is not a directory", workspacePath)
+		return Workspace{}, err
 	}
 
 	vcs := arcvcs.New(materializeCommandRunner{dir: workspacePath})
@@ -110,6 +155,16 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 	workspace.VCS = vcs
 	workspace.Cleanup = cleanup
 	return workspace, nil
+}
+
+func validateArcWorkspacePath(mount string, subpath string) (string, error) {
+	workspacePath := filepath.Join(mount, subpath)
+	if stat, err := os.Stat(workspacePath); err != nil {
+		return "", fmt.Errorf("arc workspace path %s is not available: %w", workspacePath, err)
+	} else if !stat.IsDir() {
+		return "", fmt.Errorf("arc workspace path %s is not a directory", workspacePath)
+	}
+	return workspacePath, nil
 }
 
 func prepareMaterializeArcMount(ctx context.Context, mountPath string) error {

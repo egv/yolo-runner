@@ -116,7 +116,7 @@ func TestRunQueueWithRunnerOnceCompletesTaskEndToEnd(t *testing.T) {
 			},
 		},
 		environmentPresets: runnerDaemonTestPresets("linux"),
-		materialize: func(context.Context, envpreset.Preset, string) (envpreset.Workspace, error) {
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 			return envpreset.Workspace{Path: repo}, nil
 		},
 		cfg: runnerDaemonCommandConfig{
@@ -151,6 +151,16 @@ func TestRunQueueWithRunnerOnceCompletesTaskEndToEnd(t *testing.T) {
 
 func TestEmbeddedRunnerForRunQueueCompletesTaskEndToEnd(t *testing.T) {
 	repo := initSeededRepo(t)
+
+	// Inject an isolated workspace (fake VCS) so this wiring test runs without
+	// a real git remote; the embedded path's real git-clone materialization is
+	// covered end-to-end by the kill-restart test.
+	originalMaterializer := embeddedQueueMaterializer
+	embeddedQueueMaterializer = func(_ context.Context, _ envpreset.Preset, _ string, _ bool) (envpreset.Workspace, error) {
+		return envpreset.Workspace{Path: repo, VCS: &fakeVCS{}, Cleanup: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { embeddedQueueMaterializer = originalMaterializer })
+
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	taskID := "TASK-embedded-queue"
 	taskManager := newInMemoryTaskManager(contracts.Task{

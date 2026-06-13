@@ -262,7 +262,7 @@ func runKillRestartRunnerSubprocess() error {
 		},
 		events:             events,
 		environmentPresets: presets,
-		materialize:        envpreset.Materialize,
+		materialize:        envpreset.MaterializeWorkspace,
 		cfg:                cfg,
 	}
 	err = daemon.Run(runCtx)
