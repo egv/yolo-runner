@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,8 +20,8 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/engine"
 	startreksource "github.com/egv/yolo-runner/v2/internal/sources/startrek"
 	"github.com/egv/yolo-runner/v2/internal/startrek"
-	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
-	gitvcs "github.com/egv/yolo-runner/v2/internal/vcs/git"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
@@ -235,6 +238,7 @@ func runTrackerWatchPollIteration(ctx context.Context, cfg trackerWatchConfig) e
 	if profile.Tracker.Startrek == nil {
 		return errors.New("tracker.startrek settings are required")
 	}
+	cfg.profile = profile.Name
 
 	trackerAgentConfig, err := newTrackerWatchConfigService().ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
@@ -303,7 +307,7 @@ const (
 )
 
 func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, backend trackerWatchStartrekBackend, runner contracts.AgentRunner, preflightRunner *preflight.Runner, runnerDefaults trackerWatchRunnerDefaults, queue startrekQueueModel, queueRoot contracts.Task, available []contracts.TaskSummary, tasks map[string]contracts.Task, queueRootPath string, trackerAgentConfig trackerAgentConfig) error {
-	hasReadyTask := false
+	implementSubmissions := make([]workqueue.Submission, 0)
 	// Available tasks usually share one parent epic; cache it per iteration
 	// so preflight context does not refetch the same issue for every task.
 	parentCache := map[string]contracts.Task{}
@@ -347,13 +351,17 @@ func runTrackerWatchStartrekQueue(ctx context.Context, cfg trackerWatchConfig, b
 				return err
 			}
 		case startreksource.TaskCycleImplement:
-			hasReadyTask = true
+			submission, err := trackerWatchStartrekImplementSubmission(cfg, summary, task, runnerDefaults)
+			if err != nil {
+				return err
+			}
+			implementSubmissions = append(implementSubmissions, submission)
 		}
 	}
-	if !hasReadyTask {
+	if len(implementSubmissions) == 0 {
 		return nil
 	}
-	return runTrackerWatchStartrekImplementation(ctx, cfg, backend, runner, runnerDefaults, queue, queueRootPath, trackerAgentConfig)
+	return submitTrackerWatchStartrekImplementations(ctx, cfg, implementSubmissions)
 }
 
 func trackerWatchStartrekPreflightQueueRoot(ctx context.Context, backend trackerWatchStartrekBackend, queueRoot contracts.Task, task contracts.Task, tasks map[string]contracts.Task, parentCache map[string]contracts.Task) (contracts.Task, error) {
@@ -987,28 +995,134 @@ func trackerWatchContainsCyrillic(value string) bool {
 	return false
 }
 
-func runTrackerWatchStartrekImplementation(ctx context.Context, cfg trackerWatchConfig, backend contracts.StorageBackend, runner contracts.AgentRunner, defaults trackerWatchRunnerDefaults, queue startrekQueueModel, repoRoot string, _ trackerAgentConfig) error {
-	queueKey := strings.TrimSpace(queue.Key)
-	if queueKey == "" {
-		return nil
+func trackerWatchStartrekImplementSubmission(cfg trackerWatchConfig, summary contracts.TaskSummary, task contracts.Task, defaults trackerWatchRunnerDefaults) (workqueue.Submission, error) {
+	taskID := strings.TrimSpace(task.ID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(summary.ID)
 	}
-	repoRoot = strings.TrimSpace(repoRoot)
-	if repoRoot == "" {
-		repoRoot = strings.TrimSpace(cfg.repoRoot)
+	if taskID == "" {
+		return workqueue.Submission{}, errors.New("startrek implement task id is required")
 	}
-	vcs, err := trackerWatchVCS(cfg.repoRoot, repoRoot)
-	if err != nil {
-		return err
+	if strings.TrimSpace(task.Title) == "" {
+		task.Title = strings.TrimSpace(summary.Title)
 	}
-	loop := agentLoopForTrackerWatch(backend, runner, vcs, trackerWatchLoopOptions{
-		ConfigRepoRoot: cfg.repoRoot,
-		TaskRepoRoot:   repoRoot,
-		QueueKey:       queueKey,
-		Defaults:       defaults,
-		EventSink:      cfg.eventSink,
+	preset := strings.TrimSpace(cfg.profile)
+	if preset == "" {
+		return workqueue.Submission{}, trackerWatchStartrekQueuePointerError(cfg, errors.New("tracker-watch Startrek profile is required for queue submission"))
+	}
+	payload, err := json.Marshal(workitem.ImplementPayload{
+		TaskID:      taskID,
+		Title:       strings.TrimSpace(task.Title),
+		Description: task.Description,
+		PromptContext: workitem.ImplementPromptContext{
+			ParentID: strings.TrimSpace(task.ParentID),
+			Metadata: copyStringMap(task.Metadata),
+		},
 	})
-	_, err = loop.Run(ctx)
-	return err
+	if err != nil {
+		return workqueue.Submission{}, fmt.Errorf("encode tracker-watch Startrek implement payload for issue %q: %w", taskID, err)
+	}
+	priority := 0
+	if summary.Priority != nil {
+		priority = *summary.Priority
+	}
+	maxAttempts := defaults.RetryBudgetValue() + 1
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	return workqueue.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         sourceStartrekSourceName(preset),
+		SourceRef:      taskID,
+		IdempotencyKey: "st/" + taskID + "/" + string(workitem.KindImplement) + "/" + trackerWatchStartrekImplementationRevision(task),
+		Preset:         preset,
+		Priority:       priority,
+		Payload:        payload,
+		MaxAttempts:    maxAttempts,
+	}, nil
+}
+
+func submitTrackerWatchStartrekImplementations(_ context.Context, cfg trackerWatchConfig, submissions []workqueue.Submission) error {
+	store, err := workqueue.Open("")
+	if err != nil {
+		return trackerWatchStartrekQueuePointerError(cfg, err)
+	}
+	defer store.Close()
+	for _, submission := range submissions {
+		if _, err := store.Submit(submission); err != nil {
+			return fmt.Errorf("submit tracker-watch Startrek implement queue item for issue %q: %w", submission.SourceRef, err)
+		}
+	}
+	return nil
+}
+
+func trackerWatchStartrekQueuePointerError(cfg trackerWatchConfig, err error) error {
+	profile := strings.TrimSpace(cfg.profile)
+	if profile == "" {
+		profile = "<profile>"
+	}
+	repoRoot := strings.TrimSpace(cfg.repoRoot)
+	if repoRoot == "" {
+		repoRoot = "."
+	}
+	return fmt.Errorf("tracker-watch implementation queue is unavailable: %w; use `yolo-agent source startrek --repo %s --profile %s --queue <queue.db>` with `yolo-agent runner --queue <queue.db> --presets %s`", err, repoRoot, profile, profile)
+}
+
+func trackerWatchStartrekImplementationRevision(task contracts.Task) string {
+	if task.Metadata != nil {
+		for _, key := range []string{"revision", "updated_at", "updatedAt", "updated"} {
+			if value := safeTrackerWatchStartrekKeyPart(task.Metadata[key]); value != "" {
+				return value
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(task.ID))
+	b.WriteByte('\n')
+	b.WriteString(strings.TrimSpace(task.Title))
+	b.WriteByte('\n')
+	b.WriteString(task.Description)
+	b.WriteByte('\n')
+	b.WriteString(strings.TrimSpace(task.ParentID))
+	if len(task.Metadata) > 0 {
+		keys := make([]string, 0, len(task.Metadata))
+		for key := range task.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			b.WriteByte('\n')
+			b.WriteString(strings.TrimSpace(key))
+			b.WriteByte('=')
+			b.WriteString(strings.TrimSpace(task.Metadata[key]))
+		}
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:8])
+}
+
+func safeTrackerWatchStartrekKeyPart(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.' || r == ':':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func prepareTrackerWatchQueueWorkspace(ctx context.Context, cfg trackerWatchConfig, queue startrekQueueModel) (string, func(), error) {
@@ -1168,43 +1282,6 @@ func boolDefault(value *bool, fallback bool) bool {
 		return fallback
 	}
 	return *value
-}
-
-type trackerWatchLoopOptions struct {
-	ConfigRepoRoot string
-	TaskRepoRoot   string
-	QueueKey       string
-	Defaults       trackerWatchRunnerDefaults
-	EventSink      contracts.EventSink
-}
-
-func agentLoopForTrackerWatch(backend contracts.StorageBackend, runner contracts.AgentRunner, vcs contracts.VCS, opts trackerWatchLoopOptions) *agent.Loop {
-	return agent.NewLoopWithTaskEngine(backend, engine.NewTaskEngine(), runner, opts.EventSink, agent.LoopOptions{
-		ParentID:           strings.TrimSpace(opts.QueueKey),
-		MaxRetries:         opts.Defaults.RetryBudgetValue(),
-		Concurrency:        opts.Defaults.ConcurrencyValue(),
-		SchedulerStatePath: filepath.Join(strings.TrimSpace(opts.ConfigRepoRoot), ".yolo-runner", "scheduler-state.json"),
-		RepoRoot:           strings.TrimSpace(opts.TaskRepoRoot),
-		Backend:            opts.Defaults.Config.Backend,
-		Model:              opts.Defaults.Config.Model,
-		RunnerTimeout:      opts.Defaults.RunnerTimeoutValue(),
-		WatchdogTimeout:    opts.Defaults.WatchdogTimeoutValue(),
-		WatchdogInterval:   opts.Defaults.WatchdogIntervalValue(),
-		VCS:                vcs,
-		RequireReview:      true,
-		MergeOnSuccess:     true,
-	})
-}
-
-func trackerWatchVCS(configRepoRoot string, taskRepoRoot string) (contracts.VCS, error) {
-	landingMode, err := resolveLandingMode(configRepoRoot)
-	if err != nil {
-		return nil, err
-	}
-	if landingMode == landingTypeArcPR {
-		return arcvcs.New(localGitRunner{dir: taskRepoRoot}), nil
-	}
-	return gitvcs.NewVCSAdapter(localGitRunner{dir: taskRepoRoot}), nil
 }
 
 func startrekSummoneeID(task contracts.Task) string {
