@@ -17,6 +17,20 @@ Run the production monitor pipeline over stdin:
 
 Shortcut form: `yolo-agent --stream | yolo-tui --events-stdin`.
 
+This single-process pipe is the legacy direct path, and is still the simplest way to watch one run.
+
+## Queue-Split Multi-Process Flow
+
+When running the queue-split topology (separate `source` and `runner` processes), there is no single stdout to pipe. Each process appends JSONL to its own `~/.yolo-runner/events/<proc>.jsonl` file. Merge-tail them into the TUI:
+
+```
+yolo-agent events follow --since 1h | yolo-tui --events-stdin
+```
+
+`events follow` orders events from all process files by timestamp and follows new files as sources/runners start. Events carry `proc` and `item_id` so activity can be grouped per process and per work item. Start it before or after the sources/runners — it picks up files as they appear.
+
+Note: a standalone `runner` currently emits only lifecycle events to its file (rich `runner_output` streaming through the merge-tail is a tracked improvement), so the multi-process TUI shows task/run/landing lifecycle but not yet live agent output.
+
 Expected behavior:
 
 - Status bar updates continuously with runtime, activity, task counters, queue depth, utilization, and throughput

@@ -106,8 +106,8 @@ If a run is interrupted, reset state before restarting:
 
 1. Stop any running `yolo-agent` process.
 2. Move interrupted task(s) back from `in_progress` to `open` if needed.
-3. Remove stale clone(s) under `.yolo-runner/clones/<task-id>`.
-4. Clear stale `in_flight` entries in `.yolo-runner/scheduler-state.json`.
+3. Remove stale clone(s) under `.yolo-runner/clones/<task-id>` (legacy direct path) or `/tmp/yolo-runner-clones/<item-id>` (queue runner).
+4. Legacy direct path only: clear stale `in_flight` entries in `.yolo-runner/scheduler-state.json`. Queue-backed runs (`--queue`, `source`, `runner`) recover automatically — an expired lease is requeued, so no manual state cleanup is needed; a stale row in the queue's `runners` table is harmless.
 
 ## yolo-agent Examples
 

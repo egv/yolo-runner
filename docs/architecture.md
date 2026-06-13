@@ -1,238 +1,189 @@
 # Architecture
 
-This diagram reflects the current detailed runtime architecture.
+This document reflects the current runtime architecture: a queue-centric split
+into **source-adapter** processes and **runner** processes coordinated through a
+durable local SQLite work queue. There is no network bus — the earlier
+NATS/Redis "distributed" mode was removed. The project ships two binaries:
+`yolo-agent` (multi-command) and `yolo-tui`.
+
+## Top-Level Runtime
 
 ```mermaid
 flowchart TB
   User["Developer / CI"]
-  GitRepo[(Git repository)]
-  RepoConfig[".yolo-runner/config.yaml"]
-  CloneRoots[".yolo-runner/clones/*"]
-  EventLogs["runner-logs/*.events.jsonl"]
-  TicketFiles[".tickets/ markdown"]
-  BeadsState[".beads / br storage"]
+  Queue[("~/.yolo-runner/queue.db<br/>SQLite work queue")]
+  Presets["~/.yolo-runner/environments.yaml<br/>environment presets"]
+  Events["~/.yolo-runner/events/*.jsonl<br/>per-process event files"]
   GitHubAPI[(GitHub API)]
-  LinearAPI[(Linear API)]
-  BusInfra[(Redis / NATS)]
-  AgentProcesses["External agent CLIs<br/>OpenCode / Codex / Claude / Kimi / Gemini"]
+  StartrekAPI[(Startrek API)]
+  ArcanumAPI[(Arcanum API)]
+  AgentCLIs["Coding agent CLIs<br/>Codex / Claude / OpenCode / Kimi / Gemini"]
 
-  subgraph CLIs["CLI Entry Points"]
-    YoloAgent["cmd/yolo-agent"]
-    YoloTUI["cmd/yolo-tui"]
+  subgraph Sources["Source-adapter processes — yolo-agent source <name>"]
+    SrcStartrek["internal/sources/startrek"]
+    SrcArcpr["internal/sources/arcpr"]
+    SrcBeads["internal/sources/beads"]
+    SourceHost["internal/sourcehost<br/>poll + result-consume + reap + lock"]
   end
 
-  subgraph Shared["Shared Contracts"]
-    Contracts["internal/contracts"]
+  subgraph RunnerProcs["Runner processes — yolo-agent runner --presets <p>"]
+    Daemon["cmd/yolo-agent runner daemon"]
+    Materialize["internal/envpreset<br/>workspace materialization"]
+    Executor["internal/executor<br/>implement → review → land"]
+    Catalog["internal/codingagents<br/>backend catalog + adapters"]
   end
 
-  subgraph AgentRuntime["yolo-agent Runtime"]
-    ProfileResolver["tracker profile + config resolver"]
-    Catalog["internal/codingagents<br/>builtin + custom backend catalog"]
-    LocalLoop["local role<br/>internal/agent.Loop"]
-    StorageMgr["storageEngineTaskManager"]
-    Engine["internal/engine<br/>task graph + concurrency"]
-    Quality["internal/task_quality"]
-    CloneManager["Git clone manager"]
-    VCS["internal/vcs/git"]
-    Executor["executor role<br/>internal/distributed.ExecutorWorker"]
-    Bus["internal/distributed.Bus"]
+  subgraph LegacyProc["Legacy fallback — yolo-agent --root <id> (no --queue)"]
+    Loop["internal/agent.Loop (direct, in-process)"]
   end
 
-  subgraph Storage["Tracker / Storage Backends"]
-    TK["internal/tk"]
-    GitHubBackend["internal/github"]
-    LinearBackend["internal/linear"]
-    Beads["internal/beads"]
+  subgraph Shared["Shared contracts"]
+    Contracts["internal/contracts<br/>Event / AgentRunner / VCS"]
+    WorkItem["internal/workitem<br/>kinds + payloads"]
+    WorkQueue["internal/workqueue<br/>enqueue / claim / lease / result"]
   end
 
-  subgraph Runners["Agent Runner Adapters"]
-    OpenCode["internal/opencode"]
-    Codex["internal/codex"]
-    Claude["internal/claude"]
-    Kimi["internal/kimi"]
-    GenericCmd["generic command adapter"]
-  end
+  User --> Sources
+  User --> RunnerProcs
+  User --> LegacyProc
 
-  subgraph Monitoring["Monitoring / UI State"]
-    MonitorModel["internal/ui/monitor"]
-  end
+  SrcStartrek --> StartrekAPI
+  SrcArcpr --> ArcanumAPI
+  SrcBeads --> GitHubAPI
+  Sources -- submit work items --> Queue
+  Queue -- typed results --> Sources
 
-  User --> YoloAgent
-  User --> YoloTUI
-
-  YoloAgent --> RepoConfig
-  YoloAgent --> ProfileResolver
-  YoloAgent --> Catalog
-  YoloAgent -- role=local --> LocalLoop
-  YoloAgent -- role=executor --> Executor
-  YoloAgent -- mode=ui launches --> YoloTUI
-  YoloAgent -- stream/file sinks --> EventLogs
-  YoloAgent -- monitor sink --> Bus
-
-  ProfileResolver --> TK
-  ProfileResolver --> GitHubBackend
-  ProfileResolver --> LinearBackend
-  ProfileResolver --> Beads
-
-  LocalLoop --> StorageMgr
-  LocalLoop --> Quality
-  LocalLoop --> CloneManager
-  LocalLoop --> VCS
-  LocalLoop --> Catalog
-
-  StorageMgr --> Engine
-  StorageMgr --> TK
-  StorageMgr --> GitHubBackend
-  StorageMgr --> LinearBackend
-  StorageMgr --> Beads
-
-  Catalog --> OpenCode
-  Catalog --> Codex
-  Catalog --> Claude
-  Catalog --> Kimi
-  Catalog --> GenericCmd
-
-  OpenCode --> AgentProcesses
-  Codex --> AgentProcesses
-  Claude --> AgentProcesses
-  Kimi --> AgentProcesses
-  GenericCmd --> AgentProcesses
-
-  Executor --> Bus
+  Daemon -- claim by preset --> Queue
+  Daemon -- write result --> Queue
+  Daemon --> Materialize
+  Daemon --> Executor
+  Materialize --> Presets
   Executor --> Catalog
+  Catalog --> AgentCLIs
 
-  Bus -- backend --> BusInfra
+  Loop --> Catalog
+  Loop -- direct execution --> AgentCLIs
 
-  YoloTUI --> MonitorModel
-  EventLogs -- stdin/file --> YoloTUI
-  Bus -- monitor events --> YoloTUI
+  Sources --> Events
+  RunnerProcs --> Events
+  LegacyProc --> Events
+  Events -- yolo-agent events follow --> TUI["yolo-tui"]
 
-  TK -- local tickets --> TicketFiles
-  Beads -- CLI / state --> BeadsState
-  GitHubBackend -- API --> GitHubAPI
-  LinearBackend -- API --> LinearAPI
-  CloneManager --> CloneRoots
-  CloneManager --> GitRepo
-  VCS --> GitRepo
-
-  LocalLoop --> Contracts
-  StorageMgr --> Contracts
-  Engine --> Contracts
-  Executor --> Contracts
-  TK --> Contracts
-  GitHubBackend --> Contracts
-  LinearBackend --> Contracts
-  Beads --> Contracts
-  OpenCode --> Contracts
-  Codex --> Contracts
-  Claude --> Contracts
-  Kimi --> Contracts
-  MonitorModel --> Contracts
-  Bus --> Contracts
+  Sources --> Contracts
+  RunnerProcs --> Contracts
+  Sources --> WorkQueue
+  RunnerProcs --> WorkQueue
+  WorkQueue --> WorkItem
 ```
 
-## Task Storage Flow
+## Work Item Lifecycle
 
-The storage layer hides tracker-specific details behind a shared task contract so the scheduler can reason about one normalized graph.
+Sources discover work in their external system and submit typed work items;
+runners claim them by preset, execute by kind, and write a typed result the
+source consumes and writes back.
 
 ```mermaid
 flowchart LR
-  User["Developer / CI"] --> Tracker["TK / GitHub / Linear / beads"]
-  Tracker --> Adapter["backend adapter"]
-  Adapter --> Contracts["internal/contracts task model"]
-  Contracts --> StorageMgr["storageEngineTaskManager"]
-  StorageMgr --> Graph["task graph + dependency state"]
-  Graph --> Ready["runnable task set"]
-  StorageMgr --> Updates["status / dependency / parent updates"]
-  Updates --> Adapter --> Tracker
+  Discover["source Poll()"] --> Submit["enqueue work item<br/>(idempotency key)"]
+  Submit --> Pending["pending"]
+  Pending --> Claim["runner Claim()<br/>lease + heartbeat"]
+  Claim --> Run["kind handler executes"]
+  Run --> Result["work_results (completed/blocked/failed)"]
+  Result --> Consume["source HandleResult()<br/>writeback + follow-up items"]
+  Consume --> Tracker["labels / comments / status / PR replies"]
 ```
 
-## Local Orchestrator Loop
+Work kinds: `implement`, `review`, `preflight`, `split`, `pr-review`,
+`finalize`. A stale lease (runner crash) is requeued with backoff, then failed
+with a synthesized result so the source always gets an answer. Admission is
+idempotent (unique idempotency key); writebacks are idempotent.
 
-The local `yolo-agent` process owns the scheduling loop: it keeps reloading state, launching runners, and folding results back into the tracker.
+## Kind-Aware Isolation
+
+The runner isolates by work kind, not by a preset flag. Code-writing kinds
+always run in a fresh isolated, VCS-bearing workspace; read-only kinds get a
+lightweight parallel-safe read view.
 
 ```mermaid
 flowchart TB
-  Start["yolo-agent --role local"] --> Resolve["resolve profile, repo config, backend"]
-  Resolve --> Load["load task tree and current statuses"]
-  Load --> Pick["compute runnable tasks and free slots"]
-  Pick --> Launch["start runner for each selected task"]
-  Launch --> Monitor["collect logs, events, heartbeats, test results"]
-  Monitor --> Review["apply review, quality, retry, rewrite policy"]
-  Review --> Update["merge results and update tracker state"]
-  Update --> Load
+  Item["claimed work item"] --> Kind{"kind?"}
+  Kind -->|implement / finalize| Iso["isolated workspace:<br/>per-item git clone (ff to base)<br/>or per-item arc branch"]
+  Kind -->|preflight / split / pr-review| Read["read view:<br/>git clone-or-path<br/>arc mount, no branch, no lock"]
+  Iso --> Guard{"VCS present?"}
+  Guard -->|no| Reject["reject: code work cannot run<br/>without an isolated VCS workspace"]
+  Guard -->|yes| Exec["executor: implement → review → land"]
+  Read --> Parallel["runs in parallel; no landing"]
 ```
 
-## Runner Execution Lifecycle
-
-Each runner turns a scheduler assignment into concrete work in an isolated clone, while keeping agent-specific details behind the backend catalog.
+## Runner Execution (implement kind)
 
 ```mermaid
 flowchart TB
-  Assigned["task assignment"] --> Clone["create or reuse task clone"]
-  Clone --> Brief["materialize task brief, profile, env"]
-  Brief --> Catalog["backend catalog"]
-  Catalog --> Runner["OpenCode / Codex / Claude / Kimi / generic adapter"]
-  Runner --> Agent["external coding agent CLI"]
-  Agent --> Work["edit code, run tests, write commits, emit artifacts"]
-  Work --> Report["final status, events, logs"]
-  Report --> Caller["local loop or executor caller"]
+  Claim["claim implement item"] --> Mat["materialize isolated clone from preset"]
+  Mat --> Branch["create per-item branch"]
+  Branch --> Impl["coding agent: edit, test, commit"]
+  Impl --> Review["review pass (verdict)"]
+  Review --> Gate{"accept?"}
+  Gate -->|no| Retry["retry with feedback (budget)"]
+  Retry --> Impl
+  Gate -->|yes| Land["landing per preset:<br/>git-merge (merge+push) / arc-pr / none"]
+  Land --> ResultRow["write work_results"]
 ```
 
-## Review Guardrails
+## Source Adapters
 
-The review stage is intentionally layered: deterministic checks run first, LLM judgement runs second, and tracker state changes happen last.
+Sources own all tracker semantics; runners never see a Startrek label or an
+Arcanum comment. `internal/sourcehost` provides the shared runtime (resilient
+poll loop, result consumption, opportunistic lease reaping, singleton flock,
+per-process event file). The Startrek chain is expressed as work-item chains:
+`preflight` result → (needs-info comment | submit `split`) → `split` result →
+create subtasks + submit `implement` items → `implement` result → status/labels
++ optional `finalize` (epic PR).
 
 ```mermaid
 flowchart LR
-  Result["runner result"] --> Tests["targeted checks"]
-  Tests --> Diff["diff + changed files"]
-  Diff --> Review["review pass"]
-  Review --> Policy["guardrails / policy"]
-  Policy --> Gate{"accept?"}
-  Gate -->|yes| Merge["merge + close task"]
-  Gate -->|no| Retry["retry / rewrite / comment"]
-  Retry --> Result
-```
-
-## Where Prompting Lives
-
-The system deliberately keeps task state, retries, and status transitions in code. Prompts are used only where model judgement is actually valuable: implementation and review.
-
-```mermaid
-flowchart LR
-  CodeA["code: statuses, dependencies, retries"] --> PromptA["LLM prompt: task execution"]
-  PromptA --> CodeB["code: clone, git, events, tests"]
-  CodeB --> PromptB["LLM prompt: review and risk surfacing"]
-  PromptB --> CodeC["code: merge / close / reopen"]
+  Poll["source Poll()"] --> ST["Startrek / Arcanum / beads client"]
+  ST --> Items["work items"]
+  Items --> Q[("queue.db")]
+  Q --> Results["unconsumed results"]
+  Results --> HR["source HandleResult()"]
+  HR --> Writeback["labels / transitions / comments / subtasks / PR replies / ship"]
+  HR --> Followups["follow-up work items"]
+  Followups --> Q
 ```
 
 ## Monitoring And Event Flow
 
-Monitoring is intentionally decoupled from task execution: the UI can follow either local JSONL event files or the distributed event bus.
+Each process appends JSONL to its own `~/.yolo-runner/events/<proc>.jsonl`
+file. `yolo-agent events follow` merge-tails them by timestamp into the
+unchanged `yolo-tui` stdin protocol. Events carry optional `proc` and `item_id`
+fields so a multi-process run can be grouped in the UI.
 
 ```mermaid
 flowchart LR
-  LocalLoop["local loop"] --> FileEvents["runner-logs/*.events.jsonl"]
-  LocalLoop --> Bus["distributed bus"]
-  Executor["executor worker"] --> Bus
-  FileEvents --> TUI["yolo-tui"]
-  Bus --> TUI
-  TUI --> Monitor["monitor model"]
+  SourceProc["source process"] --> F1["events/source-*.jsonl"]
+  RunnerProc["runner process"] --> F2["events/runner-*.jsonl"]
+  F1 --> Follow["yolo-agent events follow"]
+  F2 --> Follow
+  Follow --> TUI["yolo-tui --events-stdin"]
+  TUI --> Monitor["internal/ui/monitor"]
 ```
 
-## Distributed Executor Mode
+## Legacy Direct Path
 
-Remote executors keep the same runner contracts as the local process; only task dispatch and event transport move onto the bus.
+The single-command `yolo-agent --repo . --root <id> --profile <name>` (without
+`--queue`) still runs the in-process `internal/agent.Loop`, which clones per
+task and lands directly. It is retained as a proven fallback. Adding `--queue`
+switches the same command to submit `implement` items to the queue; if no
+standalone runner is live it starts an embedded runner that clones the repo per
+item (it never executes in the live working tree). `tracker-watch` and
+`arc-review-watch` remain as deprecated compatibility shims over
+`source startrek` and `source arcpr`.
 
-```mermaid
-flowchart LR
-  LocalAgent["yolo-agent --role local"] --> Storage["tracker backend"]
-  LocalAgent --> Bus["Redis / NATS bus"]
-  Bus --> RemoteExec["yolo-agent --role executor"]
-  RemoteExec --> Catalog["backend catalog"]
-  RemoteExec --> Clone["task clone"]
-  Catalog --> AgentCLI["agent CLI"]
-  Clone --> AgentCLI
-  AgentCLI --> Bus
-```
+## Where Prompting Lives
+
+Task state, retries, and status transitions stay in code. Prompts are used only
+where model judgement is valuable: implementation, review, preflight, splitting,
+and PR review. The split between "code decides, model judges" is preserved
+across the queue boundary — sources interpret typed results, runners run
+prompts.

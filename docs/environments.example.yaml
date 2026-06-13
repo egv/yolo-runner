@@ -1,0 +1,43 @@
+# Example environment presets for yolo-agent runners.
+# Copy to ~/.yolo-runner/environments.yaml and edit for your projects.
+# See docs/environment-presets.md for the full schema and behavior.
+#
+# The preset name a producer submits equals its --profile (tracker profile)
+# name; define a preset of the same name here.
+
+presets:
+  # Git project: isolated clone per work item, merge+push to its remote.
+  yolo-runner:
+    workspace:
+      strategy: git-clone
+      origin: ~/yolo-runner       # clone source; remote is rewritten to its origin for push
+      base_branch: main           # fast-forwarded before code-writing work
+    landing:
+      type: git-merge             # merge per-item branch to main and push
+    agent:
+      backend: codex
+      model: gpt-5.5
+      runner_timeout: 45m
+    limits:
+      max_concurrent: 2
+
+  # Arc project: shared mount with a per-item branch for code work,
+  # mount-only read view (no branch/lock) for reviews/preflights.
+  adapta:
+    workspace:
+      strategy: arc-shared
+      mount: ~/arcadia
+      subpath: marvel/gena/adapta
+    landing:
+      type: arc-pr
+      title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
+    agent:
+      backend: codex
+      model: gpt-5.5
+      runner_timeout: 20m
+    limits:
+      max_concurrent: 1           # shared checkout: keep code work serialized
+    env:
+      passthrough: [STARTREK_TOKEN, ARC_TOKEN]
+      set:
+        YOLO_PROJECT: adapta

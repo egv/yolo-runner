@@ -134,7 +134,7 @@ Symphony spends a lot of SPEC surface area on:
 - stall detection and exponential backoff
 
 Suggested fit:
-- Make the mastermind/executor contract match a documented state machine.
+- Make the work-item lifecycle (pending → claimed → done/failed, lease + requeue) match a documented state machine.
 - Avoid tight retry loops that generate noisy status flapping.
 - Treat rate limits and transient tracker errors as first-class retry causes.
 

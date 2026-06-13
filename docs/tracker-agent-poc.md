@@ -97,6 +97,26 @@ For a config-driven run, keep the same root and profile but rely on `.yolo-runne
 
 Before either run, commit and push the task/config changes that task clones must see.
 
+## Queue-Split Run (current architecture)
+
+`tracker-watch` is a deprecated compatibility shim. The current architecture runs the Startrek adapter and the runner as separate processes around the SQLite work queue:
+
+```bash
+# 1. Define a preset named after the profile in ~/.yolo-runner/environments.yaml
+#    (see docs/environment-presets.md). 2. Start a runner that serves it:
+./bin/yolo-agent runner --queue .yolo-runner/queue.db \
+  --environments ~/.yolo-runner/environments.yaml --presets startrek-poc
+
+# 3. Start the Startrek source: it polls the queue, submits preflight/split/implement
+#    work items, and writes results back (labels, transitions, comments, subtasks):
+./bin/yolo-agent source startrek --repo . --profile startrek-poc --queue .yolo-runner/queue.db
+
+# 4. Watch the merged event stream:
+./bin/yolo-agent events follow | ./bin/yolo-tui --events-stdin
+```
+
+The source owns all Startrek semantics (the labels and transitions below); the runner owns workspace isolation (arc mount preparation moves to the preset's `arc-shared` materialization) and execution. Queue leases replace `scheduler-state.json` recovery.
+
 ## Labels And Status Transitions
 
 The watcher searches each configured Startrek queue for issues with `yolo-agent-ready`. During preflight it removes `yolo-agent-ready`, adds `yolo-agent-in-progress`, then either restores `yolo-agent-ready` or applies the needs-info transition. If at least one task passes preflight, the watcher runs the normal implementation loop for that queue root and persists task status through the configured Startrek labels.

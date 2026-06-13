@@ -112,10 +112,10 @@ Operator commands:
 
 - Source adapters: `yolo-agent source <arcpr|startrek> --profile <name> --queue ~/.yolo-runner/queue.db`
 - Runner daemons: `yolo-agent runner --queue ~/.yolo-runner/queue.db --environments ~/.yolo-runner/environments.yaml --presets <preset>[,<preset>]`
-- Queue operations: `yolo-agent queue <ls|submit|retry|cancel|gc>`
+- Queue inspection: the queue is plain SQLite at `~/.yolo-runner/queue.db` (tables `work_items`, `work_results`, `item_deps`, `runners`); a `yolo-agent queue` operator CLI (`ls`/`submit`/`retry`/`cancel`/`gc`) is planned.
 - Merged event stream: `yolo-agent events follow --since 1h | yolo-tui --events-stdin`
 
-Environment presets live in `~/.yolo-runner/environments.yaml`. Work items carry only the preset name; runners resolve workspace strategy, landing policy, agent backend/model, concurrency limits, and environment passthrough at claim time.
+Environment presets live in `~/.yolo-runner/environments.yaml`. Work items carry only the preset name; runners resolve workspace strategy, landing policy, agent backend/model, concurrency limits, and environment passthrough at claim time. See [docs/environment-presets.md](docs/environment-presets.md) for the full schema and a copy-ready [example](docs/environments.example.yaml).
 
 Example:
 
