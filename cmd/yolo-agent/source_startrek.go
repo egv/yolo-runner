@@ -228,6 +228,13 @@ func (s *sourceStartrekRuntimeSource) Poll(ctx context.Context) ([]workqueue.Sub
 				continue
 			}
 			task := startreksource.TrackerWatchStartrekTaskFromTree(summary, tree.Tasks)
+			hasOpenItem, err := s.hasOpenQueueItem(task.ID)
+			if err != nil {
+				return nil, err
+			}
+			if hasOpenItem {
+				continue
+			}
 			queueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, s.Backend, tree.Root, task, tree.Tasks, parentCache)
 			if err != nil {
 				return nil, err
@@ -240,6 +247,17 @@ func (s *sourceStartrekRuntimeSource) Poll(ctx context.Context) ([]workqueue.Sub
 		}
 	}
 	return submissions, nil
+}
+
+func (s *sourceStartrekRuntimeSource) hasOpenQueueItem(sourceRef string) (bool, error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if sourceRef == "" {
+		return false, nil
+	}
+	if s == nil || s.Source == nil || s.Queue == nil {
+		return false, errors.New("startrek source queue is required")
+	}
+	return s.Queue.HasOpenItem(s.Name(), sourceRef)
 }
 
 func (s *sourceStartrekRuntimeSource) preflightSubmission(task contracts.Task, queueRoot contracts.Task, graphPriority *int) (workqueue.Submission, error) {

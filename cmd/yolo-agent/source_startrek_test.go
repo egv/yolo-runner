@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
+	startreksource "github.com/egv/yolo-runner/v2/internal/sources/startrek"
+	"github.com/egv/yolo-runner/v2/internal/startrek"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -197,4 +200,114 @@ tracker_agent:
 	if len(unconsumed) != 0 {
 		t.Fatalf("unconsumed results = %d, want 0", len(unconsumed))
 	}
+}
+
+func TestSourceStartrekPollSkipsReadyIssueWithOpenQueueItemAfterRevisionChange(t *testing.T) {
+	ctx := context.Background()
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	defer store.Close()
+
+	backend := &fakeSourceStartrekPollBackend{revision: "rev-1"}
+	source := &sourceStartrekRuntimeSource{
+		Source: &startreksource.Source{
+			SourceName: "startrek-st-dev",
+			Queue:      store,
+		},
+		Backend: backend,
+		Queues:  []startrekQueueModel{{Key: "VAY"}},
+		Preset:  "st-dev",
+	}
+
+	first, err := source.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(first) error = %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("Poll(first) submissions = %d, want 1", len(first))
+	}
+	if _, err := store.Enqueue(first[0]); err != nil {
+		t.Fatalf("Enqueue(first preflight) error = %v", err)
+	}
+	claimed, err := store.Claim("runner-a", []string{"st-dev"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(first preflight) error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("expected first queued Startrek preflight item")
+	}
+
+	backend.revision = "rev-2"
+	second, err := source.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(after revision change) error = %v", err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("Poll(after revision change) submissions = %d, want 0 while item %s is open; first=%s second=%s", len(second), claimed.ID, first[0].IdempotencyKey, second[0].IdempotencyKey)
+	}
+}
+
+type fakeSourceStartrekPollBackend struct {
+	revision string
+}
+
+func (b *fakeSourceStartrekPollBackend) ResumeNeedsInfoTasks(context.Context, startrek.NeedsInfoResumeInput) ([]string, error) {
+	return nil, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) GetTaskTree(context.Context, string) (*contracts.TaskTree, error) {
+	root := contracts.Task{ID: "VAY", Title: "VAY", Status: contracts.TaskStatusOpen}
+	task := contracts.Task{
+		ID:       "VAY-42",
+		Title:    "Wire source startrek",
+		Status:   contracts.TaskStatusOpen,
+		ParentID: root.ID,
+		Metadata: map[string]string{"revision": b.revision},
+	}
+	return &contracts.TaskTree{
+		Root: root,
+		Tasks: map[string]contracts.Task{
+			root.ID: root,
+			task.ID: task,
+		},
+		Relations: []contracts.TaskRelation{{
+			FromID: root.ID,
+			ToID:   task.ID,
+			Type:   contracts.RelationParent,
+		}},
+	}, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
+	return &contracts.Task{ID: taskID, Title: taskID, Status: contracts.TaskStatusOpen}, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) SetTaskStatus(context.Context, string, contracts.TaskStatus) error {
+	return nil
+}
+
+func (b *fakeSourceStartrekPollBackend) SetTaskData(context.Context, string, map[string]string) error {
+	return nil
+}
+
+func (b *fakeSourceStartrekPollBackend) RemoveLabel(context.Context, string, string) error {
+	return nil
+}
+
+func (b *fakeSourceStartrekPollBackend) AddLabel(context.Context, string, string) error {
+	return nil
+}
+
+func (b *fakeSourceStartrekPollBackend) CreateIssue(context.Context, startrek.IssueCreateOptions) (startrek.Issue, error) {
+	return startrek.Issue{}, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) GetIssueComments(context.Context, string) ([]startrek.IssueComment, error) {
+	return nil, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) CreateIssueComment(context.Context, string, startrek.IssueCommentCreateOptions) (startrek.IssueComment, error) {
+	return startrek.IssueComment{}, nil
 }
