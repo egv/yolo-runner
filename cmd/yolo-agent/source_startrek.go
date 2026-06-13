@@ -2,20 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/egv/yolo-runner/v2/internal/agent"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
-	"github.com/egv/yolo-runner/v2/internal/engine"
 	"github.com/egv/yolo-runner/v2/internal/sourcehost"
 	startreksource "github.com/egv/yolo-runner/v2/internal/sources/startrek"
 	"github.com/egv/yolo-runner/v2/internal/startrek"
@@ -156,9 +152,12 @@ func defaultRunSourceStartrek(ctx context.Context, cfg sourceStartrekCommandConf
 	source := &sourceStartrekRuntimeSource{
 		Source: &startreksource.Source{
 			SourceName:      sourceName,
+			Backend:         backend,
 			Tracker:         backend,
 			State:           state,
 			Queue:           store,
+			Queues:          sourceStartrekQueues(profile.Tracker.Startrek.Queues),
+			Preset:          cfg.profile,
 			ReadyLabel:      trackerAgentConfig.Labels.Ready,
 			ProcessingLabel: trackerAgentConfig.Labels.InProgress,
 			NeedsInfoLabel:  trackerWatchStartrekNeedsInfoLabel,
@@ -185,116 +184,25 @@ func (s *sourceStartrekRuntimeSource) Poll(ctx context.Context) ([]workqueue.Sub
 	if s == nil || s.Source == nil {
 		return nil, errors.New("startrek source is required")
 	}
-	if s.Backend == nil {
-		return nil, errors.New("startrek source backend is required")
+	if s.Backend != nil {
+		s.Source.Backend = s.Backend
 	}
-	preset := strings.TrimSpace(s.Preset)
-	if preset == "" {
-		return nil, errors.New("startrek source preset is required")
+	if len(s.Source.Queues) == 0 {
+		s.Source.Queues = sourceStartrekQueues(s.Queues)
 	}
-
-	taskEngine := s.Engine
-	if taskEngine == nil {
-		taskEngine = engine.NewTaskEngine()
+	if strings.TrimSpace(s.Source.Preset) == "" {
+		s.Source.Preset = s.Preset
 	}
-
-	submissions := make([]workqueue.Submission, 0)
-	for _, queue := range s.Queues {
-		queueKey := strings.TrimSpace(queue.Key)
-		if queueKey == "" {
-			continue
-		}
-		if _, err := s.Backend.ResumeNeedsInfoTasks(ctx, startrek.NeedsInfoResumeInput{
-			QueueKey:       queueKey,
-			ReadyLabel:     s.ReadyLabel,
-			NeedsInfoLabel: s.NeedsInfoLabel,
-			Marker:         s.Marker,
-		}); err != nil {
-			return nil, err
-		}
-
-		tree, err := s.Backend.GetTaskTree(ctx, queueKey)
-		if err != nil {
-			return nil, err
-		}
-		graph, err := taskEngine.BuildGraph(tree)
-		if err != nil {
-			return nil, err
-		}
-		available := taskEngine.GetNextAvailable(graph)
-		parentCache := map[string]contracts.Task{}
-		for _, summary := range available {
-			if strings.EqualFold(strings.TrimSpace(summary.ID), strings.TrimSpace(tree.Root.ID)) {
-				continue
-			}
-			task := startreksource.TrackerWatchStartrekTaskFromTree(summary, tree.Tasks)
-			hasOpenItem, err := s.hasOpenQueueItem(task.ID)
-			if err != nil {
-				return nil, err
-			}
-			if hasOpenItem {
-				continue
-			}
-			queueRoot, err := trackerWatchStartrekPreflightQueueRoot(ctx, s.Backend, tree.Root, task, tree.Tasks, parentCache)
-			if err != nil {
-				return nil, err
-			}
-			task, err = s.preflightTaskDetails(ctx, task)
-			if err != nil {
-				return nil, err
-			}
-			submission, err := s.preflightSubmission(task, queueRoot, summary.Priority)
-			if err != nil {
-				return nil, err
-			}
-			submissions = append(submissions, submission)
-		}
+	if s.Source.Priority == 0 {
+		s.Source.Priority = s.Priority
 	}
-	return submissions, nil
-}
-
-func (s *sourceStartrekRuntimeSource) hasOpenQueueItem(sourceRef string) (bool, error) {
-	sourceRef = strings.TrimSpace(sourceRef)
-	if sourceRef == "" {
-		return false, nil
+	if s.Source.MaxAttempts == 0 {
+		s.Source.MaxAttempts = s.MaxAttempts
 	}
-	if s == nil || s.Source == nil || s.Queue == nil {
-		return false, errors.New("startrek source queue is required")
+	if s.Source.Engine == nil {
+		s.Source.Engine = s.Engine
 	}
-	return s.Queue.HasOpenItem(s.Name(), sourceRef)
-}
-
-func (s *sourceStartrekRuntimeSource) preflightTaskDetails(ctx context.Context, task contracts.Task) (contracts.Task, error) {
-	taskID := strings.TrimSpace(task.ID)
-	if taskID == "" {
-		return task, nil
-	}
-	detailed, err := s.Backend.GetTask(ctx, taskID)
-	if err != nil {
-		return contracts.Task{}, fmt.Errorf("get startrek issue %q for preflight: %w", taskID, err)
-	}
-	if detailed == nil || strings.TrimSpace(detailed.ID) == "" {
-		return task, nil
-	}
-	out := *detailed
-	out.ParentID = task.ParentID
-	out.Status = task.Status
-	out.Metadata = mergeStartrekPreflightMetadata(task.Metadata, out.Metadata)
-	return out, nil
-}
-
-func mergeStartrekPreflightMetadata(primary map[string]string, secondary map[string]string) map[string]string {
-	if len(primary) == 0 && len(secondary) == 0 {
-		return nil
-	}
-	merged := make(map[string]string, len(primary)+len(secondary))
-	for key, value := range secondary {
-		merged[key] = value
-	}
-	for key, value := range primary {
-		merged[key] = value
-	}
-	return merged
+	return s.Source.Poll(ctx)
 }
 
 func (s *sourceStartrekRuntimeSource) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
@@ -340,94 +248,16 @@ func (s *sourceStartrekRuntimeSource) clearReadyLabelForBlockingPreflightResult(
 	return nil
 }
 
-func (s *sourceStartrekRuntimeSource) preflightSubmission(task contracts.Task, queueRoot contracts.Task, graphPriority *int) (workqueue.Submission, error) {
-	taskID := strings.TrimSpace(task.ID)
-	if taskID == "" {
-		return workqueue.Submission{}, errors.New("startrek preflight task id is required")
-	}
-	payload, err := json.Marshal(workitem.PreflightPayload{
-		Task:      workitem.TaskPayloadFromTask(task),
-		QueueRoot: workitem.TaskPayloadFromTask(queueRoot),
-	})
-	if err != nil {
-		return workqueue.Submission{}, fmt.Errorf("encode startrek preflight payload for issue %q: %w", taskID, err)
-	}
-
-	priority := s.Priority
-	if graphPriority != nil {
-		priority = *graphPriority
-	}
-	return workqueue.Submission{
-		Kind:           workitem.KindPreflight,
-		Source:         s.Name(),
-		SourceRef:      taskID,
-		IdempotencyKey: "st/" + taskID + "/preflight/" + sourceStartrekPreflightRevision(task),
-		Preset:         strings.TrimSpace(s.Preset),
-		Priority:       priority,
-		Payload:        payload,
-		MaxAttempts:    s.MaxAttempts,
-	}, nil
-}
-
-func sourceStartrekPreflightRevision(task contracts.Task) string {
-	if task.Metadata != nil {
-		for _, key := range []string{"revision", "updated_at", "updatedAt", "updated"} {
-			if value := safeStartrekKeyPart(task.Metadata[key]); value != "" {
-				return value
-			}
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString(strings.TrimSpace(task.ID))
-	b.WriteByte('\n')
-	b.WriteString(strings.TrimSpace(task.Title))
-	b.WriteByte('\n')
-	b.WriteString(task.Description)
-	b.WriteByte('\n')
-	b.WriteString(strings.TrimSpace(task.ParentID))
-	if len(task.Metadata) > 0 {
-		keys := make([]string, 0, len(task.Metadata))
-		for key := range task.Metadata {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			b.WriteByte('\n')
-			b.WriteString(strings.TrimSpace(key))
-			b.WriteByte('=')
-			b.WriteString(strings.TrimSpace(task.Metadata[key]))
-		}
-	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:8])
-}
-
-func safeStartrekKeyPart(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-' || r == '_' || r == '.' || r == ':':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	return strings.Trim(b.String(), "_")
-}
-
 func resolveSourceStartrekEventsPath(cfg sourceStartrekCommandConfig) string {
 	return resolveWatchEventsPath(cfg.eventsPath, cfg.stream, cfg.repoRoot, "source-startrek.events.jsonl")
+}
+
+func sourceStartrekQueues(queues []startrekQueueModel) []startreksource.Queue {
+	out := make([]startreksource.Queue, 0, len(queues))
+	for _, queue := range queues {
+		out = append(out, startreksource.Queue{Key: queue.Key})
+	}
+	return out
 }
 
 func sourceStartrekStatePath(repoRoot string, profile string) string {

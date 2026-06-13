@@ -43,9 +43,15 @@ type PreflightReplyTracker interface {
 
 type Source struct {
 	SourceName      string
+	Backend         DiscoveryBackend
 	Tracker         PreflightWritebackTracker
 	State           *StateStore
 	Queue           *workqueue.Store
+	Queues          []Queue
+	Preset          string
+	Priority        int
+	MaxAttempts     int
+	Engine          contracts.TaskEngine
 	ReadyLabel      string
 	ProcessingLabel string
 	NeedsInfoLabel  string
@@ -56,10 +62,6 @@ type Source struct {
 
 func (s *Source) Name() string {
 	return fallbackSourceText(s.SourceName, defaultSourceName)
-}
-
-func (s *Source) Poll(context.Context) ([]workqueue.Submission, error) {
-	return nil, nil
 }
 
 func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
