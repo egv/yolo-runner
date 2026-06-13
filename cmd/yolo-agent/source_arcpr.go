@@ -36,16 +36,18 @@ var newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 
 func sourceCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|startrek> [flags]")
 		return 1
 	}
 
 	switch args[0] {
 	case "arcpr":
 		return sourceArcPRCommand(args[1:])
+	case "startrek":
+		return sourceStartrekCommand(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown source command: %s\n", args[0])
-		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|startrek> [flags]")
 		return 1
 	}
 }
