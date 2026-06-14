@@ -20,17 +20,17 @@ import (
 const defaultSourceName = "arcpr"
 
 type PRLister interface {
-	ListWorkspacePRs(ctx context.Context, workspace string) ([]arcanum.PRSummary, error)
+	ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error)
 }
 
 type PRStateFetcher interface {
 	FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error)
 }
 
-type PRListerFunc func(context.Context, string) ([]arcanum.PRSummary, error)
+type PRListerFunc func(context.Context) ([]arcanum.PRSummary, error)
 
-func (f PRListerFunc) ListWorkspacePRs(ctx context.Context, workspace string) ([]arcanum.PRSummary, error) {
-	return f(ctx, workspace)
+func (f PRListerFunc) ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
+	return f(ctx)
 }
 
 type PRStateFetcherFunc func(context.Context, string, string) (arcreview.PRRuntimeState, error)
@@ -44,7 +44,6 @@ type Source struct {
 	Preset        string
 	Reviewer      string
 	Workspaces    []string
-	Branches      []string
 	AllowShip     bool
 	Priority      int
 	MaxAttempts   int
@@ -58,15 +57,14 @@ type Source struct {
 }
 
 type discoveredPR struct {
-	ID        string
-	Workspace string
-	Branch    string
+	ID       string
+	Revision string
 }
 
 type arcanumPRLister struct{}
 
-func (arcanumPRLister) ListWorkspacePRs(ctx context.Context, workspace string) ([]arcanum.PRSummary, error) {
-	return arcanum.ListWorkspacePRs(ctx, workspace)
+func (arcanumPRLister) ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
+	return arcanum.ListIncomingReviewPRs(ctx)
 }
 
 type arcanumPRStateFetcher struct{}
@@ -101,30 +99,35 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 
 	submissions := make([]workqueue.Submission, 0, len(discovered))
 	for _, pr := range discovered {
-		state, err := s.stateFetcher().FetchPRRuntimeState(ctx, pr.Workspace, pr.ID)
-		if err != nil {
-			return nil, fmt.Errorf("fetch arc PR runtime state for %q: %w", pr.ID, err)
-		}
-
-		prID := currentStatePRID(state, pr.ID)
+		prID := strings.TrimSpace(pr.ID)
 		if prID == "" {
 			return nil, errors.New("arc PR ID is required")
 		}
-		revision := currentStateRevision(state)
+		revision := strings.TrimSpace(pr.Revision)
 		if revision == "" {
-			return nil, fmt.Errorf("arc PR %q revision is required", prID)
+			return nil, fmt.Errorf("arc PR %q head commit is required", prID)
 		}
 
 		reviewedRevision, err := s.State.GetReviewedRevision(ctx, prID)
 		if err != nil {
 			return nil, err
 		}
-		unansweredCommentIDs, err := s.unansweredCommentIDs(ctx, prID, state.Comments)
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(reviewedRevision) == revision && len(unansweredCommentIDs) == 0 {
-			continue
+		var unansweredCommentIDs []string
+		if strings.TrimSpace(reviewedRevision) == revision {
+			if s.StateFetcher == nil {
+				continue
+			}
+			state, err := s.StateFetcher.FetchPRRuntimeState(ctx, "", prID)
+			if err != nil {
+				return nil, fmt.Errorf("fetch arc PR runtime state for comments for %q: %w", prID, err)
+			}
+			unansweredCommentIDs, err = s.unansweredCommentIDs(ctx, prID, state.Comments)
+			if err != nil {
+				return nil, err
+			}
+			if len(unansweredCommentIDs) == 0 {
+				continue
+			}
 		}
 
 		payload, err := json.Marshal(workitem.PRReviewPayload{
@@ -154,23 +157,25 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 	seen := map[string]bool{}
 	var discovered []discoveredPR
-	for _, workspace := range normalizeStrings(s.Workspaces) {
-		prs, err := s.lister().ListWorkspacePRs(ctx, workspace)
-		if err != nil {
-			return nil, fmt.Errorf("list arc review PRs in workspace %q: %w", workspace, err)
+	prs, err := s.lister().ListIncomingReviewPRs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list incoming arc review PRs: %w", err)
+	}
+	for _, pr := range prs {
+		prID := strings.TrimSpace(pr.ID)
+		revision := strings.TrimSpace(pr.FromID)
+		if prID == "" {
+			continue
 		}
-		for _, pr := range arcanum.FilterEligiblePRs(prs, s.Reviewer, s.Branches) {
-			prID := strings.TrimSpace(pr.ID)
-			if prID == "" || seen[prID] {
-				continue
-			}
-			seen[prID] = true
-			discovered = append(discovered, discoveredPR{
-				ID:        prID,
-				Workspace: workspace,
-				Branch:    strings.TrimSpace(pr.Branch),
-			})
+		key := prID + "\x00" + revision
+		if seen[key] {
+			continue
 		}
+		seen[key] = true
+		discovered = append(discovered, discoveredPR{
+			ID:       prID,
+			Revision: revision,
+		})
 	}
 	return discovered, nil
 }

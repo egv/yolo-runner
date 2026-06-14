@@ -54,14 +54,12 @@ arc_review_watch:
 		return arcreview.ReplyResult{}, nil
 	})
 
-	var listedWorkspaces []string
+	var listCalls int
 	var fetchedPRs []string
-	sourceArcPRLister = arcpr.PRListerFunc(func(_ context.Context, workspace string) ([]arcanum.PRSummary, error) {
-		listedWorkspaces = append(listedWorkspaces, workspace)
+	sourceArcPRLister = arcpr.PRListerFunc(func(_ context.Context) ([]arcanum.PRSummary, error) {
+		listCalls++
 		return []arcanum.PRSummary{
-			{ID: "777", Reviewers: []string{"alice"}, Branch: "trunk", Status: "open"},
-			{ID: "wrong-reviewer", Reviewers: []string{"bob"}, Branch: "trunk", Status: "open"},
-			{ID: "wrong-branch", Reviewers: []string{"alice"}, Branch: "release", Status: "open"},
+			{ID: "777", FromID: "rev-777", Status: "open"},
 		}, nil
 	})
 	sourceArcPRStateFetcher = arcpr.PRStateFetcherFunc(func(_ context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error) {
@@ -89,11 +87,11 @@ arc_review_watch:
 	if runCalled {
 		t.Fatalf("expected legacy run function not to be called for source arcpr")
 	}
-	if want := []string{"/arcadia/reviews/a"}; !reflect.DeepEqual(listedWorkspaces, want) {
-		t.Fatalf("listed workspaces = %#v, want %#v", listedWorkspaces, want)
+	if listCalls != 1 {
+		t.Fatalf("incoming PR list calls after submit = %d, want 1", listCalls)
 	}
-	if want := []string{"/arcadia/reviews/a:777"}; !reflect.DeepEqual(fetchedPRs, want) {
-		t.Fatalf("fetched PRs = %#v, want %#v", fetchedPRs, want)
+	if len(fetchedPRs) != 0 {
+		t.Fatalf("submit poll fetched PR runtime state, want none: %#v", fetchedPRs)
 	}
 
 	store, err := workqueue.Open(queuePath)
@@ -120,8 +118,8 @@ arc_review_watch:
 	if err != nil {
 		t.Fatalf("DecodePRReviewPayload() error = %v", err)
 	}
-	if payload.PRID != "777" || payload.Revision != "rev-777" || !payload.Ship || !reflect.DeepEqual(payload.UnansweredCommentIDs, []string{"c1"}) {
-		t.Fatalf("payload = %#v, want PR 777 rev-777 comment c1 ship=true", payload)
+	if payload.PRID != "777" || payload.Revision != "rev-777" || !payload.Ship || len(payload.UnansweredCommentIDs) != 0 {
+		t.Fatalf("payload = %#v, want PR 777 rev-777 no source-side comments ship=true", payload)
 	}
 
 	resultPayload, err := json.Marshal(workitem.PRReviewResult{
@@ -146,6 +144,12 @@ arc_review_watch:
 	})
 	if code != 0 {
 		t.Fatalf("expected source arcpr consume exit code 0, got %d", code)
+	}
+	if listCalls != 2 {
+		t.Fatalf("incoming PR list calls after consume = %d, want 2", listCalls)
+	}
+	if want := []string{"/arcadia/reviews/a:777", ":777"}; !reflect.DeepEqual(fetchedPRs, want) {
+		t.Fatalf("fetched PRs = %#v, want %#v", fetchedPRs, want)
 	}
 
 	state, err := arcreviewstate.Open(statePath)

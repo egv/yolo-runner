@@ -139,13 +139,12 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 	}
 
 	source := &arcpr.Source{
-		SourceName:   sourceArcPRSourceName(cfg.profile),
-		Preset:       cfg.profile,
-		Reviewer:     reviewWatchConfig.Reviewer,
-		Workspaces:   reviewWatchConfig.Workspaces,
-		Branches:     reviewWatchConfig.Branches,
-		AllowShip:    reviewWatchConfig.AllowShip,
-		State:        state,
+		SourceName:    sourceArcPRSourceName(cfg.profile),
+		Preset:        cfg.profile,
+		Reviewer:      reviewWatchConfig.Reviewer,
+		Workspaces:    reviewWatchConfig.Workspaces,
+		AllowShip:     reviewWatchConfig.AllowShip,
+		State:         state,
 		Lister:        sourceArcPRLister,
 		StateFetcher:  sourceArcPRStateFetcher,
 		ReplyApplier:  sourceArcPRReplyApplier,
