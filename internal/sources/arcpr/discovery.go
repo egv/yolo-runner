@@ -45,16 +45,18 @@ type Source struct {
 	Reviewer   string
 	// WritebackWorkspace is only for result handling while discovery is cross-project.
 	WritebackWorkspace string
-	AllowShip          bool
-	Priority           int
-	MaxAttempts        int
-	State              *arcreviewstate.Store
-	Lister             PRLister
-	StateFetcher       PRStateFetcher
-	APIClient          *arcanum.APIClient
-	ReplyApplier       arcreview.PRReviewCycleReplyApplier
-	ReviewApplier      arcreview.PRReviewCycleReviewApplier
-	ShipGate           arcreview.PRReviewCycleShipGate
+	// WritebackWorkspaces are tried in order for result handling while discovery is cross-project.
+	WritebackWorkspaces []string
+	AllowShip           bool
+	Priority            int
+	MaxAttempts         int
+	State               *arcreviewstate.Store
+	Lister              PRLister
+	StateFetcher        PRStateFetcher
+	APIClient           *arcanum.APIClient
+	ReplyApplier        arcreview.PRReviewCycleReplyApplier
+	ReviewApplier       arcreview.PRReviewCycleReviewApplier
+	ShipGate            arcreview.PRReviewCycleShipGate
 }
 
 type discoveredPR struct {

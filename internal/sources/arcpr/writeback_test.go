@@ -267,6 +267,117 @@ esac
 	}
 }
 
+func TestSourceHandleResultTriesConfiguredWritebackWorkspacesUntilStateFetchSucceeds(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	if err := state.StoreReviewedRevision(ctx, "42", "r7"); err != nil {
+		t.Fatalf("StoreReviewedRevision() error = %v", err)
+	}
+
+	firstWorkspace := t.TempDir()
+	secondWorkspace := t.TempDir()
+	binDir := t.TempDir()
+	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
+set -eu
+printf '%s|arc %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"pr status --json 42")
+  if [ "$PWD" = "$ARC_SOURCE_TEST_FIRST_WORKSPACE" ]; then
+    printf 'workspace cannot see PR 42\n' >&2
+    exit 12
+  fi
+  if [ "$PWD" = "$ARC_SOURCE_TEST_SECOND_WORKSPACE" ]; then
+    printf '%s\n' '{"id":42,"summary":"Ready PR","status":"open","from_id":"r7","from_branch":"users/alice/pr","to_branch":"trunk","checks":[{"name":"ci","status":"SUCCESS"}]}'
+    exit 0
+  fi
+  printf 'unexpected workspace for status: %s\n' "$PWD" >&2
+  exit 7
+  ;;
+"pr changes 42")
+  if [ "$PWD" != "$ARC_SOURCE_TEST_SECOND_WORKSPACE" ]; then
+    printf 'changes used workspace %s, want %s\n' "$PWD" "$ARC_SOURCE_TEST_SECOND_WORKSPACE" >&2
+    exit 7
+  fi
+  printf '%s\n' 'diff --git a/README.md b/README.md'
+  ;;
+"pr merge --now 42")
+  if [ "$PWD" != "$ARC_SOURCE_TEST_SECOND_WORKSPACE" ]; then
+    printf 'merge used workspace %s, want %s\n' "$PWD" "$ARC_SOURCE_TEST_SECOND_WORKSPACE" >&2
+    exit 7
+  fi
+  ;;
+*)
+  printf 'unexpected arc args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
+set -eu
+printf '%s|curl %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
+  if [ "$PWD" != "$ARC_SOURCE_TEST_SECOND_WORKSPACE" ]; then
+    printf 'comments used workspace %s, want %s\n' "$PWD" "$ARC_SOURCE_TEST_SECOND_WORKSPACE" >&2
+    exit 7
+  fi
+  printf '%s\n' '{"data":[]}'
+  ;;
+*)
+  printf 'unexpected curl args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("ARC_SOURCE_TEST_FIRST_WORKSPACE", firstWorkspace)
+	t.Setenv("ARC_SOURCE_TEST_SECOND_WORKSPACE", secondWorkspace)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := &Source{
+		SourceName:          "arcpr-adapta",
+		WritebackWorkspaces: []string{firstWorkspace, secondWorkspace},
+		State:               state,
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Ship:     true,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			ReviewVerdict: "ship",
+			ShipReady:     true,
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+
+	rawCalls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(calls) error = %v", err)
+	}
+	gotCalls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
+	wantCalls := []string{
+		firstWorkspace + "|arc pr status --json 42",
+		secondWorkspace + "|arc pr status --json 42",
+		secondWorkspace + "|curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
+		secondWorkspace + "|arc pr changes 42",
+		secondWorkspace + "|arc pr merge --now 42",
+	}
+	if !reflect.DeepEqual(gotCalls, wantCalls) {
+		t.Fatalf("writeback calls = %#v, want %#v", gotCalls, wantCalls)
+	}
+}
+
 func arcPRWritebackRuntimeState(commentsAnswered bool, checks []arcreview.PRCheck) arcreview.PRRuntimeState {
 	return arcreview.PRRuntimeState{
 		PRID:     "42",

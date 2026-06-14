@@ -91,16 +91,33 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 }
 
 func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcreview.PRRuntimeState, string, error) {
-	workspace := strings.TrimSpace(s.WritebackWorkspace)
-	if workspace == "" && s.StateFetcher == nil {
+	workspaces := s.writebackWorkspaces()
+	if len(workspaces) == 0 && s.StateFetcher == nil {
 		return arcreview.PRRuntimeState{}, "", errors.New("arcpr source writeback workspace is required")
 	}
 
-	state, err := s.stateFetcher().FetchPRRuntimeState(ctx, workspace, prID)
-	if err != nil {
-		return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
+	fetcher := s.stateFetcher()
+	if len(workspaces) == 0 {
+		state, err := fetcher.FetchPRRuntimeState(ctx, "", prID)
+		if err != nil {
+			return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
+		}
+		return state, "", nil
 	}
-	return state, workspace, nil
+
+	errs := make([]error, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		state, err := fetcher.FetchPRRuntimeState(ctx, workspace, prID)
+		if err == nil {
+			return state, workspace, nil
+		}
+		errs = append(errs, fmt.Errorf("workspace %q: %w", workspace, err))
+	}
+	return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, errors.Join(errs...))
+}
+
+func (s *Source) writebackWorkspaces() []string {
+	return normalizeStrings(append([]string{s.WritebackWorkspace}, s.WritebackWorkspaces...))
 }
 
 func (s *Source) applyPRReviewReplies(ctx context.Context, state arcreview.PRRuntimeState, result workitem.PRReviewResult) error {
