@@ -239,6 +239,8 @@ profiles:
 }
 
 func TestTrackerConfigServiceResolveArcReviewWatchConfigAcceptsValidBlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
 profiles:
@@ -247,28 +249,11 @@ profiles:
       type: tk
 arc_review_watch:
   poll_interval: 20s
-  lock_path: locks/arc-review-watch.lock
   state_path: state/arc-review-watch.json
-  max_concurrency: 3
+  reviewer: alice
   allow_ship: true
-  workspaces:
-    - /arcadia/users/alice/review-1
-    - /arcadia/users/alice/review-2
-  branches:
-    - users/alice/review-1
-    - users/alice/review-2
-  arc_mount:
-    enabled: true
-    mount: /tmp/arcadia
-    store: /tmp/arc-store
-    object_store: /tmp/arc-objects
-    allow_other: true
-    ssh_tokens: true
-    no_hardlinks: true
-    no_auto_rehash: true
-    inode_cache_size: 100
-    cache_size: 200
-    override_lazy_checkout: 1
+  objects_base_dir: ~/.cache/yolo/pr-objects
+  mounts_base_dir: ~/.cache/yolo/pr-mounts
 `)
 
 	svc := newTrackerConfigService()
@@ -279,29 +264,20 @@ arc_review_watch:
 	if cfg.PollInterval != 20*time.Second {
 		t.Fatalf("expected poll interval 20s, got %s", cfg.PollInterval)
 	}
-	if got, want := cfg.LockPath, filepath.Join(repoRoot, "locks", "arc-review-watch.lock"); got != want {
-		t.Fatalf("expected lock path %q, got %q", want, got)
-	}
 	if got, want := cfg.StatePath, filepath.Join(repoRoot, "state", "arc-review-watch.json"); got != want {
 		t.Fatalf("expected state path %q, got %q", want, got)
 	}
-	if cfg.MaxConcurrency != 3 {
-		t.Fatalf("expected max concurrency 3, got %d", cfg.MaxConcurrency)
+	if got := cfg.Reviewer; got != "alice" {
+		t.Fatalf("expected reviewer alice, got %q", got)
 	}
 	if !cfg.AllowShip {
 		t.Fatalf("expected allow_ship to parse as true")
 	}
-	if got := strings.Join(cfg.Workspaces, ","); got != "/arcadia/users/alice/review-1,/arcadia/users/alice/review-2" {
-		t.Fatalf("expected workspaces to parse, got %q", got)
+	if got, want := cfg.ObjectsBaseDir, filepath.Join(home, ".cache", "yolo", "pr-objects"); got != want {
+		t.Fatalf("expected objects base dir %q, got %q", want, got)
 	}
-	if got := strings.Join(cfg.Branches, ","); got != "users/alice/review-1,users/alice/review-2" {
-		t.Fatalf("expected branches to parse, got %q", got)
-	}
-	if cfg.ArcMount == nil || !cfg.ArcMount.Enabled {
-		t.Fatalf("expected enabled arc_mount config, got %#v", cfg.ArcMount)
-	}
-	if cfg.ArcMount.InodeCacheSize == nil || *cfg.ArcMount.InodeCacheSize != 100 {
-		t.Fatalf("expected arc_mount inode cache size to parse, got %#v", cfg.ArcMount.InodeCacheSize)
+	if got, want := cfg.MountsBaseDir, filepath.Join(home, ".cache", "yolo", "pr-mounts"); got != want {
+		t.Fatalf("expected mounts base dir %q, got %q", want, got)
 	}
 }
 

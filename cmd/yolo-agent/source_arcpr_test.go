@@ -22,31 +22,30 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 	repoRoot := t.TempDir()
 	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
 	statePath := filepath.Join(repoRoot, "state", "arcpr.db")
-	writeTrackerConfigYAML(t, repoRoot, `
-profiles:
-  arc-dev:
-    tracker:
-      type: tk
-arc_review_watch:
-  poll_interval: 1s
-  lock_path: locks/arcpr.lock
-  state_path: state/arcpr.db
-  reviewer: alice
-  allow_ship: true
-  workspaces:
-    - /arcadia/reviews/a
-  branches:
-    - trunk
-`)
 
+	originalConfigService := newSourceArcPRConfigService
 	originalLister := sourceArcPRLister
 	originalStateFetcher := sourceArcPRStateFetcher
 	originalReplyApplier := sourceArcPRReplyApplier
 	t.Cleanup(func() {
+		newSourceArcPRConfigService = originalConfigService
 		sourceArcPRLister = originalLister
 		sourceArcPRStateFetcher = originalStateFetcher
 		sourceArcPRReplyApplier = originalReplyApplier
 	})
+	newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
+		return staticArcReviewWatchConfigResolver{
+			cfg: arcReviewWatchConfig{
+				PollInterval: time.Second,
+				LockPath:     filepath.Join(repoRoot, "locks", "arcpr.lock"),
+				StatePath:    statePath,
+				Reviewer:     "alice",
+				AllowShip:    true,
+				Workspaces:   []string{"/arcadia/reviews/a"},
+				Branches:     []string{"trunk"},
+			},
+		}
+	}
 
 	// Stub the reply applier so result consumption stays offline instead of
 	// reaching the live Arcanum API.
@@ -197,4 +196,12 @@ type arcPRReplyApplierFunc func(context.Context, arcreview.PRRuntimeState, []byt
 
 func (f arcPRReplyApplierFunc) Apply(ctx context.Context, state arcreview.PRRuntimeState, payload []byte) (arcreview.ReplyResult, error) {
 	return f(ctx, state, payload)
+}
+
+type staticArcReviewWatchConfigResolver struct {
+	cfg arcReviewWatchConfig
+}
+
+func (r staticArcReviewWatchConfigResolver) ResolveArcReviewWatchConfig(string) (arcReviewWatchConfig, error) {
+	return r.cfg, nil
 }

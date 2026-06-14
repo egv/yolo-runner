@@ -224,19 +224,6 @@ arc_review_watch:
 			wantCause: "must be greater than 0",
 		},
 		{
-			name: "empty lock path",
-			config: `
-profiles:
-  default:
-    tracker:
-      type: tk
-arc_review_watch:
-  lock_path: ""
-`,
-			wantField: "arc_review_watch.lock_path",
-			wantCause: "must not be empty",
-		},
-		{
 			name: "empty state path",
 			config: `
 profiles:
@@ -248,19 +235,6 @@ arc_review_watch:
 `,
 			wantField: "arc_review_watch.state_path",
 			wantCause: "must not be empty",
-		},
-		{
-			name: "non positive max concurrency",
-			config: `
-profiles:
-  default:
-    tracker:
-      type: tk
-arc_review_watch:
-  max_concurrency: 0
-`,
-			wantField: "arc_review_watch.max_concurrency",
-			wantCause: "must be greater than 0",
 		},
 		{
 			name: "invalid allow ship",
@@ -276,7 +250,7 @@ arc_review_watch:
 			wantCause: "must be true or false",
 		},
 		{
-			name: "empty workspace",
+			name: "removed workspaces",
 			config: `
 profiles:
   default:
@@ -284,13 +258,13 @@ profiles:
       type: tk
 arc_review_watch:
   workspaces:
-    - ""
+    - /arcadia/reviews/a
 `,
 			wantField: "arc_review_watch.workspaces",
-			wantCause: "must not be empty",
+			wantCause: "no longer supported",
 		},
 		{
-			name: "empty branch",
+			name: "removed branches",
 			config: `
 profiles:
   default:
@@ -298,24 +272,36 @@ profiles:
       type: tk
 arc_review_watch:
   branches:
-    - ""
+    - trunk
 `,
 			wantField: "arc_review_watch.branches",
-			wantCause: "must not be empty",
+			wantCause: "no longer supported",
 		},
 		{
-			name: "invalid arc mount cache size",
+			name: "empty objects base dir",
 			config: `
 profiles:
   default:
     tracker:
       type: tk
 arc_review_watch:
-  arc_mount:
-    cache_size: 0
+  objects_base_dir: ""
 `,
-			wantField: "arc_review_watch.arc_mount.cache_size",
-			wantCause: "must be greater than 0",
+			wantField: "arc_review_watch.objects_base_dir",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "empty mounts base dir",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  mounts_base_dir: ""
+`,
+			wantField: "arc_review_watch.mounts_base_dir",
+			wantCause: "must not be empty",
 		},
 	}
 

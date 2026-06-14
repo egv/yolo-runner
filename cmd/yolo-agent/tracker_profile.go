@@ -43,7 +43,8 @@ const (
 	defaultArcReviewWatchPollInterval   = 30 * time.Second
 	defaultArcReviewWatchLockPath       = ".yolo-runner/arc-review-watch.lock"
 	defaultArcReviewWatchStatePath      = ".yolo-runner/arc-review-watch-state.json"
-	defaultArcReviewWatchMaxConcurrency = 1
+	defaultArcReviewWatchObjectsBaseDir = "~/.yolo-runner/pr-objects"
+	defaultArcReviewWatchMountsBaseDir  = "~/.yolo-runner/pr-mounts"
 )
 
 type profileSelectionInput struct {
@@ -192,15 +193,12 @@ type trackerAgentConfig struct {
 }
 
 type arcReviewWatchConfigModel struct {
-	PollInterval   string            `yaml:"poll_interval,omitempty"`
-	LockPath       string            `yaml:"lock_path,omitempty"`
-	StatePath      string            `yaml:"state_path,omitempty"`
-	Reviewer       string            `yaml:"reviewer,omitempty"`
-	MaxConcurrency *int              `yaml:"max_concurrency,omitempty"`
-	AllowShip      bool              `yaml:"allow_ship,omitempty"`
-	Workspaces     []string          `yaml:"workspaces,omitempty"`
-	Branches       []string          `yaml:"branches,omitempty"`
-	ArcMount       *startrekArcMount `yaml:"arc_mount,omitempty"`
+	PollInterval   string `yaml:"poll_interval,omitempty"`
+	StatePath      string `yaml:"state_path,omitempty"`
+	Reviewer       string `yaml:"reviewer,omitempty"`
+	AllowShip      bool   `yaml:"allow_ship,omitempty"`
+	ObjectsBaseDir string `yaml:"objects_base_dir,omitempty"`
+	MountsBaseDir  string `yaml:"mounts_base_dir,omitempty"`
 }
 
 type arcReviewWatchConfig struct {
@@ -208,11 +206,11 @@ type arcReviewWatchConfig struct {
 	LockPath       string
 	StatePath      string
 	Reviewer       string
-	MaxConcurrency int
 	AllowShip      bool
+	ObjectsBaseDir string
+	MountsBaseDir  string
 	Workspaces     []string
 	Branches       []string
-	ArcMount       *startrekArcMount
 }
 
 type landingConfigModel struct {
@@ -665,9 +663,6 @@ func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot strin
 		cfg.PollInterval = pollInterval
 	}
 
-	if lockPath := strings.TrimSpace(model.LockPath); lockPath != "" {
-		cfg.LockPath = lockPath
-	}
 	cfg.LockPath = resolveRepoLocalPath(repoRoot, cfg.LockPath)
 
 	if statePath := strings.TrimSpace(model.StatePath); statePath != "" {
@@ -675,37 +670,25 @@ func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot strin
 	}
 	cfg.StatePath = resolveRepoLocalPath(repoRoot, cfg.StatePath)
 	cfg.Reviewer = strings.TrimSpace(model.Reviewer)
-
-	if model.MaxConcurrency != nil {
-		if *model.MaxConcurrency <= 0 {
-			return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.max_concurrency in %s must be greater than 0", trackerConfigRelPath)
-		}
-		cfg.MaxConcurrency = *model.MaxConcurrency
-	}
-
 	cfg.AllowShip = model.AllowShip
-	workspaces, err := normalizeNonEmptyStringList("arc_review_watch.workspaces", model.Workspaces)
-	if err != nil {
-		return arcReviewWatchConfig{}, err
-	}
-	cfg.Workspaces = workspaces
 
-	branches, err := normalizeNonEmptyStringList("arc_review_watch.branches", model.Branches)
+	if objectsBaseDir := strings.TrimSpace(model.ObjectsBaseDir); objectsBaseDir != "" {
+		cfg.ObjectsBaseDir = objectsBaseDir
+	}
+	objectsBaseDir, err := resolveHomePath(cfg.ObjectsBaseDir)
 	if err != nil {
-		return arcReviewWatchConfig{}, err
+		return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.objects_base_dir in %s cannot be resolved: %w", trackerConfigRelPath, err)
 	}
-	cfg.Branches = branches
+	cfg.ObjectsBaseDir = objectsBaseDir
 
-	if model.ArcMount != nil {
-		if err := validateArcReviewWatchArcMount(*model.ArcMount); err != nil {
-			return arcReviewWatchConfig{}, err
-		}
-		arcMount := *model.ArcMount
-		arcMount.Mount = strings.TrimSpace(arcMount.Mount)
-		arcMount.Store = strings.TrimSpace(arcMount.Store)
-		arcMount.ObjectStore = strings.TrimSpace(arcMount.ObjectStore)
-		cfg.ArcMount = &arcMount
+	if mountsBaseDir := strings.TrimSpace(model.MountsBaseDir); mountsBaseDir != "" {
+		cfg.MountsBaseDir = mountsBaseDir
 	}
+	mountsBaseDir, err := resolveHomePath(cfg.MountsBaseDir)
+	if err != nil {
+		return arcReviewWatchConfig{}, fmt.Errorf("arc_review_watch.mounts_base_dir in %s cannot be resolved: %w", trackerConfigRelPath, err)
+	}
+	cfg.MountsBaseDir = mountsBaseDir
 
 	return cfg, nil
 }
@@ -715,7 +698,8 @@ func defaultArcReviewWatchConfig() arcReviewWatchConfig {
 		PollInterval:   defaultArcReviewWatchPollInterval,
 		LockPath:       defaultArcReviewWatchLockPath,
 		StatePath:      defaultArcReviewWatchStatePath,
-		MaxConcurrency: defaultArcReviewWatchMaxConcurrency,
+		ObjectsBaseDir: defaultArcReviewWatchObjectsBaseDir,
+		MountsBaseDir:  defaultArcReviewWatchMountsBaseDir,
 	}
 }
 
@@ -727,32 +711,20 @@ func resolveRepoLocalPath(repoRoot string, path string) string {
 	return filepath.Join(repoRoot, cleaned)
 }
 
-func normalizeNonEmptyStringList(field string, values []string) ([]string, error) {
-	if len(values) == 0 {
-		return nil, nil
+func resolveHomePath(path string) (string, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned != "~" && !strings.HasPrefix(cleaned, "~/") {
+		return cleaned, nil
 	}
-	normalized := make([]string, 0, len(values))
-	for i, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			return nil, fmt.Errorf("%s[%d] in %s must not be empty", field, i, trackerConfigRelPath)
-		}
-		normalized = append(normalized, trimmed)
-	}
-	return normalized, nil
-}
 
-func validateArcReviewWatchArcMount(cfg startrekArcMount) error {
-	if cfg.InodeCacheSize != nil && *cfg.InodeCacheSize <= 0 {
-		return fmt.Errorf("arc_review_watch.arc_mount.inode_cache_size in %s must be greater than 0", trackerConfigRelPath)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
-	if cfg.CacheSize != nil && *cfg.CacheSize <= 0 {
-		return fmt.Errorf("arc_review_watch.arc_mount.cache_size in %s must be greater than 0", trackerConfigRelPath)
+	if cleaned == "~" {
+		return home, nil
 	}
-	if cfg.OverrideLazyCheckout != nil && *cfg.OverrideLazyCheckout < 0 {
-		return fmt.Errorf("arc_review_watch.arc_mount.override_lazy_checkout in %s must be greater than or equal to 0", trackerConfigRelPath)
-	}
-	return nil
+	return filepath.Join(home, strings.TrimPrefix(cleaned, "~/")), nil
 }
 
 func validateTrackerModel(profileName string, model trackerModel, rootID string, getenv func(string) string) (trackerModel, error) {
