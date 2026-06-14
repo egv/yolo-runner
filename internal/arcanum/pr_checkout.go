@@ -78,6 +78,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 			if _, stderr, err := arcExec(context.Background(), mountPath, "arc", unmountArgs...); err != nil {
 				return workspaceArcError(mountPath, unmountArgs, stderr, err)
 			}
+			if err := os.RemoveAll(mountPath); err != nil {
+				return fmt.Errorf("remove arc PR mount %s: %w", mountPath, err)
+			}
 			return nil
 		}),
 	}, nil
