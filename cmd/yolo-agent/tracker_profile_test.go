@@ -590,6 +590,67 @@ arc_review_watch:
 	}
 }
 
+func TestResolveArcReviewWatchConfigParsesReviewSettingsAndCheckoutBaseDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  reviewer: "  alice  "
+  allow_ship: true
+  objects_base_dir: "  ~/.cache/yolo/pr-objects  "
+  mounts_base_dir: "  ~/.cache/yolo/pr-mounts  "
+`)
+
+	cfg, err := newTrackerConfigService().ResolveArcReviewWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected arc_review_watch config to resolve, got %v", err)
+	}
+
+	if got := cfg.Reviewer; got != "alice" {
+		t.Fatalf("expected reviewer to be trimmed, got %q", got)
+	}
+	if !cfg.AllowShip {
+		t.Fatalf("expected allow_ship to parse as true")
+	}
+	if got, want := cfg.ObjectsBaseDir, filepath.Join(home, ".cache", "yolo", "pr-objects"); got != want {
+		t.Fatalf("expected objects base dir %q, got %q", want, got)
+	}
+	if got, want := cfg.MountsBaseDir, filepath.Join(home, ".cache", "yolo", "pr-mounts"); got != want {
+		t.Fatalf("expected mounts base dir %q, got %q", want, got)
+	}
+}
+
+func TestResolveArcReviewWatchConfigDefaultsCheckoutBaseDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+arc_review_watch:
+  reviewer: alice
+`)
+
+	cfg, err := newTrackerConfigService().ResolveArcReviewWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected arc_review_watch config to resolve, got %v", err)
+	}
+
+	if got, want := cfg.ObjectsBaseDir, filepath.Join(home, ".yolo-runner", "pr-objects"); got != want {
+		t.Fatalf("expected default objects base dir %q, got %q", want, got)
+	}
+	if got, want := cfg.MountsBaseDir, filepath.Join(home, ".yolo-runner", "pr-mounts"); got != want {
+		t.Fatalf("expected default mounts base dir %q, got %q", want, got)
+	}
+}
+
 func TestBuildTaskManagerForTrackerSupportsGitHub(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_test")
 	originalFactory := newGitHubTaskManager

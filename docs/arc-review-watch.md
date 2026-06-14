@@ -29,24 +29,21 @@ agent:
   watchdog_interval: 5s
 arc_review_watch:
   poll_interval: 30s
-  lock_path: .yolo-runner/arcpr-source.lock
   state_path: .yolo-runner/arcpr-source-state.db
   reviewer: alice
   allow_ship: false
-  workspaces:
-    - /arcadia/users/alice/review-1
-  branches:
-    - users/alice/review-1
+  objects_base_dir: ~/.yolo-runner/pr-objects
+  mounts_base_dir: ~/.yolo-runner/pr-mounts
 ```
 
 Important fields:
 
 - `poll_interval`: time between source polling iterations when `--once` is omitted.
-- `lock_path`: local single-source lock. Remove it only after confirming no source process is running.
 - `state_path`: SQLite source state for `reviewed_revisions` and `answered_comments`.
 - `reviewer`: required reviewer identity used by PR discovery. Omitted or blank discovers no eligible PRs.
 - `allow_ship`: copied into submitted PR review work items. Omitted or `false` keeps shipping disabled.
-- `workspaces` and `branches`: filters used by PR discovery.
+- `objects_base_dir`: base directory for per-PR arc object stores. Omit it to use `~/.yolo-runner/pr-objects`.
+- `mounts_base_dir`: base directory for per-PR arc mount checkouts. Omit it to use `~/.yolo-runner/pr-mounts`.
 
 Validate the file before a live run:
 
