@@ -56,6 +56,23 @@ func FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (ar
 	return arcreview.NormalizePRRuntimeState(details, comments, changedFiles, checks), nil
 }
 
+func FetchPRComments(ctx context.Context, prID string) ([]arcreview.PRComment, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return nil, fmt.Errorf("PR ID is required")
+	}
+
+	commentsOutput, err := fetchArcanumPRComments(ctx, "", prID)
+	if err != nil {
+		return nil, err
+	}
+	comments, err := ParsePRCommentsJSON(commentsOutput)
+	if err != nil {
+		return nil, fmt.Errorf("parse PR comments: %w", err)
+	}
+	return comments, nil
+}
+
 func fetchArcanumPRComments(ctx context.Context, workspace string, prID string) ([]byte, error) {
 	return runWorkspaceCommand(ctx, workspace, "curl", "-fsSL", arcanumPRCommentsURL(prID))
 }

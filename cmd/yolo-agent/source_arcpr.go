@@ -139,18 +139,17 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 	}
 
 	source := &arcpr.Source{
-		SourceName:   sourceArcPRSourceName(cfg.profile),
-		Preset:       cfg.profile,
-		Reviewer:     reviewWatchConfig.Reviewer,
-		Workspaces:   reviewWatchConfig.Workspaces,
-		Branches:     reviewWatchConfig.Branches,
-		AllowShip:    reviewWatchConfig.AllowShip,
-		State:        state,
-		Lister:        sourceArcPRLister,
-		StateFetcher:  sourceArcPRStateFetcher,
-		ReplyApplier:  sourceArcPRReplyApplier,
-		ReviewApplier: sourceArcPRReviewApplier,
-		ShipGate:      sourceArcPRShipGate,
+		SourceName:          sourceArcPRSourceName(cfg.profile),
+		Preset:              cfg.profile,
+		Reviewer:            reviewWatchConfig.Reviewer,
+		WritebackWorkspaces: sourceArcPRWritebackWorkspaces(reviewWatchConfig.Workspaces),
+		AllowShip:           reviewWatchConfig.AllowShip,
+		State:               state,
+		Lister:              sourceArcPRLister,
+		StateFetcher:        sourceArcPRStateFetcher,
+		ReplyApplier:        sourceArcPRReplyApplier,
+		ReviewApplier:       sourceArcPRReviewApplier,
+		ShipGate:            sourceArcPRShipGate,
 	}
 	return sourcehost.Run(ctx, source, store, sourcehost.Options{
 		Once:         cfg.once,
@@ -171,4 +170,18 @@ func sourceArcPRSourceName(profile string) string {
 		return "arcpr"
 	}
 	return "arcpr-" + profile
+}
+
+func sourceArcPRWritebackWorkspaces(workspaces []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		workspace = strings.TrimSpace(workspace)
+		if workspace == "" || seen[workspace] {
+			continue
+		}
+		seen[workspace] = true
+		out = append(out, workspace)
+	}
+	return out
 }
