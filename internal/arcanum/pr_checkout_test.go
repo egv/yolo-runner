@@ -55,7 +55,7 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 		{
 			workspace: "",
 			name:      "arc",
-			args:      []string{"init", "--repository", "arcadia", "--object-store", objectStore, mountPath},
+			args:      []string{"mount", "-m", mountPath, "-S", objectStore},
 		},
 		{
 			workspace: mountPath,
@@ -63,9 +63,9 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 			args:      []string{"pr", "checkout", "2293787", "--detached", "--force"},
 		},
 		{
-			workspace: mountPath,
+			workspace: "",
 			name:      "arc",
-			args:      []string{"unmount", "--forget"},
+			args:      []string{"unmount", "--forget", mountPath},
 		},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
@@ -94,10 +94,11 @@ func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndSharedObjectStore(t
 		mu.Lock()
 		defer mu.Unlock()
 
-		if name == "arc" && len(args) == 6 && reflect.DeepEqual(args[:2], []string{"init", "--repository"}) {
+		if name == "arc" && len(args) == 5 && args[0] == "mount" {
+			// arc mount -m <mountPath> -S <objectStore>
 			inits = append(inits, initCall{
 				objectStore: args[4],
-				mountPath:   args[5],
+				mountPath:   args[2],
 			})
 		}
 		return nil, nil, nil

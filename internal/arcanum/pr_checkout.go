@@ -57,25 +57,32 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
-	if err := os.MkdirAll(mountPath, 0o755); err != nil {
-		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
+	// `arc mount` creates the mount path itself; only the parent must exist.
+	if err := os.MkdirAll(mountsBaseDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create arc PR mounts dir %s: %w", mountsBaseDir, err)
 	}
+	_ = os.RemoveAll(mountPath)
 
-	initArgs := []string{"init", "--repository", "arcadia", "--object-store", objectStore, mountPath}
-	if _, stderr, err := arcExec(ctx, "", "arc", initArgs...); err != nil {
-		return nil, workspaceArcError("", initArgs, stderr, err)
+	// A fresh isolated arc working copy sharing one object store across PRs:
+	// `arc mount -m <mount> -S <store>` (verified against the arc CLI; `arc init`
+	// is for bare/path-filtered repos and rejects this form).
+	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
+	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
+		return nil, workspaceArcError("", mountArgs, stderr, err)
 	}
 
 	checkoutArgs := []string{"pr", "checkout", prID, "--detached", "--force"}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
+		// Best-effort unmount so a failed checkout does not leak a mount.
+		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--forget", mountPath)
 		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
 	}
 
 	return &PRCheckout{
 		MountPath: mountPath,
 		Cleanup: oncePRCheckoutCleanup(func() error {
-			unmountArgs := []string{"unmount", "--forget"}
-			if _, stderr, err := arcExec(context.Background(), mountPath, "arc", unmountArgs...); err != nil {
+			unmountArgs := []string{"unmount", "--forget", mountPath}
+			if _, stderr, err := arcExec(context.Background(), "", "arc", unmountArgs...); err != nil {
 				return workspaceArcError(mountPath, unmountArgs, stderr, err)
 			}
 			if err := os.RemoveAll(mountPath); err != nil {
