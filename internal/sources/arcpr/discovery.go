@@ -40,19 +40,21 @@ func (f PRStateFetcherFunc) FetchPRRuntimeState(ctx context.Context, workspace s
 }
 
 type Source struct {
-	SourceName    string
-	Preset        string
-	Reviewer      string
-	AllowShip     bool
-	Priority      int
-	MaxAttempts   int
-	State         *arcreviewstate.Store
-	Lister        PRLister
-	StateFetcher  PRStateFetcher
-	APIClient     *arcanum.APIClient
-	ReplyApplier  arcreview.PRReviewCycleReplyApplier
-	ReviewApplier arcreview.PRReviewCycleReviewApplier
-	ShipGate      arcreview.PRReviewCycleShipGate
+	SourceName string
+	Preset     string
+	Reviewer   string
+	// WritebackWorkspace is only for result handling while discovery is cross-project.
+	WritebackWorkspace string
+	AllowShip          bool
+	Priority           int
+	MaxAttempts        int
+	State              *arcreviewstate.Store
+	Lister             PRLister
+	StateFetcher       PRStateFetcher
+	APIClient          *arcanum.APIClient
+	ReplyApplier       arcreview.PRReviewCycleReplyApplier
+	ReviewApplier      arcreview.PRReviewCycleReviewApplier
+	ShipGate           arcreview.PRReviewCycleShipGate
 }
 
 type discoveredPR struct {

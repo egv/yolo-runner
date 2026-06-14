@@ -148,7 +148,7 @@ arc_review_watch:
 	if listCalls != 2 {
 		t.Fatalf("incoming PR list calls after consume = %d, want 2", listCalls)
 	}
-	if want := []string{":777", ":777"}; !reflect.DeepEqual(fetchedPRs, want) {
+	if want := []string{"/arcadia/reviews/a:777", ":777"}; !reflect.DeepEqual(fetchedPRs, want) {
 		t.Fatalf("fetched PRs = %#v, want %#v", fetchedPRs, want)
 	}
 

@@ -3,7 +3,10 @@ package arcpr
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
@@ -174,6 +177,93 @@ func TestSourceHandleResultDoesNotShipStaleReviewedRevision(t *testing.T) {
 	}
 	if reviewed != "r7" {
 		t.Fatalf("reviewed revision = %q, want stale result revision recorded", reviewed)
+	}
+}
+
+func TestSourceHandleResultFetchesWritebackStateAndShipsFromWritebackWorkspace(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	if err := state.StoreReviewedRevision(ctx, "42", "r7"); err != nil {
+		t.Fatalf("StoreReviewedRevision() error = %v", err)
+	}
+
+	workspace := t.TempDir()
+	binDir := t.TempDir()
+	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
+set -eu
+printf '%s|arc %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"pr status --json 42")
+  printf '%s\n' '{"id":42,"summary":"Ready PR","status":"open","from_id":"r7","from_branch":"users/alice/pr","to_branch":"trunk","checks":[{"name":"ci","status":"SUCCESS"}]}'
+  ;;
+"pr changes 42")
+  printf '%s\n' 'diff --git a/README.md b/README.md'
+  ;;
+"pr merge --now 42")
+  ;;
+*)
+  printf 'unexpected arc args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
+set -eu
+printf '%s|curl %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
+  printf '%s\n' '{"data":[]}'
+  ;;
+*)
+  printf 'unexpected curl args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := &Source{
+		SourceName:         "arcpr-adapta",
+		WritebackWorkspace: workspace,
+		State:              state,
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Ship:     true,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			ReviewVerdict:    "ship",
+			ShipReady:        true,
+			RevisionReviewed: "r7",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+
+	rawCalls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(calls) error = %v", err)
+	}
+	gotCalls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
+	wantCalls := []string{
+		workspace + "|arc pr status --json 42",
+		workspace + "|curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
+		workspace + "|arc pr changes 42",
+		workspace + "|arc pr merge --now 42",
+	}
+	if !reflect.DeepEqual(gotCalls, wantCalls) {
+		t.Fatalf("writeback calls = %#v, want %#v", gotCalls, wantCalls)
 	}
 }
 

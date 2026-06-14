@@ -91,11 +91,16 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 }
 
 func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcreview.PRRuntimeState, string, error) {
-	state, err := s.stateFetcher().FetchPRRuntimeState(ctx, "", prID)
+	workspace := strings.TrimSpace(s.WritebackWorkspace)
+	if workspace == "" && s.StateFetcher == nil {
+		return arcreview.PRRuntimeState{}, "", errors.New("arcpr source writeback workspace is required")
+	}
+
+	state, err := s.stateFetcher().FetchPRRuntimeState(ctx, workspace, prID)
 	if err != nil {
 		return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
 	}
-	return state, "", nil
+	return state, workspace, nil
 }
 
 func (s *Source) applyPRReviewReplies(ctx context.Context, state arcreview.PRRuntimeState, result workitem.PRReviewResult) error {
@@ -194,8 +199,12 @@ func (s *Source) shipGate(workspace string) (arcreview.PRReviewCycleShipGate, er
 	if s.ShipGate != nil {
 		return s.ShipGate, nil
 	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return nil, errors.New("arcpr source workspace is required for shipping")
+	}
 	return arcreview.ShipGate{
-		Client: arcanum.NewShipArcanumClient(strings.TrimSpace(workspace)),
+		Client: arcanum.NewShipArcanumClient(workspace),
 	}, nil
 }
 
