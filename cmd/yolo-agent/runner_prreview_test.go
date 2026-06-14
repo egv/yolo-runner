@@ -176,6 +176,108 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	})
 }
 
+func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	arcCallsPath := installRunnerPRReviewFakeArc(t)
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:     "42",
+		Revision: "r7",
+	})
+	if err != nil {
+		t.Fatalf("marshal PR review payload: %v", err)
+	}
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcreview",
+		SourceRef:      "42:r7",
+		IdempotencyKey: "arcreview/42/r7",
+		Preset:         "arc",
+		Payload:        payload,
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	claimed, err := store.Claim("runner-prreview", []string{"arc"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("Claim() returned nil")
+	}
+
+	fetcher := &runnerPRReviewFakeFetcher{state: arcreview.PRRuntimeState{
+		PRID:     "42",
+		Revision: "r7",
+		Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7"},
+	}}
+	model := &runnerPRReviewFakeModelHelper{payload: []byte(`{
+		"summary": "Revision reviewed.",
+		"inline_comments": [],
+		"replies": [],
+		"blockers": [],
+		"ship": {"verdict": "hold", "reason": "Needs follow-up."}
+	}`)}
+
+	sharedMount := filepath.Join(t.TempDir(), "shared-arc")
+	sharedSubpath := "project"
+	if err := os.MkdirAll(filepath.Join(sharedMount, sharedSubpath), 0o755); err != nil {
+		t.Fatalf("create shared arc workspace: %v", err)
+	}
+
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPRReview: newRunnerPRReviewKindHandler(func(_ context.Context, _ workitem.Item, workspace envpreset.Workspace, _ workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+				return runnerPRReviewRuntime{
+					StateFetcher: fetcher,
+					ModelHelper:  model,
+					Model:        "gpt-prreview-test",
+					RepoRoot:     workspace.Path,
+					Timeout:      4 * time.Second,
+				}, nil
+			}),
+		},
+		environmentPresets: map[string]envpreset.Preset{
+			"arc": {
+				Workspace: envpreset.Workspace{
+					Strategy: envpreset.WorkspaceStrategyArcShared,
+					Mount:    sharedMount,
+					Subpath:  sharedSubpath,
+				},
+			},
+		},
+		materialize: envpreset.MaterializeWorkspace,
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-prreview",
+			heartbeatInterval: time.Hour,
+		},
+	}
+	if err := daemon.runClaimedItem(context.Background(), *claimed); err != nil {
+		t.Fatalf("runClaimedItem() error = %v", err)
+	}
+
+	prMountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "42")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
+	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
+		{args: "init --repository arcadia --object-store " + objectStore + " " + prMountPath},
+		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
+		{cwd: prMountPath, args: "unmount --forget"},
+	})
+}
+
 type runnerPRReviewFakeFetcher struct {
 	state arcreview.PRRuntimeState
 	calls []runnerPRReviewFetchCall
@@ -222,7 +324,10 @@ for arg in "$@"; do
 	first=0
 done
 printf '\n' >> "$ARC_CALLS"
-`
+if [ "$1" = "mount" ] && [ "$2" = "-l" ]; then
+	printf '[]\n'
+fi
+	`
 	if err := os.WriteFile(filepath.Join(fakeBin, "arc"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake arc: %v", err)
 	}

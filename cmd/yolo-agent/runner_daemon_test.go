@@ -606,6 +606,66 @@ func TestRunnerDaemonMaterializesEachPresetStrategyAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestRunnerDaemonMaterializeRoutingKeepsReadViewForPreflightSplitAndSkipsPRReview(t *testing.T) {
+	type materializeCall struct {
+		itemID   string
+		isolated bool
+	}
+	var calls []materializeCall
+	daemon := runnerDaemon{
+		environmentPresets: map[string]envpreset.Preset{
+			"arc": {
+				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyArcShared},
+			},
+		},
+		materialize: func(_ context.Context, _ envpreset.Preset, itemID string, isolated bool) (envpreset.Workspace, error) {
+			calls = append(calls, materializeCall{itemID: itemID, isolated: isolated})
+			return envpreset.Workspace{Path: t.TempDir()}, nil
+		},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		kind         workitem.Kind
+		wantCalled   bool
+		wantIsolated bool
+	}{
+		{name: "preflight", kind: workitem.KindPreflight, wantCalled: true, wantIsolated: false},
+		{name: "split", kind: workitem.KindSplit, wantCalled: true, wantIsolated: false},
+		{name: "pr_review", kind: workitem.KindPRReview, wantCalled: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls = nil
+			workspace, err := daemon.materializeClaimedWorkspace(context.Background(), workitem.Item{
+				ID:     "item-" + tc.name,
+				Kind:   tc.kind,
+				Preset: "arc",
+			})
+			if err != nil {
+				t.Fatalf("materializeClaimedWorkspace() error = %v", err)
+			}
+			if tc.wantCalled {
+				if len(calls) != 1 {
+					t.Fatalf("materializer calls = %#v, want one call", calls)
+				}
+				if calls[0].itemID != "item-"+tc.name {
+					t.Fatalf("materializer item ID = %q, want %q", calls[0].itemID, "item-"+tc.name)
+				}
+				if calls[0].isolated != tc.wantIsolated {
+					t.Fatalf("materializer isolated = %v, want %v", calls[0].isolated, tc.wantIsolated)
+				}
+				return
+			}
+			if len(calls) != 0 {
+				t.Fatalf("materializer calls = %#v, want none", calls)
+			}
+			if workspace.Cleanup == nil {
+				t.Fatal("workspace cleanup = nil")
+			}
+		})
+	}
+}
+
 func TestRunnerDaemonFailsClaimWithoutEnvironmentPresets(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
