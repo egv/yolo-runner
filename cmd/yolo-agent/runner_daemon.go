@@ -46,8 +46,8 @@ type runnerKindRegistry map[workitem.Kind]runnerKindHandler
 type runnerWorkspaceMaterializer func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error)
 
 // runnerKindIsolated reports whether a work kind writes code and therefore
-// needs a fully isolated, VCS-bearing workspace. Read-only kinds (preflight,
-// split, pr-review) produce a decision and write back over the source API, so
+// needs a fully isolated, VCS-bearing workspace. Read-only model kinds
+// (preflight, split) produce a decision and write back over the source API, so
 // they get a lightweight parallel-safe read view instead.
 func runnerKindIsolated(kind workitem.Kind) bool {
 	switch kind {
@@ -56,6 +56,10 @@ func runnerKindIsolated(kind workitem.Kind) bool {
 	default:
 		return false
 	}
+}
+
+func runnerKindNeedsPresetWorkspace(kind workitem.Kind) bool {
+	return kind != workitem.KindPRReview
 }
 
 func runnerDaemonCommand(args []string) int {
@@ -430,6 +434,9 @@ func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item work
 	preset, ok := d.environmentPresets[presetName]
 	if !ok {
 		return envpreset.Workspace{}, fmt.Errorf("environment preset %q is not defined", presetName)
+	}
+	if !runnerKindNeedsPresetWorkspace(item.Kind) {
+		return envpreset.Workspace{Cleanup: func() error { return nil }}, nil
 	}
 
 	materialize := d.materialize

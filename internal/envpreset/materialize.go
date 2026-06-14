@@ -29,7 +29,7 @@ func Materialize(ctx context.Context, preset Preset, itemID string) (Workspace, 
 // true (code-writing kinds: implement/finalize) it produces a writable,
 // VCS-bearing workspace — a fresh git clone fast-forwarded to the base branch,
 // or a per-item branch on the arc mount. When isolated is false (read-only
-// kinds: preflight/split/pr-review) it produces a lightweight read view — for
+// kinds: preflight/split) it produces a lightweight read view — for
 // arc the prepared mount with no per-item branch and no serializing lock, so
 // reads run in parallel; the returned VCS is nil.
 func MaterializeWorkspace(ctx context.Context, preset Preset, itemID string, isolated bool) (Workspace, error) {
@@ -110,7 +110,7 @@ func materializeArcShared(ctx context.Context, workspace Workspace, itemID strin
 		return Workspace{}, err
 	}
 
-	// Read-only items (preflight/split/pr-review) only need the mount present
+	// Read-only items (preflight/split) only need the mount present
 	// to run read commands like `arc pr status`. They take no per-item branch
 	// and no serializing lock, so reviews on one mount run in parallel.
 	if !isolated {

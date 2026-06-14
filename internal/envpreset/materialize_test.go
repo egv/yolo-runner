@@ -153,7 +153,7 @@ func TestMaterializeWorkspaceArcReadOnlyMountsWithoutBranchOrLock(t *testing.T) 
 		Subpath:  arcSubpath,
 	}}
 
-	// Read-only (isolated=false) materialization for kinds like pr-review:
+	// Read-only (isolated=false) materialization for preflight/split:
 	// mount the workspace but take no per-item branch and no serializing lock,
 	// and return no VCS.
 	ws, err := MaterializeWorkspace(ctx, preset, "PR-1", false)
