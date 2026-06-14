@@ -174,9 +174,9 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
-		{args: "init --repository arcadia --object-store " + objectStore + " " + prMountPath},
+		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
-		{cwd: prMountPath, args: "unmount --forget"},
+		{args: "unmount --forget " + prMountPath},
 	})
 }
 
@@ -422,9 +422,9 @@ func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 	prMountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "42")
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
-		{args: "init --repository arcadia --object-store " + objectStore + " " + prMountPath},
+		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
-		{cwd: prMountPath, args: "unmount --forget"},
+		{args: "unmount --forget " + prMountPath},
 	})
 }
 

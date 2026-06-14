@@ -269,8 +269,8 @@ case "$*" in
 "pr list --json -i --status open")
   printf '%s\n' '[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]'
   ;;
-"init --repository arcadia --object-store "*)
-  mkdir -p "$6"
+"mount -m "*)
+  mkdir -p "$3"
   ;;
 "pr checkout 777 --detached --force")
   mkdir -p project
@@ -282,7 +282,7 @@ case "$*" in
 "pr changes 777")
   printf '%s\n' 'diff --git a/project/README.md b/project/README.md'
   ;;
-"unmount --forget")
+"unmount --forget "*)
   ;;
 *)
   printf 'unexpected arc args: %s\n' "$*" >&2
@@ -377,12 +377,12 @@ esac
 	}
 	calls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
 	assertSourceArcPRCallsContain(t, calls,
-		"arc init --repository arcadia --object-store "+filepath.Join(home, ".yolo-runner", "pr-objects")+" "+mountPath,
+		"arc mount -m "+mountPath+" -S "+filepath.Join(home, ".yolo-runner", "pr-objects"),
 		mountPath+"\tarc pr checkout 777 --detached --force",
 		mountPath+"\tarc pr status --json 777",
 		mountPath+"\tcurl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 		mountPath+"\tarc pr changes 777",
-		mountPath+"\tarc unmount --forget",
+		"arc unmount --forget "+mountPath,
 	)
 
 	state, err := arcreviewstate.Open(statePath)

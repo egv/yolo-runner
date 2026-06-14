@@ -57,11 +57,11 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
-	// `arc mount` creates the mount path itself; only the parent must exist.
-	if err := os.MkdirAll(mountsBaseDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create arc PR mounts dir %s: %w", mountsBaseDir, err)
-	}
+	// arc mounts onto an existing empty dir; start clean.
 	_ = os.RemoveAll(mountPath)
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
+	}
 
 	// A fresh isolated arc working copy sharing one object store across PRs:
 	// `arc mount -m <mount> -S <store>` (verified against the arc CLI; `arc init`

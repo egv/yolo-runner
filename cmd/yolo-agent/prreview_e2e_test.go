@@ -165,9 +165,9 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 		t.Fatalf("Getwd() error = %v", err)
 	}
 	assertPRReviewE2EArcCalls(t, arcCallsPath, []string{
-		testCWD + "\tarc init --repository arcadia --object-store " + filepath.Join(home, ".yolo-runner", "pr-objects") + " " + prMountPath,
+		testCWD + "\tarc mount -m " + prMountPath + " -S " + filepath.Join(home, ".yolo-runner", "pr-objects"),
 		prMountPath + "\tarc pr checkout 777 --detached --force",
-		prMountPath + "\tarc unmount --forget",
+		testCWD + "\tarc unmount --forget " + prMountPath,
 	})
 
 	if !reflect.DeepEqual(writebackClient.replies, []prReviewE2EReply{{
@@ -310,8 +310,8 @@ for arg in "$@"; do
 done
 printf '\n' >> "$PRREVIEW_E2E_ARC_CALLS"
 case "$*" in
-"init --repository arcadia --object-store "*)
-  mkdir -p "$6"
+"mount -m "*)
+  mkdir -p "$3"
   ;;
 "pr checkout 777 --detached --force")
   mkdir -p taxi/backend-cpp/services/ai_minion
@@ -319,7 +319,7 @@ case "$*" in
   printf 'Use service-specific AI minion review conventions.\n' > taxi/backend-cpp/services/ai_minion/AGENTS.md
   printf 'int deterministic_retry;\n' > taxi/backend-cpp/services/ai_minion/main.cpp
   ;;
-"unmount --forget")
+"unmount --forget "*)
   ;;
 *)
   printf 'unexpected arc args: %s\n' "$*" >&2
