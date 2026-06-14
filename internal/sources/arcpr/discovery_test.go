@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -53,6 +54,13 @@ func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.
 				{ID: "102", FromID: "rev-2", Status: "open"},
 				{ID: "103", FromID: "rev-3", Status: "open"},
 				{ID: "101", FromID: "rev-1", Status: "open"},
+			}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{
+				PRID:     prID,
+				Details:  arcreview.PRDetails{ID: prID},
+				Comments: nil,
 			}, nil
 		}),
 	}
@@ -165,6 +173,100 @@ func TestSourcePollSubmitsReviewedIncomingPRWhenUnansweredCommentsRemain(t *test
 	}
 }
 
+func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePinning(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	if err := state.StoreReviewedRevision(ctx, "101", "rev-1"); err != nil {
+		t.Fatalf("StoreReviewedRevision(101) error = %v", err)
+	}
+	if err := state.StoreAnsweredCommentIDs(ctx, "101", []string{"c-old"}); err != nil {
+		t.Fatalf("StoreAnsweredCommentIDs() error = %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
+set -eu
+printf 'arc %s\n' "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"pr list --json -i --status open")
+  printf '%s\n' \
+    '{"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment"}' \
+    '{"id":"102","from_id":"rev-2","status":"open","summary":"new head"}' \
+    '{"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head"}'
+  ;;
+*)
+  printf 'unexpected arc args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
+set -eu
+printf 'curl %s\n' "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/101/comments")
+  printf '%s\n' '{"data":[{"id":"c-new","content":"please answer","issue_status":"open"},{"id":"c-old","content":"already answered","issue_status":"open"},{"id":"c-resolved","content":"done","issue_status":"resolved"}]}'
+  ;;
+"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/102/comments")
+  printf '%s\n' '{"data":[]}'
+  ;;
+*)
+  printf 'unexpected curl args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		State:      state,
+	}
+
+	first, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(first) error = %v", err)
+	}
+	second, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(second) error = %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("Poll() was not stable across polls\nfirst:  %#v\nsecond: %#v", first, second)
+	}
+	if len(first) != 2 {
+		t.Fatalf("Poll() returned %d submissions, want 2: %#v", len(first), first)
+	}
+	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", []string{"c-new"}, false)
+	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "102", "rev-2", nil, false)
+
+	for _, submission := range first {
+		payload, err := workitem.DecodePRReviewPayload(submission.Payload)
+		if err != nil {
+			t.Fatalf("DecodePRReviewPayload(%q) error = %v", submission.IdempotencyKey, err)
+		}
+		if err := state.StoreReviewedRevision(ctx, payload.PRID, payload.Revision); err != nil {
+			t.Fatalf("StoreReviewedRevision(%q) error = %v", payload.PRID, err)
+		}
+		if len(payload.UnansweredCommentIDs) > 0 {
+			if err := state.StoreAnsweredCommentIDs(ctx, payload.PRID, payload.UnansweredCommentIDs); err != nil {
+				t.Fatalf("StoreAnsweredCommentIDs(%q) error = %v", payload.PRID, err)
+			}
+		}
+	}
+
+	afterResult, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(after result) error = %v", err)
+	}
+	if len(afterResult) != 0 {
+		t.Fatalf("Poll(after result) returned %#v, want none", afterResult)
+	}
+}
+
 func openDiscoveryTestState(t *testing.T) *arcreviewstate.Store {
 	t.Helper()
 
@@ -178,6 +280,15 @@ func openDiscoveryTestState(t *testing.T) *arcreviewstate.Store {
 		}
 	})
 	return store
+}
+
+func writeDiscoveryFakeExecutable(t *testing.T, dir string, name string, content string) {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write fake executable %s: %v", name, err)
+	}
 }
 
 func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName string, preset string, prID string, revision string, comments []string, ship bool) {

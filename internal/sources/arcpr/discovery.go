@@ -43,7 +43,6 @@ type Source struct {
 	SourceName    string
 	Preset        string
 	Reviewer      string
-	Workspaces    []string
 	AllowShip     bool
 	Priority      int
 	MaxAttempts   int
@@ -70,6 +69,18 @@ func (arcanumPRLister) ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRS
 type arcanumPRStateFetcher struct{}
 
 func (arcanumPRStateFetcher) FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error) {
+	if strings.TrimSpace(workspace) == "" {
+		comments, err := arcanum.FetchPRComments(ctx, prID)
+		if err != nil {
+			return arcreview.PRRuntimeState{}, err
+		}
+		prID = strings.TrimSpace(prID)
+		return arcreview.PRRuntimeState{
+			PRID:     prID,
+			Details:  arcreview.PRDetails{ID: prID},
+			Comments: comments,
+		}, nil
+	}
 	return arcanum.FetchPRRuntimeState(ctx, workspace, prID)
 }
 
@@ -114,10 +125,7 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 		}
 		var unansweredCommentIDs []string
 		if strings.TrimSpace(reviewedRevision) == revision {
-			if s.StateFetcher == nil {
-				continue
-			}
-			state, err := s.StateFetcher.FetchPRRuntimeState(ctx, "", prID)
+			state, err := s.stateFetcher().FetchPRRuntimeState(ctx, "", prID)
 			if err != nil {
 				return nil, fmt.Errorf("fetch arc PR runtime state for comments for %q: %w", prID, err)
 			}

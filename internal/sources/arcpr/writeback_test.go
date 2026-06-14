@@ -20,7 +20,6 @@ func TestSourceHandleResultAppliesRepliesReviewAndShipsWhenGateAllows(t *testing
 	}
 	src := &Source{
 		SourceName:   "arcpr-adapta",
-		Workspaces:   []string{"/arcadia/project"},
 		AllowShip:    true,
 		State:        state,
 		StateFetcher: fetcher,
@@ -134,7 +133,6 @@ func TestSourceHandleResultDoesNotShipStaleReviewedRevision(t *testing.T) {
 	}
 	src := &Source{
 		SourceName:   "arcpr-adapta",
-		Workspaces:   []string{"/arcadia/project"},
 		AllowShip:    true,
 		State:        state,
 		StateFetcher: fetcher,

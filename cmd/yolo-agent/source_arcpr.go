@@ -142,7 +142,6 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		SourceName:    sourceArcPRSourceName(cfg.profile),
 		Preset:        cfg.profile,
 		Reviewer:      reviewWatchConfig.Reviewer,
-		Workspaces:    reviewWatchConfig.Workspaces,
 		AllowShip:     reviewWatchConfig.AllowShip,
 		State:         state,
 		Lister:        sourceArcPRLister,
