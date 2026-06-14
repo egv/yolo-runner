@@ -40,18 +40,22 @@ func TestParsePRListJSONNormalizesSummaries(t *testing.T) {
 		{
 			ID:        "123456",
 			Title:     "ARW-01 Add review watcher",
+			Summary:   "ARW-01 Add review watcher",
 			Author:    "alice",
 			Reviewers: []string{"bob", "carol"},
 			Branch:    "users/alice/arw-01",
 			Status:    "open",
 		},
 		{
-			ID:        "ARCADIA-789",
-			Title:     "ARW-02 Handle comments",
-			Author:    "dave",
-			Reviewers: []string{"erin"},
-			Branch:    "trunk",
-			Status:    "merged",
+			ID:         "ARCADIA-789",
+			Title:      "ARW-02 Handle comments",
+			Summary:    "ARW-02 Handle comments",
+			Author:     "dave",
+			Reviewers:  []string{"erin"},
+			Branch:     "trunk",
+			FromBranch: "users/dave/arw-02",
+			ToBranch:   "trunk",
+			Status:     "merged",
 		},
 	}
 

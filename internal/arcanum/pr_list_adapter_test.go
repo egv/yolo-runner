@@ -54,17 +54,21 @@ func TestListWorkspacePRsRunsArcPRListJSONAndParsesSummaries(t *testing.T) {
 		{
 			ID:        "2293787",
 			Title:     "ARW2-03 Add PR list adapter",
+			Summary:   "ARW2-03 Add PR list adapter",
 			Author:    "alice",
 			Reviewers: []string{"bob", "carol"},
 			Branch:    "trunk",
+			ToBranch:  "trunk",
 			Status:    "open",
 		},
 		{
 			ID:        "2293791",
 			Title:     "ARW2-05 Wire discovery",
+			Summary:   "ARW2-05 Wire discovery",
 			Author:    "dave",
 			Reviewers: []string{"erin"},
 			Branch:    "users/dave/arw2-05",
+			ToBranch:  "users/dave/arw2-05",
 			Status:    "open",
 		},
 	}
