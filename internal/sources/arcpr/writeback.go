@@ -13,7 +13,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
-func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
+func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) (submissions []workqueue.Submission, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -44,9 +44,20 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 		return nil, errors.New("arc PR ID is required")
 	}
 
-	state, workspace, err := s.fetchWritebackState(ctx, prID)
+	state, workspace, cleanup, err := s.fetchWritebackState(ctx, prID)
 	if err != nil {
 		return nil, err
+	}
+	if cleanup != nil {
+		defer func() {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				if err != nil {
+					err = errors.Join(err, cleanupErr)
+					return
+				}
+				err = cleanupErr
+			}
+		}()
 	}
 	gateStateBase := stateWithWritebackIdentity(state, prID, "")
 	writebackState := stateWithWritebackIdentity(state, prID, payload.Revision)
@@ -90,30 +101,47 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	return nil, nil
 }
 
-func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcreview.PRRuntimeState, string, error) {
+func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcreview.PRRuntimeState, string, func() error, error) {
 	workspaces := s.writebackWorkspaces()
-	if len(workspaces) == 0 && s.StateFetcher == nil {
-		return arcreview.PRRuntimeState{}, "", errors.New("arcpr source writeback workspace is required")
-	}
-
 	fetcher := s.stateFetcher()
 	if len(workspaces) == 0 {
+		if s.StateFetcher == nil {
+			checkout, err := arcanum.PreparePRCheckoutWithConfig(ctx, prID, arcanum.PRCheckoutConfig{
+				ObjectsBaseDir: s.ObjectsBaseDir,
+				MountsBaseDir:  s.MountsBaseDir,
+			})
+			if err != nil {
+				return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("prepare arc PR checkout for %q: %w", prID, err)
+			}
+			if checkout == nil || strings.TrimSpace(checkout.MountPath) == "" {
+				return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("prepare arc PR checkout for %q returned empty mount path", prID)
+			}
+			state, err := fetcher.FetchPRRuntimeState(ctx, checkout.MountPath, prID)
+			if err != nil {
+				if checkout.Cleanup != nil {
+					err = errors.Join(err, checkout.Cleanup())
+				}
+				return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
+			}
+			return state, checkout.MountPath, checkout.Cleanup, nil
+		}
+
 		state, err := fetcher.FetchPRRuntimeState(ctx, "", prID)
 		if err != nil {
-			return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
+			return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
 		}
-		return state, "", nil
+		return state, "", nil, nil
 	}
 
 	errs := make([]error, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		state, err := fetcher.FetchPRRuntimeState(ctx, workspace, prID)
 		if err == nil {
-			return state, workspace, nil
+			return state, workspace, nil, nil
 		}
 		errs = append(errs, fmt.Errorf("workspace %q: %w", workspace, err))
 	}
-	return arcreview.PRRuntimeState{}, "", fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, errors.Join(errs...))
+	return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, errors.Join(errs...))
 }
 
 func (s *Source) writebackWorkspaces() []string {

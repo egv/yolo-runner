@@ -14,11 +14,23 @@ type PRCheckout struct {
 	Cleanup   func() error
 }
 
-func PreparePRCheckout(prID string) (*PRCheckout, error) {
-	return preparePRCheckout(context.Background(), prID)
+type PRCheckoutConfig struct {
+	ObjectsBaseDir string
+	MountsBaseDir  string
 }
 
-func preparePRCheckout(ctx context.Context, prID string) (*PRCheckout, error) {
+func PreparePRCheckout(prID string) (*PRCheckout, error) {
+	return PreparePRCheckoutWithConfig(context.Background(), prID, PRCheckoutConfig{})
+}
+
+func PreparePRCheckoutWithConfig(ctx context.Context, prID string, cfg PRCheckoutConfig) (*PRCheckout, error) {
+	return preparePRCheckout(ctx, prID, cfg)
+}
+
+func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (*PRCheckout, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	prID = strings.TrimSpace(prID)
 	if prID == "" {
 		return nil, fmt.Errorf("PR ID is required")
@@ -33,8 +45,15 @@ func preparePRCheckout(ctx context.Context, prID string) (*PRCheckout, error) {
 	}
 
 	root := filepath.Join(home, ".yolo-runner")
-	objectStore := filepath.Join(root, "pr-objects")
-	mountPath := filepath.Join(root, "pr-mounts", prID)
+	objectStore := strings.TrimSpace(cfg.ObjectsBaseDir)
+	if objectStore == "" {
+		objectStore = filepath.Join(root, "pr-objects")
+	}
+	mountsBaseDir := strings.TrimSpace(cfg.MountsBaseDir)
+	if mountsBaseDir == "" {
+		mountsBaseDir = filepath.Join(root, "pr-mounts")
+	}
+	mountPath := filepath.Join(mountsBaseDir, prID)
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
