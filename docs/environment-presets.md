@@ -58,6 +58,20 @@ presets:
   (`preflight`, `split`, `pr-review`); code-writing kinds (`implement`,
   `finalize`) are rejected if they would have no isolated VCS workspace.
 
+## PR review project auto-detection
+
+For `pr-review` work items, the preset selects runner capacity and agent settings
+(backend, model, timeouts, and allowed environment variables), but it does not
+provide the reviewed source tree. PR review execution always prepares a per-PR
+isolated checkout with `arc pr checkout <pr-id> --detached --force`, then runs the
+review from that checkout.
+
+Inside the per-PR isolated checkout, yolo-agent detects the project root from the
+changed files by finding the nearest `ya.make`. The detected root supplies the
+validation command and local project conventions included in the model prompt.
+PR review execution does not use MCP; it uses the built-in Arcanum clients,
+review prompts, reply/review appliers, and ship gate.
+
 ## Landing policies
 
 - **`git-merge`** — merge the per-item branch to `main` and push (serialized by

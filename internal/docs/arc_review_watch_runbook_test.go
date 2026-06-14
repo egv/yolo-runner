@@ -59,6 +59,36 @@ func TestArcReviewWatchRunbookDocumentsOperatorWorkflow(t *testing.T) {
 	}
 }
 
+func TestArcReviewDocsDescribeCrossProjectPRReviewModel(t *testing.T) {
+	runbook := readRepoFile(t, "docs", "arc-review-watch.md")
+	presets := readRepoFile(t, "docs", "environment-presets.md")
+
+	runbookRequired := []string{
+		"discovers incoming reviews with `arc pr list -i`",
+		"Each PR review work item receives an isolated checkout",
+		"auto-detects the project root from changed files",
+		"PR review does not configure or require MCP servers",
+		"`allow_ship` defaults to `false`",
+	}
+	for _, needle := range runbookRequired {
+		if !strings.Contains(runbook, needle) {
+			t.Fatalf("arc review watch runbook missing cross-project PR model detail %q", needle)
+		}
+	}
+
+	presetRequired := []string{
+		"PR review project auto-detection",
+		"the preset selects runner capacity and agent settings",
+		"per-PR isolated checkout",
+		"PR review execution does not use MCP",
+	}
+	for _, needle := range presetRequired {
+		if !strings.Contains(presets, needle) {
+			t.Fatalf("environment presets docs missing PR review model detail %q", needle)
+		}
+	}
+}
+
 func TestReadmeLinksArcReviewWatchRunbook(t *testing.T) {
 	readme := readRepoFile(t, "README.md")
 	if !strings.Contains(readme, "docs/arc-review-watch.md") {
