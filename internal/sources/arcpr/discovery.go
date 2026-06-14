@@ -47,6 +47,8 @@ type Source struct {
 	WritebackWorkspace string
 	// WritebackWorkspaces are tried in order for result handling while discovery is cross-project.
 	WritebackWorkspaces []string
+	ObjectsBaseDir      string
+	MountsBaseDir       string
 	AllowShip           bool
 	Priority            int
 	MaxAttempts         int
