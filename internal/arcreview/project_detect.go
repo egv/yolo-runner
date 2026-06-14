@@ -10,8 +10,10 @@ import (
 )
 
 type ProjectContext struct {
-	Root    string   `json:"root,omitempty"`
-	Command []string `json:"command,omitempty"`
+	Root               string                `json:"root,omitempty"`
+	Command            []string              `json:"command,omitempty"`
+	ConventionsExcerpt string                `json:"conventions_excerpt,omitempty"`
+	LinkedTickets      []LinkedTicketSummary `json:"linked_tickets,omitempty"`
 }
 
 func DetectProjectContext(workspace string, files []PRChangedFile) (ProjectContext, error) {

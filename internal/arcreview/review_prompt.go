@@ -2,33 +2,57 @@ package arcreview
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
 
-func BuildReviewRevisionPrompt(state PRRuntimeState) string {
-	return strings.Join([]string{
-		"You are reviewing one Arcanum PR revision. Use only the provided PR metadata, diffs, comments, open blockers, and checks.",
+func BuildReviewRevisionPrompt(state PRRuntimeState, projectContexts ...ProjectContext) string {
+	projectContext := reviewRevisionProjectContext(projectContexts)
+	hasProjectContext := hasReviewRevisionProjectContext(projectContext)
+
+	sections := []string{
+		reviewRevisionIntroSection(hasProjectContext),
 		"Action: review_revision",
-		reviewRevisionRulesSection(),
+		reviewRevisionRulesSection(hasProjectContext),
 		reviewRevisionMetadataSection(state),
+	}
+	if hasProjectContext {
+		sections = append(sections, reviewRevisionProjectContextSection(projectContext))
+	}
+	sections = append(sections,
 		reviewRevisionDiffsSection(state.ChangedFiles),
 		reviewRevisionCommentsSection(state.Comments),
 		reviewRevisionBlockersSection(state.OpenIssues),
 		reviewRevisionChecksSection(state.Checks),
 		reviewRevisionJSONContractSection(),
-	}, "\n\n")
+	)
+	return strings.Join(sections, "\n\n")
 }
 
-func reviewRevisionRulesSection() string {
-	return strings.Join([]string{
+func reviewRevisionIntroSection(hasProjectContext bool) string {
+	if hasProjectContext {
+		return "You are reviewing one Arcanum PR revision in a real checkout. Use the provided PR metadata, project context, diffs, comments, open blockers, and checks."
+	}
+	return "You are reviewing one Arcanum PR revision. Use only the provided PR metadata, diffs, comments, open blockers, and checks."
+}
+
+func reviewRevisionRulesSection(hasProjectContext bool) string {
+	lines := []string{
 		"Rules:",
 		"- Review the current revision for correctness, tests, regressions, and unresolved discussion.",
-		"- Do not execute commands, modify files, post comments, or ship the PR.",
+	}
+	if hasProjectContext {
+		lines = append(lines, "- You may inspect files and run targeted build/test commands in the real checkout when useful; do not modify files, post comments, or ship the PR.")
+	} else {
+		lines = append(lines, "- Do not execute commands, modify files, post comments, or ship the PR.")
+	}
+	lines = append(lines,
 		"- Inline comments must be actionable and tied to a concrete file and line when possible.",
 		"- Replies must answer or resolve existing review comments only.",
 		"- Blockers must describe issues that should prevent shipping.",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func reviewRevisionMetadataSection(state PRRuntimeState) string {
@@ -57,6 +81,101 @@ func reviewRevisionMetadataSection(state PRRuntimeState) string {
 		"Description:",
 		reviewPromptFallback(details.Description),
 	}, "\n")
+}
+
+func reviewRevisionProjectContext(contexts []ProjectContext) ProjectContext {
+	if len(contexts) == 0 {
+		return ProjectContext{}
+	}
+	return contexts[0]
+}
+
+func hasReviewRevisionProjectContext(context ProjectContext) bool {
+	return strings.TrimSpace(context.Root) != "" ||
+		len(reviewPromptCommandArgs(context.Command)) > 0 ||
+		strings.TrimSpace(context.ConventionsExcerpt) != "" ||
+		len(reviewPromptLinkedTicketAcceptanceLines(context.LinkedTickets)) > 0
+}
+
+func reviewRevisionProjectContextSection(context ProjectContext) string {
+	lines := []string{
+		"Project context:",
+		"Note: You are inside a real checkout. You may build/run tests and inspect files for this review; keep commands targeted and do not modify files.",
+		"Root: " + reviewPromptFallback(context.Root),
+		"Build/test command: " + reviewPromptCommand(context.Command),
+	}
+
+	if conventions := strings.TrimSpace(context.ConventionsExcerpt); conventions != "" {
+		lines = append(lines,
+			"",
+			"Conventions excerpt:",
+			conventions,
+		)
+	}
+
+	if linkedTicketLines := reviewPromptLinkedTicketAcceptanceLines(context.LinkedTickets); len(linkedTicketLines) > 0 {
+		lines = append(lines,
+			"",
+			"Linked ticket acceptance criteria:",
+		)
+		lines = append(lines, linkedTicketLines...)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func reviewPromptCommand(args []string) string {
+	args = reviewPromptCommandArgs(args)
+	if len(args) == 0 {
+		return "None"
+	}
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		if strings.ContainsAny(arg, " \t\r\n\"'\\") {
+			parts = append(parts, strconv.Quote(arg))
+			continue
+		}
+		parts = append(parts, arg)
+	}
+	return strings.Join(parts, " ")
+}
+
+func reviewPromptCommandArgs(args []string) []string {
+	trimmed := make([]string, 0, len(args))
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg != "" {
+			trimmed = append(trimmed, arg)
+		}
+	}
+	return trimmed
+}
+
+func reviewPromptLinkedTicketAcceptanceLines(tickets []LinkedTicketSummary) []string {
+	lines := make([]string, 0, len(tickets)*2)
+	for _, ticket := range tickets {
+		acceptanceCriteria := strings.TrimSpace(ticket.AcceptanceCriteria)
+		if acceptanceCriteria == "" {
+			continue
+		}
+		lines = append(lines, reviewPromptLinkedTicketHeader(ticket)+":", acceptanceCriteria)
+	}
+	return lines
+}
+
+func reviewPromptLinkedTicketHeader(ticket LinkedTicketSummary) string {
+	id := strings.TrimSpace(ticket.ID)
+	title := strings.TrimSpace(ticket.Title)
+	switch {
+	case id != "" && title != "":
+		return id + " - " + title
+	case id != "":
+		return id
+	case title != "":
+		return title
+	default:
+		return "Linked ticket"
+	}
 }
 
 func reviewRevisionDiffsSection(files []PRChangedFile) string {

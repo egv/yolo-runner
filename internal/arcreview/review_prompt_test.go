@@ -115,3 +115,71 @@ func TestBuildReviewRevisionPromptIncludesContextAndJSONContract(t *testing.T) {
 		t.Fatalf("expected strict JSON contract, got legacy verdict marker:\n%s", prompt)
 	}
 }
+
+func TestBuildReviewRevisionPromptIncludesProjectContextWhenProvided(t *testing.T) {
+	state := PRRuntimeState{
+		PRID:     "ARW-15",
+		Revision: "r3",
+		Details: PRDetails{
+			ID:          "ARW-15",
+			Title:       "Review with project context",
+			Author:      "alice",
+			Status:      "open",
+			Revision:    "r3",
+			Description: "Use local project facts for execution-grade review.",
+		},
+		ChangedFiles: []PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
+		},
+		Checks: []PRCheck{{Name: "ya make", Status: "passed"}},
+	}
+
+	prompt := BuildReviewRevisionPrompt(state, ProjectContext{
+		Root: "taxi/backend-cpp/services/ai_minion",
+		Command: []string{
+			"ya",
+			"make",
+			"-t",
+			"taxi/backend-cpp/services/ai_minion",
+		},
+		ConventionsExcerpt: "Prefer table-driven tests.\nKeep generated code untouched.",
+		LinkedTickets: []LinkedTicketSummary{
+			{
+				ID:                 "TAXI-42",
+				Title:              "Keep AI minion retries deterministic",
+				AcceptanceCriteria: "- retries preserve ordering\n- tests cover transient failures",
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Project context:",
+		"Note: You are inside a real checkout. You may build/run tests",
+		"Root: taxi/backend-cpp/services/ai_minion",
+		"Build/test command: ya make -t taxi/backend-cpp/services/ai_minion",
+		"Conventions excerpt:",
+		"Prefer table-driven tests.",
+		"Keep generated code untouched.",
+		"Linked ticket acceptance criteria:",
+		"TAXI-42 - Keep AI minion retries deterministic:",
+		"- retries preserve ordering",
+		"- tests cover transient failures",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+
+	if strings.Contains(prompt, "- Do not execute commands") {
+		t.Fatalf("expected project context prompt to permit build/test execution, got:\n%s", prompt)
+	}
+
+	withoutContext := BuildReviewRevisionPrompt(state)
+	withEmptyContext := BuildReviewRevisionPrompt(state, ProjectContext{})
+	if withEmptyContext != withoutContext {
+		t.Fatalf("expected empty project context to leave prompt unchanged\nwithout:\n%s\nwith empty:\n%s", withoutContext, withEmptyContext)
+	}
+	if strings.Contains(withoutContext, "Project context:") {
+		t.Fatalf("expected prompt without context to omit project context section, got:\n%s", withoutContext)
+	}
+}
