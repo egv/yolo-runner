@@ -24,7 +24,7 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 	var output bytes.Buffer
 	request := contracts.RunnerRequest{
 		TaskID:     arcPRReviewModelTaskID(input.State),
-		Prompt:     arcreview.BuildReviewRevisionPrompt(input.State),
+		Prompt:     arcreview.BuildReviewRevisionPrompt(input.State, input.ProjectContext),
 		Mode:       contracts.RunnerModeReview,
 		Model:      input.Model,
 		RepoRoot:   input.RepoRoot,
