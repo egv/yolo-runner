@@ -14,11 +14,14 @@ func TestArcReviewWatchRunbookDocumentsOperatorWorkflow(t *testing.T) {
 		"delegates to `yolo-agent source arcpr`",
 		"arc_review_watch:",
 		"poll_interval: 30s",
-		"lock_path: .yolo-runner/arcpr-source.lock",
 		"state_path: .yolo-runner/arcpr-source-state.db",
 		"reviewer: alice",
 		"allow_ship: false",
+		"objects_base_dir: ~/.yolo-runner/pr-objects",
+		"mounts_base_dir: ~/.yolo-runner/pr-mounts",
 		"`reviewer`: required reviewer identity used by PR discovery. Omitted or blank discovers no eligible PRs.",
+		"`objects_base_dir`: base directory for per-PR arc object stores. Omit it to use `~/.yolo-runner/pr-objects`.",
+		"`mounts_base_dir`: base directory for per-PR arc mount checkouts. Omit it to use `~/.yolo-runner/pr-mounts`.",
 		"./bin/yolo-agent config validate --repo .",
 		"./bin/yolo-agent source arcpr --repo . --profile arc-review --queue .yolo-runner/queue.db --once",
 		"--events \"runner-logs/source-arcpr-$(date +%Y%m%d_%H%M%S).events.jsonl\" --stream | ./bin/yolo-tui --events-stdin",
@@ -38,6 +41,20 @@ func TestArcReviewWatchRunbookDocumentsOperatorWorkflow(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(runbook, needle) {
 			t.Fatalf("arc review watch runbook missing %q", needle)
+		}
+	}
+
+	removed := []string{
+		"lock_path:",
+		"workspaces:",
+		"branches:",
+		"`lock_path`",
+		"`workspaces`",
+		"`branches`",
+	}
+	for _, needle := range removed {
+		if strings.Contains(runbook, needle) {
+			t.Fatalf("arc review watch runbook still documents removed field %q", needle)
 		}
 	}
 }
