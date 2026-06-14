@@ -12,6 +12,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
+	trackerstartrek "github.com/egv/yolo-runner/v2/internal/startrek"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -73,6 +74,9 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 		},
 		Checks: []arcreview.PRCheck{
 			{Name: "ci", Status: "passed"},
+		},
+		ChangedFiles: []arcreview.PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
 		},
 	}}
 	model := &runnerPRReviewFakeModelHelper{payload: []byte(`{
@@ -176,6 +180,149 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	})
 }
 
+func TestRunnerPRReviewHandlerPassesProjectContextIntoPrompt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	installRunnerPRReviewFakeArc(t)
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:     "42",
+		Revision: "r7",
+	})
+	if err != nil {
+		t.Fatalf("marshal PR review payload: %v", err)
+	}
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcreview",
+		SourceRef:      "42:r7",
+		IdempotencyKey: "arcreview/42/r7",
+		Preset:         "arc",
+		Payload:        payload,
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	claimed, err := store.Claim("runner-prreview", []string{"arc"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("Claim() returned nil")
+	}
+
+	state := arcreview.PRRuntimeState{
+		PRID:     "42",
+		Revision: "r7",
+		Details: arcreview.PRDetails{
+			ID:       "42",
+			Status:   "open",
+			Revision: "r7",
+			Issues: []arcreview.PRIssue{
+				{ID: "TAXI-42", Status: "open", Message: "Keep AI minion retries deterministic"},
+			},
+		},
+		OpenIssues: []arcreview.PRIssue{
+			{ID: "TAXI-42", Status: "open", Message: "Keep AI minion retries deterministic"},
+		},
+		ChangedFiles: []arcreview.PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
+		},
+		Checks: []arcreview.PRCheck{
+			{Name: "ci", Status: "passed"},
+		},
+	}
+	fetcher := &runnerPRReviewFakeFetcher{state: state}
+	runner := &fakeArcPRReviewModelRunner{payload: []byte(`{
+		"summary": "Revision is ready after context-aware review.",
+		"inline_comments": [],
+		"replies": [],
+		"blockers": [],
+		"ship": {"verdict": "ship", "reason": "No blockers remain."}
+	}`)}
+	tracker := &runnerPRReviewFakeLinkedTicketTracker{
+		issues: map[string]trackerstartrek.Issue{
+			"TAXI-42": {
+				ID:     "TAXI-42",
+				Title:  "Keep AI minion retries deterministic",
+				Status: "open",
+				Description: strings.Join([]string{
+					"Intent:",
+					"Reviewers need retry behavior checked against the ticket.",
+					"",
+					"Acceptance Criteria:",
+					"- retries preserve ordering",
+					"- tests cover retry ordering",
+				}, "\n"),
+			},
+		},
+	}
+
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPRReview: newRunnerPRReviewKindHandler(func(_ context.Context, _ workitem.Item, workspace envpreset.Workspace, _ workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+				return runnerPRReviewRuntime{
+					StateFetcher: fetcher,
+					ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
+						return runArcPRReviewModel(ctx, runner, input)
+					}),
+					LinkedTicketTracker: tracker,
+					Model:               "gpt-prreview-test",
+					RepoRoot:            workspace.Path,
+					Timeout:             4 * time.Second,
+				}, nil
+			}),
+		},
+		environmentPresets: runnerDaemonTestPresets("arc"),
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
+			return envpreset.Workspace{Path: filepath.Join(t.TempDir(), "unused-shared-arcadia")}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-prreview",
+			heartbeatInterval: time.Hour,
+		},
+	}
+	if err := daemon.runClaimedItem(context.Background(), *claimed); err != nil {
+		t.Fatalf("runClaimedItem() error = %v", err)
+	}
+
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner requests = %d, want 1", len(runner.requests))
+	}
+	prompt := runner.requests[0].Prompt
+	for _, want := range []string{
+		"Project context:",
+		"Root: taxi/backend-cpp/services/ai_minion",
+		"Build/test command: ya make -t taxi/backend-cpp/services/ai_minion",
+		"Conventions excerpt:",
+		"AGENTS.md:",
+		"Use service-specific AI minion review conventions.",
+		"Linked ticket acceptance criteria:",
+		"TAXI-42 - Keep AI minion retries deterministic:",
+		"- retries preserve ordering",
+		"- tests cover retry ordering",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+	if !reflect.DeepEqual(tracker.calls, []string{"TAXI-42"}) {
+		t.Fatalf("linked ticket tracker calls = %#v, want TAXI-42", tracker.calls)
+	}
+}
+
 func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -222,6 +369,9 @@ func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 		PRID:     "42",
 		Revision: "r7",
 		Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7"},
+		ChangedFiles: []arcreview.PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
+		},
 	}}
 	model := &runnerPRReviewFakeModelHelper{payload: []byte(`{
 		"summary": "Revision reviewed.",
@@ -303,6 +453,16 @@ func (m *runnerPRReviewFakeModelHelper) RunArcPRReviewModel(_ context.Context, i
 	return m.payload, nil
 }
 
+type runnerPRReviewFakeLinkedTicketTracker struct {
+	issues map[string]trackerstartrek.Issue
+	calls  []string
+}
+
+func (f *runnerPRReviewFakeLinkedTicketTracker) GetIssue(_ context.Context, issueID string) (trackerstartrek.Issue, error) {
+	f.calls = append(f.calls, issueID)
+	return f.issues[issueID], nil
+}
+
 type runnerPRReviewArcCall struct {
 	cwd  string
 	args string
@@ -326,6 +486,11 @@ done
 printf '\n' >> "$ARC_CALLS"
 if [ "$1" = "mount" ] && [ "$2" = "-l" ]; then
 	printf '[]\n'
+fi
+if [ "$1" = "pr" ] && [ "$2" = "checkout" ]; then
+	mkdir -p taxi/backend-cpp/services/ai_minion
+	printf '# fixture ya.make\n' > taxi/backend-cpp/services/ai_minion/ya.make
+	printf 'Use service-specific AI minion review conventions.\n' > taxi/backend-cpp/services/ai_minion/AGENTS.md
 fi
 	`
 	if err := os.WriteFile(filepath.Join(fakeBin, "arc"), []byte(script), 0o755); err != nil {

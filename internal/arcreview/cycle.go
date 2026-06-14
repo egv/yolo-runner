@@ -20,12 +20,13 @@ type PRReviewCycleConfig struct {
 	Metadata   map[string]string
 	AllowShip  bool
 
-	StateFetcher  PRReviewCycleStateFetcher
-	RevisionStore PRReviewCycleRevisionStore
-	ModelHelper   PRReviewCycleModelHelper
-	ReviewApplier PRReviewCycleReviewApplier
-	ReplyApplier  PRReviewCycleReplyApplier
-	ShipGate      PRReviewCycleShipGate
+	StateFetcher          PRReviewCycleStateFetcher
+	ProjectContextFetcher PRReviewCycleProjectContextFetcher
+	RevisionStore         PRReviewCycleRevisionStore
+	ModelHelper           PRReviewCycleModelHelper
+	ReviewApplier         PRReviewCycleReviewApplier
+	ReplyApplier          PRReviewCycleReplyApplier
+	ShipGate              PRReviewCycleShipGate
 }
 
 type PRReviewCycleStateFetcher interface {
@@ -36,14 +37,19 @@ type PRReviewCycleRevisionStore interface {
 	GetReviewedRevision(ctx context.Context, prID string) (string, error)
 }
 
+type PRReviewCycleProjectContextFetcher interface {
+	FetchProjectContext(ctx context.Context, workspace string, state PRRuntimeState) (ProjectContext, error)
+}
+
 type PRReviewModelInput struct {
-	State      PRRuntimeState
-	Model      string
-	RepoRoot   string
-	Timeout    time.Duration
-	MaxRetries int
-	Metadata   map[string]string
-	OnProgress func(contracts.RunnerProgress)
+	State          PRRuntimeState
+	ProjectContext ProjectContext
+	Model          string
+	RepoRoot       string
+	Timeout        time.Duration
+	MaxRetries     int
+	Metadata       map[string]string
+	OnProgress     func(contracts.RunnerProgress)
 }
 
 type PRReviewCycleModelHelper interface {
@@ -66,6 +72,12 @@ type PRReviewCycleModelHelperFunc func(context.Context, PRReviewModelInput) ([]b
 
 func (f PRReviewCycleModelHelperFunc) RunArcPRReviewModel(ctx context.Context, input PRReviewModelInput) ([]byte, error) {
 	return f(ctx, input)
+}
+
+type PRReviewCycleProjectContextFetcherFunc func(context.Context, string, PRRuntimeState) (ProjectContext, error)
+
+func (f PRReviewCycleProjectContextFetcherFunc) FetchProjectContext(ctx context.Context, workspace string, state PRRuntimeState) (ProjectContext, error) {
+	return f(ctx, workspace, state)
 }
 
 func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAction, error) {
@@ -99,7 +111,11 @@ func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAct
 		if cfg.ReviewApplier == nil {
 			return action, errors.New("arc PR review applier is required")
 		}
-		payload, err := cfg.ModelHelper.RunArcPRReviewModel(ctx, prReviewCycleModelInput(cfg, state))
+		projectContext, err := prReviewCycleProjectContext(ctx, cfg, state)
+		if err != nil {
+			return action, err
+		}
+		payload, err := cfg.ModelHelper.RunArcPRReviewModel(ctx, prReviewCycleModelInput(cfg, state, projectContext))
 		if err != nil {
 			return action, fmt.Errorf("run arc PR review model: %w", err)
 		}
@@ -113,7 +129,11 @@ func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAct
 		if cfg.ReplyApplier == nil {
 			return action, errors.New("arc PR reply applier is required")
 		}
-		payload, err := cfg.ModelHelper.RunArcPRReviewModel(ctx, prReviewCycleModelInput(cfg, state))
+		projectContext, err := prReviewCycleProjectContext(ctx, cfg, state)
+		if err != nil {
+			return action, err
+		}
+		payload, err := cfg.ModelHelper.RunArcPRReviewModel(ctx, prReviewCycleModelInput(cfg, state, projectContext))
 		if err != nil {
 			return action, fmt.Errorf("run arc PR reply model: %w", err)
 		}
@@ -136,14 +156,26 @@ func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAct
 	return action, nil
 }
 
-func prReviewCycleModelInput(cfg PRReviewCycleConfig, state PRRuntimeState) PRReviewModelInput {
+func prReviewCycleProjectContext(ctx context.Context, cfg PRReviewCycleConfig, state PRRuntimeState) (ProjectContext, error) {
+	if cfg.ProjectContextFetcher == nil {
+		return ProjectContext{}, nil
+	}
+	projectContext, err := cfg.ProjectContextFetcher.FetchProjectContext(ctx, cfg.Workspace, state)
+	if err != nil {
+		return ProjectContext{}, fmt.Errorf("build arc PR review project context: %w", err)
+	}
+	return projectContext, nil
+}
+
+func prReviewCycleModelInput(cfg PRReviewCycleConfig, state PRRuntimeState, projectContext ProjectContext) PRReviewModelInput {
 	return PRReviewModelInput{
-		State:      state,
-		Model:      cfg.Model,
-		RepoRoot:   cfg.RepoRoot,
-		Timeout:    cfg.Timeout,
-		MaxRetries: cfg.MaxRetries,
-		Metadata:   clonePRReviewModelMetadata(cfg.Metadata),
+		State:          state,
+		ProjectContext: projectContext,
+		Model:          cfg.Model,
+		RepoRoot:       cfg.RepoRoot,
+		Timeout:        cfg.Timeout,
+		MaxRetries:     cfg.MaxRetries,
+		Metadata:       clonePRReviewModelMetadata(cfg.Metadata),
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,18 +13,25 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
+	"github.com/egv/yolo-runner/v2/internal/startrek"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
+const (
+	runnerPRReviewDefaultStartrekEndpoint = "https://api.tracker.yandex.net/v3"
+	runnerPRReviewStartrekTokenEnv        = "STARTREK_TOKEN"
+)
+
 type runnerPRReviewRuntime struct {
-	StateFetcher arcPRReviewCycleStateFetcher
-	ModelHelper  arcPRReviewCycleModelHelper
-	Model        string
-	RepoRoot     string
-	Timeout      time.Duration
-	MaxRetries   int
-	Metadata     map[string]string
+	StateFetcher        arcPRReviewCycleStateFetcher
+	ModelHelper         arcPRReviewCycleModelHelper
+	LinkedTicketTracker arcreview.LinkedTicketTracker
+	Model               string
+	RepoRoot            string
+	Timeout             time.Duration
+	MaxRetries          int
+	Metadata            map[string]string
 }
 
 type runnerPRReviewRuntimeResolver func(context.Context, workitem.Item, envpreset.Workspace, workitem.PRReviewPayload) (runnerPRReviewRuntime, error)
@@ -83,19 +91,24 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 	}
 	repoRoot := prMountPath
 
+	projectContextFetcher := arcreview.ProjectContextFetcher{
+		LinkedTicketTracker: runtime.LinkedTicketTracker,
+	}
+
 	capture := &runnerPRReviewResultCapture{}
 	_, err = runArcPRReviewCycle(ctx, arcPRReviewCycleConfig{
-		PRID:          strings.TrimSpace(payload.PRID),
-		Workspace:     runnerPRReviewWorkspacePath(reviewWorkspace),
-		RepoRoot:      repoRoot,
-		Model:         strings.TrimSpace(runtime.Model),
-		Timeout:       runtime.Timeout,
-		MaxRetries:    runtime.MaxRetries,
-		Metadata:      runnerPRReviewMetadata(item, runtime.Metadata),
-		AllowShip:     payload.Ship,
-		StateFetcher:  runtime.StateFetcher,
-		RevisionStore: runnerPRReviewPayloadRevisionStore{payload: payload},
-		ModelHelper:   runtime.ModelHelper,
+		PRID:                  strings.TrimSpace(payload.PRID),
+		Workspace:             runnerPRReviewWorkspacePath(reviewWorkspace),
+		RepoRoot:              repoRoot,
+		Model:                 strings.TrimSpace(runtime.Model),
+		Timeout:               runtime.Timeout,
+		MaxRetries:            runtime.MaxRetries,
+		Metadata:              runnerPRReviewMetadata(item, runtime.Metadata),
+		AllowShip:             payload.Ship,
+		StateFetcher:          runtime.StateFetcher,
+		ProjectContextFetcher: projectContextFetcher,
+		RevisionStore:         runnerPRReviewPayloadRevisionStore{payload: payload},
+		ModelHelper:           runtime.ModelHelper,
 		ReviewApplier: runnerPRReviewCapturingReviewApplier{
 			inner: arcreview.ReviewApplier{
 				Client: runnerPRReviewNoopReviewClient{},
@@ -156,13 +169,29 @@ func defaultRunnerPRReviewRuntimeResolver(_ context.Context, item workitem.Item,
 		ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
 			return runArcPRReviewModel(ctx, runner, input)
 		}),
-		Model:    resolvedAgent.Model,
-		RepoRoot: repoRoot,
-		Timeout:  resolvedAgent.RunnerTimeout,
+		LinkedTicketTracker: defaultRunnerPRReviewLinkedTicketTracker(),
+		Model:               resolvedAgent.Model,
+		RepoRoot:            repoRoot,
+		Timeout:             resolvedAgent.RunnerTimeout,
 		Metadata: map[string]string{
 			"backend": strings.TrimSpace(resolvedAgent.Backend),
 		},
 	}, nil
+}
+
+func defaultRunnerPRReviewLinkedTicketTracker() arcreview.LinkedTicketTracker {
+	token := strings.TrimSpace(os.Getenv(runnerPRReviewStartrekTokenEnv))
+	if token == "" {
+		return nil
+	}
+	client, err := startrek.NewClient(startrek.Config{
+		Endpoint: runnerPRReviewDefaultStartrekEndpoint,
+		Token:    token,
+	})
+	if err != nil {
+		return nil
+	}
+	return client
 }
 
 func runnerPRReviewWorkspacePath(workspace envpreset.Workspace) string {
