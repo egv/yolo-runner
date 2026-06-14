@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,7 @@ func newRunnerPRReviewKindHandler(resolve runnerPRReviewRuntimeResolver) runnerK
 	}
 }
 
-func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpreset.Workspace, resolve runnerPRReviewRuntimeResolver) (workqueue.Result, error) {
+func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpreset.Workspace, resolve runnerPRReviewRuntimeResolver) (result workqueue.Result, err error) {
 	if item.Kind != workitem.KindPRReview {
 		return workqueue.Result{}, fmt.Errorf("PR review handler received kind %q", item.Kind)
 	}
@@ -49,19 +50,43 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		return workqueue.Result{}, fmt.Errorf("decode PR review payload for item %q: %w", item.ID, err)
 	}
 
-	runtime, err := resolve(ctx, item, workspace, payload)
+	checkout, err := arcanum.PreparePRCheckout(payload.PRID)
+	if err != nil {
+		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q: %w", item.ID, strings.TrimSpace(payload.PRID), err)
+	}
+	if checkout == nil {
+		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q returned empty mount path", item.ID, strings.TrimSpace(payload.PRID))
+	}
+	defer func() {
+		if checkout.Cleanup == nil {
+			return
+		}
+		if cleanupErr := checkout.Cleanup(); cleanupErr != nil {
+			if err != nil {
+				err = errors.Join(err, cleanupErr)
+				return
+			}
+			err = cleanupErr
+		}
+	}()
+	prMountPath := strings.TrimSpace(checkout.MountPath)
+	if prMountPath == "" {
+		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q returned empty mount path", item.ID, strings.TrimSpace(payload.PRID))
+	}
+
+	reviewWorkspace := workspace
+	reviewWorkspace.Path = prMountPath
+
+	runtime, err := resolve(ctx, item, reviewWorkspace, payload)
 	if err != nil {
 		return workqueue.Result{}, err
 	}
-	repoRoot := strings.TrimSpace(runtime.RepoRoot)
-	if repoRoot == "" {
-		repoRoot = strings.TrimSpace(workspace.Path)
-	}
+	repoRoot := prMountPath
 
 	capture := &runnerPRReviewResultCapture{}
 	_, err = runArcPRReviewCycle(ctx, arcPRReviewCycleConfig{
 		PRID:          strings.TrimSpace(payload.PRID),
-		Workspace:     runnerPRReviewWorkspacePath(workspace),
+		Workspace:     runnerPRReviewWorkspacePath(reviewWorkspace),
 		RepoRoot:      repoRoot,
 		Model:         strings.TrimSpace(runtime.Model),
 		Timeout:       runtime.Timeout,
