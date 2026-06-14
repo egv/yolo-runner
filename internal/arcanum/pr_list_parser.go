@@ -77,13 +77,22 @@ func parsePRSummary(raw json.RawMessage) (PRSummary, error) {
 		return PRSummary{}, err
 	}
 
+	summary := firstScalar(item, "summary", "title", "name")
+	fromBranch := firstScalar(item, "from_branch", "fromBranch", "source_branch", "sourceBranch")
+	toBranch := firstScalar(item, "to_branch", "toBranch", "target_branch", "targetBranch", "base_branch", "baseBranch")
+
 	return PRSummary{
-		ID:        firstScalar(item, "id", "number", "pr_id", "pull_request_id"),
-		Title:     firstScalar(item, "title", "summary", "name"),
-		Author:    firstPerson(item, "author", "created_by", "createdBy"),
-		Reviewers: firstPeopleList(item, "reviewers", "reviewer_logins"),
-		Branch:    firstScalar(item, "target_branch", "targetBranch", "to_branch", "toBranch", "base_branch", "baseBranch", "branch"),
-		Status:    firstScalar(item, "status", "state"),
+		ID:         firstScalar(item, "id", "number", "pr_id", "pull_request_id"),
+		Title:      summary,
+		Summary:    summary,
+		Author:     firstPerson(item, "author", "created_by", "createdBy"),
+		Reviewers:  firstPeopleList(item, "reviewers", "reviewer_logins"),
+		Branch:     firstNonEmpty(toBranch, firstScalar(item, "branch"), fromBranch),
+		FromBranch: fromBranch,
+		FromID:     firstScalar(item, "from_id", "fromId", "head_id", "headId", "head_commit", "headCommit", "revision", "current_revision", "currentRevision"),
+		ToBranch:   toBranch,
+		Status:     firstScalar(item, "status", "state"),
+		Issues:     firstIssueList(item, "issues", "linked_issues", "linkedIssues"),
 	}, nil
 }
 
@@ -117,6 +126,16 @@ func firstPeopleList(item map[string]json.RawMessage, keys ...string) []string {
 	return nil
 }
 
+func firstIssueList(item map[string]json.RawMessage, keys ...string) []string {
+	for _, key := range keys {
+		values := issueListValue(item[key])
+		if len(values) > 0 {
+			return values
+		}
+	}
+	return nil
+}
+
 func peopleListValue(raw json.RawMessage) []string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
@@ -141,6 +160,30 @@ func peopleListValue(raw json.RawMessage) []string {
 	return values
 }
 
+func issueListValue(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+
+	var stringsList []string
+	if err := json.Unmarshal(raw, &stringsList); err == nil {
+		return compactStrings(stringsList)
+	}
+
+	var rawList []json.RawMessage
+	if err := json.Unmarshal(raw, &rawList); err != nil {
+		return nil
+	}
+
+	values := make([]string, 0, len(rawList))
+	for _, item := range rawList {
+		if value := issueValue(item); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 func personValue(raw json.RawMessage) string {
 	if value := scalarValue(raw); value != "" {
 		return value
@@ -151,6 +194,18 @@ func personValue(raw json.RawMessage) string {
 		return ""
 	}
 	return firstScalar(object, "login", "username", "uid", "id", "name", "display")
+}
+
+func issueValue(raw json.RawMessage) string {
+	if value := scalarValue(raw); value != "" {
+		return value
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return ""
+	}
+	return firstScalar(object, "id", "key", "issue", "issue_id", "issueId")
 }
 
 func scalarValue(raw json.RawMessage) string {
