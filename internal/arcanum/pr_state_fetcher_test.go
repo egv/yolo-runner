@@ -15,6 +15,7 @@ func TestFetchPRRuntimeStateRunsArcCommandsAndNormalizesState(t *testing.T) {
 	t.Cleanup(func() {
 		arcExec = oldExec
 	})
+	t.Setenv("ARC_TOKEN", "test-token")
 
 	detailsFixture := []byte(`{
   "id":13843457,
@@ -80,7 +81,7 @@ index 0000000..1111111
 
 	fixtures := map[string][]byte{
 		"arc pr status --json 13843457": detailsFixture,
-		"curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments": commentsFixture,
+		"curl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments": commentsFixture,
 		"arc pr changes 13843457": diffFixture,
 	}
 
@@ -120,7 +121,7 @@ index 0000000..1111111
 	}
 	wantArgs := [][]string{
 		{"pr", "status", "--json", "13843457"},
-		{"-fsSL", "https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments"},
+		{"-fsSL", "-H", "Authorization: OAuth test-token", "https://a.yandex-team.ru/api/v1/public/review-requests/13843457/comments"},
 		{"pr", "changes", "13843457"},
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {

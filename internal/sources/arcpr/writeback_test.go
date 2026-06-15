@@ -211,7 +211,7 @@ esac
 set -eu
 printf '%s|curl %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
   printf '%s\n' '{"data":[]}'
   ;;
 *)
@@ -222,6 +222,7 @@ esac
 `)
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
 	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("ARC_TOKEN", "test-token")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := &Source{
@@ -258,7 +259,7 @@ esac
 	gotCalls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
 	wantCalls := []string{
 		workspace + "|arc pr status --json 42",
-		workspace + "|curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
+		workspace + "|curl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
 		workspace + "|arc pr changes 42",
 		workspace + "|arc pr merge --now 42",
 	}
@@ -316,7 +317,7 @@ esac
 set -eu
 printf '%s|curl %s\n' "$PWD" "$*" >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
   if [ "$PWD" != "$ARC_SOURCE_TEST_SECOND_WORKSPACE" ]; then
     printf 'comments used workspace %s, want %s\n' "$PWD" "$ARC_SOURCE_TEST_SECOND_WORKSPACE" >&2
     exit 7
@@ -331,6 +332,7 @@ esac
 `)
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
 	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("ARC_TOKEN", "test-token")
 	t.Setenv("ARC_SOURCE_TEST_FIRST_WORKSPACE", firstWorkspace)
 	t.Setenv("ARC_SOURCE_TEST_SECOND_WORKSPACE", secondWorkspace)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -369,7 +371,7 @@ esac
 	wantCalls := []string{
 		firstWorkspace + "|arc pr status --json 42",
 		secondWorkspace + "|arc pr status --json 42",
-		secondWorkspace + "|curl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
+		secondWorkspace + "|curl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/42/comments",
 		secondWorkspace + "|arc pr changes 42",
 		secondWorkspace + "|arc pr merge --now 42",
 	}

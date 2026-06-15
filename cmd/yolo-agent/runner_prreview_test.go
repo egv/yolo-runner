@@ -142,6 +142,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 		t.Fatalf("unmarshal PR review result payload %s: %v", got.Result.Payload, err)
 	}
 	want := workitem.PRReviewResult{
+		Summary: "Revision is ready after review.",
 		Replies: []workitem.PRReviewReply{
 			{CommentID: "comment-1", Body: "The nil path is covered by the guard above."},
 		},
@@ -152,7 +153,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	if !reflect.DeepEqual(result, want) {
 		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
 	}
-	for _, forbidden := range []string{"status", "kind", "item_id", "summary", "inline_comments"} {
+	for _, forbidden := range []string{"status", "kind", "item_id"} {
 		if strings.Contains(string(got.Result.Payload), forbidden) {
 			t.Fatalf("PR review result payload should not include %q: %s", forbidden, got.Result.Payload)
 		}

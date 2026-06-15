@@ -12,16 +12,28 @@ type PRReviewPayload struct {
 
 // PRReviewResult is the typed result payload for a pr-review work item.
 type PRReviewResult struct {
-	Replies          []PRReviewReply `json:"replies,omitempty"`
-	ReviewVerdict    string          `json:"review_verdict"`
-	ShipReady        bool            `json:"ship_ready"`
-	RevisionReviewed string          `json:"revision_reviewed,omitempty"`
+	Summary          string                  `json:"summary,omitempty"`
+	InlineComments   []PRReviewInlineComment `json:"inline_comments,omitempty"`
+	Replies          []PRReviewReply         `json:"replies,omitempty"`
+	ReviewVerdict    string                  `json:"review_verdict"`
+	ShipReady        bool                    `json:"ship_ready"`
+	RevisionReviewed string                  `json:"revision_reviewed,omitempty"`
 }
 
 // PRReviewReply mirrors arcreview.ReviewReply in the queue result schema.
 type PRReviewReply struct {
 	CommentID string `json:"comment_id"`
 	Body      string `json:"body"`
+}
+
+// PRReviewInlineComment mirrors arcreview.ReviewInlineComment in the queue
+// result schema, recording the review's per-line findings for audit and
+// dry-run inspection.
+type PRReviewInlineComment struct {
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Body     string `json:"body"`
+	Severity string `json:"severity,omitempty"`
 }
 
 // FinalizePayload is the typed payload for a finalize work item.

@@ -74,7 +74,17 @@ func FetchPRComments(ctx context.Context, prID string) ([]arcreview.PRComment, e
 }
 
 func fetchArcanumPRComments(ctx context.Context, workspace string, prID string) ([]byte, error) {
-	return runWorkspaceCommand(ctx, workspace, "curl", "-fsSL", arcanumPRCommentsURL(prID))
+	// The public review-requests API requires OAuth; a bare curl gets 401.
+	token, err := DefaultAPITokenSource(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load Arcanum API token for comments fetch: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("Arcanum API token is required to fetch PR comments")
+	}
+	return runWorkspaceCommand(ctx, workspace, "curl", "-fsSL",
+		"-H", "Authorization: OAuth "+token, arcanumPRCommentsURL(prID))
 }
 
 func arcanumPRCommentsURL(prID string) string {

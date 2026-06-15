@@ -97,7 +97,7 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 		t.Fatalf("expected legacy run function not to be called for source arcpr")
 	}
 	if listCalls != 1 {
-		t.Fatalf("incoming PR list calls after submit = %d, want 1", listCalls)
+		t.Fatalf("review PR list calls after submit = %d, want 1", listCalls)
 	}
 	if len(fetchedPRs) != 0 {
 		t.Fatalf("submit poll fetched PR runtime state, want none: %#v", fetchedPRs)
@@ -155,7 +155,7 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 		t.Fatalf("expected source arcpr consume exit code 0, got %d", code)
 	}
 	if listCalls != 2 {
-		t.Fatalf("incoming PR list calls after consume = %d, want 2", listCalls)
+		t.Fatalf("review PR list calls after consume = %d, want 2", listCalls)
 	}
 	if want := []string{":777", ":777"}; !reflect.DeepEqual(fetchedPRs, want) {
 		t.Fatalf("fetched PRs = %#v, want %#v", fetchedPRs, want)
@@ -210,6 +210,7 @@ func TestSourceArcPROnceUsesSimplifiedConfigIncomingDiscoveryAndMountWriteback(t
 	ctx := context.Background()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("ARC_TOKEN", "test-token")
 	repoRoot := t.TempDir()
 	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
 	mountsBaseDir := filepath.Join(repoRoot, "configured-pr-mounts")
@@ -258,6 +259,10 @@ arc_review_watch:
 
 	binDir := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	arcListWorkspace := filepath.Join(t.TempDir(), "arcadia")
+	if err := os.MkdirAll(arcListWorkspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(arc list workspace) error = %v", err)
+	}
 	writeSourceArcPRFakeExecutable(t, binDir, "arc", `#!/bin/sh
 set -eu
 printf '%s	arc' "$PWD" >> "$ARC_SOURCE_TEST_CALLS"
@@ -266,8 +271,14 @@ for arg in "$@"; do
 done
 printf '\n' >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"pr list --json -i --status open")
+"mount --list --json")
+  printf '%s\n' '[{"status":"mounted","mount":"`+arcListWorkspace+`"}]'
+  ;;
+"pr list --json --reviewer alice --status open")
   printf '%s\n' '[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]'
+  ;;
+"pr list --json --author alice --status open")
+  printf '%s\n' '[]'
   ;;
 "mount -m "*)
   mkdir -p "$3"
@@ -298,7 +309,7 @@ for arg in "$@"; do
 done
 printf '\n' >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/777/comments")
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments")
   printf '%s\n' '{"data":[{"id":"c1","content":"please address","issue_status":"open"}]}'
   ;;
 *)
@@ -380,7 +391,7 @@ esac
 		"arc mount -m "+mountPath+" -S "+filepath.Join(home, ".yolo-runner", "pr-objects"),
 		mountPath+"\tarc pr checkout 777 --detached --force",
 		mountPath+"\tarc pr status --json 777",
-		mountPath+"\tcurl -fsSL https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
+		mountPath+"\tcurl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 		mountPath+"\tarc pr changes 777",
 		"arc unmount --forget "+mountPath,
 	)

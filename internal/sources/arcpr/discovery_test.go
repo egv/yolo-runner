@@ -78,7 +78,7 @@ func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.
 	}
 
 	if listCalls != 2 {
-		t.Fatalf("incoming PR list calls = %d, want 2", listCalls)
+		t.Fatalf("review PR list calls = %d, want 2", listCalls)
 	}
 
 	if len(first) != 2 {
@@ -184,15 +184,25 @@ func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePi
 	}
 
 	binDir := t.TempDir()
+	arcListWorkspace := filepath.Join(t.TempDir(), "arcadia")
+	if err := os.MkdirAll(arcListWorkspace, 0o755); err != nil {
+		t.Fatalf("MkdirAll(arc list workspace) error = %v", err)
+	}
 	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
 set -eu
 printf 'arc %s\n' "$*" >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"pr list --json -i --status open")
+"mount --list --json")
+  printf '%s\n' '[{"status":"mounted","mount":"`+arcListWorkspace+`"}]'
+  ;;
+"pr list --json --reviewer alice --status open")
   printf '%s\n' \
     '{"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment"}' \
     '{"id":"102","from_id":"rev-2","status":"open","summary":"new head"}' \
     '{"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head"}'
+  ;;
+"pr list --json --author alice --status open")
+  printf '%s\n' '{"id":"103","from_id":"rev-3","status":"open","summary":"authored head"}'
   ;;
 *)
   printf 'unexpected arc args: %s\n' "$*" >&2
@@ -204,10 +214,13 @@ esac
 set -eu
 printf 'curl %s\n' "$*" >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/101/comments")
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/101/comments")
   printf '%s\n' '{"data":[{"id":"c-new","content":"please answer","issue_status":"open"},{"id":"c-old","content":"already answered","issue_status":"open"},{"id":"c-resolved","content":"done","issue_status":"resolved"}]}'
   ;;
-"-fsSL https://a.yandex-team.ru/api/v1/public/review-requests/102/comments")
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/102/comments")
+  printf '%s\n' '{"data":[]}'
+  ;;
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/103/comments")
   printf '%s\n' '{"data":[]}'
   ;;
 *)
@@ -218,11 +231,13 @@ esac
 `)
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
 	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("ARC_TOKEN", "test-token")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := &Source{
 		SourceName: "arcpr-adapta",
 		Preset:     "adapta",
+		Reviewer:   "alice",
 		State:      state,
 	}
 
@@ -237,11 +252,12 @@ esac
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("Poll() was not stable across polls\nfirst:  %#v\nsecond: %#v", first, second)
 	}
-	if len(first) != 2 {
-		t.Fatalf("Poll() returned %d submissions, want 2: %#v", len(first), first)
+	if len(first) != 3 {
+		t.Fatalf("Poll() returned %d submissions, want 3: %#v", len(first), first)
 	}
 	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", []string{"c-new"}, false)
 	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "102", "rev-2", nil, false)
+	assertPRReviewSubmission(t, first[2], "arcpr-adapta", "adapta", "103", "rev-3", nil, false)
 
 	for _, submission := range first {
 		payload, err := workitem.DecodePRReviewPayload(submission.Payload)

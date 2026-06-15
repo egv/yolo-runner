@@ -63,3 +63,25 @@ func TestParsePRListJSONNormalizesSummaries(t *testing.T) {
 		t.Fatalf("unexpected PR summaries:\n got %#v\nwant %#v", got, want)
 	}
 }
+
+func TestParsePRListJSONAcceptsSingleObject(t *testing.T) {
+	got, err := ParsePRListJSON([]byte(`{"id":"42","summary":"one PR","author":"alice","reviewers":["bob"],"from_id":"rev-42","status":"open"}`))
+	if err != nil {
+		t.Fatalf("ParsePRListJSON(single object) error = %v", err)
+	}
+
+	want := []PRSummary{
+		{
+			ID:        "42",
+			Title:     "one PR",
+			Summary:   "one PR",
+			Author:    "alice",
+			Reviewers: []string{"bob"},
+			FromID:    "rev-42",
+			Status:    "open",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParsePRListJSON(single object) = %#v, want %#v", got, want)
+	}
+}

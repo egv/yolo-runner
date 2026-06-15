@@ -1,4 +1,8 @@
 default_profile: beads
+arc_review_watch:
+  reviewer: genaevstratov
+  allow_ship: false
+  poll_interval: 2m
 profiles:
   tk:
     tracker:

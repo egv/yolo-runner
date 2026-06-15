@@ -220,7 +220,7 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 
 type prReviewE2EIncomingLister struct{}
 
-func (prReviewE2EIncomingLister) ListIncomingReviewPRs(context.Context) ([]arcanum.PRSummary, error) {
+func (prReviewE2EIncomingLister) ListReviewPRs(context.Context) ([]arcanum.PRSummary, error) {
 	return []arcanum.PRSummary{
 		{ID: "777", FromID: "rev-777", Status: "open"},
 	}, nil

@@ -16,7 +16,11 @@ import (
 )
 
 const (
-	defaultAPIBaseURL       = "https://a.yandex-team.ru/api"
+	// DefaultAPIBaseURL is the production Arcanum API endpoint. It is NOT a
+	// default applied automatically: NewAPIClient requires the base URL to be
+	// passed explicitly so that tests and local runs can never silently mutate
+	// production. Only the real daemon wiring should reference this constant.
+	DefaultAPIBaseURL       = "https://a.yandex-team.ru/api"
 	arcTokenEnv             = "ARC_TOKEN"
 	maxAPIErrorBodyExcerpt  = 512
 	defaultAPIClientTimeout = 15 * time.Second
@@ -173,7 +177,10 @@ func (c *APIClient) doJSON(ctx context.Context, method string, path string, requ
 func normalizeAPIBaseURL(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		trimmed = defaultAPIBaseURL
+		// No implicit production fallback: an unconfigured base URL is an error
+		// rather than a silent prod target. This is the guardrail that stops
+		// tests/dev runs from posting to real Arcanum reviews.
+		return "", errors.New("Arcanum API base URL is required (no implicit production default)")
 	}
 
 	parsed, err := url.Parse(trimmed)

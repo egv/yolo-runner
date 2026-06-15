@@ -243,6 +243,8 @@ type runnerPRReviewResultCapture struct {
 }
 
 func (c *runnerPRReviewResultCapture) captureReview(state arcreview.PRRuntimeState, result arcreview.ReviewResult) {
+	c.result.Summary = strings.TrimSpace(result.Summary)
+	c.result.InlineComments = runnerPRReviewInlineComments(result.InlineComments)
 	c.result.Replies = runnerPRReviewReplies(result.Replies)
 	c.result.ReviewVerdict = strings.TrimSpace(result.Ship.Verdict)
 	c.result.ShipReady = runnerPRReviewReviewShipReady(result)
@@ -343,6 +345,22 @@ func runnerPRReviewReplies(replies []arcreview.ReviewReply) []workitem.PRReviewR
 		out = append(out, workitem.PRReviewReply{
 			CommentID: strings.TrimSpace(reply.CommentID),
 			Body:      strings.TrimSpace(reply.Body),
+		})
+	}
+	return out
+}
+
+func runnerPRReviewInlineComments(comments []arcreview.ReviewInlineComment) []workitem.PRReviewInlineComment {
+	if comments == nil {
+		return nil
+	}
+	out := make([]workitem.PRReviewInlineComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, workitem.PRReviewInlineComment{
+			Path:     strings.TrimSpace(comment.Path),
+			Line:     comment.Line,
+			Body:     strings.TrimSpace(comment.Body),
+			Severity: strings.TrimSpace(comment.Severity),
 		})
 	}
 	return out

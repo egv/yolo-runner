@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -43,7 +45,13 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 			}
 			outputMu.Lock()
 			defer outputMu.Unlock()
-			if output.Len() > 0 {
+			// Streamed model deltas are whitespace-significant fragments that
+			// must be concatenated verbatim — inserting a newline between them
+			// corrupts JSON (a string value split across two deltas would gain
+			// a raw '\n'). Only line-oriented output gets a newline separator.
+			preserveWhitespace := progress.Metadata != nil &&
+				strings.EqualFold(strings.TrimSpace(progress.Metadata["preserve_whitespace"]), "true")
+			if output.Len() > 0 && !preserveWhitespace {
 				output.WriteByte('\n')
 			}
 			output.WriteString(progress.Message)
@@ -60,7 +68,14 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 
 	outputMu.Lock()
 	defer outputMu.Unlock()
-	return append([]byte(nil), output.Bytes()...), nil
+	raw := append([]byte(nil), output.Bytes()...)
+	// Optional dry-run/debug hook: persist the raw model output so a review can
+	// be inspected even if downstream parsing or application fails.
+	if dir := strings.TrimSpace(os.Getenv("YOLO_PRREVIEW_RAW_DUMP_DIR")); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+		_ = os.WriteFile(filepath.Join(dir, arcPRReviewModelTaskID(input.State)+".out"), raw, 0o644)
+	}
+	return raw, nil
 }
 
 func arcPRReviewModelTaskID(state arcreview.PRRuntimeState) string {

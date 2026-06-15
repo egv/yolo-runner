@@ -257,7 +257,10 @@ func (s *Source) arcanumAPIClient() (*arcanum.APIClient, error) {
 	if s.APIClient != nil {
 		return s.APIClient, nil
 	}
-	return arcanum.NewAPIClient(arcanum.APIClientConfig{})
+	// No implicit production client: a Source that needs to post must be given
+	// an explicit APIClient (or fake appliers). This prevents tests and local
+	// runs that forget to inject one from silently writing to real Arcanum.
+	return nil, errors.New("arcpr source: Arcanum API client must be configured explicitly (no implicit production client)")
 }
 
 func resultReplyCommentIDs(replies []workitem.PRReviewReply) []string {

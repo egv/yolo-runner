@@ -139,6 +139,14 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		}
 	}
 
+	// This is the single, explicit opt-in to the production Arcanum endpoint.
+	// The library never defaults to prod; only the real daemon command points a
+	// client at it. Tests construct Sources directly and never reach this path.
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: arcanum.DefaultAPIBaseURL})
+	if err != nil {
+		return fmt.Errorf("build Arcanum API client: %w", err)
+	}
+
 	source := &arcpr.Source{
 		SourceName:     sourceArcPRSourceName(cfg.profile),
 		Preset:         cfg.profile,
@@ -147,8 +155,9 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		MountsBaseDir:  reviewWatchConfig.MountsBaseDir,
 		AllowShip:      reviewWatchConfig.AllowShip,
 		State:          state,
-		Lister:         sourceArcPRIncomingLister(),
+		Lister:         sourceArcPRReviewLister(),
 		StateFetcher:   sourceArcPRStateFetcher,
+		APIClient:      apiClient,
 		ReplyApplier:   sourceArcPRReplyApplier,
 		ReviewApplier:  sourceArcPRReviewApplier,
 		ShipGate:       sourceArcPRShipGate,
@@ -174,9 +183,6 @@ func sourceArcPRSourceName(profile string) string {
 	return "arcpr-" + profile
 }
 
-func sourceArcPRIncomingLister() arcpr.PRLister {
-	if sourceArcPRLister != nil {
-		return sourceArcPRLister
-	}
-	return arcpr.PRListerFunc(arcanum.ListIncomingReviewPRs)
+func sourceArcPRReviewLister() arcpr.PRLister {
+	return sourceArcPRLister
 }

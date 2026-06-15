@@ -52,7 +52,7 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 		return list, nil
 	}
 
-	return nil, fmt.Errorf("arc pr list JSON did not contain a PR list")
+	return []json.RawMessage{bytes.TrimSpace(data)}, nil
 }
 
 func prListStreamItems(data []byte) ([]json.RawMessage, error) {

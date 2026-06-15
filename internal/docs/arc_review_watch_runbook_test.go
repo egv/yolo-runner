@@ -64,7 +64,9 @@ func TestArcReviewDocsDescribeCrossProjectPRReviewModel(t *testing.T) {
 	presets := readRepoFile(t, "docs", "environment-presets.md")
 
 	runbookRequired := []string{
-		"discovers incoming reviews with `arc pr list -i`",
+		"arc mount --list --json",
+		"arc pr list --json --reviewer <login> --status open",
+		"arc pr list --json --author <login> --status open",
 		"Each PR review work item receives an isolated checkout",
 		"auto-detects the project root from changed files",
 		"PR review does not configure or require MCP servers",

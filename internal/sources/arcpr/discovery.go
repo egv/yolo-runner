@@ -20,7 +20,8 @@ import (
 const defaultSourceName = "arcpr"
 
 type PRLister interface {
-	ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error)
+	// ListReviewPRs returns the open PRs to monitor for its configured user.
+	ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error)
 }
 
 type PRStateFetcher interface {
@@ -29,7 +30,7 @@ type PRStateFetcher interface {
 
 type PRListerFunc func(context.Context) ([]arcanum.PRSummary, error)
 
-func (f PRListerFunc) ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
+func (f PRListerFunc) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
 	return f(ctx)
 }
 
@@ -66,10 +67,12 @@ type discoveredPR struct {
 	Revision string
 }
 
-type arcanumPRLister struct{}
+type arcanumPRLister struct {
+	Reviewer string
+}
 
-func (arcanumPRLister) ListIncomingReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
-	return arcanum.ListIncomingReviewPRs(ctx)
+func (l arcanumPRLister) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
+	return arcanum.ListReviewPRs(ctx, l.Reviewer)
 }
 
 type arcanumPRStateFetcher struct{}
@@ -171,9 +174,9 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 	seen := map[string]bool{}
 	var discovered []discoveredPR
-	prs, err := s.lister().ListIncomingReviewPRs(ctx)
+	prs, err := s.lister().ListReviewPRs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("list incoming arc review PRs: %w", err)
+		return nil, fmt.Errorf("list arc review PRs: %w", err)
 	}
 	for _, pr := range prs {
 		prID := strings.TrimSpace(pr.ID)
@@ -225,7 +228,7 @@ func (s *Source) lister() PRLister {
 	if s.Lister != nil {
 		return s.Lister
 	}
-	return arcanumPRLister{}
+	return arcanumPRLister{Reviewer: s.Reviewer}
 }
 
 func (s *Source) stateFetcher() PRStateFetcher {
