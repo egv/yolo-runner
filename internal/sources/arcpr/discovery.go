@@ -69,10 +69,11 @@ type discoveredPR struct {
 
 type arcanumPRLister struct {
 	Reviewer string
+	APIClient *arcanum.APIClient
 }
 
 func (l arcanumPRLister) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
-	return arcanum.ListReviewPRs(ctx, l.Reviewer)
+	return arcanum.ListReviewPRsViaAPI(ctx, l.APIClient, l.Reviewer)
 }
 
 type arcanumPRStateFetcher struct{}
@@ -228,7 +229,7 @@ func (s *Source) lister() PRLister {
 	if s.Lister != nil {
 		return s.Lister
 	}
-	return arcanumPRLister{Reviewer: s.Reviewer}
+	return arcanumPRLister{Reviewer: s.Reviewer, APIClient: s.APIClient}
 }
 
 func (s *Source) stateFetcher() PRStateFetcher {

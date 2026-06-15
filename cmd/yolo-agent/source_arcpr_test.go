@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -233,12 +236,14 @@ arc_review_watch:
 	originalStateFetcher := sourceArcPRStateFetcher
 	originalReplyApplier := sourceArcPRReplyApplier
 	originalReviewApplier := sourceArcPRReviewApplier
+	originalAPIClient := newSourceArcPRAPIClient
 	t.Cleanup(func() {
 		newSourceArcPRConfigService = originalConfigService
 		sourceArcPRLister = originalLister
 		sourceArcPRStateFetcher = originalStateFetcher
 		sourceArcPRReplyApplier = originalReplyApplier
 		sourceArcPRReviewApplier = originalReviewApplier
+		newSourceArcPRAPIClient = originalAPIClient
 	})
 	newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 		return newTrackerConfigService()
@@ -257,12 +262,41 @@ arc_review_watch:
 		return arcreview.ReviewResult{}, nil
 	})
 
+	discoveryMu := sync.Mutex{}
+	discoveryCalls := make([]string, 0, 2)
+	discoveryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		discoveryMu.Lock()
+		discoveryCalls = append(discoveryCalls, r.URL.RequestURI())
+		discoveryMu.Unlock()
+
+		if r.URL.Path != "/v1/review-requests" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("status") != "open" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Query().Get("reviewer") == "alice" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]`))
+			return
+		}
+		if r.URL.Query().Get("author") == "alice" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	}))
+	defer discoveryServer.Close()
+	newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
+		return arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: discoveryServer.URL})
+	}
+
 	binDir := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
-	arcListWorkspace := filepath.Join(t.TempDir(), "arcadia")
-	if err := os.MkdirAll(arcListWorkspace, 0o755); err != nil {
-		t.Fatalf("MkdirAll(arc list workspace) error = %v", err)
-	}
 	writeSourceArcPRFakeExecutable(t, binDir, "arc", `#!/bin/sh
 set -eu
 printf '%s	arc' "$PWD" >> "$ARC_SOURCE_TEST_CALLS"
@@ -271,15 +305,6 @@ for arg in "$@"; do
 done
 printf '\n' >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
-"mount --list --json")
-  printf '%s\n' '[{"status":"mounted","mount":"`+arcListWorkspace+`"}]'
-  ;;
-"pr list --json --reviewer alice --status open")
-  printf '%s\n' '[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]'
-  ;;
-"pr list --json --author alice --status open")
-  printf '%s\n' '[]'
-  ;;
 "mount -m "*)
   mkdir -p "$3"
   ;;
@@ -371,6 +396,19 @@ esac
 		t.Fatalf("expected source arcpr consume exit code 0, got %d", code)
 	}
 
+	discoveryMu.Lock()
+	requests := append([]string(nil), discoveryCalls...)
+	discoveryMu.Unlock()
+	if len(requests) != 4 {
+		t.Fatalf("discovery API request count = %d, want 4", len(requests))
+	}
+	assertStringsEqualInOrder(t, requests,
+		"/v1/review-requests?reviewer=alice&status=open",
+		"/v1/review-requests?author=alice&status=open",
+		"/v1/review-requests?reviewer=alice&status=open",
+		"/v1/review-requests?author=alice&status=open",
+	)
+
 	if len(replyStates) != 1 {
 		t.Fatalf("reply applier calls = %d, want 1", len(replyStates))
 	}
@@ -394,6 +432,11 @@ esac
 		mountPath+"\tcurl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 		mountPath+"\tarc pr changes 777",
 		"arc unmount --forget "+mountPath,
+	)
+	assertSourceArcPRCallsDoNotContain(t, calls,
+		"arc mount --list --json",
+		"arc pr list --json --reviewer alice --status open",
+		"arc pr list --json --author alice --status open",
 	)
 
 	state, err := arcreviewstate.Open(statePath)
@@ -465,6 +508,31 @@ func assertSourceArcPRCallsContain(t *testing.T, calls []string, want ...string)
 		}
 		if !found {
 			t.Fatalf("source arcpr calls missing %q in %#v", expected, calls)
+		}
+	}
+}
+
+func assertSourceArcPRCallsDoNotContain(t *testing.T, calls []string, disallowed ...string) {
+	t.Helper()
+
+	for _, disallowedCall := range disallowed {
+		for _, call := range calls {
+			if call == disallowedCall || strings.HasSuffix(call, "\t"+disallowedCall) {
+				t.Fatalf("source arcpr calls unexpectedly contained %q in %#v", disallowedCall, calls)
+			}
+		}
+	}
+}
+
+func assertStringsEqualInOrder(t *testing.T, got []string, want ...string) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d in order: %#v", len(got), len(want), got)
+	}
+	for i, wantValue := range want {
+		if got[i] != wantValue {
+			t.Fatalf("entry %d = %q, want %q", i, got[i], wantValue)
 		}
 	}
 }
