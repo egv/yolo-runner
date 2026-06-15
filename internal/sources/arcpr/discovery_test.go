@@ -186,55 +186,80 @@ func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePi
 		t.Fatalf("StoreAnsweredCommentIDs() error = %v", err)
 	}
 
-	binDir := t.TempDir()
-	callsPath := filepath.Join(t.TempDir(), "calls.log")
-	t.Setenv("ARC_TOKEN", "test-token")
-	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
-
-	discoveryMu := sync.Mutex{}
-	discoveryCalls := make([]string, 0, 4)
-	discoveryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		discoveryMu.Lock()
-		discoveryCalls = append(discoveryCalls, r.URL.RequestURI())
-		discoveryMu.Unlock()
-
+	listCalls := make([]string, 0, 4)
+	var listCallsMu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listCallsMu.Lock()
+		defer listCallsMu.Unlock()
+		if got := r.Method; got != http.MethodGet {
+			t.Fatalf("method = %s, want GET", got)
+		}
+		if got := r.URL.Path; got != "/api/v1/review-requests" {
+			t.Fatalf("path = %q, want /api/v1/review-requests", got)
+		}
 		query := r.URL.Query()
-		reviewer := strings.TrimSpace(query.Get("reviewer"))
-		author := strings.TrimSpace(query.Get("author"))
-		if query.Get("status") != "open" {
-			http.Error(w, "status=open is required", http.StatusBadRequest)
-			return
+		if got := query.Get("status"); got != "open" {
+			t.Fatalf("status = %q, want open", got)
 		}
 
+		reviewer := query.Get("reviewer")
+		author := query.Get("author")
 		switch {
-		case reviewer == "alice":
+		case reviewer == "alice" && author == "":
+			listCalls = append(listCalls, "reviewer")
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[
-				{"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment","reviewers":["alice"]},
-				{"id":"102","from_id":"rev-2","status":"open","summary":"new head","reviewers":["alice"]},
-				{"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head","reviewers":["alice"]}
-			]`))
-		case author == "alice":
+			if _, err := w.Write([]byte(`[
+  {"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment","author":"bob"},
+  {"id":"102","from_id":"rev-2","status":"open","summary":"new head","author":"alice"},
+  {"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head","author":"alice"}
+]`)); err != nil {
+				t.Fatalf("write reviewer response: %v", err)
+			}
+		case author == "alice" && reviewer == "":
+			listCalls = append(listCalls, "author")
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[
-				{"id":"103","from_id":"rev-3","status":"open","summary":"authored head","author":"alice"}
-			]`))
+			if _, err := w.Write([]byte(`{"data":[{"id":"103","from_id":"rev-3","status":"open","summary":"authored head","author":"alice"}]}`)); err != nil {
+				t.Fatalf("write author response: %v", err)
+			}
 		default:
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte("[]"))
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
 		}
 	}))
-	defer discoveryServer.Close()
+	t.Cleanup(server.Close)
 
-	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: discoveryServer.URL})
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{
+		BaseURL:    server.URL + "/api",
+		HTTPClient: server.Client(),
+		TokenSource: func(context.Context) (string, error) {
+			return "test-token", nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewAPIClient() error = %v", err)
 	}
 
+	binDir := t.TempDir()
 	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
 set -eu
-printf 'unexpected arc discovery call: %s\n' "$*" >&2
-exit 7
+printf 'arc %s\n' "$*" >> "$ARC_SOURCE_TEST_CALLS"
+case "$*" in
+"mount --list --json")
+  echo "unexpected arc mount --list during discovery" >&2
+  exit 7
+  ;;
+"pr list --json --reviewer alice --status open")
+  echo "unexpected arc reviewer discovery via arc CLI" >&2
+  exit 7
+  ;;
+"pr list --json --author alice --status open")
+  echo "unexpected arc author discovery via arc CLI" >&2
+  exit 7
+  ;;
+*)
+  printf 'unexpected arc args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
 `)
 	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
 set -eu
@@ -255,14 +280,17 @@ case "$*" in
   ;;
 esac
 `)
+	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	t.Setenv("ARC_SOURCE_TEST_CALLS", callsPath)
+	t.Setenv("ARC_TOKEN", "test-token")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := &Source{
 		SourceName: "arcpr-adapta",
 		Preset:     "adapta",
 		Reviewer:   "alice",
-		State:      state,
 		APIClient:  apiClient,
+		State:      state,
 	}
 
 	first, err := src.Poll(ctx)
@@ -306,54 +334,32 @@ esac
 		t.Fatalf("Poll(after result) returned %#v, want none", afterResult)
 	}
 
-	discoveryMu.Lock()
-	calls := append([]string(nil), discoveryCalls...)
-	discoveryMu.Unlock()
-	if len(calls) != 6 {
-		t.Fatalf("discovery API request count = %d, want 6", len(calls))
+	listCallsMu.Lock()
+	wantListCalls := []string{"reviewer", "author", "reviewer", "author", "reviewer", "author"}
+	if !reflect.DeepEqual(listCalls, wantListCalls) {
+		t.Fatalf("review list call order = %#v, want %#v", listCalls, wantListCalls)
 	}
-	assertStringsEqualInOrder(t, calls,
-		"/v1/review-requests?reviewer=alice&status=open",
-		"/v1/review-requests?author=alice&status=open",
-		"/v1/review-requests?reviewer=alice&status=open",
-		"/v1/review-requests?author=alice&status=open",
-		"/v1/review-requests?reviewer=alice&status=open",
-		"/v1/review-requests?author=alice&status=open",
-	)
-
-	rawCalls, err := os.ReadFile(callsPath)
-	if err != nil {
-		t.Fatalf("ReadFile(calls) error = %v", err)
-	}
-	arcCalls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
-	for _, call := range arcCalls {
-		switch {
-		case strings.Contains(call, "arc mount --list --json"):
-			t.Fatalf("discovery should not call arc mount --list --json: %v", arcCalls)
-		case strings.Contains(call, "arc pr list --json --reviewer alice --status open"):
-			t.Fatalf("discovery should not call arc pr list for reviewer: %v", arcCalls)
-		case strings.Contains(call, "arc pr list --json --author alice --status open"):
-			t.Fatalf("discovery should not call arc pr list for author: %v", arcCalls)
-		}
-	}
+	listCallsMu.Unlock()
 }
 
-func TestSourcePollSkipsDefaultIncomingDiscoveryWithMissingReviewer(t *testing.T) {
+func TestSourcePollUsesAPIDefaultDiscoveryWhenReviewerMissing(t *testing.T) {
 	ctx := context.Background()
 	state := openDiscoveryTestState(t)
 
-	discoveryMu := sync.Mutex{}
-	discoveryCalls := make([]string, 0, 1)
-	discoveryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		discoveryMu.Lock()
-		discoveryCalls = append(discoveryCalls, r.URL.RequestURI())
-		discoveryMu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
+	listCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listCalled = true
+		t.Fatalf("expected no API list calls for blank reviewer, got %q %q", r.Method, r.URL.String())
 	}))
-	defer discoveryServer.Close()
+	t.Cleanup(server.Close)
 
-	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: discoveryServer.URL})
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{
+		BaseURL:    server.URL + "/api",
+		HTTPClient: server.Client(),
+		TokenSource: func(context.Context) (string, error) {
+			return "test-token", nil
+		},
+	})
 	if err != nil {
 		t.Fatalf("NewAPIClient() error = %v", err)
 	}
@@ -361,24 +367,19 @@ func TestSourcePollSkipsDefaultIncomingDiscoveryWithMissingReviewer(t *testing.T
 	src := &Source{
 		SourceName: "arcpr-adapta",
 		Preset:     "adapta",
-		Reviewer:   "",
-		State:      state,
+		Reviewer:   "  ",
 		APIClient:  apiClient,
+		State:      state,
 	}
-
-	submissions, err := src.Poll(ctx)
+	prs, err := src.Poll(ctx)
 	if err != nil {
 		t.Fatalf("Poll() error = %v", err)
 	}
-	if len(submissions) != 0 {
-		t.Fatalf("Poll() with missing reviewer = %#v, want none", submissions)
+	if len(prs) != 0 {
+		t.Fatalf("Poll() returned %#v, want no submissions", prs)
 	}
-
-	discoveryMu.Lock()
-	calls := len(discoveryCalls)
-	discoveryMu.Unlock()
-	if calls != 0 {
-		t.Fatalf("discovery API request count = %d, want 0 for missing reviewer", calls)
+	if listCalled {
+		t.Fatalf("expected blank reviewer to skip API list calls")
 	}
 }
 
@@ -456,17 +457,4 @@ func prReviewReplies(commentIDs []string) []workitem.PRReviewReply {
 		})
 	}
 	return replies
-}
-
-func assertStringsEqualInOrder(t *testing.T, got []string, want ...string) {
-	t.Helper()
-
-	if len(got) != len(want) {
-		t.Fatalf("got %d entries, want %d in order: %#v", len(got), len(want), got)
-	}
-	for i, wantValue := range want {
-		if got[i] != wantValue {
-			t.Fatalf("entry %d = %q, want %q", i, got[i], wantValue)
-		}
-	}
 }

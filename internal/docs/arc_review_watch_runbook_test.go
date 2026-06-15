@@ -48,6 +48,9 @@ func TestArcReviewWatchRunbookDocumentsOperatorWorkflow(t *testing.T) {
 		"lock_path:",
 		"workspaces:",
 		"branches:",
+		"arc mount --list --json",
+		"arc pr list --json --reviewer <login> --status open",
+		"arc pr list --json --author <login> --status open",
 		"`lock_path`",
 		"`workspaces`",
 		"`branches`",
@@ -64,9 +67,11 @@ func TestArcReviewDocsDescribeCrossProjectPRReviewModel(t *testing.T) {
 	presets := readRepoFile(t, "docs", "environment-presets.md")
 
 	runbookRequired := []string{
-		"arc mount --list --json",
-		"arc pr list --json --reviewer <login> --status open",
-		"arc pr list --json --author <login> --status open",
+		"API-backed",
+		"Arcanum public API",
+		"/api/v1/public/review-requests?status=open&reviewer=<login>",
+		"/api/v1/public/review-requests?status=open&author=<login>",
+		"No mounted Arc workspace is needed for discovery",
 		"Each PR review work item receives an isolated checkout",
 		"auto-detects the project root from changed files",
 		"PR review does not configure or require MCP servers",

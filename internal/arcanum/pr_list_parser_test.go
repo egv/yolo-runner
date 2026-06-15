@@ -85,3 +85,29 @@ func TestParsePRListJSONAcceptsSingleObject(t *testing.T) {
 		t.Fatalf("ParsePRListJSON(single object) = %#v, want %#v", got, want)
 	}
 }
+
+func TestParsePRListJSONAcceptsDataWrapper(t *testing.T) {
+	got, err := ParsePRListJSON([]byte(`{
+  "data": [
+    {"id":"42","summary":"wrapped PR","author":{"login":"alice"},"reviewers":["bob"],"from_id":"rev-42","status":"open"}
+  ]
+}`))
+	if err != nil {
+		t.Fatalf("ParsePRListJSON(data wrapper) error = %v", err)
+	}
+
+	want := []PRSummary{
+		{
+			ID:        "42",
+			Title:     "wrapped PR",
+			Summary:   "wrapped PR",
+			Author:    "alice",
+			Reviewers: []string{"bob"},
+			FromID:    "rev-42",
+			Status:    "open",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParsePRListJSON(data wrapper) = %#v, want %#v", got, want)
+	}
+}

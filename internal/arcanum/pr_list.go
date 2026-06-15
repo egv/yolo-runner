@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -22,6 +23,17 @@ type arcMountJSON struct {
 	ObjectStore string `json:"object-store"`
 }
 
+func arcCommandError(args []string, stderr []byte, err error) error {
+	command := strings.Join(append([]string{"arc"}, args...), " ")
+	details := strings.TrimSpace(string(stderr))
+	if details == "" {
+		return fmt.Errorf("%s failed: %w", command, err)
+	}
+	return fmt.Errorf("%s failed: %s: %w", command, details, err)
+}
+
+// ListArcMounts performs legacy Arc CLI mount discovery. It is kept for compatibility with
+// callers that still rely on workspace-based discovery and is not used by arcpr source.
 func ListArcMounts(ctx context.Context) ([]ArcMount, error) {
 	stdout, stderr, err := arcExec(ctx, "", "arc", "mount", "--list", "--json")
 	if err != nil {
@@ -45,6 +57,8 @@ func ListArcMounts(ctx context.Context) ([]ArcMount, error) {
 	return mounts, nil
 }
 
+// DefaultPRListWorkspace resolves a default mounted workspace for legacy discovery flows.
+// Deprecated: arcpr source uses API-based discovery and does not need workspace mounts.
 func DefaultPRListWorkspace(ctx context.Context) (string, error) {
 	mounts, err := ListArcMounts(ctx)
 	if err != nil {
@@ -55,9 +69,11 @@ func DefaultPRListWorkspace(ctx context.Context) (string, error) {
 			return strings.TrimSpace(mount.Mount), nil
 		}
 	}
-	return "", errors.New("no mounted Arc workspace found for PR discovery; run `arc mount` before starting the Arc PR source")
+	return "", errors.New("legacy PR discovery requires a mounted Arc workspace; run `arc mount` before using workspace-based listing")
 }
 
+// ListReviewerReviewPRs lists review requests for a reviewer in a specific mounted workspace.
+// Deprecated: use API-backed listing (`ListReviewPRsWithClient`) instead.
 func ListReviewerReviewPRs(ctx context.Context, workspace string, reviewer string) ([]PRSummary, error) {
 	reviewer = strings.TrimSpace(reviewer)
 	if reviewer == "" {
@@ -70,6 +86,8 @@ func ListReviewerReviewPRs(ctx context.Context, workspace string, reviewer strin
 	return ParsePRListJSON(stdout)
 }
 
+// ListAuthorReviewPRs lists outgoing review requests authored by `author` in a mounted workspace.
+// Deprecated: use API-backed listing (`ListReviewPRsWithClient`) instead.
 func ListAuthorReviewPRs(ctx context.Context, workspace string, author string) ([]PRSummary, error) {
 	author = strings.TrimSpace(author)
 	if author == "" {
@@ -82,9 +100,24 @@ func ListAuthorReviewPRs(ctx context.Context, workspace string, author string) (
 	return ParsePRListJSON(stdout)
 }
 
-// ListReviewPRs returns open PRs the configured user should monitor: PRs where
-// that user is an assigned reviewer and PRs authored by that user, deduplicated
-// by PR ID with reviewer entries taking precedence.
+type PRListArcanumClient struct {
+	apiClient *APIClient
+}
+
+func NewPRListArcanumClient(apiClient *APIClient) *PRListArcanumClient {
+	return &PRListArcanumClient{apiClient: apiClient}
+}
+
+func (c *PRListArcanumClient) ListReviewerReviewPRs(ctx context.Context, reviewer string) ([]PRSummary, error) {
+	return c.listReviewRequestsByFilter(ctx, "reviewer", reviewer)
+}
+
+func (c *PRListArcanumClient) ListAuthorReviewPRs(ctx context.Context, author string) ([]PRSummary, error) {
+	return c.listReviewRequestsByFilter(ctx, "author", author)
+}
+
+// ListReviewPRs returns open PRs using the legacy workspace-based flow.
+// Deprecated: arcpr source uses `ListReviewPRsWithClient` for API-backed discovery.
 func ListReviewPRs(ctx context.Context, user string) ([]PRSummary, error) {
 	user = strings.TrimSpace(user)
 	if user == "" {
@@ -97,6 +130,27 @@ func ListReviewPRs(ctx context.Context, user string) ([]PRSummary, error) {
 	return ListReviewPRsInWorkspace(ctx, workspace, user)
 }
 
+func ListReviewPRsWithClient(ctx context.Context, apiClient *APIClient, user string) ([]PRSummary, error) {
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return nil, nil
+	}
+
+	client := NewPRListArcanumClient(apiClient)
+
+	reviewerPRs, err := client.ListReviewerReviewPRs(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	authorPRs, err := client.ListAuthorReviewPRs(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	return dedupePRSummaries(reviewerPRs, authorPRs), nil
+}
+
+// ListReviewPRsInWorkspace performs legacy review-request listing for a specific workspace.
+// Deprecated: use `ListReviewPRsWithClient` unless a workspace is explicitly required.
 func ListReviewPRsInWorkspace(ctx context.Context, workspace string, user string) ([]PRSummary, error) {
 	user = strings.TrimSpace(user)
 	if user == "" {
@@ -116,6 +170,44 @@ func ListReviewPRsInWorkspace(ctx context.Context, workspace string, user string
 		return nil, err
 	}
 	return dedupePRSummaries(reviewerPRs, authorPRs), nil
+}
+
+func (c *PRListArcanumClient) listReviewRequestsByFilter(ctx context.Context, filter string, user string) ([]PRSummary, error) {
+	apiClient, err := c.api()
+	if err != nil {
+		return nil, err
+	}
+
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return nil, nil
+	}
+	if filter != "reviewer" && filter != "author" {
+		return nil, fmt.Errorf("invalid review request filter %q", filter)
+	}
+
+	var raw json.RawMessage
+	if err := apiClient.GetJSON(ctx, reviewRequestsPath(filter, user), &raw); err != nil {
+		return nil, fmt.Errorf("list %s review requests: %w", filter, err)
+	}
+	return ParsePRListJSON(raw)
+}
+
+func (c *PRListArcanumClient) api() (*APIClient, error) {
+	if c == nil {
+		return nil, fmt.Errorf("review request list Arcanum client is nil")
+	}
+	if c.apiClient == nil {
+		return nil, fmt.Errorf("Arcanum API client is required for review request list")
+	}
+	return c.apiClient, nil
+}
+
+func reviewRequestsPath(filter string, user string) string {
+	query := url.Values{}
+	query.Set("status", "open")
+	query.Set(filter, strings.TrimSpace(user))
+	return "/v1/review-requests?" + query.Encode()
 }
 
 func dedupePRSummaries(groups ...[]PRSummary) []PRSummary {

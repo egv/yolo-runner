@@ -31,6 +31,11 @@ type sourceArcPRCommandConfig struct {
 var runSourceArcPR = defaultRunSourceArcPR
 var sourceArcPRLister arcpr.PRLister
 var sourceArcPRStateFetcher arcpr.PRStateFetcher
+var newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
+	return arcanum.NewAPIClient(arcanum.APIClientConfig{
+		BaseURL: arcanum.DefaultAPIBaseURL,
+	})
+}
 
 // Applier seams are nil in production: the arcpr source then builds real
 // Arcanum-backed appliers from the default API client. Tests inject fakes so
@@ -38,9 +43,6 @@ var sourceArcPRStateFetcher arcpr.PRStateFetcher
 var sourceArcPRReplyApplier arcreview.PRReviewCycleReplyApplier
 var sourceArcPRReviewApplier arcreview.PRReviewCycleReviewApplier
 var sourceArcPRShipGate arcreview.PRReviewCycleShipGate
-var newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
-	return arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: arcanum.DefaultAPIBaseURL})
-}
 
 var newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 	return newTrackerConfigService()
@@ -142,16 +144,7 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 		}
 	}
 
-	// This is the single, explicit opt-in to the production Arcanum endpoint.
-	// The library never defaults to prod; only the real daemon command points a
-	// client at it. Tests construct Sources directly and never reach this path.
-	apiClientFactory := newSourceArcPRAPIClient
-	if apiClientFactory == nil {
-		apiClientFactory = func() (*arcanum.APIClient, error) {
-			return arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: arcanum.DefaultAPIBaseURL})
-		}
-	}
-	apiClient, err := apiClientFactory()
+	apiClient, err := newSourceArcPRAPIClient()
 	if err != nil {
 		return fmt.Errorf("build Arcanum API client: %w", err)
 	}

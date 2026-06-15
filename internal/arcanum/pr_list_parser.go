@@ -41,7 +41,7 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("parse arc pr list JSON: %w", err)
 	}
 
-	for _, key := range []string{"pull_requests", "pullRequests", "prs", "items", "result"} {
+	for _, key := range []string{"pull_requests", "pullRequests", "prs", "items", "result", "data"} {
 		raw := object[key]
 		if len(raw) == 0 {
 			continue

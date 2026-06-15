@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +34,7 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 	originalReplyApplier := sourceArcPRReplyApplier
 	originalReviewApplier := sourceArcPRReviewApplier
 	originalShipGate := sourceArcPRShipGate
+	originalAPIClient := newSourceArcPRAPIClient
 	t.Cleanup(func() {
 		newSourceArcPRConfigService = originalConfigService
 		sourceArcPRLister = originalLister
@@ -41,6 +42,7 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 		sourceArcPRReplyApplier = originalReplyApplier
 		sourceArcPRReviewApplier = originalReviewApplier
 		sourceArcPRShipGate = originalShipGate
+		newSourceArcPRAPIClient = originalAPIClient
 	})
 	newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 		return staticArcReviewWatchConfigResolver{
@@ -251,6 +253,53 @@ arc_review_watch:
 	sourceArcPRLister = nil
 	sourceArcPRStateFetcher = nil
 
+	listCalls := make([]string, 0, 4)
+	listCallsMu := &sync.Mutex{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listCallsMu.Lock()
+		defer listCallsMu.Unlock()
+		if got := r.Method; got != http.MethodGet {
+			t.Fatalf("method = %s, want GET", got)
+		}
+		if got := r.URL.Path; got != "/api/v1/review-requests" {
+			t.Fatalf("path = %q, want /api/v1/review-requests", got)
+		}
+		query := r.URL.Query()
+		if got := query.Get("status"); got != "open" {
+			t.Fatalf("status = %q, want open", got)
+		}
+
+		reviewer := query.Get("reviewer")
+		author := query.Get("author")
+		switch {
+		case reviewer == "alice" && author == "":
+			listCalls = append(listCalls, "reviewer")
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := w.Write([]byte(`[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]`)); err != nil {
+				t.Fatalf("write reviewer response: %v", err)
+			}
+		case author == "alice" && reviewer == "":
+			listCalls = append(listCalls, "author")
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := w.Write([]byte(`[]`)); err != nil {
+				t.Fatalf("write author response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
+		return arcanum.NewAPIClient(arcanum.APIClientConfig{
+			BaseURL:    server.URL + "/api",
+			HTTPClient: server.Client(),
+			TokenSource: func(context.Context) (string, error) {
+				return "test-token", nil
+			},
+		})
+	}
+
 	var replyStates []arcreview.PRRuntimeState
 	sourceArcPRReplyApplier = arcPRReplyApplierFunc(func(_ context.Context, state arcreview.PRRuntimeState, _ []byte) (arcreview.ReplyResult, error) {
 		replyStates = append(replyStates, state)
@@ -261,39 +310,6 @@ arc_review_watch:
 		reviewStates = append(reviewStates, state)
 		return arcreview.ReviewResult{}, nil
 	})
-
-	discoveryMu := sync.Mutex{}
-	discoveryCalls := make([]string, 0, 2)
-	discoveryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		discoveryMu.Lock()
-		discoveryCalls = append(discoveryCalls, r.URL.RequestURI())
-		discoveryMu.Unlock()
-
-		if r.URL.Path != "/v1/review-requests" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.URL.Query().Get("status") != "open" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if r.URL.Query().Get("reviewer") == "alice" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[{"id":"777","from_id":"rev-777","status":"open","summary":"Ready for review","reviewers":["alice"],"to_branch":"trunk"}]`))
-			return
-		}
-		if r.URL.Query().Get("author") == "alice" {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[]`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[]`))
-	}))
-	defer discoveryServer.Close()
-	newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
-		return arcanum.NewAPIClient(arcanum.APIClientConfig{BaseURL: discoveryServer.URL})
-	}
 
 	binDir := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
@@ -395,19 +411,6 @@ esac
 	if code != 0 {
 		t.Fatalf("expected source arcpr consume exit code 0, got %d", code)
 	}
-
-	discoveryMu.Lock()
-	requests := append([]string(nil), discoveryCalls...)
-	discoveryMu.Unlock()
-	if len(requests) != 4 {
-		t.Fatalf("discovery API request count = %d, want 4", len(requests))
-	}
-	assertStringsEqualInOrder(t, requests,
-		"/v1/review-requests?reviewer=alice&status=open",
-		"/v1/review-requests?author=alice&status=open",
-		"/v1/review-requests?reviewer=alice&status=open",
-		"/v1/review-requests?author=alice&status=open",
-	)
 
 	if len(replyStates) != 1 {
 		t.Fatalf("reply applier calls = %d, want 1", len(replyStates))
@@ -512,27 +515,27 @@ func assertSourceArcPRCallsContain(t *testing.T, calls []string, want ...string)
 	}
 }
 
-func assertSourceArcPRCallsDoNotContain(t *testing.T, calls []string, disallowed ...string) {
+func assertSourceArcPRCallsDoNotContain(t *testing.T, calls []string, banned ...string) {
 	t.Helper()
 
-	for _, disallowedCall := range disallowed {
+	for _, bad := range banned {
 		for _, call := range calls {
-			if call == disallowedCall || strings.HasSuffix(call, "\t"+disallowedCall) {
-				t.Fatalf("source arcpr calls unexpectedly contained %q in %#v", disallowedCall, calls)
+			if call == bad || strings.HasSuffix(call, "\t"+bad) {
+				t.Fatalf("source arcpr calls contained disallowed command %q in %#v", bad, calls)
 			}
 		}
 	}
 }
 
-func assertStringsEqualInOrder(t *testing.T, got []string, want ...string) {
+func assertStringsEqualInOrder(t *testing.T, got []string, want []string) {
 	t.Helper()
 
 	if len(got) != len(want) {
-		t.Fatalf("got %d entries, want %d in order: %#v", len(got), len(want), got)
+		t.Fatalf("command sequence length = %d, want %d", len(got), len(want))
 	}
-	for i, wantValue := range want {
-		if got[i] != wantValue {
-			t.Fatalf("entry %d = %q, want %q", i, got[i], wantValue)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("command sequence[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
 }

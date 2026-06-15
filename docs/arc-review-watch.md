@@ -12,10 +12,12 @@ The legacy `--dry-run` flag is accepted by `arc-review-watch` for command compat
 
 ## PR Review Model
 
-The Arc PR source is cross-project. It discovers PRs for the configured `arc_review_watch.reviewer` identity instead of scanning a project workspace, monitoring two sets and merging them (deduplicated by PR id, reviewer entries taking precedence). The Arc CLI still needs an Arc mount for discovery, so the source uses the first mounted workspace reported by `arc mount --list --json`:
+The Arc PR source is cross-project and API-backed. It discovers PRs for the configured `arc_review_watch.reviewer` identity by calling the Arcanum public API, then filters and deduplicates review requests by PR id (reviewer entries take precedence). No mounted Arc workspace is needed for discovery.
 
-- **Reviewer** PRs assigned to that login — `arc pr list --json --reviewer <login> --status open`.
-- **Authored** PRs created by that login — `arc pr list --json --author <login> --status open`.
+Discovery uses these API paths:
+
+- **Reviewer** PRs assigned to that login from `/api/v1/public/review-requests?status=open&reviewer=<login>`.
+- **Authored** PRs created by that login from `/api/v1/public/review-requests?status=open&author=<login>`.
 
 The source records the PR id, head revision, unanswered comments, and `allow_ship` flag in a queue item for the profile's preset.
 
