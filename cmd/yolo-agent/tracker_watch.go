@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,10 +124,14 @@ func resolveSourceEventsPath(eventsPath string, procID string) string {
 }
 
 func watchEventSink(stream bool, eventsPath string) (contracts.EventSink, func()) {
+	return watchEventSinkWithWriter(stream, eventsPath, os.Stdout)
+}
+
+func watchEventSinkWithWriter(stream bool, eventsPath string, streamWriter io.Writer) (contracts.EventSink, func()) {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
 	if stream {
-		sinks = append(sinks, contracts.NewStreamEventSink(os.Stdout))
+		sinks = append(sinks, contracts.NewStreamEventSink(streamWriter))
 	}
 	if strings.TrimSpace(eventsPath) != "" {
 		fileSink := contracts.NewFileEventSink(eventsPath)

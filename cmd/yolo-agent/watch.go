@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sort"
@@ -30,6 +31,7 @@ type watchCommandConfig struct {
 	repoRoot         string
 	environmentsPath string
 	stream           bool
+	tui              bool
 	eventsPath       string
 	tickInterval     time.Duration
 	idleCooldown     time.Duration
@@ -51,10 +53,14 @@ func watchCommand(args []string) int {
 	repo := fs.String("repo", ".", "Repository root")
 	environments := fs.String("environments", "", "Path to the environment presets file")
 	stream := fs.Bool("stream", false, "Emit NDJSON events to stdout for piping into yolo-tui")
+	tui := fs.Bool("tui", false, "Open yolo-tui and stream watch events into it")
 	events := fs.String("events", "", "Path to JSONL events log")
 	tickInterval := fs.Duration("tick-interval", defaultWatchSupervisorTickInterval, "Autoscaler queue-depth polling interval")
 	idleCooldown := fs.Duration("idle-cooldown", defaultWatchIdleCooldown, "Idle duration before scaling runner pools down")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 	if fs.NArg() > 0 {
@@ -73,6 +79,7 @@ func watchCommand(args []string) int {
 		repoRoot:         *repo,
 		environmentsPath: *environments,
 		stream:           *stream,
+		tui:              *tui,
 		eventsPath:       *events,
 		tickInterval:     *tickInterval,
 		idleCooldown:     *idleCooldown,
@@ -116,8 +123,26 @@ func defaultRunWatch(ctx context.Context, cfg watchCommandConfig) error {
 	}
 	defer store.Close()
 
-	stream := cfg.stream || watchCfg.DefaultMode == agentModeStream
-	eventSink, closeEventSink := watchEventSink(stream, cfg.eventsPath)
+	mode := strings.TrimSpace(watchCfg.DefaultMode)
+	if cfg.stream {
+		mode = agentModeStream
+	}
+	if cfg.tui {
+		mode = agentModeUI
+	}
+	stream := mode == agentModeStream || mode == agentModeUI
+	var streamWriter io.Writer = os.Stdout
+	if mode == agentModeUI {
+		stdin, closeFn, err := launchYoloTUI()
+		if err != nil {
+			return fmt.Errorf("start yolo-tui: %w", err)
+		}
+		defer func() {
+			_ = closeFn()
+		}()
+		streamWriter = stdin
+	}
+	eventSink, closeEventSink := watchEventSinkWithWriter(stream, cfg.eventsPath, streamWriter)
 	defer closeEventSink()
 	if cfg.eventSink != nil {
 		if eventSink != nil {
