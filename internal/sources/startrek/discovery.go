@@ -19,7 +19,8 @@ import (
 )
 
 type Queue struct {
-	Key string
+	Key    string
+	Preset string
 }
 
 type DiscoveryBackend interface {
@@ -97,7 +98,7 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			if err != nil {
 				return nil, err
 			}
-			submission, err := s.preflightSubmission(ctx, task, queueRoot, summary.Priority, resumedIssue(resumed, task.ID))
+			submission, err := s.preflightSubmission(ctx, queue, task, queueRoot, summary.Priority, resumedIssue(resumed, task.ID))
 			if err != nil {
 				return nil, err
 			}
@@ -256,7 +257,7 @@ func appendUniqueTaskDependencyID(ids []string, seen map[string]struct{}, raw st
 	return append(ids, id)
 }
 
-func (s *Source) preflightSubmission(ctx context.Context, task contracts.Task, queueRoot contracts.Task, graphPriority *int, resumed bool) (workqueue.Submission, error) {
+func (s *Source) preflightSubmission(ctx context.Context, queue Queue, task contracts.Task, queueRoot contracts.Task, graphPriority *int, resumed bool) (workqueue.Submission, error) {
 	taskID := strings.TrimSpace(task.ID)
 	if taskID == "" {
 		return workqueue.Submission{}, errors.New("startrek preflight task id is required")
@@ -280,12 +281,19 @@ func (s *Source) preflightSubmission(ctx context.Context, task contracts.Task, q
 			return workqueue.Submission{}, err
 		}
 	}
+	preset := strings.TrimSpace(queue.Preset)
+	if preset == "" {
+		preset = strings.TrimSpace(s.Preset)
+	}
+	if preset == "" {
+		return workqueue.Submission{}, errors.New("startrek preflight preset is required")
+	}
 	return workqueue.Submission{
 		Kind:           workitem.KindPreflight,
 		Source:         s.Name(),
 		SourceRef:      taskID,
 		IdempotencyKey: "st/" + taskID + "/preflight/" + revision,
-		Preset:         strings.TrimSpace(s.Preset),
+		Preset:         preset,
 		Priority:       priority,
 		Payload:        payload,
 		MaxAttempts:    s.MaxAttempts,

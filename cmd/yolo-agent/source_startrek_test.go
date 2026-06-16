@@ -19,6 +19,22 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
+func TestSourceStartrekQueuesMapsPresets(t *testing.T) {
+	got := sourceStartrekQueues([]startrekQueueModel{
+		{Key: "VAY", Preset: "queue-a"},
+		{Key: "VBO"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("sourceStartrekQueues() length = %d, want 2", len(got))
+	}
+	if got[0].Key != "VAY" || got[0].Preset != "queue-a" {
+		t.Fatalf("first queue = %#v, want key=%q preset=%q", got[0], "VAY", "queue-a")
+	}
+	if got[1].Key != "VBO" || got[1].Preset != "" {
+		t.Fatalf("second queue = %#v, want key=%q preset=%q", got[1], "VBO", "")
+	}
+}
+
 func TestSourceStartrekOnceSubmitsPreflightAndConsumesResult(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repoRoot := t.TempDir()
