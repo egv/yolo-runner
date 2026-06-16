@@ -47,11 +47,25 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 			continue
 		}
 		if err := json.Unmarshal(raw, &list); err != nil {
-			return nil, fmt.Errorf("parse %q as PR list: %w", key, err)
+			var nested map[string]json.RawMessage
+			if nestedErr := json.Unmarshal(raw, &nested); nestedErr != nil {
+				return nil, fmt.Errorf("parse %q as PR list: %w", key, err)
+			}
+			if len(nested) == 0 {
+				return nil, nil
+			}
+			list, err := prListItems(raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse %q as PR list: %w", key, err)
+			}
+			return list, nil
 		}
 		return list, nil
 	}
 
+	if len(object) == 0 {
+		return nil, nil
+	}
 	return []json.RawMessage{bytes.TrimSpace(data)}, nil
 }
 

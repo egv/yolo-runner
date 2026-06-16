@@ -111,3 +111,41 @@ func TestParsePRListJSONAcceptsDataWrapper(t *testing.T) {
 		t.Fatalf("ParsePRListJSON(data wrapper) = %#v, want %#v", got, want)
 	}
 }
+
+func TestParsePRListJSONAcceptsEmptyDataObjectAsEmptyList(t *testing.T) {
+	got, err := ParsePRListJSON([]byte(`{"data":{}}`))
+	if err != nil {
+		t.Fatalf("ParsePRListJSON(empty data object) error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ParsePRListJSON(empty data object) = %#v, want empty", got)
+	}
+}
+
+func TestParsePRListJSONAcceptsNestedDataItemsWrapper(t *testing.T) {
+	got, err := ParsePRListJSON([]byte(`{
+  "data": {
+    "items": [
+      {"id":"42","summary":"nested PR","author":{"login":"alice"},"reviewers":["bob"],"from_id":"rev-42","status":"open"}
+    ]
+  }
+}`))
+	if err != nil {
+		t.Fatalf("ParsePRListJSON(nested data items wrapper) error = %v", err)
+	}
+
+	want := []PRSummary{
+		{
+			ID:        "42",
+			Title:     "nested PR",
+			Summary:   "nested PR",
+			Author:    "alice",
+			Reviewers: []string{"bob"},
+			FromID:    "rev-42",
+			Status:    "open",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParsePRListJSON(nested data items wrapper) = %#v, want %#v", got, want)
+	}
+}
