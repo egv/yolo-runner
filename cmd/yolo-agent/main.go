@@ -46,32 +46,34 @@ const (
 )
 
 type runConfig struct {
-	repoRoot             string
-	rootID               string
-	queuePath            string
-	backend              string
-	profile              string
-	trackerType          string
-	model                string
-	qualityThreshold     int
-	qualityGateTools     []string
-	qcGateTools          []string
-	allowLowQuality      bool
-	maxTasks             int
-	retryBudget          int
-	concurrency          int
-	dryRun               bool
-	mode                 string
-	stream               bool
-	verboseStream        bool
-	streamOutputInterval time.Duration
-	streamOutputBuffer   int
-	tddMode              bool
-	runnerTimeout        time.Duration
-	watchdogTimeout      time.Duration
-	watchdogInterval     time.Duration
-	eventsPath           string
-	codingAgents         codingagents.Catalog
+	repoRoot               string
+	rootID                 string
+	queuePath              string
+	backend                string
+	profile                string
+	trackerType            string
+	model                  string
+	qualityThreshold       int
+	qualityGateTools       []string
+	qcGateTools            []string
+	allowLowQuality        bool
+	maxTasks               int
+	retryBudget            int
+	concurrency            int
+	dryRun                 bool
+	mode                   string
+	stream                 bool
+	verboseStream          bool
+	streamOutputInterval   time.Duration
+	streamOutputBuffer     int
+	embeddedRunnerPool     string
+	embeddedRunnerReplicas int
+	tddMode                bool
+	runnerTimeout          time.Duration
+	watchdogTimeout        time.Duration
+	watchdogInterval       time.Duration
+	eventsPath             string
+	codingAgents           codingagents.Catalog
 }
 
 type trackerWatchConfig struct {
@@ -878,7 +880,12 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 	if preset == "" {
 		return nil, nil
 	}
-	live, err := queueHasLiveRunnerForPreset(cfg.queuePath, preset, time.Now().UTC())
+	pool := strings.TrimSpace(cfg.embeddedRunnerPool)
+	if pool == "" {
+		pool = "global"
+	}
+
+	live, err := queueHasLiveRunnerForPresetInPool(cfg.queuePath, preset, pool, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -901,48 +908,56 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 		return nil, err
 	}
 
-	runnerID := embeddedQueueRunnerID(preset)
-	capacity := cfg.concurrency
-	if capacity <= 0 {
-		capacity = 1
+	replicas := cfg.embeddedRunnerReplicas
+	if replicas <= 0 {
+		replicas = cfg.concurrency
 	}
-	if err := runners.Register(runnerID, []string{preset}, capacity); err != nil {
-		_ = runners.Close()
-		_ = store.Close()
-		return nil, err
+	if replicas <= 0 {
+		replicas = 1
+	}
+
+	baseCfg := runnerDaemonCommandConfig{
+		presets:           []string{preset},
+		capacity:          1,
+		pollInterval:      embeddedQueueRunnerPollInterval,
+		heartbeatInterval: embeddedQueueRunnerHeartbeatInterval,
+		leaseTTL:          embeddedQueueRunnerLeaseTTL,
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	handlers := runnerKindRegistry{
-		workitem.KindImplement: newRunnerImplementKindHandler(embeddedQueueRunnerExecutorResolver(cfg, runner, events)),
-		workitem.KindFinalize:  newRunnerFinalizeKindHandler(),
-	}
-	daemon := runnerDaemon{
-		store:    store,
-		runners:  runners,
-		events:   embeddedQueueRunnerEventSink(events),
-		handlers: handlers,
-		environmentPresets: map[string]envpreset.Preset{
-			preset: embeddedPreset,
-		},
-		// Isolated materialization: every implement item runs in a fresh clone
-		// (never the live working tree) and lands like the old loop.
-		materialize: embeddedQueueMaterializer,
-		cfg: runnerDaemonCommandConfig{
-			presets:           []string{preset},
-			runnerID:          runnerID,
-			capacity:          capacity,
-			pollInterval:      embeddedQueueRunnerPollInterval,
-			heartbeatInterval: embeddedQueueRunnerHeartbeatInterval,
-			leaseTTL:          embeddedQueueRunnerLeaseTTL,
-		},
+	workerErrs := make(chan error, replicas)
+
+	for replica := 0; replica < replicas; replica++ {
+		daemon, runnerID, err := buildEmbeddedQueueRunnerWorker(cfg, runner, events, store, runners, baseCfg, preset, embeddedPreset, pool, replica)
+		if err != nil {
+			_ = runners.Close()
+			_ = store.Close()
+			return nil, err
+		}
+		go func(daemon runnerDaemon, runnerID string) {
+			runErr := daemon.Run(runCtx)
+			if err := unregisterQueueRunner(runners, runnerID); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
+				runErr = err
+			}
+			workerErrs <- runErr
+		}(daemon, runnerID)
 	}
 
 	go func() {
-		runErr := daemon.Run(runCtx)
-		if err := unregisterQueueRunner(runners, runnerID); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
-			runErr = err
+		var runErr error
+		for i := 0; i < replicas; i++ {
+			workerErr := <-workerErrs
+			if workerErr != nil && !errors.Is(workerErr, context.Canceled) {
+				if runErr == nil || errors.Is(runErr, context.Canceled) {
+					runErr = workerErr
+				}
+				cancel()
+				continue
+			}
+			if runErr == nil {
+				runErr = workerErr
+			}
 		}
 		if err := runners.Close(); err != nil && (runErr == nil || errors.Is(runErr, context.Canceled)) {
 			runErr = err
@@ -954,6 +969,39 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 	}()
 
 	return &embeddedQueueRunnerHandle{cancel: cancel, done: done}, nil
+}
+
+func buildEmbeddedQueueRunnerWorker(cfg runConfig, runner contracts.AgentRunner, events contracts.EventSink, store *workqueue.Store, runners *runnerRegistry, baseCfg runnerDaemonCommandConfig, preset string, embeddedPreset envpreset.Preset, pool string, replica int) (runnerDaemon, string, error) {
+	if strings.TrimSpace(preset) == "" {
+		return runnerDaemon{}, "", fmt.Errorf("embedded queue runner preset is required")
+	}
+
+	daemonCfg := baseCfg
+	daemonCfg.runnerID = embeddedQueueRunnerID(pool, preset, replica)
+	if err := runners.Register(daemonCfg.runnerID, daemonCfg.presets, daemonCfg.capacity); err != nil {
+		return runnerDaemon{}, "", err
+	}
+
+	daemon, err := newRunnerDaemon(daemonCfg, store, runners, runnerDaemonBuildOptions{
+		handlers: handlersFromWorkerRunConfig(cfg, runner, events),
+		environmentPresets: map[string]envpreset.Preset{
+			preset: embeddedPreset,
+		},
+		materializer: embeddedQueueMaterializer,
+		eventSink:    embeddedQueueRunnerEventSink(events),
+	})
+	if err != nil {
+		return runnerDaemon{}, "", err
+	}
+
+	return daemon, daemonCfg.runnerID, nil
+}
+
+func handlersFromWorkerRunConfig(cfg runConfig, runner contracts.AgentRunner, events contracts.EventSink) runnerKindRegistry {
+	return runnerKindRegistry{
+		workitem.KindImplement: newRunnerImplementKindHandler(embeddedQueueRunnerExecutorResolver(cfg, runner, events)),
+		workitem.KindFinalize:  newRunnerFinalizeKindHandler(),
+	}
 }
 
 func (h *embeddedQueueRunnerHandle) Stop() error {
@@ -988,6 +1036,10 @@ func (h *embeddedQueueRunnerHandle) cancelRunOnError(cancel context.CancelFunc) 
 }
 
 func queueHasLiveRunnerForPreset(queuePath string, preset string, now time.Time) (bool, error) {
+	return queueHasLiveRunnerForPresetInPool(queuePath, preset, "", now)
+}
+
+func queueHasLiveRunnerForPresetInPool(queuePath string, preset string, pool string, now time.Time) (bool, error) {
 	runners, err := openRunnerRegistry(queuePath)
 	if err != nil {
 		return false, err
@@ -995,7 +1047,7 @@ func queueHasLiveRunnerForPreset(queuePath string, preset string, now time.Time)
 	defer runners.Close()
 
 	rows, err := runners.db.Query(`
-SELECT presets, capacity, heartbeat_at
+SELECT id, presets, capacity, heartbeat_at
 FROM runners`)
 	if err != nil {
 		return false, fmt.Errorf("list queue runners: %w", err)
@@ -1006,9 +1058,14 @@ FROM runners`)
 	for rows.Next() {
 		var rawPresets string
 		var capacity int
+		var runnerID string
 		var heartbeatAt string
-		if err := rows.Scan(&rawPresets, &capacity, &heartbeatAt); err != nil {
+		if err := rows.Scan(&runnerID, &rawPresets, &capacity, &heartbeatAt); err != nil {
 			return false, fmt.Errorf("scan queue runner: %w", err)
+		}
+		pool = strings.TrimSpace(pool)
+		if pool != "" && !embeddedQueueRunnerPoolMatches(runnerID, pool) {
+			continue
 		}
 		if capacity <= 0 || !runnerPresetMatches(rawPresets, preset) {
 			continue
@@ -1025,6 +1082,31 @@ FROM runners`)
 		return false, fmt.Errorf("read queue runners: %w", err)
 	}
 	return false, nil
+}
+
+func embeddedQueueRunnerPoolMatches(runnerID string, pool string) bool {
+	pool = strings.TrimSpace(pool)
+	if pool == "" {
+		return true
+	}
+
+	runnerPool, ok := embeddedQueueRunnerPoolFromID(runnerID)
+	if !ok {
+		return false
+	}
+	return runnerPool == pool
+}
+
+func embeddedQueueRunnerPoolFromID(runnerID string) (string, bool) {
+	runnerID = strings.TrimSpace(runnerID)
+	if !strings.HasPrefix(runnerID, "embedded-pool-") {
+		return "", false
+	}
+	pool, _, ok := strings.Cut(strings.TrimPrefix(runnerID, "embedded-pool-"), "-pid-")
+	if !ok || strings.TrimSpace(pool) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(pool), true
 }
 
 func runnerPresetMatches(rawPresets string, preset string) bool {
@@ -1051,8 +1133,12 @@ func unregisterQueueRunner(runners *runnerRegistry, runnerID string) error {
 	return nil
 }
 
-func embeddedQueueRunnerID(preset string) string {
-	return fmt.Sprintf("embedded-%d-%d-%s", os.Getpid(), time.Now().UnixNano(), safeRunnerIDForPath(preset))
+func embeddedQueueRunnerID(pool string, preset string, replica int) string {
+	return fmt.Sprintf("embedded-pool-%s-pid-%d-replica-%d-preset-%s",
+		safeRunnerIDForPath(pool),
+		os.Getpid(),
+		replica,
+		safeRunnerIDForPath(preset))
 }
 
 func embeddedQueueRunnerExecutorResolver(cfg runConfig, runner contracts.AgentRunner, events contracts.EventSink) runnerImplementExecutorResolver {

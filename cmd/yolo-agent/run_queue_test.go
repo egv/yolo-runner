@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -234,6 +235,208 @@ func TestEmbeddedRunnerForRunQueueCompletesTaskEndToEnd(t *testing.T) {
 	}
 }
 
+func TestEmbeddedQueueRunnerSupervisedWorkersShutDownCleanly(t *testing.T) {
+	repo := initSeededRepo(t)
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Ensure no embedded runner rows exist after supervisor stop, including one
+	// row per replica worker created by this test.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	handle, err := maybeStartEmbeddedQueueRunner(ctx, runConfig{
+		repoRoot:               repo,
+		queuePath:              dbPath,
+		profile:                "linux",
+		embeddedRunnerPool:     "shut-down",
+		embeddedRunnerReplicas: 2,
+	}, &fakeAgentRunner{}, nil)
+	if err != nil {
+		t.Fatalf("maybeStartEmbeddedQueueRunner() error = %v", err)
+	}
+	if handle == nil {
+		t.Fatalf("embedded runner handle is nil")
+	}
+	t.Cleanup(func() {
+		_ = handle.Stop()
+	})
+
+	if got := waitForEmbeddedRunnerIDCount(t, dbPath, 2, 1*time.Second); got != 2 {
+		t.Fatalf("running embedded runner count = %d, want 2", got)
+	}
+	if err := handle.Stop(); err != nil {
+		t.Fatalf("handle.Stop() error = %v", err)
+	}
+	if got := waitForEmbeddedRunnerIDCount(t, dbPath, 0, 1*time.Second); got != 0 {
+		t.Fatalf("embedded runner count after stop = %d, want 0", got)
+	}
+}
+
+func TestEmbeddedQueueRunnerDuplicatePoolIsolation(t *testing.T) {
+	repo := initSeededRepo(t)
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	poolAHandle, err := maybeStartEmbeddedQueueRunner(ctx, runConfig{
+		repoRoot:               repo,
+		queuePath:              dbPath,
+		profile:                "linux",
+		embeddedRunnerPool:     "pool-a",
+		embeddedRunnerReplicas: 1,
+	}, &fakeAgentRunner{}, nil)
+	if err != nil {
+		t.Fatalf("maybeStartEmbeddedQueueRunner(pool-a) error = %v", err)
+	}
+	if poolAHandle == nil {
+		t.Fatalf("embedded runner handle (pool-a) is nil")
+	}
+	t.Cleanup(func() {
+		_ = poolAHandle.Stop()
+	})
+
+	poolBHandle, err := maybeStartEmbeddedQueueRunner(ctx, runConfig{
+		repoRoot:               repo,
+		queuePath:              dbPath,
+		profile:                "linux",
+		embeddedRunnerPool:     "pool-b",
+		embeddedRunnerReplicas: 1,
+	}, &fakeAgentRunner{}, nil)
+	if err != nil {
+		t.Fatalf("maybeStartEmbeddedQueueRunner(pool-b) error = %v", err)
+	}
+	if poolBHandle == nil {
+		t.Fatalf("embedded runner handle (pool-b) is nil")
+	}
+	t.Cleanup(func() {
+		_ = poolBHandle.Stop()
+	})
+
+	if got := waitForEmbeddedRunnerIDCount(t, dbPath, 2, 1*time.Second); got != 2 {
+		t.Fatalf("running embedded runner count = %d, want 2", got)
+	}
+
+	var sawPoolA uint32
+	var sawPoolB uint32
+	for {
+		ids, err := listEmbeddedRunnerIDs(t, dbPath)
+		if err != nil {
+			t.Fatalf("list embedded runner ids: %v", err)
+		}
+		for _, id := range ids {
+			pool, ok := embeddedQueueRunnerPoolFromID(id)
+			if !ok {
+				t.Fatalf("runner id %q does not follow expected embedded format", id)
+			}
+			switch pool {
+			case "pool-a":
+				atomic.AddUint32(&sawPoolA, 1)
+			case "pool-b":
+				atomic.AddUint32(&sawPoolB, 1)
+			}
+		}
+		if atomic.LoadUint32(&sawPoolA) == 1 && atomic.LoadUint32(&sawPoolB) == 1 {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("timed out waiting for pool isolation: saw pool-a=%d pool-b=%d", sawPoolA, sawPoolB)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := poolAHandle.Stop(); err != nil {
+		t.Fatalf("pool-a handle.Stop() error = %v", err)
+	}
+	if err := poolBHandle.Stop(); err != nil {
+		t.Fatalf("pool-b handle.Stop() error = %v", err)
+	}
+	if got := waitForEmbeddedRunnerIDCount(t, dbPath, 0, 1*time.Second); got != 0 {
+		t.Fatalf("embedded runner count after stop = %d, want 0", got)
+	}
+}
+
+func TestQueueHasLiveRunnerForPresetInPoolIgnoresNonEmbeddedRunnerIDs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	runners, err := openRunnerRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("openRunnerRegistry() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runners.Close(); err != nil {
+			t.Errorf("runner registry Close() error = %v", err)
+		}
+	})
+
+	now := time.Now().UTC()
+	heartbeatAt := now.Format(time.RFC3339Nano)
+	legacyID := "legacy-runner"
+	if _, err := runners.db.Exec(`
+INSERT INTO runners (id, pid, presets, capacity, started_at, heartbeat_at)
+VALUES (?, ?, ?, ?, ?, ?)`, legacyID, os.Getpid(), "linux", 1, heartbeatAt, heartbeatAt); err != nil {
+		t.Fatalf("insert legacy runner row = %v", err)
+	}
+
+	live, err := queueHasLiveRunnerForPresetInPool(dbPath, "linux", "pool-a", now)
+	if err != nil {
+		t.Fatalf("queueHasLiveRunnerForPresetInPool(pool-a) error = %v", err)
+	}
+	if live {
+		t.Fatalf("expected legacy non-embedded runner to be ignored for pool filter, got live=true")
+	}
+
+	live, err = queueHasLiveRunnerForPresetInPool(dbPath, "linux", "", now)
+	if err != nil {
+		t.Fatalf("queueHasLiveRunnerForPresetInPool(no-pool) error = %v", err)
+	}
+	if !live {
+		t.Fatalf("expected legacy non-embedded runner to be considered when no pool is set")
+	}
+
+	embeddedID := embeddedQueueRunnerID("pool-a", "linux", 0)
+	if _, err := runners.db.Exec(`
+INSERT INTO runners (id, pid, presets, capacity, started_at, heartbeat_at)
+VALUES (?, ?, ?, ?, ?, ?)`, embeddedID, os.Getpid(), "linux", 1, heartbeatAt, heartbeatAt); err != nil {
+		t.Fatalf("insert embedded runner row = %v", err)
+	}
+
+	live, err = queueHasLiveRunnerForPresetInPool(dbPath, "linux", "pool-a", now)
+	if err != nil {
+		t.Fatalf("queueHasLiveRunnerForPresetInPool(pool-a, with embedded row) error = %v", err)
+	}
+	if !live {
+		t.Fatalf("expected embedded runner with matching pool to be considered live")
+	}
+
+	live, err = queueHasLiveRunnerForPresetInPool(dbPath, "linux", "pool-b", now)
+	if err != nil {
+		t.Fatalf("queueHasLiveRunnerForPresetInPool(pool-b) error = %v", err)
+	}
+	if live {
+		t.Fatalf("expected embedded runner with non-matching pool to be ignored")
+	}
+}
+
 func waitForRunQueueItem(t *testing.T, ctx context.Context, dbPath string, runErrs <-chan error) string {
 	t.Helper()
 
@@ -268,4 +471,62 @@ LIMIT 1`, string(workitem.KindImplement)).Scan(&itemID)
 			t.Fatalf("close queue db while waiting for item: %v", closeErr)
 		}
 	}
+}
+
+func waitForEmbeddedRunnerIDCount(t *testing.T, dbPath string, want int, timeout time.Duration) int {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		count, err := listEmbeddedRunnerCount(dbPath)
+		if err != nil {
+			t.Fatalf("count embedded runners: %v", err)
+		}
+		if count == want {
+			return count
+		}
+		if time.Now().After(deadline) {
+			return count
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func listEmbeddedRunnerCount(dbPath string) (int, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runners WHERE id LIKE 'embedded-%'`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func listEmbeddedRunnerIDs(t *testing.T, dbPath string) ([]string, error) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT id FROM runners WHERE id LIKE 'embedded-%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
