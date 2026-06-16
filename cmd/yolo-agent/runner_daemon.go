@@ -39,6 +39,13 @@ type runnerDaemonCommandConfig struct {
 	leaseTTL          time.Duration
 }
 
+type runnerDaemonBuildOptions struct {
+	handlers           runnerKindRegistry
+	environmentPresets map[string]envpreset.Preset
+	materializer       runnerWorkspaceMaterializer
+	eventSink          contracts.EventSink
+}
+
 type runnerKindHandler func(context.Context, workitem.Item, envpreset.Workspace) (workqueue.Result, error)
 
 type runnerKindRegistry map[workitem.Kind]runnerKindHandler
@@ -143,16 +150,41 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 	handlers := defaultRunnerKindRegistry()
 	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
 
-	daemon := runnerDaemon{
-		store:              store,
-		runners:            runners,
+	daemon, err := newRunnerDaemon(cfg, store, runners, runnerDaemonBuildOptions{
 		handlers:           handlers,
-		events:             defaultRunnerDaemonEventSink(cfg.runnerID),
 		environmentPresets: environmentPresets,
-		materialize:        envpreset.MaterializeWorkspace,
-		cfg:                cfg,
+		materializer:       envpreset.MaterializeWorkspace,
+		eventSink:          defaultRunnerDaemonEventSink(cfg.runnerID),
+	})
+	if err != nil {
+		return err
 	}
 	return daemon.Run(ctx)
+}
+
+func newRunnerDaemon(cfg runnerDaemonCommandConfig, store *workqueue.Store, runners *runnerRegistry, options runnerDaemonBuildOptions) (runnerDaemon, error) {
+	if options.handlers == nil {
+		options.handlers = defaultRunnerKindRegistry()
+	}
+	if len(options.environmentPresets) == 0 {
+		return runnerDaemon{}, fmt.Errorf("environment presets are required for runner dispatch")
+	}
+	if options.materializer == nil {
+		options.materializer = envpreset.MaterializeWorkspace
+	}
+	if options.eventSink == nil {
+		options.eventSink = defaultRunnerDaemonEventSink(cfg.runnerID)
+	}
+
+	return runnerDaemon{
+		store:              store,
+		runners:            runners,
+		handlers:           options.handlers,
+		events:             options.eventSink,
+		environmentPresets: options.environmentPresets,
+		materialize:        options.materializer,
+		cfg:                cfg,
+	}, nil
 }
 
 type runnerDaemon struct {
