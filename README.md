@@ -151,6 +151,124 @@ The runner isolates by work kind, not by a preset flag. Code-writing kinds (`imp
 
 Each process writes JSONL to `~/.yolo-runner/events/<proc-id>.jsonl`. Use `yolo-agent events follow` to merge-tail those files by timestamp into the unchanged TUI stdin protocol. `tracker-watch` and `arc-review-watch` are deprecated compatibility shims; prefer `yolo-agent source startrek` and `yolo-agent source arcpr` for queue-backed runs.
 
+### Watch configuration
+
+`yolo-agent watch` starts configured sources and autoscaled runner pools from one command. Use `--tui` to open the existing live monitor directly; omit it for headless operation. `watch.tui.default_mode: ui` makes the TUI the config default, while `stream` keeps NDJSON on stdout for pipes and service logs.
+
+`.yolo-runner/config.yaml`:
+
+```yaml
+default_profile: startrek-adapta
+profiles:
+  startrek-adapta:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.example.test
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: VAY
+            preset: adapta
+            root: ~/arcadia/marvel/gena/adapta
+  arc-review:
+    tracker:
+      type: tk
+
+tracker_agent:
+  poll_interval: 30s
+  labels:
+    ready: yolo-agent-ready
+    in_progress: yolo-agent-in-progress
+    completed: yolo-agent-completed
+    blocked: yolo-agent-blocked
+    failed: yolo-agent-failed
+
+arc_review_watch:
+  poll_interval: 30s
+  reviewer: alice
+  allow_ship: false
+  objects_base_dir: ~/.yolo-runner/pr-objects
+  mounts_base_dir: ~/.yolo-runner/pr-mounts
+
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: startrek-adapta
+      type: startrek
+      profile: startrek-adapta
+    - name: arc-review
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: adapta-implementers
+      source: startrek-adapta
+      presets: [adapta]
+      min_replicas: 1
+      max_replicas: 4
+      capacity: 1
+    - name: arc-reviewers
+      source: arc-review
+      presets: [arc-review]
+      min_replicas: 1
+      max_replicas: 3
+      capacity: 2
+  autoscale:
+    min_runners: 1
+    max_runners: 7
+  tui:
+    default_mode: stream
+```
+
+`~/.yolo-runner/environments.yaml`:
+
+```yaml
+presets:
+  adapta:
+    workspace:
+      strategy: arc-shared
+      mount: ~/arcadia
+      subpath: marvel/gena/adapta
+    landing:
+      type: arc-pr
+      title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
+    agent:
+      backend: codex
+      model: gpt-5.5
+      runner_timeout: 20m
+      watchdog_timeout: 10m
+      watchdog_interval: 5s
+    limits:
+      max_concurrent: 1
+    env:
+      passthrough: [STARTREK_TOKEN, ARC_TOKEN]
+
+  arc-review:
+    workspace:
+      strategy: path
+      path: ~/arcadia
+    landing:
+      type: none
+    agent:
+      backend: codex
+      model: gpt-5.5
+      runner_timeout: 20m
+      watchdog_timeout: 10m
+      watchdog_interval: 5s
+    limits:
+      max_concurrent: 2
+    env:
+      passthrough: [ARC_TOKEN]
+```
+
+Validate and run:
+
+```bash
+export STARTREK_TOKEN=<startrek-api-token>
+export ARC_TOKEN=<arc-token>
+./bin/yolo-agent config validate --repo .
+./bin/yolo-agent watch --repo . --environments ~/.yolo-runner/environments.yaml --tui
+```
+
 ## What It Does
 
 - Loads tasks from tracker/storage backends such as GitHub, Linear, TK, or beads/br.
