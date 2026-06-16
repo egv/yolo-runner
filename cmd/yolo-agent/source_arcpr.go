@@ -43,6 +43,7 @@ var newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
 var sourceArcPRReplyApplier arcreview.PRReviewCycleReplyApplier
 var sourceArcPRReviewApplier arcreview.PRReviewCycleReviewApplier
 var sourceArcPRShipGate arcreview.PRReviewCycleShipGate
+var newSourceArcPRRunBundle = buildSourceArcPRRunBundle
 
 var newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 	return newTrackerConfigService()
@@ -101,41 +102,63 @@ func sourceArcPRCommand(args []string) int {
 }
 
 func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) error {
+	bundle, err := newSourceArcPRRunBundle(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer bundle.Close()
+
+	return sourcehost.Run(ctx, bundle.Source, bundle.Store, bundle.Options)
+}
+
+type sourceArcPRRunBundle struct {
+	Source  *arcpr.Source
+	Store   *workqueue.Store
+	Options sourcehost.Options
+	closeFn func()
+}
+
+func (b sourceArcPRRunBundle) Close() {
+	if b.closeFn != nil {
+		b.closeFn()
+	}
+}
+
+func buildSourceArcPRRunBundle(ctx context.Context, cfg sourceArcPRCommandConfig) (sourceArcPRRunBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	cfg.repoRoot = strings.TrimSpace(cfg.repoRoot)
 	if cfg.repoRoot == "" {
 		cfg.repoRoot = "."
 	}
 	cfg.profile = strings.TrimSpace(cfg.profile)
 	if cfg.profile == "" {
-		return errors.New("--profile is required")
+		return sourceArcPRRunBundle{}, errors.New("--profile is required")
 	}
 
 	configService := newSourceArcPRConfigService()
 	if configService == nil {
-		return errors.New("source arcpr config service is required")
+		return sourceArcPRRunBundle{}, errors.New("source arcpr config service is required")
 	}
 	reviewWatchConfig, err := configService.ResolveArcReviewWatchConfig(cfg.repoRoot)
 	if err != nil {
-		return err
+		return sourceArcPRRunBundle{}, err
 	}
 
 	store, err := workqueue.Open(cfg.queuePath)
 	if err != nil {
-		return err
+		return sourceArcPRRunBundle{}, err
 	}
-	defer store.Close()
 
 	state, err := arcreviewstate.Open(reviewWatchConfig.StatePath)
 	if err != nil {
-		return err
+		_ = store.Close()
+		return sourceArcPRRunBundle{}, err
 	}
-	defer state.Close()
 
 	eventSink, closeEventSink := watchEventSink(cfg.stream, "")
-	defer closeEventSink()
 	if cfg.eventSink != nil {
 		if eventSink != nil {
 			eventSink = contracts.NewFanoutEventSink(cfg.eventSink, eventSink)
@@ -146,31 +169,43 @@ func defaultRunSourceArcPR(ctx context.Context, cfg sourceArcPRCommandConfig) er
 
 	apiClient, err := newSourceArcPRAPIClient()
 	if err != nil {
-		return fmt.Errorf("build Arcanum API client: %w", err)
+		_ = state.Close()
+		_ = store.Close()
+		return sourceArcPRRunBundle{}, fmt.Errorf("build Arcanum API client: %w", err)
 	}
 
 	source := &arcpr.Source{
-		SourceName:     sourceArcPRSourceName(cfg.profile),
-		Preset:         cfg.profile,
-		Reviewer:       reviewWatchConfig.Reviewer,
+		SourceName:    sourceArcPRSourceName(cfg.profile),
+		Preset:        cfg.profile,
+		Reviewer:      reviewWatchConfig.Reviewer,
 		ObjectsBaseDir: reviewWatchConfig.ObjectsBaseDir,
 		MountsBaseDir:  reviewWatchConfig.MountsBaseDir,
-		AllowShip:      reviewWatchConfig.AllowShip,
-		State:          state,
-		Lister:         sourceArcPRReviewLister(),
-		StateFetcher:   sourceArcPRStateFetcher,
-		APIClient:      apiClient,
-		ReplyApplier:   sourceArcPRReplyApplier,
-		ReviewApplier:  sourceArcPRReviewApplier,
-		ShipGate:       sourceArcPRShipGate,
+		AllowShip:     reviewWatchConfig.AllowShip,
+		State:         state,
+		Lister:        sourceArcPRReviewLister(),
+		StateFetcher:  sourceArcPRStateFetcher,
+		APIClient:     apiClient,
+		ReplyApplier:  sourceArcPRReplyApplier,
+		ReviewApplier: sourceArcPRReviewApplier,
+		ShipGate:      sourceArcPRShipGate,
 	}
-	return sourcehost.Run(ctx, source, store, sourcehost.Options{
-		Once:         cfg.once,
-		PollInterval: reviewWatchConfig.PollInterval,
-		LockPath:     reviewWatchConfig.LockPath,
-		EventsPath:   cfg.eventsPath,
-		EventSink:    eventSink,
-	})
+
+	return sourceArcPRRunBundle{
+		Source: source,
+		Store:  store,
+		Options: sourcehost.Options{
+			Once:         cfg.once,
+			PollInterval: reviewWatchConfig.PollInterval,
+			LockPath:     reviewWatchConfig.LockPath,
+			EventsPath:   cfg.eventsPath,
+			EventSink:    eventSink,
+		},
+		closeFn: func() {
+			closeEventSink()
+			_ = state.Close()
+			_ = store.Close()
+		},
+	}, nil
 }
 
 func resolveSourceArcPREventsPath(cfg sourceArcPRCommandConfig) string {
