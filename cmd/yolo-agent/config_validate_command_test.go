@@ -333,6 +333,203 @@ arc_review_watch:
 	}
 }
 
+func TestRunConfigValidateCommandValidWatchConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: arcpr-source
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets: [arc-review]
+      min_capacity: 1
+      max_capacity: 2
+  autoscale:
+    min_runners: 1
+    max_runners: 2
+  tui:
+    default_mode: stream
+`)
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot})
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d", code)
+		}
+	})
+
+	if stdoutText != "config is valid\n" {
+		t.Fatalf("expected deterministic success output, got %q", stdoutText)
+	}
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for valid config, got %q", stderrText)
+	}
+}
+
+
+func TestRunConfigValidateCommandRejectsInvalidWatchConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		config    string
+		wantField string
+		wantCause string
+	}{
+		{
+			name: "missing queue path",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: ""
+  sources:
+    - name: arcpr-source
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets: [arc-review]
+      min_capacity: 2
+      max_capacity: 4
+`,
+			wantField: "watch.queue_path",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "missing source profile",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: arcpr-source
+      type: arcpr
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets: [arc-review]
+      min_capacity: 2
+      max_capacity: 4
+`,
+			wantField: "watch.sources[0].profile",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "invalid source type",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: unknown-source
+      type: invalid
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: unknown-source
+      presets: [arc-review]
+      min_capacity: 2
+      max_capacity: 4
+`,
+			wantField: "watch.sources[0].type",
+			wantCause: "must be one of",
+		},
+		{
+			name: "invalid runner pool bounds",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: arcpr-source
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets: [arc-review]
+      min_capacity: 6
+      max_capacity: 5
+			`,
+			wantField: "watch.runner_pools[0].max_capacity",
+			wantCause: "must be greater than or equal",
+		},
+		{
+			name: "invalid autoscale limits",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: arcpr-source
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets: [arc-review]
+      min_capacity: 2
+      max_capacity: 4
+  autoscale:
+    min_runners: 5
+    max_runners: 2
+			`,
+			wantField: "watch.autoscale.max_runners",
+			wantCause: "must be greater than or equal",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeTrackerConfigYAML(t, repoRoot, tc.config)
+
+			stdoutText, stderrText := captureOutput(t, func() {
+				code := runConfigValidateCommand([]string{"--repo", repoRoot})
+				if code != 1 {
+					t.Fatalf("expected exit code 1, got %d", code)
+				}
+			})
+
+			if stdoutText != "" {
+				t.Fatalf("expected no stdout output for invalid config, got %q", stdoutText)
+			}
+			if !strings.Contains(stderrText, "field: "+tc.wantField) {
+				t.Fatalf("expected field %s in output, got %q", tc.wantField, stderrText)
+			}
+			if !strings.Contains(stderrText, "reason: "+tc.wantCause) {
+				t.Fatalf("expected reason to contain %q, got %q", tc.wantCause, stderrText)
+			}
+			if !strings.Contains(stderrText, "remediation:") {
+				t.Fatalf("expected remediation guidance in output, got %q", stderrText)
+			}
+		})
+	}
+}
+
+
 func TestRunConfigValidateCommandValidConfigJSONOutputUsesStableSchema(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `
