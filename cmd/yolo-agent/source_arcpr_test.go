@@ -463,6 +463,114 @@ esac
 	}
 }
 
+func TestBuildSourceArcPRRunBundleConfiguresSourcehostOptions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot := t.TempDir()
+	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
+	statePath := filepath.Join(repoRoot, "state", "arcpr.db")
+
+	originalConfigService := newSourceArcPRConfigService
+	originalAPIClient := newSourceArcPRAPIClient
+	originalLister := sourceArcPRLister
+	originalStateFetcher := sourceArcPRStateFetcher
+	t.Cleanup(func() {
+		newSourceArcPRConfigService = originalConfigService
+		newSourceArcPRAPIClient = originalAPIClient
+		sourceArcPRLister = originalLister
+		sourceArcPRStateFetcher = originalStateFetcher
+	})
+	newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
+		return staticArcReviewWatchConfigResolver{
+			cfg: arcReviewWatchConfig{
+				PollInterval:   12 * time.Second,
+				LockPath:       filepath.Join(repoRoot, ".yolo-runner", "custom-arcpr.lock"),
+				StatePath:      statePath,
+				Reviewer:       "alice",
+				AllowShip:      true,
+				ObjectsBaseDir: filepath.Join(repoRoot, "objects"),
+				MountsBaseDir:  filepath.Join(repoRoot, "mounts"),
+			},
+		}
+	}
+	newSourceArcPRAPIClient = func() (*arcanum.APIClient, error) {
+		return arcanum.NewAPIClient(arcanum.APIClientConfig{
+			BaseURL: "https://a.yandex-team.ru/api",
+		})
+	}
+	sourceArcPRLister = arcpr.PRListerFunc(func(context.Context) ([]arcanum.PRSummary, error) {
+		return nil, nil
+	})
+	sourceArcPRStateFetcher = arcpr.PRStateFetcherFunc(func(context.Context, string, string) (arcreview.PRRuntimeState, error) {
+		return arcreview.PRRuntimeState{}, nil
+	})
+
+	sink := &testSink{}
+	bundle, err := buildSourceArcPRRunBundle(context.Background(), sourceArcPRCommandConfig{
+		repoRoot:   repoRoot,
+		profile:    "arc-dev",
+		queuePath:  queuePath,
+		once:       true,
+		eventsPath: filepath.Join(repoRoot, "arcpr.events.jsonl"),
+		eventSink:  sink,
+	})
+	if err != nil {
+		t.Fatalf("buildSourceArcPRRunBundle() error = %v", err)
+	}
+	defer bundle.Close()
+
+	if !bundle.Options.Once {
+		t.Fatalf("sourcehost option once = false, want true")
+	}
+	if got := bundle.Options.PollInterval; got != 12*time.Second {
+		t.Fatalf("sourcehost poll interval = %s, want %s", got, 12*time.Second)
+	}
+	if got := bundle.Options.LockPath; got != filepath.Join(repoRoot, ".yolo-runner", "custom-arcpr.lock") {
+		t.Fatalf("sourcehost lock path = %q, want %q", got, filepath.Join(repoRoot, ".yolo-runner", "custom-arcpr.lock"))
+	}
+	if got := bundle.Options.EventsPath; got != filepath.Join(repoRoot, "arcpr.events.jsonl") {
+		t.Fatalf("sourcehost events path = %q, want %q", got, filepath.Join(repoRoot, "arcpr.events.jsonl"))
+	}
+	if bundle.Options.EventSink == nil {
+		t.Fatalf("sourcehost event sink is nil, want non-nil")
+	}
+	assertBundleEventSinkWritesToInjectedSinkAndEventsPath(t, sink, bundle.Options.EventSink, bundle.Options.EventsPath)
+
+	source := bundle.Source
+	if source == nil {
+		t.Fatalf("bundle source is nil")
+	}
+	if source.SourceName != sourceArcPRSourceName("arc-dev") {
+		t.Fatalf("source name = %q, want %q", source.SourceName, sourceArcPRSourceName("arc-dev"))
+	}
+	if source.Preset != "arc-dev" {
+		t.Fatalf("source preset = %q, want arc-dev", source.Preset)
+	}
+	if source.Reviewer != "alice" {
+		t.Fatalf("source reviewer = %q, want alice", source.Reviewer)
+	}
+	if !source.AllowShip {
+		t.Fatalf("source allow ship = false, want true")
+	}
+	if source.ObjectsBaseDir != filepath.Join(repoRoot, "objects") {
+		t.Fatalf("source objects base dir = %q, want %q", source.ObjectsBaseDir, filepath.Join(repoRoot, "objects"))
+	}
+	if source.MountsBaseDir != filepath.Join(repoRoot, "mounts") {
+		t.Fatalf("source mounts base dir = %q, want %q", source.MountsBaseDir, filepath.Join(repoRoot, "mounts"))
+	}
+	if source.State == nil {
+		t.Fatalf("source state is nil")
+	}
+	if source.Lister == nil {
+		t.Fatalf("source lister is nil")
+	}
+	if source.StateFetcher == nil {
+		t.Fatalf("source state fetcher is nil")
+	}
+	if source.APIClient == nil {
+		t.Fatalf("source API client is nil")
+	}
+}
+
 type arcPRReplyApplierFunc func(context.Context, arcreview.PRRuntimeState, []byte) (arcreview.ReplyResult, error)
 
 func (f arcPRReplyApplierFunc) Apply(ctx context.Context, state arcreview.PRRuntimeState, payload []byte) (arcreview.ReplyResult, error) {

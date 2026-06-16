@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -342,6 +343,118 @@ tracker_agent:
 	}
 }
 
+func TestBuildSourceStartrekRunBundleConfiguresSourcehostOptions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("STARTREK_TEST_TOKEN", "startrek-token")
+	repoRoot := t.TempDir()
+	queuePath := filepath.Join(repoRoot, ".yolo-runner", "queue.db")
+	statePath := sourceStartrekStatePath(repoRoot, "st-dev")
+
+	originalConfigService := newSourceStartrekConfigService
+	t.Cleanup(func() {
+		newSourceStartrekConfigService = originalConfigService
+	})
+	newSourceStartrekConfigService = func() sourceStartrekConfigResolver {
+		return staticSourceStartrekConfigResolver{
+			profile: resolvedTrackerProfile{
+				Name: "st-dev",
+				Tracker: trackerModel{
+					Type: trackerTypeStartrek,
+					Startrek: &startrekTrackerModel{
+						Endpoint: "https://tracker.example.com/v3",
+						TokenEnv: "STARTREK_TEST_TOKEN",
+						Queues: []startrekQueueModel{{
+							Key:  "VAY",
+							Root: filepath.Join(repoRoot, "root"),
+						}},
+					},
+				},
+			},
+			trackerAgentConfig: trackerAgentConfig{
+				PollInterval: 10 * time.Second,
+				LockPath:     filepath.Join(repoRoot, ".yolo-runner", "custom-startrek.lock"),
+				Labels: trackerAgentLabelNamesConfig{
+					Ready:      "yolo-agent-ready-custom",
+					InProgress: "yolo-agent-in-progress-custom",
+				},
+				StatusTransitions: trackerAgentStatusTransitions{
+					Ready:      "open",
+					InProgress: "inProgress",
+				},
+			},
+		}
+	}
+
+	sink := &testSink{}
+	bundle, err := buildSourceStartrekRunBundle(context.Background(), sourceStartrekCommandConfig{
+		repoRoot:   repoRoot,
+		profile:    "  st-dev ",
+		queuePath:  queuePath,
+		once:       true,
+		eventsPath: filepath.Join(repoRoot, "source-startrek.events.jsonl"),
+		eventSink:  sink,
+	})
+	if err != nil {
+		t.Fatalf("buildSourceStartrekRunBundle() error = %v", err)
+	}
+	defer bundle.Close()
+
+	if !bundle.Options.Once {
+		t.Fatalf("sourcehost option once = false, want true")
+	}
+	if got := bundle.Options.PollInterval; got != 10*time.Second {
+		t.Fatalf("sourcehost poll interval = %s, want %s", got, 10*time.Second)
+	}
+	if got := bundle.Options.LockPath; got != sourceStartrekLockPath(repoRoot, "st-dev") {
+		t.Fatalf("sourcehost lock path = %q, want %q", got, sourceStartrekLockPath(repoRoot, "st-dev"))
+	}
+	if got := bundle.Options.EventsPath; got != filepath.Join(repoRoot, "source-startrek.events.jsonl") {
+		t.Fatalf("sourcehost events path = %q, want %q", got, filepath.Join(repoRoot, "source-startrek.events.jsonl"))
+	}
+	if bundle.Options.EventSink == nil {
+		t.Fatalf("sourcehost event sink is nil, want non-nil")
+	}
+	assertBundleEventSinkWritesToInjectedSinkAndEventsPath(t, sink, bundle.Options.EventSink, bundle.Options.EventsPath)
+
+	source := bundle.Source
+	if source == nil {
+		t.Fatalf("bundle source is nil")
+	}
+	if source.SourceName != sourceStartrekSourceName("st-dev") {
+		t.Fatalf("source name = %q, want %q", source.SourceName, sourceStartrekSourceName("st-dev"))
+	}
+	if source.Source.Preset != "st-dev" {
+		t.Fatalf("source preset = %q, want st-dev", source.Source.Preset)
+	}
+	if source.Source.Backend == nil {
+		t.Fatalf("source backend is nil")
+	}
+	if source.Source.Queue == nil {
+		t.Fatalf("source queue is nil")
+	}
+	if source.Source.Queue != bundle.Store {
+		t.Fatalf("source queue != bundle store")
+	}
+	if len(source.Source.Queues) != 1 || source.Source.Queues[0].Key != "VAY" {
+		t.Fatalf("source queues = %#v, want one queue VAY", source.Source.Queues)
+	}
+	if len(source.Queues) != 1 || source.Queues[0].Key != "VAY" {
+		t.Fatalf("runtime source queues = %#v, want one queue VAY", source.Queues)
+	}
+	if source.Source.ReadyLabel != "yolo-agent-ready-custom" {
+		t.Fatalf("source ready label = %q, want yolo-agent-ready-custom", source.Source.ReadyLabel)
+	}
+	if source.Source.ProcessingLabel != "yolo-agent-in-progress-custom" {
+		t.Fatalf("source processing label = %q, want yolo-agent-in-progress-custom", source.Source.ProcessingLabel)
+	}
+	if source.State == nil {
+		t.Fatalf("source state is nil")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("expected source state path to be created %q: %v", statePath, err)
+	}
+}
+
 func TestSourceStartrekPollSkipsReadyIssueWithOpenQueueItemAfterRevisionChange(t *testing.T) {
 	ctx := context.Background()
 	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
@@ -466,6 +579,88 @@ func (s *closeStartrekQueueAfterPollSource) Poll(ctx context.Context) ([]workque
 
 func (s *closeStartrekQueueAfterPollSource) HandleResult(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
 	return s.source.HandleResult(ctx, item, result)
+}
+
+type staticSourceStartrekConfigResolver struct {
+	profile            resolvedTrackerProfile
+	trackerAgentConfig trackerAgentConfig
+}
+
+func (r staticSourceStartrekConfigResolver) ResolveTrackerAgentConfig(repoRoot string) (trackerAgentConfig, error) {
+	return r.trackerAgentConfig, nil
+}
+
+func (r staticSourceStartrekConfigResolver) ResolveTrackerProfile(repoRoot string, selectedProfile string, rootID string, getenv func(string) string) (resolvedTrackerProfile, error) {
+	return r.profile, nil
+}
+
+type testSink struct {
+	emitCount int
+}
+
+func (s *testSink) Emit(context.Context, contracts.Event) error {
+	s.emitCount++
+	return nil
+}
+
+func assertBundleEventSinkWritesToInjectedSinkAndEventsPath(t *testing.T, injected *testSink, eventSink contracts.EventSink, eventsPath string) {
+	t.Helper()
+	if injected == nil {
+		t.Fatal("expected injected sink, got nil")
+	}
+	if eventSink == nil {
+		t.Fatal("sourcehost event sink is nil, want non-nil")
+	}
+	if strings.TrimSpace(eventsPath) == "" {
+		t.Fatal("events path is required for this assertion")
+	}
+
+	queuePath := filepath.Join(t.TempDir(), "queue.db")
+	if err := os.MkdirAll(filepath.Dir(queuePath), 0o755); err != nil {
+		t.Fatalf("create queue directory: %v", err)
+	}
+	queue, err := workqueue.Open(queuePath)
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	defer queue.Close()
+
+	injected.emitCount = 0
+	if err := sourcehost.Run(context.Background(), bundleEventSinkProbeSource{}, queue, sourcehost.Options{
+		Once:         true,
+		EventsPath:   eventsPath,
+		EventSink:    eventSink,
+		LockPath:     filepath.Join(filepath.Dir(queuePath), "probe.lock"),
+		PollInterval: 10 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("sourcehost run assertion check error = %v", err)
+	}
+	if injected.emitCount == 0 {
+		t.Fatalf("sourcehost event sink did not emit to injected sink")
+	}
+
+	raw, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read sourcehost events path %q: %v", eventsPath, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		t.Fatalf("expected events file %q to contain sourcehost events", eventsPath)
+	}
+}
+
+type bundleEventSinkProbeSource struct{}
+
+func (bundleEventSinkProbeSource) Name() string {
+	return "probe"
+}
+
+func (bundleEventSinkProbeSource) Poll(context.Context) ([]workqueue.Submission, error) {
+	return nil, nil
+}
+
+func (bundleEventSinkProbeSource) HandleResult(context.Context, workitem.Item, workqueue.Result) ([]workqueue.Submission, error) {
+	return nil, nil
 }
 
 type fakeSourceStartrekPollBackend struct {

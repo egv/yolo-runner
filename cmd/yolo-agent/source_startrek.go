@@ -50,6 +50,7 @@ type sourceStartrekRuntimeSource struct {
 }
 
 var runSourceStartrek = defaultRunSourceStartrek
+var newSourceStartrekRunBundle = buildSourceStartrekRunBundle
 
 var newSourceStartrekConfigService = func() sourceStartrekConfigResolver {
 	return newTrackerConfigService()
@@ -90,55 +91,77 @@ func sourceStartrekCommand(args []string) int {
 }
 
 func defaultRunSourceStartrek(ctx context.Context, cfg sourceStartrekCommandConfig) error {
+	bundle, err := newSourceStartrekRunBundle(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer bundle.Close()
+
+	return sourcehost.Run(ctx, bundle.Source, bundle.Store, bundle.Options)
+}
+
+type sourceStartrekRunBundle struct {
+	Source  *sourceStartrekRuntimeSource
+	Store   *workqueue.Store
+	Options sourcehost.Options
+	closeFn func()
+}
+
+func (b sourceStartrekRunBundle) Close() {
+	if b.closeFn != nil {
+		b.closeFn()
+	}
+}
+
+func buildSourceStartrekRunBundle(ctx context.Context, cfg sourceStartrekCommandConfig) (sourceStartrekRunBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	cfg.repoRoot = strings.TrimSpace(cfg.repoRoot)
 	if cfg.repoRoot == "" {
 		cfg.repoRoot = "."
 	}
 	cfg.profile = strings.TrimSpace(cfg.profile)
 	if cfg.profile == "" {
-		return errors.New("--profile is required")
+		return sourceStartrekRunBundle{}, errors.New("--profile is required")
 	}
 
 	configService := newSourceStartrekConfigService()
 	if configService == nil {
-		return errors.New("source startrek config service is required")
+		return sourceStartrekRunBundle{}, errors.New("source startrek config service is required")
 	}
 	profile, err := configService.ResolveTrackerProfile(cfg.repoRoot, cfg.profile, "", os.Getenv)
 	if err != nil {
-		return err
+		return sourceStartrekRunBundle{}, err
 	}
 	if profile.Tracker.Type != trackerTypeStartrek {
-		return fmt.Errorf("profile %q uses tracker type %q, want startrek", profile.Name, profile.Tracker.Type)
+		return sourceStartrekRunBundle{}, fmt.Errorf("profile %q uses tracker type %q, want startrek", profile.Name, profile.Tracker.Type)
 	}
 	if profile.Tracker.Startrek == nil {
-		return errors.New("tracker.startrek settings are required")
+		return sourceStartrekRunBundle{}, errors.New("tracker.startrek settings are required")
 	}
 	trackerAgentConfig, err := configService.ResolveTrackerAgentConfig(cfg.repoRoot)
 	if err != nil {
-		return err
+		return sourceStartrekRunBundle{}, err
 	}
 	backend, err := buildTrackerWatchStartrekBackend(profile, trackerAgentConfig)
 	if err != nil {
-		return err
+		return sourceStartrekRunBundle{}, err
 	}
 
 	store, err := workqueue.Open(cfg.queuePath)
 	if err != nil {
-		return err
+		return sourceStartrekRunBundle{}, err
 	}
-	defer store.Close()
 
 	state, err := startreksource.OpenState(sourceStartrekStatePath(cfg.repoRoot, cfg.profile))
 	if err != nil {
-		return err
+		_ = store.Close()
+		return sourceStartrekRunBundle{}, err
 	}
-	defer state.Close()
 
 	eventSink, closeEventSink := watchEventSink(cfg.stream, "")
-	defer closeEventSink()
 	if cfg.eventSink != nil {
 		if eventSink != nil {
 			eventSink = contracts.NewFanoutEventSink(cfg.eventSink, eventSink)
@@ -168,13 +191,23 @@ func defaultRunSourceStartrek(ctx context.Context, cfg sourceStartrekCommandConf
 		Queues:  profile.Tracker.Startrek.Queues,
 		Preset:  cfg.profile,
 	}
-	return sourcehost.Run(ctx, source, store, sourcehost.Options{
-		Once:         cfg.once,
-		PollInterval: trackerAgentConfig.PollInterval,
-		LockPath:     sourceStartrekLockPath(cfg.repoRoot, cfg.profile),
-		EventsPath:   cfg.eventsPath,
-		EventSink:    eventSink,
-	})
+
+	return sourceStartrekRunBundle{
+		Source: source,
+		Store:  store,
+		Options: sourcehost.Options{
+			Once:         cfg.once,
+			PollInterval: trackerAgentConfig.PollInterval,
+			LockPath:     sourceStartrekLockPath(cfg.repoRoot, cfg.profile),
+			EventsPath:   cfg.eventsPath,
+			EventSink:    eventSink,
+		},
+		closeFn: func() {
+			closeEventSink()
+			_ = state.Close()
+			_ = store.Close()
+		},
+	}, nil
 }
 
 func (s *sourceStartrekRuntimeSource) Poll(ctx context.Context) ([]workqueue.Submission, error) {

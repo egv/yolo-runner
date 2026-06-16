@@ -235,7 +235,7 @@ func fixedTrackerWatchPollInterval(interval time.Duration) trackerWatchPollInter
 	}
 }
 
-func TestDefaultRunTrackerWatchDelegatesToSourceStartrekOnce(t *testing.T) {
+func TestDefaultRunTrackerWatchDelegatesToSourceStartrekConfig(t *testing.T) {
 	originalRunSourceStartrek := runSourceStartrek
 	t.Cleanup(func() {
 		runSourceStartrek = originalRunSourceStartrek
@@ -243,6 +243,7 @@ func TestDefaultRunTrackerWatchDelegatesToSourceStartrekOnce(t *testing.T) {
 
 	called := false
 	var got sourceStartrekCommandConfig
+	sink := &testSink{}
 	runSourceStartrek = func(_ context.Context, cfg sourceStartrekCommandConfig) error {
 		called = true
 		got = cfg
@@ -252,9 +253,9 @@ func TestDefaultRunTrackerWatchDelegatesToSourceStartrekOnce(t *testing.T) {
 	err := defaultRunTrackerWatch(context.Background(), trackerWatchConfig{
 		repoRoot:   "/repo",
 		profile:    "st-dev",
-		once:       false,
 		stream:     true,
 		eventsPath: "/repo/events.jsonl",
+		eventSink:  sink,
 	})
 	if err != nil {
 		t.Fatalf("defaultRunTrackerWatch() error = %v", err)
@@ -268,14 +269,17 @@ func TestDefaultRunTrackerWatchDelegatesToSourceStartrekOnce(t *testing.T) {
 	if got.profile != "st-dev" {
 		t.Fatalf("profile = %q, want st-dev", got.profile)
 	}
-	if !got.once {
-		t.Fatalf("once = false, want true")
+	if got.once {
+		t.Fatalf("once = true, want false")
 	}
 	if !got.stream {
 		t.Fatalf("stream = false, want true")
 	}
 	if got.eventsPath != "/repo/events.jsonl" {
 		t.Fatalf("eventsPath = %q, want /repo/events.jsonl", got.eventsPath)
+	}
+	if got.eventSink != sink {
+		t.Fatalf("eventSink was not forwarded to source startrek command config")
 	}
 }
 
@@ -316,8 +320,8 @@ profiles:
 	if got.profile != "st-default" {
 		t.Fatalf("delegated profile = %q, want st-default", got.profile)
 	}
-	if !got.once {
-		t.Fatalf("once = false, want true")
+	if got.once {
+		t.Fatalf("once = true, want false")
 	}
 }
 

@@ -56,7 +56,7 @@ func defaultRunTrackerWatch(ctx context.Context, cfg trackerWatchConfig) error {
 	return handler(ctx, sourceStartrekCommandConfig{
 		repoRoot:   cfg.repoRoot,
 		profile:    profile,
-		once:       true,
+		once:       cfg.once,
 		stream:     cfg.stream,
 		eventsPath: cfg.eventsPath,
 		eventSink:  cfg.eventSink,
