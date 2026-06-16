@@ -281,6 +281,77 @@ arc_review_watch:
 	}
 }
 
+func TestTrackerConfigServiceResolveWatchConfigAcceptsValidConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: arcpr-source
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arcpr-pool
+      source: arcpr-source
+      presets:
+        - arc-review
+      min_capacity: 2
+      max_capacity: 4
+  autoscale:
+    min_runners: 2
+    max_runners: 5
+  tui:
+    default_mode: ui
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected watch config to resolve, got %v", err)
+	}
+	if got, want := cfg.QueuePath, filepath.Join(repoRoot, "queue", "watch.db"); got != want {
+		t.Fatalf("expected queue path %q, got %q", want, got)
+	}
+	if len(cfg.Sources) != 1 {
+		t.Fatalf("expected 1 watch source, got %d", len(cfg.Sources))
+	}
+	if got := cfg.Sources[0]; got.Name != "arcpr-source" || got.Type != watchSourceArcPR || got.Profile != "arc-review" {
+		t.Fatalf("unexpected watch source %#v", got)
+	}
+	if len(cfg.RunnerPools) != 1 {
+		t.Fatalf("expected 1 runner pool, got %d", len(cfg.RunnerPools))
+	}
+	pool := cfg.RunnerPools[0]
+	if pool.Name != "arcpr-pool" {
+		t.Fatalf("expected pool name arcpr-pool, got %q", pool.Name)
+	}
+	if pool.Source != "arcpr-source" {
+		t.Fatalf("expected pool source arcpr-source, got %q", pool.Source)
+	}
+	if len(pool.Presets) != 1 || pool.Presets[0] != "arc-review" {
+		t.Fatalf("expected pool preset arc-review, got %#v", pool.Presets)
+	}
+	if pool.MinCapacity != 2 {
+		t.Fatalf("expected pool min capacity 2, got %d", pool.MinCapacity)
+	}
+	if pool.MaxCapacity != 4 {
+		t.Fatalf("expected pool max capacity 4, got %d", pool.MaxCapacity)
+	}
+	if cfg.Autoscale.MinRunners != 2 {
+		t.Fatalf("expected watch autoscale min 2, got %d", cfg.Autoscale.MinRunners)
+	}
+	if cfg.Autoscale.MaxRunners != 5 {
+		t.Fatalf("expected watch autoscale max 5, got %d", cfg.Autoscale.MaxRunners)
+	}
+	if cfg.DefaultMode != "ui" {
+		t.Fatalf("expected TUI default mode ui, got %q", cfg.DefaultMode)
+	}
+}
+
 func TestTrackerConfigServiceResolveLandingConfigDefaultsToGitWhenOmitted(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `

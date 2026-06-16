@@ -14,7 +14,12 @@ import (
 
 const configValidateSchemaVersion = "v1"
 
-var configFieldPattern = regexp.MustCompile(`[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+`)
+var (
+	configFieldPattern = regexp.MustCompile(`[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+`)
+	configWatchSourcesFieldPattern = regexp.MustCompile(`watch\.sources\[(\d+)\]\.([a-z0-9_]+)`)
+	configWatchRunnerPoolsFieldPattern = regexp.MustCompile(`watch\.runner_pools\[(\d+)\]\.([a-z0-9_]+)`)
+	configWatchAutoscaleFieldPattern = regexp.MustCompile(`watch\.autoscale\.(min_runners|max_runners)`)
+)
 
 type configValidateOutputFormat string
 
@@ -79,6 +84,9 @@ func defaultRunConfigValidateCommand(args []string) int {
 		return reportInvalidConfig(err, format)
 	}
 	if err := validateArcReviewWatchConfigDefaults(*repo, model.ArcReviewWatch); err != nil {
+		return reportInvalidConfig(err, format)
+	}
+	if err := validateWatchConfigDefaults(*repo, model.Watch); err != nil {
 		return reportInvalidConfig(err, format)
 	}
 
@@ -235,6 +243,14 @@ func validateArcReviewWatchConfigDefaults(repoRoot string, model arcReviewWatchC
 	return nil
 }
 
+func validateWatchConfigDefaults(repoRoot string, model *watchConfigModel) error {
+	if model == nil {
+		return nil
+	}
+	_, err := resolveWatchConfig(model, repoRoot)
+	return err
+}
+
 func validateExplicitArcReviewWatchConfigValues(repoRoot string) error {
 	content, err := os.ReadFile(filepath.Join(repoRoot, trackerConfigRelPath))
 	if err != nil {
@@ -356,6 +372,16 @@ func classifyConfigValidationError(err error) configValidateDiagnostic {
 }
 
 func inferConfigField(message string) string {
+	if match := configWatchSourcesFieldPattern.FindStringSubmatch(message); len(match) == 3 {
+		return "watch.sources[" + match[1] + "]." + match[2]
+	}
+	if match := configWatchRunnerPoolsFieldPattern.FindStringSubmatch(message); len(match) == 3 {
+		return "watch.runner_pools[" + match[1] + "]." + match[2]
+	}
+	if match := configWatchAutoscaleFieldPattern.FindStringSubmatch(message); len(match) == 2 {
+		return "watch.autoscale." + match[1]
+	}
+
 	knownFields := []string{
 		"agent.backend",
 		"agent.concurrency",
@@ -382,6 +408,13 @@ func inferConfigField(message string) string {
 		"arc_review_watch.allow_ship",
 		"arc_review_watch.objects_base_dir",
 		"arc_review_watch.mounts_base_dir",
+		"watch.queue_path",
+		"watch.sources",
+		"watch.runner_pools",
+		"watch.autoscale",
+		"watch.autoscale.min_runners",
+		"watch.autoscale.max_runners",
+		"watch.tui.default_mode",
 		"tracker.type",
 		"linear.scope.workspace",
 		linearTokenEnvVarLabel,
@@ -457,6 +490,15 @@ func inferConfigReason(message string, field string) string {
 }
 
 func inferConfigRemediation(field string, message string) string {
+	if strings.HasPrefix(field, "watch.sources[") {
+		return "Set watch.sources entries with a non-empty name, a supported type, and a non-empty profile."
+	}
+	if strings.HasPrefix(field, "watch.runner_pools[") {
+		return "Set watch.runner_pools entries with a source name, presets, and valid capacity bounds."
+	}
+	if strings.HasPrefix(field, "watch.autoscale.") {
+		return "Set watch.autoscale.min_runners and watch.autoscale.max_runners so watchers can scale runners predictably."
+	}
 	switch field {
 	case "agent.backend":
 		return "Set agent.backend to a configured coding backend in .yolo-runner/config.yaml."
@@ -508,6 +550,16 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set arc_review_watch.objects_base_dir to a non-empty arc object-store base directory, or omit it to use the default."
 	case "arc_review_watch.mounts_base_dir":
 		return "Set arc_review_watch.mounts_base_dir to a non-empty per-PR checkout mount base directory, or omit it to use the default."
+	case "watch.queue_path":
+		return "Set watch.queue_path to a writable SQLite queue path for watch processes."
+	case "watch.sources":
+		return "Set watch.sources to one or more source definitions."
+	case "watch.runner_pools":
+		return "Set watch.runner_pools to define one or more runner pools for watch sources."
+	case "watch.autoscale":
+		return "Set watch.autoscale.min_runners and watch.autoscale.max_runners so watchers can scale runners predictably."
+	case "watch.tui.default_mode":
+		return "Set watch.tui.default_mode to one of stream or ui, or omit it to use stream mode."
 	case "tracker.type":
 		return "Set tracker.type to a supported tracker (tk, linear, github) in .yolo-runner/config.yaml."
 	case "linear.scope.workspace":

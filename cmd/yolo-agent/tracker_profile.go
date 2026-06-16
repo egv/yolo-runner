@@ -22,6 +22,8 @@ const (
 	trackerTypeGitHub   = "github"
 	trackerTypeBeads    = "beads"
 	trackerTypeStartrek = "startrek"
+	watchSourceArcPR    = "arcpr"
+	watchSourceStartrek = "startrek"
 
 	landingTypeGit   = "git"
 	landingTypeArcPR = "arc-pr"
@@ -45,6 +47,12 @@ const (
 	defaultArcReviewWatchStatePath      = ".yolo-runner/arc-review-watch-state.json"
 	defaultArcReviewWatchObjectsBaseDir = "~/.yolo-runner/pr-objects"
 	defaultArcReviewWatchMountsBaseDir  = "~/.yolo-runner/pr-mounts"
+	defaultWatchQueuePath              = ".yolo-runner/watch.db"
+	defaultWatchRunnerPoolMinCapacity   = 1
+	defaultWatchRunnerPoolMaxCapacity   = 1
+	defaultWatchAutoscaleMin            = 1
+	defaultWatchAutoscaleMax            = 1
+	defaultWatchUIDefaultMode          = agentModeStream
 )
 
 type profileSelectionInput struct {
@@ -58,6 +66,7 @@ type trackerProfilesModel struct {
 	Agent          yoloAgentConfigModel         `yaml:"agent,omitempty"`
 	TrackerAgent   trackerAgentConfigModel      `yaml:"tracker_agent,omitempty"`
 	ArcReviewWatch arcReviewWatchConfigModel    `yaml:"arc_review_watch,omitempty"`
+	Watch          *watchConfigModel            `yaml:"watch,omitempty"`
 	Landing        landingConfigModel           `yaml:"landing,omitempty"`
 	Tracker        trackerModel                 `yaml:"tracker,omitempty"`
 }
@@ -211,6 +220,64 @@ type arcReviewWatchConfig struct {
 	MountsBaseDir  string
 	Workspaces     []string
 	Branches       []string
+}
+
+type watchConfigModel struct {
+	QueuePath  string             `yaml:"queue_path,omitempty"`
+	Sources    []watchSourceModel `yaml:"sources,omitempty"`
+	RunnerPools []watchRunnerPoolModel `yaml:"runner_pools,omitempty"`
+	Autoscale  watchAutoscaleModel `yaml:"autoscale,omitempty"`
+	TUI        watchTUIModel       `yaml:"tui,omitempty"`
+}
+
+type watchSourceModel struct {
+	Name    string `yaml:"name,omitempty"`
+	Type    string `yaml:"type,omitempty"`
+	Profile string `yaml:"profile,omitempty"`
+}
+
+type watchRunnerPoolModel struct {
+	Name        string `yaml:"name,omitempty"`
+	Source      string `yaml:"source,omitempty"`
+	Presets     []string `yaml:"presets,omitempty"`
+	MinCapacity *int   `yaml:"min_capacity,omitempty"`
+	MaxCapacity *int   `yaml:"max_capacity,omitempty"`
+}
+
+type watchAutoscaleModel struct {
+	MinRunners *int `yaml:"min_runners,omitempty"`
+	MaxRunners *int `yaml:"max_runners,omitempty"`
+}
+
+type watchTUIModel struct {
+	DefaultMode string `yaml:"default_mode,omitempty"`
+}
+
+type watchConfig struct {
+	QueuePath   string
+	Sources     []watchSourceConfig
+	RunnerPools []watchRunnerPoolConfig
+	Autoscale   watchAutoscaleConfig
+	DefaultMode string
+}
+
+type watchSourceConfig struct {
+	Name    string
+	Type    string
+	Profile string
+}
+
+type watchRunnerPoolConfig struct {
+	Name        string
+	Source      string
+	Presets     []string
+	MinCapacity int
+	MaxCapacity int
+}
+
+type watchAutoscaleConfig struct {
+	MinRunners int
+	MaxRunners int
 }
 
 type landingConfigModel struct {
@@ -700,6 +767,152 @@ func defaultArcReviewWatchConfig() arcReviewWatchConfig {
 		StatePath:      defaultArcReviewWatchStatePath,
 		ObjectsBaseDir: defaultArcReviewWatchObjectsBaseDir,
 		MountsBaseDir:  defaultArcReviewWatchMountsBaseDir,
+	}
+}
+
+func resolveWatchConfig(model *watchConfigModel, repoRoot string) (watchConfig, error) {
+	if model == nil {
+		return defaultWatchConfig(), nil
+	}
+
+	cfg := defaultWatchConfig()
+
+	queuePath := strings.TrimSpace(model.QueuePath)
+	if queuePath == "" {
+		return watchConfig{}, fmt.Errorf("watch.queue_path in %s must not be empty", trackerConfigRelPath)
+	}
+	cfg.QueuePath = resolveRepoLocalPath(repoRoot, queuePath)
+
+	seeds := make(map[string]watchSourceConfig, len(model.Sources))
+	for i := range model.Sources {
+		src := model.Sources[i]
+		name := strings.TrimSpace(src.Name)
+		if name == "" {
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].name in %s must not be empty", i, trackerConfigRelPath)
+		}
+		if _, ok := seeds[name]; ok {
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].name in %s must be unique", i, trackerConfigRelPath)
+		}
+		typ := strings.ToLower(strings.TrimSpace(src.Type))
+		if typ == "" {
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].type in %s must not be empty", i, trackerConfigRelPath)
+		}
+		switch typ {
+		case watchSourceArcPR, watchSourceStartrek:
+		default:
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].type in %s must be one of: %s, %s", i, trackerConfigRelPath, watchSourceArcPR, watchSourceStartrek)
+		}
+		profile := strings.TrimSpace(src.Profile)
+		if profile == "" {
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].profile in %s must not be empty", i, trackerConfigRelPath)
+		}
+
+		cfgSource := watchSourceConfig{Name: name, Type: typ, Profile: profile}
+		cfg.Sources = append(cfg.Sources, cfgSource)
+		seeds[name] = cfgSource
+	}
+
+	for i := range model.RunnerPools {
+		pool := model.RunnerPools[i]
+		name := strings.TrimSpace(pool.Name)
+		if name == "" {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].name in %s must not be empty", i, trackerConfigRelPath)
+		}
+		source := strings.TrimSpace(pool.Source)
+		if source == "" {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].source in %s must not be empty", i, trackerConfigRelPath)
+		}
+		if _, ok := seeds[source]; !ok {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].source in %s must reference an existing source", i, trackerConfigRelPath)
+		}
+
+		presets := make([]string, 0, len(pool.Presets))
+		for _, preset := range pool.Presets {
+			if preset = strings.TrimSpace(preset); preset != "" {
+				presets = append(presets, preset)
+			}
+		}
+		if len(presets) == 0 {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].presets in %s must not be empty", i, trackerConfigRelPath)
+		}
+
+		minCapacity := defaultWatchRunnerPoolMinCapacity
+		if pool.MinCapacity != nil {
+			minCapacity = *pool.MinCapacity
+		}
+		if minCapacity <= 0 {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].min_capacity in %s must be greater than 0", i, trackerConfigRelPath)
+		}
+
+		maxCapacity := defaultWatchRunnerPoolMaxCapacity
+		if pool.MaxCapacity != nil {
+			maxCapacity = *pool.MaxCapacity
+		}
+		if maxCapacity <= 0 {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].max_capacity in %s must be greater than 0", i, trackerConfigRelPath)
+		}
+		if maxCapacity < minCapacity {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].max_capacity in %s must be greater than or equal to min_capacity", i, trackerConfigRelPath)
+		}
+
+		cfg.RunnerPools = append(cfg.RunnerPools, watchRunnerPoolConfig{
+			Name:        name,
+			Source:      source,
+			Presets:     presets,
+			MinCapacity: minCapacity,
+			MaxCapacity: maxCapacity,
+		})
+	}
+
+	if len(cfg.Sources) == 0 {
+		return watchConfig{}, fmt.Errorf("watch.sources in %s must define at least one source", trackerConfigRelPath)
+	}
+	if len(cfg.RunnerPools) == 0 {
+		return watchConfig{}, fmt.Errorf("watch.runner_pools in %s must define at least one runner pool", trackerConfigRelPath)
+	}
+
+	minAutoscale := defaultWatchAutoscaleMin
+	if model.Autoscale.MinRunners != nil {
+		minAutoscale = *model.Autoscale.MinRunners
+	}
+	if minAutoscale <= 0 {
+		return watchConfig{}, fmt.Errorf("watch.autoscale.min_runners in %s must be greater than 0", trackerConfigRelPath)
+	}
+
+	maxAutoscale := defaultWatchAutoscaleMax
+	if model.Autoscale.MaxRunners != nil {
+		maxAutoscale = *model.Autoscale.MaxRunners
+	}
+	if maxAutoscale <= 0 {
+		return watchConfig{}, fmt.Errorf("watch.autoscale.max_runners in %s must be greater than 0", trackerConfigRelPath)
+	}
+	if maxAutoscale < minAutoscale {
+		return watchConfig{}, fmt.Errorf("watch.autoscale.max_runners in %s must be greater than or equal to min_runners", trackerConfigRelPath)
+	}
+	cfg.Autoscale = watchAutoscaleConfig{
+		MinRunners: minAutoscale,
+		MaxRunners: maxAutoscale,
+	}
+
+	if defaultMode := strings.ToLower(strings.TrimSpace(model.TUI.DefaultMode)); defaultMode != "" {
+		mode, err := normalizeAndValidateAgentMode(defaultMode, "watch.tui.default_mode")
+		if err != nil {
+			return watchConfig{}, err
+		}
+		cfg.DefaultMode = mode
+	}
+
+	return cfg, nil
+}
+
+func defaultWatchConfig() watchConfig {
+	return watchConfig{
+		QueuePath: defaultWatchQueuePath,
+		Autoscale: watchAutoscaleConfig{
+			MinRunners: defaultWatchAutoscaleMin,
+			MaxRunners: defaultWatchAutoscaleMax,
+		},
+		DefaultMode: defaultWatchUIDefaultMode,
 	}
 }
 
