@@ -38,6 +38,15 @@ profiles:
               ssh_tokens: true
               inode_cache_size: 100000
               cache_size: 134217728
+  startrek-adapta:
+    tracker:
+      type: startrek
+      startrek:
+        endpoint: https://st-api.yandex-team.ru/v3
+        token_env: STARTREK_TOKEN
+        queues:
+          - key: ADAPTABOT
+            root: /home/genaevstratov/arcadia
 agent:
   backend: codex
   model: gpt-5.5
