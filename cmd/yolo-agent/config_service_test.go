@@ -338,6 +338,12 @@ watch:
 	if pool.MinCapacity != 2 {
 		t.Fatalf("expected pool min capacity 2, got %d", pool.MinCapacity)
 	}
+	if pool.MinReplicas != 2 {
+		t.Fatalf("expected pool min replicas 2, got %d", pool.MinReplicas)
+	}
+	if pool.Capacity != 1 {
+		t.Fatalf("expected pool capacity default 1, got %d", pool.Capacity)
+	}
 	if pool.MaxCapacity != 4 {
 		t.Fatalf("expected pool max capacity 4, got %d", pool.MaxCapacity)
 	}
@@ -349,6 +355,48 @@ watch:
 	}
 	if cfg.DefaultMode != "ui" {
 		t.Fatalf("expected TUI default mode ui, got %q", cfg.DefaultMode)
+	}
+}
+
+func TestTrackerConfigServiceResolveWatchConfigAcceptsRunnerReplicasAndCapacity(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: startrek-source
+      type: startrek
+      profile: st-dev
+  runner_pools:
+    - name: startrek-pool
+      source: startrek-source
+      presets: [st-dev]
+      min_replicas: 2
+      max_replicas: 5
+      capacity: 3
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected watch config to resolve, got %v", err)
+	}
+	if len(cfg.RunnerPools) != 1 {
+		t.Fatalf("expected 1 runner pool, got %d", len(cfg.RunnerPools))
+	}
+	pool := cfg.RunnerPools[0]
+	if pool.MinReplicas != 2 || pool.MinCapacity != 2 {
+		t.Fatalf("expected min replicas/capacity 2, got replicas=%d capacity=%d", pool.MinReplicas, pool.MinCapacity)
+	}
+	if pool.MaxReplicas != 5 || pool.MaxCapacity != 5 {
+		t.Fatalf("expected max replicas/capacity 5, got replicas=%d capacity=%d", pool.MaxReplicas, pool.MaxCapacity)
+	}
+	if pool.Capacity != 3 {
+		t.Fatalf("expected capacity 3, got %d", pool.Capacity)
 	}
 }
 

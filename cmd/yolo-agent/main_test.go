@@ -318,6 +318,62 @@ func TestRunMainRoutesArcReviewWatchSubcommandAndParsesFlags(t *testing.T) {
 	}
 }
 
+func TestRunMainRoutesWatchSubcommandAndParsesFlags(t *testing.T) {
+	originalRun := runWatch
+	t.Cleanup(func() {
+		runWatch = originalRun
+	})
+
+	called := false
+	var got watchCommandConfig
+	runWatch = func(_ context.Context, cfg watchCommandConfig) error {
+		called = true
+		got = cfg
+		return nil
+	}
+
+	runCalled := false
+	code := RunMain([]string{
+		"watch",
+		"--repo", "/repo",
+		"--environments", "/repo/environments.yaml",
+		"--events", "/tmp/watch.events.jsonl",
+		"--stream",
+		"--tick-interval", "250ms",
+		"--idle-cooldown", "3s",
+	}, func(context.Context, runConfig) error {
+		runCalled = true
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("expected watch exit code 0, got %d", code)
+	}
+	if !called {
+		t.Fatalf("expected watch handler to be called")
+	}
+	if runCalled {
+		t.Fatalf("expected legacy run function not to be called for watch")
+	}
+	if got.repoRoot != "/repo" {
+		t.Fatalf("expected repo=/repo, got %q", got.repoRoot)
+	}
+	if got.environmentsPath != "/repo/environments.yaml" {
+		t.Fatalf("expected environments path, got %q", got.environmentsPath)
+	}
+	if got.eventsPath != "/tmp/watch.events.jsonl" {
+		t.Fatalf("expected events path to be parsed, got %q", got.eventsPath)
+	}
+	if !got.stream {
+		t.Fatalf("expected stream=true")
+	}
+	if got.tickInterval != 250*time.Millisecond {
+		t.Fatalf("expected tick interval 250ms, got %s", got.tickInterval)
+	}
+	if got.idleCooldown != 3*time.Second {
+		t.Fatalf("expected idle cooldown 3s, got %s", got.idleCooldown)
+	}
+}
+
 func TestDefaultRunArcReviewWatchDelegatesToSourceArcPR(t *testing.T) {
 	repoRoot := t.TempDir()
 	eventsPath := filepath.Join(repoRoot, "events.jsonl")

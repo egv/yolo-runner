@@ -47,12 +47,12 @@ const (
 	defaultArcReviewWatchStatePath      = ".yolo-runner/arc-review-watch-state.json"
 	defaultArcReviewWatchObjectsBaseDir = "~/.yolo-runner/pr-objects"
 	defaultArcReviewWatchMountsBaseDir  = "~/.yolo-runner/pr-mounts"
-	defaultWatchQueuePath              = ".yolo-runner/watch.db"
+	defaultWatchQueuePath               = ".yolo-runner/watch.db"
 	defaultWatchRunnerPoolMinCapacity   = 1
 	defaultWatchRunnerPoolMaxCapacity   = 1
 	defaultWatchAutoscaleMin            = 1
 	defaultWatchAutoscaleMax            = 1
-	defaultWatchUIDefaultMode          = agentModeStream
+	defaultWatchUIDefaultMode           = agentModeStream
 )
 
 type profileSelectionInput struct {
@@ -224,11 +224,11 @@ type arcReviewWatchConfig struct {
 }
 
 type watchConfigModel struct {
-	QueuePath  string             `yaml:"queue_path,omitempty"`
-	Sources    []watchSourceModel `yaml:"sources,omitempty"`
+	QueuePath   string                 `yaml:"queue_path,omitempty"`
+	Sources     []watchSourceModel     `yaml:"sources,omitempty"`
 	RunnerPools []watchRunnerPoolModel `yaml:"runner_pools,omitempty"`
-	Autoscale  watchAutoscaleModel `yaml:"autoscale,omitempty"`
-	TUI        watchTUIModel       `yaml:"tui,omitempty"`
+	Autoscale   watchAutoscaleModel    `yaml:"autoscale,omitempty"`
+	TUI         watchTUIModel          `yaml:"tui,omitempty"`
 }
 
 type watchSourceModel struct {
@@ -238,11 +238,14 @@ type watchSourceModel struct {
 }
 
 type watchRunnerPoolModel struct {
-	Name        string `yaml:"name,omitempty"`
-	Source      string `yaml:"source,omitempty"`
+	Name        string   `yaml:"name,omitempty"`
+	Source      string   `yaml:"source,omitempty"`
 	Presets     []string `yaml:"presets,omitempty"`
-	MinCapacity *int   `yaml:"min_capacity,omitempty"`
-	MaxCapacity *int   `yaml:"max_capacity,omitempty"`
+	MinReplicas *int     `yaml:"min_replicas,omitempty"`
+	MaxReplicas *int     `yaml:"max_replicas,omitempty"`
+	Capacity    *int     `yaml:"capacity,omitempty"`
+	MinCapacity *int     `yaml:"min_capacity,omitempty"`
+	MaxCapacity *int     `yaml:"max_capacity,omitempty"`
 }
 
 type watchAutoscaleModel struct {
@@ -272,6 +275,9 @@ type watchRunnerPoolConfig struct {
 	Name        string
 	Source      string
 	Presets     []string
+	MinReplicas int
+	MaxReplicas int
+	Capacity    int
 	MinCapacity int
 	MaxCapacity int
 }
@@ -837,31 +843,58 @@ func resolveWatchConfig(model *watchConfigModel, repoRoot string) (watchConfig, 
 			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].presets in %s must not be empty", i, trackerConfigRelPath)
 		}
 
-		minCapacity := defaultWatchRunnerPoolMinCapacity
-		if pool.MinCapacity != nil {
-			minCapacity = *pool.MinCapacity
+		minReplicas := defaultWatchRunnerPoolMinCapacity
+		if pool.MinReplicas != nil {
+			minReplicas = *pool.MinReplicas
+		} else if pool.MinCapacity != nil {
+			minReplicas = *pool.MinCapacity
 		}
-		if minCapacity <= 0 {
-			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].min_capacity in %s must be greater than 0", i, trackerConfigRelPath)
+		if minReplicas <= 0 {
+			field := "min_replicas"
+			if pool.MinReplicas == nil && pool.MinCapacity != nil {
+				field = "min_capacity"
+			}
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].%s in %s must be greater than 0", i, field, trackerConfigRelPath)
 		}
 
-		maxCapacity := defaultWatchRunnerPoolMaxCapacity
-		if pool.MaxCapacity != nil {
-			maxCapacity = *pool.MaxCapacity
+		maxReplicas := defaultWatchRunnerPoolMaxCapacity
+		if pool.MaxReplicas != nil {
+			maxReplicas = *pool.MaxReplicas
+		} else if pool.MaxCapacity != nil {
+			maxReplicas = *pool.MaxCapacity
 		}
-		if maxCapacity <= 0 {
-			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].max_capacity in %s must be greater than 0", i, trackerConfigRelPath)
+		if maxReplicas <= 0 {
+			field := "max_replicas"
+			if pool.MaxReplicas == nil && pool.MaxCapacity != nil {
+				field = "max_capacity"
+			}
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].%s in %s must be greater than 0", i, field, trackerConfigRelPath)
 		}
-		if maxCapacity < minCapacity {
-			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].max_capacity in %s must be greater than or equal to min_capacity", i, trackerConfigRelPath)
+		if maxReplicas < minReplicas {
+			field := "max_replicas"
+			if pool.MaxReplicas == nil && pool.MaxCapacity != nil {
+				field = "max_capacity"
+			}
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].%s in %s must be greater than or equal to min_replicas", i, field, trackerConfigRelPath)
+		}
+
+		capacity := 1
+		if pool.Capacity != nil {
+			capacity = *pool.Capacity
+		}
+		if capacity <= 0 {
+			return watchConfig{}, fmt.Errorf("watch.runner_pools[%d].capacity in %s must be greater than 0", i, trackerConfigRelPath)
 		}
 
 		cfg.RunnerPools = append(cfg.RunnerPools, watchRunnerPoolConfig{
 			Name:        name,
 			Source:      source,
 			Presets:     presets,
-			MinCapacity: minCapacity,
-			MaxCapacity: maxCapacity,
+			MinReplicas: minReplicas,
+			MaxReplicas: maxReplicas,
+			Capacity:    capacity,
+			MinCapacity: minReplicas,
+			MaxCapacity: maxReplicas,
 		})
 	}
 
@@ -1031,36 +1064,36 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; configure at least one Startrek queue to Arcadia root mapping", "startrek.queues", profileName, trackerConfigRelPath)
 		}
 
-	for i := range model.Startrek.Queues {
-		key := strings.TrimSpace(model.Startrek.Queues[i].Key)
-		if key == "" {
-			return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s", fmt.Sprintf("startrek.queues[%d].key", i), profileName, trackerConfigRelPath)
-		}
-		preset := strings.TrimSpace(model.Startrek.Queues[i].Preset)
-		arcMountEnabled := model.Startrek.Queues[i].ArcMount != nil && model.Startrek.Queues[i].ArcMount.Enabled
-		root := strings.TrimSpace(model.Startrek.Queues[i].Root)
-		if root == "" {
-			if !arcMountEnabled {
-				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
+		for i := range model.Startrek.Queues {
+			key := strings.TrimSpace(model.Startrek.Queues[i].Key)
+			if key == "" {
+				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s", fmt.Sprintf("startrek.queues[%d].key", i), profileName, trackerConfigRelPath)
 			}
-			model.Startrek.Queues[i].Key = key
-			model.Startrek.Queues[i].Preset = preset
-			continue
-		}
-		cleanRoot := filepath.Clean(root)
+			preset := strings.TrimSpace(model.Startrek.Queues[i].Preset)
+			arcMountEnabled := model.Startrek.Queues[i].ArcMount != nil && model.Startrek.Queues[i].ArcMount.Enabled
+			root := strings.TrimSpace(model.Startrek.Queues[i].Root)
+			if root == "" {
+				if !arcMountEnabled {
+					return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
+				}
+				model.Startrek.Queues[i].Key = key
+				model.Startrek.Queues[i].Preset = preset
+				continue
+			}
+			cleanRoot := filepath.Clean(root)
 			if !arcMountEnabled {
 				info, err := os.Stat(cleanRoot)
 				if err != nil {
 					return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root path for profile %q in %s: %w", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, err)
+				}
+				if !info.IsDir() {
+					return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root directory for profile %q in %s; got %q", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, cleanRoot)
+				}
 			}
-			if !info.IsDir() {
-				return trackerModel{}, fmt.Errorf("%s must point to an existing Arcadia root directory for profile %q in %s; got %q", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath, cleanRoot)
-			}
+			model.Startrek.Queues[i].Key = key
+			model.Startrek.Queues[i].Root = cleanRoot
+			model.Startrek.Queues[i].Preset = preset
 		}
-		model.Startrek.Queues[i].Key = key
-		model.Startrek.Queues[i].Root = cleanRoot
-		model.Startrek.Queues[i].Preset = preset
-	}
 		model.Startrek.Endpoint = endpoint
 		model.Startrek.TokenEnv = tokenEnv
 		return model, nil

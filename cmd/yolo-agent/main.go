@@ -141,6 +141,9 @@ func RunMain(args []string, run func(context.Context, runConfig) error) int {
 	if len(args) > 0 && args[0] == "arc-review-watch" {
 		return arcReviewWatchCommand(args[1:])
 	}
+	if len(args) > 0 && args[0] == "watch" {
+		return watchCommand(args[1:])
+	}
 	if len(args) > 0 && args[0] == "source" {
 		return sourceCommand(args[1:])
 	}
@@ -881,9 +884,6 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 		return nil, nil
 	}
 	pool := strings.TrimSpace(cfg.embeddedRunnerPool)
-	if pool == "" {
-		pool = "global"
-	}
 
 	live, err := queueHasLiveRunnerForPresetInPool(cfg.queuePath, preset, pool, time.Now().UTC())
 	if err != nil {
@@ -891,6 +891,9 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 	}
 	if live {
 		return nil, nil
+	}
+	if pool == "" {
+		pool = "global"
 	}
 
 	embeddedPreset, err := synthesizeEmbeddedQueuePreset(cfg)
