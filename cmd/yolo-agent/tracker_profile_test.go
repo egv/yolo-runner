@@ -349,6 +349,7 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: QUEUEA
+            preset: queue-a
             root: %s
           - key: QUEUEB
             root: %s
@@ -380,6 +381,12 @@ profiles:
 		}
 		if got.Tracker.Startrek.Queues[0].Key != "QUEUEA" || got.Tracker.Startrek.Queues[0].Root != queueARoot {
 			t.Fatalf("expected first queue mapping to be normalized, got %#v", got.Tracker.Startrek.Queues[0])
+		}
+		if got.Tracker.Startrek.Queues[0].Preset != "queue-a" {
+			t.Fatalf("expected first queue preset, got %q", got.Tracker.Startrek.Queues[0].Preset)
+		}
+		if got.Tracker.Startrek.Queues[1].Preset != "" {
+			t.Fatalf("expected second queue preset to be empty, got %q", got.Tracker.Startrek.Queues[1].Preset)
 		}
 	})
 

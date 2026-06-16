@@ -255,7 +255,10 @@ func resolveSourceStartrekEventsPath(cfg sourceStartrekCommandConfig) string {
 func sourceStartrekQueues(queues []startrekQueueModel) []startreksource.Queue {
 	out := make([]startreksource.Queue, 0, len(queues))
 	for _, queue := range queues {
-		out = append(out, startreksource.Queue{Key: queue.Key})
+		out = append(out, startreksource.Queue{
+			Key:    queue.Key,
+			Preset: queue.Preset,
+		})
 	}
 	return out
 }

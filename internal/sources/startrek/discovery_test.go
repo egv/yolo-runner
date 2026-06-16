@@ -130,9 +130,121 @@ func TestSourcePollResumeNeedsInfoTasksSubmitsFreshPreflight(t *testing.T) {
 	}
 }
 
+func TestSourcePollUsesQueuePresetForPreflightSubmissions(t *testing.T) {
+	ctx := context.Background()
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close(queue) error = %v", err)
+		}
+	})
+
+	backend := &fakeStartrekDiscoveryBackend{
+		trees: map[string]contracts.TaskTree{
+			"VAY": {
+				Root: contracts.Task{ID: "VAY", Title: "Queue A root", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"VAY": {
+						ID:     "VAY",
+						Title:  "Queue A root",
+						Status: contracts.TaskStatusOpen,
+					},
+					"VAY-42": {
+						ID:       "VAY-42",
+						Title:    "Queue A task",
+						Status:   contracts.TaskStatusOpen,
+						ParentID: "VAY",
+						Metadata: map[string]string{"revision": "rev-a"},
+					},
+				},
+				Relations: []contracts.TaskRelation{{
+					FromID: "VAY",
+					ToID:   "VAY-42",
+					Type:   contracts.RelationParent,
+				}},
+			},
+			"VBO": {
+				Root: contracts.Task{ID: "VBO", Title: "Queue B root", Status: contracts.TaskStatusOpen},
+				Tasks: map[string]contracts.Task{
+					"VBO": {
+						ID:     "VBO",
+						Title:  "Queue B root",
+						Status: contracts.TaskStatusOpen,
+					},
+					"VBO-7": {
+						ID:       "VBO-7",
+						Title:    "Queue B task",
+						Status:   contracts.TaskStatusOpen,
+						ParentID: "VBO",
+						Metadata: map[string]string{"revision": "rev-b"},
+					},
+				},
+				Relations: []contracts.TaskRelation{{
+					FromID: "VBO",
+					ToID:   "VBO-7",
+					Type:   contracts.RelationParent,
+				}},
+			},
+		},
+		details: map[string]contracts.Task{
+			"VAY-42": {
+				ID:          "VAY-42",
+				Title:       "Queue A task",
+				Description: "from VAY",
+				Status:      contracts.TaskStatusOpen,
+				Metadata:    map[string]string{"revision": "rev-a"},
+			},
+			"VBO-7": {
+				ID:          "VBO-7",
+				Title:       "Queue B task",
+				Description: "from VBO",
+				Status:      contracts.TaskStatusOpen,
+				Metadata:    map[string]string{"revision": "rev-b"},
+			},
+		},
+	}
+	src := &Source{
+		SourceName: "startrek-st-dev",
+		Backend:    backend,
+		Queue:      store,
+		Queues: []Queue{
+			{Key: "VAY", Preset: "queue-a"},
+			{Key: "VBO"},
+		},
+		Preset: "source-preset",
+	}
+
+	submissions, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(submissions) != 2 {
+		t.Fatalf("Poll() submissions = %d, want 2", len(submissions))
+	}
+
+	submissionsByRef := map[string]workqueue.Submission{}
+	for _, submission := range submissions {
+		if submission.Kind != workitem.KindPreflight {
+			t.Fatalf("unexpected submission kind = %q, want %q", submission.Kind, workitem.KindPreflight)
+		}
+		submissionsByRef[strings.TrimSpace(submission.SourceRef)] = submission
+	}
+
+	if got := submissionsByRef["VAY-42"].Preset; got != "queue-a" {
+		t.Fatalf("submission preset for VAY-42 = %q, want queue-a", got)
+	}
+	if got := submissionsByRef["VBO-7"].Preset; got != "source-preset" {
+		t.Fatalf("submission preset for VBO-7 = %q, want source-preset", got)
+	}
+}
+
 type fakeStartrekDiscoveryBackend struct {
 	resumeInputs []trackerstartrek.NeedsInfoResumeInput
 	resumed      []string
+	trees        map[string]contracts.TaskTree
 	tree         contracts.TaskTree
 	details      map[string]contracts.Task
 }
@@ -142,10 +254,21 @@ func (f *fakeStartrekDiscoveryBackend) ResumeNeedsInfoTasks(_ context.Context, i
 	return append([]string(nil), f.resumed...), nil
 }
 
-func (f *fakeStartrekDiscoveryBackend) GetTaskTree(_ context.Context, _ string) (*contracts.TaskTree, error) {
-	tree := f.tree
-	tree.Tasks = cloneDiscoveryTasks(f.tree.Tasks)
-	tree.Relations = append([]contracts.TaskRelation(nil), f.tree.Relations...)
+func (f *fakeStartrekDiscoveryBackend) GetTaskTree(_ context.Context, queueKey string) (*contracts.TaskTree, error) {
+	key := strings.TrimSpace(strings.ToUpper(queueKey))
+	if f.trees != nil {
+		if tree, ok := f.trees[key]; ok {
+			tree.Tasks = cloneDiscoveryTasks(tree.Tasks)
+			tree.Relations = append([]contracts.TaskRelation(nil), tree.Relations...)
+			return &tree, nil
+		}
+	}
+	tree, ok := f.trees[key]
+	if !ok {
+		tree = f.tree
+	}
+	tree.Tasks = cloneDiscoveryTasks(tree.Tasks)
+	tree.Relations = append([]contracts.TaskRelation(nil), tree.Relations...)
 	return &tree, nil
 }
 
