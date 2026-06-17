@@ -244,6 +244,34 @@ func TestDefaultWatchSourceStarterRejectsBRSourceWithoutBeadsWorkspace(t *testin
 	}
 }
 
+func TestDefaultWatchSourceStarterBRMissingWorkspaceErrorMentionsRepoField(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	handle, err := (defaultWatchSourceStarter{}).StartSource(context.Background(), watchSourceConfig{
+		Name:   "br-source",
+		Type:   watchSourceBR,
+		Repo:   repoRoot,
+		Preset: "yolo-runner",
+	}, filepath.Join(t.TempDir(), "watch.db"))
+	if handle != nil {
+		if stopErr := handle.Stop(); stopErr != nil {
+			t.Fatalf("Stop() error = %v", stopErr)
+		}
+	}
+	if err == nil {
+		t.Fatalf("expected br source startup to fail without .beads")
+	}
+	if !strings.Contains(err.Error(), `br source "br-source"`) {
+		t.Fatalf("expected source name in missing workspace error, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "watch.sources[].repo") {
+		t.Fatalf("expected watch.sources[].repo guidance, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "br init") {
+		t.Fatalf("expected br init remediation, got %q", err.Error())
+	}
+}
+
 type fakeSourcehostSource struct {
 	name        string
 	submissions []workqueue.Submission
