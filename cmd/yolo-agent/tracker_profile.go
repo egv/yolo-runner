@@ -23,6 +23,7 @@ const (
 	trackerTypeBeads    = "beads"
 	trackerTypeStartrek = "startrek"
 	watchSourceArcPR    = "arcpr"
+	watchSourceBR       = "br"
 	watchSourceStartrek = "startrek"
 
 	landingTypeGit   = "git"
@@ -235,6 +236,9 @@ type watchSourceModel struct {
 	Name    string `yaml:"name,omitempty"`
 	Type    string `yaml:"type,omitempty"`
 	Profile string `yaml:"profile,omitempty"`
+	Repo    string `yaml:"repo,omitempty"`
+	Preset  string `yaml:"preset,omitempty"`
+	Root    string `yaml:"root,omitempty"`
 }
 
 type watchRunnerPoolModel struct {
@@ -269,6 +273,9 @@ type watchSourceConfig struct {
 	Name    string
 	Type    string
 	Profile string
+	Repo    string
+	Preset  string
+	Root    string
 }
 
 type watchRunnerPoolConfig struct {
@@ -805,16 +812,31 @@ func resolveWatchConfig(model *watchConfigModel, repoRoot string) (watchConfig, 
 			return watchConfig{}, fmt.Errorf("watch.sources[%d].type in %s must not be empty", i, trackerConfigRelPath)
 		}
 		switch typ {
-		case watchSourceArcPR, watchSourceStartrek:
+		case watchSourceArcPR, watchSourceBR, watchSourceStartrek:
 		default:
-			return watchConfig{}, fmt.Errorf("watch.sources[%d].type in %s must be one of: %s, %s", i, trackerConfigRelPath, watchSourceArcPR, watchSourceStartrek)
+			return watchConfig{}, fmt.Errorf("watch.sources[%d].type in %s must be one of: %s, %s, %s", i, trackerConfigRelPath, watchSourceArcPR, watchSourceBR, watchSourceStartrek)
 		}
 		profile := strings.TrimSpace(src.Profile)
-		if profile == "" {
+		repo := strings.TrimSpace(src.Repo)
+		preset := strings.TrimSpace(src.Preset)
+		root := strings.TrimSpace(src.Root)
+		if typ == watchSourceBR {
+			if preset == "" {
+				return watchConfig{}, fmt.Errorf("watch.sources[%d].preset in %s must not be empty", i, trackerConfigRelPath)
+			}
+			if repo == "" {
+				repo = repoRoot
+			} else {
+				repo = resolveRepoLocalPath(repoRoot, repo)
+			}
+			if err := validateBRWatchSourceRepo(i, repo); err != nil {
+				return watchConfig{}, err
+			}
+		} else if profile == "" {
 			return watchConfig{}, fmt.Errorf("watch.sources[%d].profile in %s must not be empty", i, trackerConfigRelPath)
 		}
 
-		cfgSource := watchSourceConfig{Name: name, Type: typ, Profile: profile}
+		cfgSource := watchSourceConfig{Name: name, Type: typ, Profile: profile, Repo: repo, Preset: preset, Root: root}
 		cfg.Sources = append(cfg.Sources, cfgSource)
 		seeds[name] = cfgSource
 	}
@@ -948,6 +970,25 @@ func defaultWatchConfig() watchConfig {
 		},
 		DefaultMode: defaultWatchUIDefaultMode,
 	}
+}
+
+func validateBRWatchSourceRepo(index int, repo string) error {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return fmt.Errorf("watch.sources[%d].repo in %s must not be empty", index, trackerConfigRelPath)
+	}
+	beadsDir := filepath.Join(repo, ".beads")
+	info, err := os.Stat(beadsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("watch.sources[%d].repo in %s must contain a .beads workspace at %s; run br init in that repo", index, trackerConfigRelPath, beadsDir)
+		}
+		return fmt.Errorf("watch.sources[%d].repo in %s cannot inspect .beads workspace at %s: %w", index, trackerConfigRelPath, beadsDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("watch.sources[%d].repo in %s must contain a .beads directory at %s", index, trackerConfigRelPath, beadsDir)
+	}
+	return nil
 }
 
 func resolveRepoLocalPath(repoRoot string, path string) string {

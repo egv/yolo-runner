@@ -57,7 +57,7 @@ flowchart TB
 
   SrcStartrek --> StartrekAPI
   SrcArcpr --> ArcanumAPI
-  SrcBeads --> GitHubAPI
+  SrcBeads --> BeadsCLI["br CLI<br/>.beads workspace"]
   Sources -- submit work items --> Queue
   Queue -- typed results --> Sources
 
@@ -140,13 +140,18 @@ flowchart TB
 
 ## Source Adapters
 
-Sources own all tracker semantics; runners never see a Startrek label or an
-Arcanum comment. `internal/sourcehost` provides the shared runtime (resilient
+Sources own all tracker semantics; runners never see a Startrek label, an
+Arcanum comment, or a br status transition. `internal/sourcehost` provides the shared runtime (resilient
 poll loop, result consumption, opportunistic lease reaping, singleton flock,
 per-process event file). The Startrek chain is expressed as work-item chains:
 `preflight` result → (needs-info comment | submit `split`) → `split` result →
 create subtasks + submit `implement` items → `implement` result → status/labels
 + optional `finalize` (epic PR).
+
+The br source uses the br CLI as the source of truth. With `root` set, it keeps
+the existing task-tree path for one epic. Without `root`, it polls the whole
+workspace with `br --no-daemon ready --limit 0 --json` and submits every ready
+issue as an `implement` work item with a stable idempotency key.
 
 ```mermaid
 flowchart LR
@@ -183,7 +188,7 @@ flowchart LR
 ## Watch Supervisor
 
 `yolo-agent watch` reads the `watch:` block in `.yolo-runner/config.yaml`,
-starts all configured `startrek` and `arcpr` sources in-process, and manages
+starts all configured `startrek`, `arcpr`, and `br` sources in-process, and manages
 runner pools with `min_replicas`, `max_replicas`, and `capacity`. Autoscaling is
 queue-depth based per pool and bounded by `watch.autoscale.min_runners` and
 `watch.autoscale.max_runners`.
@@ -192,6 +197,8 @@ The supervisor does not replace queue claim limits. Preset-level
 `limits.max_concurrent` still comes from the environment preset and remains the
 final concurrency gate at claim time. This lets one Startrek profile watch many
 queues while each queue routes to the preset that owns its workspace and limits.
+br sources require an explicit `watch.sources[].preset`, and runner pools claim
+their queued br `implement` items through that preset.
 
 ## Legacy Direct Path
 
@@ -202,7 +209,8 @@ switches the same command to submit `implement` items to the queue; if no
 standalone runner is live it starts an embedded runner that clones the repo per
 item (it never executes in the live working tree). `tracker-watch` and
 `arc-review-watch` remain as deprecated compatibility shims over
-`source startrek` and `source arcpr`.
+`source startrek` and `source arcpr`. `source br` is the split-process debug path
+for the br source used by the watch supervisor.
 
 ## Where Prompting Lives
 

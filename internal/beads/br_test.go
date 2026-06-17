@@ -1,8 +1,8 @@
 package beads
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,6 +44,40 @@ func TestRustAdapterUsesNoDaemonForSync(t *testing.T) {
 	}
 
 	assertCall(t, runner.calls, []string{"br", "--no-daemon", "sync", "--flush-only"})
+}
+
+func TestRustAdapterReadyAllUsesWorkspaceWideReadyCommand(t *testing.T) {
+	runner := &fakeRunner{output: `[{"id":"task-1","title":"Task 1","issue_type":"task","status":"open","priority":2}]`}
+	adapter := NewRustAdapter(runner)
+
+	issues, err := adapter.ReadyAll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "task-1" {
+		t.Fatalf("unexpected ready issues: %#v", issues)
+	}
+
+	assertCall(t, runner.calls, []string{"br", "--no-daemon", "ready", "--limit", "0", "--json"})
+}
+
+func TestTaskManagerReadyTasksUsesReadyAllPriorityMetadata(t *testing.T) {
+	runner := &fakeRunner{output: `[{"id":"task-1","title":"Task 1","description":"do it","issue_type":"task","status":"open","priority":3},{"id":"epic-1","issue_type":"epic","status":"open"}]`}
+	manager := NewTaskManager(runner, "/repo")
+
+	tasks, err := manager.ReadyTasks(context.Background())
+	if err != nil {
+		t.Fatalf("ReadyTasks() error = %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("ReadyTasks() len = %d, want 1: %#v", len(tasks), tasks)
+	}
+	if tasks[0].ID != "task-1" || tasks[0].Title != "Task 1" || tasks[0].Description != "do it" {
+		t.Fatalf("unexpected task: %#v", tasks[0])
+	}
+	if got := tasks[0].Metadata["priority"]; got != "3" {
+		t.Fatalf("priority metadata = %q, want %q", got, "3")
+	}
 }
 
 func TestTaskManagerSetTaskDataUsesNoDaemon(t *testing.T) {

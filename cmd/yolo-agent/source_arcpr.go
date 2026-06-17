@@ -51,18 +51,20 @@ var newSourceArcPRConfigService = func() arcReviewWatchConfigResolver {
 
 func sourceCommand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|startrek> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|br|startrek> [flags]")
 		return 1
 	}
 
 	switch args[0] {
 	case "arcpr":
 		return sourceArcPRCommand(args[1:])
+	case "br":
+		return sourceBRCommand(args[1:])
 	case "startrek":
 		return sourceStartrekCommand(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown source command: %s\n", args[0])
-		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|startrek> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: yolo-agent source <arcpr|br|startrek> [flags]")
 		return 1
 	}
 }
@@ -175,19 +177,19 @@ func buildSourceArcPRRunBundle(ctx context.Context, cfg sourceArcPRCommandConfig
 	}
 
 	source := &arcpr.Source{
-		SourceName:    sourceArcPRSourceName(cfg.profile),
-		Preset:        cfg.profile,
-		Reviewer:      reviewWatchConfig.Reviewer,
+		SourceName:     sourceArcPRSourceName(cfg.profile),
+		Preset:         cfg.profile,
+		Reviewer:       reviewWatchConfig.Reviewer,
 		ObjectsBaseDir: reviewWatchConfig.ObjectsBaseDir,
 		MountsBaseDir:  reviewWatchConfig.MountsBaseDir,
-		AllowShip:     reviewWatchConfig.AllowShip,
-		State:         state,
-		Lister:        sourceArcPRReviewLister(),
-		StateFetcher:  sourceArcPRStateFetcher,
-		APIClient:     apiClient,
-		ReplyApplier:  sourceArcPRReplyApplier,
-		ReviewApplier: sourceArcPRReviewApplier,
-		ShipGate:      sourceArcPRShipGate,
+		AllowShip:      reviewWatchConfig.AllowShip,
+		State:          state,
+		Lister:         sourceArcPRReviewLister(),
+		StateFetcher:   sourceArcPRStateFetcher,
+		APIClient:      apiClient,
+		ReplyApplier:   sourceArcPRReplyApplier,
+		ReviewApplier:  sourceArcPRReviewApplier,
+		ShipGate:       sourceArcPRShipGate,
 	}
 
 	return sourceArcPRRunBundle{

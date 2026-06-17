@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -111,6 +112,52 @@ func (m *TaskManager) NextTasks(ctx context.Context, parentID string) ([]contrac
 		return *tasks[i].Priority < *tasks[j].Priority
 	})
 
+	return tasks, nil
+}
+
+// ReadyTasks returns all ready leaf tasks in the workspace.
+func (m *TaskManager) ReadyTasks(ctx context.Context) ([]contracts.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	issues, err := m.adapter.ReadyAll()
+	if err != nil {
+		return nil, err
+	}
+
+	tasks := make([]contracts.Task, 0, len(issues))
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		if m.isTerminal(issue.ID) {
+			continue
+		}
+		if issue.IssueType == "epic" || issue.IssueType == "molecule" {
+			continue
+		}
+		status := contracts.TaskStatus(issue.Status)
+		if status == "" {
+			status = contracts.TaskStatusOpen
+		}
+		if status != contracts.TaskStatusOpen {
+			continue
+		}
+		metadata := map[string]string{}
+		if issue.Priority != nil {
+			metadata["priority"] = strconv.Itoa(*issue.Priority)
+		}
+		if len(metadata) == 0 {
+			metadata = nil
+		}
+		tasks = append(tasks, contracts.Task{
+			ID:          issue.ID,
+			Title:       issue.Title,
+			Description: issue.Description,
+			Status:      status,
+			Metadata:    metadata,
+		})
+	}
 	return tasks, nil
 }
 

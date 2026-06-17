@@ -1,6 +1,6 @@
 # Watch Supervisor Playbook
 
-Use `yolo-agent watch` for queue-backed production runs that need one process to supervise multiple sources and autoscaled runner pools. It replaces the manual "start source, start runner, start events follow" operator loop for normal Startrek and Arc PR operation.
+Use `yolo-agent watch` for queue-backed production runs that need one process to supervise multiple sources and autoscaled runner pools. It replaces the manual "start source, start runner, start events follow" operator loop for normal Startrek, Arc PR, and br-backed Beads operation.
 
 Keep `yolo-agent source ...`, `yolo-agent runner ...`, and `yolo-agent events follow ...` available for focused debugging, one-off validation, or rollback.
 
@@ -8,7 +8,13 @@ Keep `yolo-agent source ...`, `yolo-agent runner ...`, and `yolo-agent events fo
 
 `watch` reads `.yolo-runner/config.yaml`, opens the configured SQLite queue, starts every configured source in-process, then starts each runner pool at `min_replicas`. On each autoscale tick it checks pending and active queue depth per pool and adjusts replicas up to the pool and global limits.
 
-- Sources: `startrek` and `arcpr`.
+The model is watcher/sink/runner:
+
+- Watchers collect external work from Startrek, Arc PRs, or br.
+- `workqueue` is the shared sink. Sources submit typed queue items and consume typed results from the same SQLite database.
+- Runner pools consume queue items by preset. A br task becomes a normal `implement` work item, just like Startrek implementation work or Arc PR review work.
+
+- Sources: `startrek`, `arcpr`, and `br`.
 - Runner pools: named groups with `source`, `presets`, `min_replicas`, `max_replicas`, and `capacity`.
 - Autoscale: global `min_runners` and `max_runners` cap total replicas across pools.
 - TUI: `--tui` or `watch.tui.default_mode: ui` starts `yolo-tui` and streams events into it.
@@ -86,6 +92,12 @@ watch:
     - name: arc-review
       type: arcpr
       profile: arc-review
+    - name: local-beads
+      type: br
+      repo: .
+      preset: local
+      # root is optional. Omit it to watch every ready issue in the .beads workspace.
+      # root: yolo-epic
   runner_pools:
     - name: adapta-implementers
       source: startrek-adapta
@@ -99,6 +111,12 @@ watch:
       min_replicas: 1
       max_replicas: 3
       capacity: 2
+    - name: local-beads-implementers
+      source: local-beads
+      presets: [local]
+      min_replicas: 1
+      max_replicas: 3
+      capacity: 1
   autoscale:
     min_runners: 1
     max_runners: 7
@@ -165,6 +183,41 @@ presets:
 
 The Startrek queue `preset` is optional. If it is omitted, the source falls back to the source/profile preset. Set it per queue when one Startrek profile watches several queues that need different workspaces, landing policy, or model limits.
 
+For br sources, `preset` is required because br has no profile-to-preset mapping. `repo` defaults to the supervisor repo and must contain `.beads`; if validation fails with a missing workspace, run `br init` in that repo or point `watch.sources[].repo` at the correct br workspace. `root` is optional. When omitted, the source polls the whole workspace through `br --no-daemon ready --limit 0 --json`; when set, it keeps the existing root-scoped task-tree behavior.
+
+Workspace-wide br watch:
+
+```yaml
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: local-beads
+      type: br
+      preset: local
+  runner_pools:
+    - name: local-beads-implementers
+      source: local-beads
+      presets: [local]
+      min_replicas: 1
+      max_replicas: 3
+```
+
+Root-scoped br watch:
+
+```yaml
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: local-beads-epic
+      type: br
+      preset: local
+      root: yolo-epic
+  runner_pools:
+    - name: local-beads-implementers
+      source: local-beads-epic
+      presets: [local]
+```
+
 ## Run
 
 Interactive monitor:
@@ -219,6 +272,13 @@ Use this when debugging one source or runner pool independently:
   --repo . \
   --profile arc-review \
   --queue .yolo-runner/watch.db
+
+./bin/yolo-agent source br \
+  --repo . \
+  --name local-beads \
+  --preset local \
+  --queue .yolo-runner/watch.db \
+  --once
 
 ./bin/yolo-agent events follow --since 1h | ./bin/yolo-tui --events-stdin
 ```

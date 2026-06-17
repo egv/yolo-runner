@@ -15,10 +15,10 @@ import (
 const configValidateSchemaVersion = "v1"
 
 var (
-	configFieldPattern = regexp.MustCompile(`[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+`)
-	configWatchSourcesFieldPattern = regexp.MustCompile(`watch\.sources\[(\d+)\]\.([a-z0-9_]+)`)
+	configFieldPattern                 = regexp.MustCompile(`[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+`)
+	configWatchSourcesFieldPattern     = regexp.MustCompile(`watch\.sources\[(\d+)\]\.([a-z0-9_]+)`)
 	configWatchRunnerPoolsFieldPattern = regexp.MustCompile(`watch\.runner_pools\[(\d+)\]\.([a-z0-9_]+)`)
-	configWatchAutoscaleFieldPattern = regexp.MustCompile(`watch\.autoscale\.(min_runners|max_runners)`)
+	configWatchAutoscaleFieldPattern   = regexp.MustCompile(`watch\.autoscale\.(min_runners|max_runners)`)
 )
 
 type configValidateOutputFormat string
@@ -491,7 +491,13 @@ func inferConfigReason(message string, field string) string {
 
 func inferConfigRemediation(field string, message string) string {
 	if strings.HasPrefix(field, "watch.sources[") {
-		return "Set watch.sources entries with a non-empty name, a supported type, and a non-empty profile."
+		if strings.Contains(message, ".beads") || strings.Contains(message, "br init") {
+			return "Run br init in the configured watch source repo, or set watch.sources[].repo to a repo that already contains .beads."
+		}
+		if strings.HasSuffix(field, ".preset") {
+			return "Set watch.sources[].preset for br sources so runner pools can claim queued items by preset."
+		}
+		return "Set watch.sources entries with a non-empty name, a supported type, and the fields required by that source type."
 	}
 	if strings.HasPrefix(field, "watch.runner_pools[") {
 		return "Set watch.runner_pools entries with a source name, presets, and valid capacity bounds."

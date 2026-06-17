@@ -47,6 +47,14 @@ func (b *StorageBackend) GetTask(ctx context.Context, taskID string) (*contracts
 	return &task, nil
 }
 
+// ReadyTasks returns all ready leaf tasks in the workspace.
+func (b *StorageBackend) ReadyTasks(ctx context.Context) ([]contracts.Task, error) {
+	if b == nil || b.manager == nil {
+		return nil, fmt.Errorf("beads storage backend is not initialized")
+	}
+	return b.manager.ReadyTasks(ctx)
+}
+
 // SetTaskStatus updates the status of a task
 func (b *StorageBackend) SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
 	if b == nil || b.manager == nil {

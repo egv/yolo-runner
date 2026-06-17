@@ -65,6 +65,20 @@ func (a *RustAdapter) Ready(rootID string) (Issue, error) {
 	}, nil
 }
 
+// ReadyAll returns all ready issues in the workspace using br's native
+// ready/open/unblocked/not-deferred semantics.
+func (a *RustAdapter) ReadyAll() ([]Issue, error) {
+	output, err := a.run("ready", "--limit", "0", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var issues []Issue
+	if err := traceJSONParse("ReadyAll", []byte(output), &issues); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
 // Tree returns the full issue tree for a root ID
 func (a *RustAdapter) Tree(rootID string) (Issue, error) {
 	issues, err := a.listTree(rootID)

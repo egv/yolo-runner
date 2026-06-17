@@ -358,6 +358,44 @@ watch:
 	}
 }
 
+func TestTrackerConfigServiceResolveWatchConfigAcceptsBRSource(t *testing.T) {
+	repoRoot := t.TempDir()
+	mkdirBeadsWorkspace(t, repoRoot)
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: br-source
+      type: br
+      preset: yolo-runner
+      root: yolo-epic
+  runner_pools:
+    - name: br-pool
+      source: br-source
+      presets: [yolo-runner]
+`)
+
+	svc := newTrackerConfigService()
+	cfg, err := svc.ResolveWatchConfig(repoRoot)
+	if err != nil {
+		t.Fatalf("expected watch config to resolve, got %v", err)
+	}
+	if len(cfg.Sources) != 1 {
+		t.Fatalf("expected 1 watch source, got %d", len(cfg.Sources))
+	}
+	source := cfg.Sources[0]
+	if source.Name != "br-source" || source.Type != watchSourceBR || source.Preset != "yolo-runner" || source.Root != "yolo-epic" {
+		t.Fatalf("unexpected br source %#v", source)
+	}
+	if source.Repo != repoRoot {
+		t.Fatalf("expected source repo %q, got %q", repoRoot, source.Repo)
+	}
+}
+
 func TestTrackerConfigServiceResolveWatchConfigAcceptsRunnerReplicasAndCapacity(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeTrackerConfigYAML(t, repoRoot, `

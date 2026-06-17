@@ -71,3 +71,23 @@ tracker_agent:
 landing:
   type: git
   title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: br-upgrade
+      type: br
+      repo: .
+      preset: beads
+      root: yolo-c2au
+  runner_pools:
+    - name: br-upgrade-implementers
+      source: br-upgrade
+      presets: [beads]
+      min_replicas: 1
+      max_replicas: 3
+      capacity: 1
+  autoscale:
+    min_runners: 1
+    max_runners: 3
+  tui:
+    default_mode: stream

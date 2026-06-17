@@ -2,10 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/sourcehost"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 func TestWatchSupervisorScalesUpFromQueueDepth(t *testing.T) {
@@ -106,6 +112,88 @@ func TestWatchSupervisorCancelsSourcesAndRunnersCleanly(t *testing.T) {
 	sourceStarter.assertStopped(t, "startrek-source", 1)
 	sourceStarter.assertStopped(t, "arcpr-source", 1)
 	runnerStarter.assertStopped(t, "startrek-pool", 2)
+}
+
+func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
+	origBundle := newSourceBRRunBundle
+	t.Cleanup(func() { newSourceBRRunBundle = origBundle })
+
+	queuePath := filepath.Join(t.TempDir(), "watch.db")
+	var assertionStore *workqueue.Store
+	newSourceBRRunBundle = func(_ context.Context, cfg sourceBRCommandConfig) (sourceBRRunBundle, error) {
+		store, err := workqueue.Open(cfg.queuePath)
+		if err != nil {
+			return sourceBRRunBundle{}, err
+		}
+		payload, err := json.Marshal(workitem.ImplementPayload{TaskID: "task-a", Title: "Task A"})
+		if err != nil {
+			_ = store.Close()
+			return sourceBRRunBundle{}, err
+		}
+		source := &fakeSourcehostSource{
+			name: cfg.sourceName,
+			submissions: []workqueue.Submission{{
+				Kind:           workitem.KindImplement,
+				Source:         cfg.sourceName,
+				SourceRef:      "task-a",
+				IdempotencyKey: cfg.sourceName + "/task-a/implement",
+				Preset:         cfg.preset,
+				Payload:        payload,
+			}},
+		}
+		assertionStore = store
+		return sourceBRRunBundle{
+			Source:  source,
+			Store:   store,
+			Options: sourcehost.Options{PollInterval: time.Hour},
+			closeFn: func() { _ = store.Close() },
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handle, err := (defaultWatchSourceStarter{}).StartSource(ctx, watchSourceConfig{
+		Name:   "br-source",
+		Type:   watchSourceBR,
+		Repo:   "/repo",
+		Preset: "yolo-runner",
+	}, queuePath)
+	if err != nil {
+		t.Fatalf("StartSource(br) error = %v", err)
+	}
+	defer func() {
+		if err := handle.Stop(); err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
+
+	waitForWatchCount(t, func() int {
+		if assertionStore == nil {
+			return 0
+		}
+		depth, err := assertionStore.PendingDepth("br-source", []string{"yolo-runner"})
+		if err != nil {
+			return 0
+		}
+		return depth
+	}, 1)
+}
+
+type fakeSourcehostSource struct {
+	name        string
+	submissions []workqueue.Submission
+}
+
+func (s *fakeSourcehostSource) Name() string {
+	return s.name
+}
+
+func (s *fakeSourcehostSource) Poll(context.Context) ([]workqueue.Submission, error) {
+	return s.submissions, nil
+}
+
+func (s *fakeSourcehostSource) HandleResult(context.Context, workitem.Item, workqueue.Result) ([]workqueue.Submission, error) {
+	return nil, nil
 }
 
 func runWatchSupervisorForTest(t *testing.T, ctx context.Context, supervisor *watchSupervisor) <-chan error {

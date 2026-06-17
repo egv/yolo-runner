@@ -222,10 +222,101 @@ func TestHandleResultWritesBeadsTerminalStatuses(t *testing.T) {
 	}
 }
 
+func TestReconcileWithoutRootPollsWorkspaceReadyTasks(t *testing.T) {
+	ctx := context.Background()
+	store := openBeadsSourceQueue(t, filepath.Join(t.TempDir(), "queue.db"))
+	storage := &fakeBeadsStorage{
+		readyTasks: []contracts.Task{
+			{
+				ID:          "task-a",
+				Title:       "Task A",
+				Description: "first",
+				Status:      contracts.TaskStatusOpen,
+				Metadata:    map[string]string{"priority": "7"},
+			},
+			{
+				ID:          "task-b",
+				Title:       "Task B",
+				Description: "second",
+				Status:      contracts.TaskStatusOpen,
+			},
+		},
+	}
+
+	src := &Source{
+		SourceName: "br-workspace",
+		Preset:     "yolo-runner",
+		Storage:    storage,
+		Queue:      store,
+	}
+	submissions, err := src.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if got, want := submissionRefs(submissions), []string{"task-a", "task-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile() source refs = %#v, want %#v", got, want)
+	}
+
+	first, err := store.Claim("runner-a", []string{"yolo-runner"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(first) error = %v", err)
+	}
+	if first == nil || first.SourceRef != "task-a" {
+		t.Fatalf("Claim(first) = %#v, want highest-priority task-a", first)
+	}
+}
+
+func TestReconcileWithoutRootDoesNotDuplicateWorkspaceReadyTasks(t *testing.T) {
+	ctx := context.Background()
+	store := openBeadsSourceQueue(t, filepath.Join(t.TempDir(), "queue.db"))
+	storage := &fakeBeadsStorage{
+		readyTasks: []contracts.Task{
+			{ID: "task-a", Title: "Task A", Status: contracts.TaskStatusOpen},
+		},
+	}
+	src := &Source{
+		SourceName: "br-workspace",
+		Preset:     "yolo-runner",
+		Storage:    storage,
+		Queue:      store,
+	}
+
+	firstSubmissions, err := src.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile(first) error = %v", err)
+	}
+	secondSubmissions, err := src.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile(second) error = %v", err)
+	}
+	if got, want := submissionRefs(firstSubmissions), []string{"task-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile(first) source refs = %#v, want %#v", got, want)
+	}
+	if got, want := submissionRefs(secondSubmissions), []string{"task-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile(second) source refs = %#v, want %#v", got, want)
+	}
+
+	claimed, err := store.Claim("runner-a", []string{"yolo-runner"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(first) error = %v", err)
+	}
+	if claimed == nil || claimed.SourceRef != "task-a" {
+		t.Fatalf("Claim(first) = %#v, want task-a", claimed)
+	}
+	duplicate, err := store.Claim("runner-b", []string{"yolo-runner"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(second) error = %v", err)
+	}
+	if duplicate != nil {
+		t.Fatalf("Claim(second) = %#v, want no duplicate", duplicate)
+	}
+}
+
 type fakeBeadsStorage struct {
-	tree     *contracts.TaskTree
-	statuses map[string]contracts.TaskStatus
-	data     map[string]map[string]string
+	tree       *contracts.TaskTree
+	readyTasks []contracts.Task
+	statuses   map[string]contracts.TaskStatus
+	data       map[string]map[string]string
 }
 
 func (s *fakeBeadsStorage) GetTaskTree(context.Context, string) (*contracts.TaskTree, error) {
@@ -235,6 +326,10 @@ func (s *fakeBeadsStorage) GetTaskTree(context.Context, string) (*contracts.Task
 func (s *fakeBeadsStorage) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
 	task := s.tree.Tasks[taskID]
 	return &task, nil
+}
+
+func (s *fakeBeadsStorage) ReadyTasks(context.Context) ([]contracts.Task, error) {
+	return s.readyTasks, nil
 }
 
 func (s *fakeBeadsStorage) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {

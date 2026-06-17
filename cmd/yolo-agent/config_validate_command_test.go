@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -374,11 +375,84 @@ watch:
 	}
 }
 
+func TestRunConfigValidateCommandValidWorkspaceWideBRWatchConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	mkdirBeadsWorkspace(t, repoRoot)
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: br-source
+      type: br
+      preset: yolo-runner
+  runner_pools:
+    - name: br-pool
+      source: br-source
+      presets: [yolo-runner]
+      min_capacity: 1
+      max_capacity: 2
+`)
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot})
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d", code)
+		}
+	})
+
+	if stdoutText != "config is valid\n" {
+		t.Fatalf("expected deterministic success output, got %q", stdoutText)
+	}
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for valid config, got %q", stderrText)
+	}
+}
+
+func TestRunConfigValidateCommandValidRootScopedBRWatchConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	mkdirBeadsWorkspace(t, repoRoot)
+	writeTrackerConfigYAML(t, repoRoot, `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: br-source
+      type: br
+      preset: yolo-runner
+      root: yolo-epic
+  runner_pools:
+    - name: br-pool
+      source: br-source
+      presets: [yolo-runner]
+`)
+
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := runConfigValidateCommand([]string{"--repo", repoRoot})
+		if code != 0 {
+			t.Fatalf("expected exit code 0, got %d", code)
+		}
+	})
+
+	if stdoutText != "config is valid\n" {
+		t.Fatalf("expected deterministic success output, got %q", stdoutText)
+	}
+	if stderrText != "" {
+		t.Fatalf("expected no stderr output for valid config, got %q", stderrText)
+	}
+}
 
 func TestRunConfigValidateCommandRejectsInvalidWatchConfig(t *testing.T) {
 	tests := []struct {
 		name      string
 		config    string
+		setup     func(*testing.T, string)
 		wantField string
 		wantCause string
 	}{
@@ -499,11 +573,56 @@ watch:
 			wantField: "watch.autoscale.max_runners",
 			wantCause: "must be greater than or equal",
 		},
+		{
+			name: "missing br preset",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: br-source
+      type: br
+  runner_pools:
+    - name: br-pool
+      source: br-source
+      presets: [yolo-runner]
+`,
+			setup:     mkdirBeadsWorkspace,
+			wantField: "watch.sources[0].preset",
+			wantCause: "must not be empty",
+		},
+		{
+			name: "missing br workspace",
+			config: `
+profiles:
+  default:
+    tracker:
+      type: tk
+watch:
+  queue_path: queue/watch.db
+  sources:
+    - name: br-source
+      type: br
+      preset: yolo-runner
+  runner_pools:
+    - name: br-pool
+      source: br-source
+      presets: [yolo-runner]
+`,
+			wantField: "watch.sources[0].repo",
+			wantCause: "must contain a .beads workspace",
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			repoRoot := t.TempDir()
+			if tc.setup != nil {
+				tc.setup(t, repoRoot)
+			}
 			writeTrackerConfigYAML(t, repoRoot, tc.config)
 
 			stdoutText, stderrText := captureOutput(t, func() {
@@ -528,7 +647,6 @@ watch:
 		})
 	}
 }
-
 
 func TestRunConfigValidateCommandValidConfigJSONOutputUsesStableSchema(t *testing.T) {
 	repoRoot := t.TempDir()
@@ -631,6 +749,13 @@ profiles:
 	}
 	if stderrText != "" {
 		t.Fatalf("expected no stderr output for valid config, got %q", stderrText)
+	}
+}
+
+func mkdirBeadsWorkspace(t *testing.T, repoRoot string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".beads"), 0o755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
 	}
 }
 

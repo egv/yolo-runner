@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,8 +25,13 @@ type Source struct {
 	Priority    int
 	MaxAttempts int
 	Storage     contracts.StorageBackend
+	ReadyLister ReadyTaskLister
 	Engine      contracts.TaskEngine
 	Queue       *workqueue.Store
+}
+
+type ReadyTaskLister interface {
+	ReadyTasks(context.Context) ([]contracts.Task, error)
 }
 
 type plannedSubmission struct {
@@ -115,16 +121,16 @@ func (s *Source) plan(ctx context.Context, terminalItems map[string]string) ([]p
 	if s == nil {
 		return nil, errors.New("beads source is required")
 	}
-	if s.Storage == nil {
-		return nil, errors.New("beads source storage backend is required")
-	}
 	rootID := strings.TrimSpace(s.RootID)
-	if rootID == "" {
-		return nil, errors.New("beads source root id is required")
-	}
 	preset := strings.TrimSpace(s.Preset)
 	if preset == "" {
 		return nil, errors.New("beads source preset is required")
+	}
+	if rootID == "" {
+		return s.planWorkspaceReady(ctx, terminalItems)
+	}
+	if s.Storage == nil {
+		return nil, errors.New("beads source storage backend is required")
 	}
 
 	tree, err := s.Storage.GetTaskTree(ctx, rootID)
@@ -150,6 +156,37 @@ func (s *Source) plan(ctx context.Context, terminalItems map[string]string) ([]p
 			taskID:     node.ID,
 			submission: submission,
 			depTaskIDs: dependencyTaskIDs(node),
+		})
+	}
+	return planned, nil
+}
+
+func (s *Source) planWorkspaceReady(ctx context.Context, terminalItems map[string]string) ([]plannedSubmission, error) {
+	lister := s.readyTaskLister()
+	if lister == nil {
+		return nil, errors.New("beads source ready task lister is required when root id is omitted")
+	}
+	tasks, err := lister.ReadyTasks(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list ready beads tasks: %w", err)
+	}
+
+	planned := make([]plannedSubmission, 0, len(tasks))
+	for _, task := range tasks {
+		taskID := strings.TrimSpace(task.ID)
+		if taskID == "" {
+			continue
+		}
+		if _, terminal := terminalItems[taskID]; terminal {
+			continue
+		}
+		submission, err := s.submissionForTask("", task, taskMetadataPriority(task))
+		if err != nil {
+			return nil, err
+		}
+		planned = append(planned, plannedSubmission{
+			taskID:     taskID,
+			submission: submission,
 		})
 	}
 	return planned, nil
@@ -237,7 +274,9 @@ func (s *Source) submissionForTask(rootID string, task contracts.Task, graphPrio
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
-	metadata["queue_root"] = strings.TrimSpace(rootID)
+	if rootID = strings.TrimSpace(rootID); rootID != "" {
+		metadata["queue_root"] = rootID
+	}
 
 	payload, err := json.Marshal(workitem.ImplementPayload{
 		TaskID:      taskID,
@@ -273,6 +312,17 @@ func (s *Source) taskEngine() contracts.TaskEngine {
 		return s.Engine
 	}
 	return engine.NewTaskEngine()
+}
+
+func (s *Source) readyTaskLister() ReadyTaskLister {
+	if s == nil {
+		return nil
+	}
+	if s.ReadyLister != nil {
+		return s.ReadyLister
+	}
+	lister, _ := s.Storage.(ReadyTaskLister)
+	return lister
 }
 
 func topologicallyOrderedOpenLeafNodes(graph *contracts.TaskGraph) []*contracts.TaskNode {
@@ -347,6 +397,21 @@ func dependencyTaskIDs(node *contracts.TaskNode) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func taskMetadataPriority(task contracts.Task) int {
+	if task.Metadata == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(task.Metadata["priority"])
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func decodeImplementPayload(raw json.RawMessage) (workitem.ImplementPayload, error) {

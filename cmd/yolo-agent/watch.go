@@ -527,6 +527,17 @@ func (s defaultWatchSourceStarter) StartSource(ctx context.Context, source watch
 				eventSink: s.eventSink,
 			})
 		}()
+	case watchSourceBR:
+		go func() {
+			done <- defaultRunSourceBR(runCtx, sourceBRCommandConfig{
+				repoRoot:   source.Repo,
+				sourceName: source.Name,
+				queuePath:  queuePath,
+				preset:     source.Preset,
+				rootID:     source.Root,
+				eventSink:  s.eventSink,
+			})
+		}()
 	case watchSourceArcPR:
 		go func() {
 			done <- defaultRunSourceArcPR(runCtx, sourceArcPRCommandConfig{
