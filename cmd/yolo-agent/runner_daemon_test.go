@@ -734,6 +734,46 @@ func TestRunnerDaemonFailsClaimWithoutEnvironmentPresets(t *testing.T) {
 	}
 }
 
+func TestRunnerItemHeartbeatRetriesTransientSQLiteBusy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	store := &fakeRunnerHeartbeatStore{
+		errs: []error{
+			fmt.Errorf("heartbeat item %q: database is locked (5) (SQLITE_BUSY)", "item-1"),
+		},
+		calls: make(chan int, 2),
+	}
+
+	done, errs := startRunnerItemHeartbeat(ctx, store, "item-1", "runner-1", time.Hour)
+	waitForHeartbeatCalls(t, store.calls, 2)
+	cancel()
+	<-done
+
+	if err, ok := <-errs; ok {
+		t.Fatalf("heartbeat error = %v, want retry to succeed", err)
+	}
+}
+
+func TestRunnerItemHeartbeatDoesNotRetryNonTransientError(t *testing.T) {
+	store := &fakeRunnerHeartbeatStore{
+		errs:  []error{fmt.Errorf("item %q is no longer claimed", "item-1")},
+		calls: make(chan int, 1),
+	}
+
+	done, errs := startRunnerItemHeartbeat(context.Background(), store, "item-1", "runner-1", time.Hour)
+	<-done
+
+	err, ok := <-errs
+	if !ok {
+		t.Fatalf("expected heartbeat error")
+	}
+	if !strings.Contains(err.Error(), "no longer claimed") {
+		t.Fatalf("heartbeat error = %v, want original non-transient error", err)
+	}
+	waitForHeartbeatCalls(t, store.calls, 1)
+}
+
 type runnerDaemonNoopEventSink struct{}
 
 func (runnerDaemonNoopEventSink) Emit(context.Context, contracts.Event) error {
@@ -752,4 +792,43 @@ func runnerDaemonTestPresets(names ...string) map[string]envpreset.Preset {
 
 func runnerDaemonNoopMaterializer(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
 	return envpreset.Workspace{}, nil
+}
+
+type fakeRunnerHeartbeatStore struct {
+	mu    sync.Mutex
+	errs  []error
+	calls chan int
+	count int
+}
+
+func (s *fakeRunnerHeartbeatStore) Heartbeat(string, string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.count++
+	callNumber := s.count
+	select {
+	case s.calls <- callNumber:
+	default:
+	}
+	if callNumber <= len(s.errs) {
+		return s.errs[callNumber-1]
+	}
+	return nil
+}
+
+func waitForHeartbeatCalls(t *testing.T, calls <-chan int, want int) {
+	t.Helper()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-calls:
+			if got >= want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for heartbeat call %d", want)
+		}
+	}
 }

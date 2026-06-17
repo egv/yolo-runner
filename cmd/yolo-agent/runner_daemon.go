@@ -509,14 +509,20 @@ func (d runnerDaemon) failClaimedItem(item workitem.Item, startedAt time.Time, c
 	})
 }
 
-func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemID string, runnerID string, interval time.Duration) (<-chan struct{}, <-chan error) {
+type runnerItemHeartbeatStore interface {
+	Heartbeat(itemID string, runnerID string) error
+}
+
+const runnerItemHeartbeatBusyRetryDelay = 250 * time.Millisecond
+
+func startRunnerItemHeartbeat(ctx context.Context, store runnerItemHeartbeatStore, itemID string, runnerID string, interval time.Duration) (<-chan struct{}, <-chan error) {
 	done := make(chan struct{})
 	errs := make(chan error, 1)
 
 	go func() {
 		defer close(done)
 		defer close(errs)
-		if err := store.Heartbeat(itemID, runnerID); err != nil {
+		if err := heartbeatRunnerItem(ctx, store, itemID, runnerID); err != nil {
 			errs <- err
 			return
 		}
@@ -528,7 +534,7 @@ func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemI
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := store.Heartbeat(itemID, runnerID); err != nil {
+				if err := heartbeatRunnerItem(ctx, store, itemID, runnerID); err != nil {
 					errs <- err
 					return
 				}
@@ -537,6 +543,40 @@ func startRunnerItemHeartbeat(ctx context.Context, store *workqueue.Store, itemI
 	}()
 
 	return done, errs
+}
+
+func heartbeatRunnerItem(ctx context.Context, store runnerItemHeartbeatStore, itemID string, runnerID string) error {
+	for {
+		err := store.Heartbeat(itemID, runnerID)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if !isTransientSQLiteBusyError(err) {
+			return err
+		}
+
+		timer := time.NewTimer(runnerItemHeartbeatBusyRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+}
+
+func isTransientSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlite_busy") ||
+		strings.Contains(message, "database is locked") ||
+		strings.Contains(message, "database table is locked") ||
+		strings.Contains(message, "database is busy")
 }
 
 func defaultRunnerKindRegistry() runnerKindRegistry {
