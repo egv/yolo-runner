@@ -496,12 +496,12 @@ func terminalResultData(decision string, result workitem.ImplementResult) map[st
 }
 
 func beadsIdempotencyKey(sourceName string, rootID string, taskID string) string {
-	return strings.Join([]string{
-		strings.TrimSpace(sourceName),
-		strings.TrimSpace(rootID),
-		strings.TrimSpace(taskID),
-		string(workitem.KindImplement),
-	}, "/")
+	parts := []string{strings.TrimSpace(sourceName)}
+	if rootID = strings.TrimSpace(rootID); rootID != "" {
+		parts = append(parts, rootID)
+	}
+	parts = append(parts, strings.TrimSpace(taskID), string(workitem.KindImplement))
+	return strings.Join(parts, "/")
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
