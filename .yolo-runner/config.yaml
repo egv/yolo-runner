@@ -47,6 +47,17 @@ profiles:
         queues:
           - key: ADAPTABOT
             root: /home/genaevstratov/arcadia
+          - key: LUMI
+            preset: startrek-lumi
+            root: /home/genaevstratov/arcadia/marvel/gena/lumi
+            arc_mount:
+              enabled: true
+              store: .yolo-runner/arc-stores/lumi/store
+              object_store: .yolo-runner/arc-stores/shared-store
+              allow_other: true
+              ssh_tokens: true
+              inode_cache_size: 100000
+              cache_size: 134217728
 agent:
   backend: codex
   model: gpt-5.5
@@ -83,9 +94,9 @@ watch:
   runner_pools:
     - name: startrek-adapta-implementers
       source: startrek-adapta
-      presets: [startrek-adapta]
+      presets: [startrek-adapta, startrek-lumi]
       min_replicas: 1
-      max_replicas: 1
+      max_replicas: 2
       capacity: 1
     - name: arcpr-reviewers
       source: arcpr
@@ -95,6 +106,6 @@ watch:
       capacity: 2
   autoscale:
     min_runners: 2
-    max_runners: 3
+    max_runners: 4
   tui:
     default_mode: stream
