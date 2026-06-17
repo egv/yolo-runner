@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 func TestSourceCommandDispatchesBR(t *testing.T) {
@@ -62,6 +66,117 @@ func TestSourceBRCommandHelpReturnsZero(t *testing.T) {
 	}
 }
 
+func TestSourceBRCommandManualDebugSmoke(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot := t.TempDir()
+	mkdirBeadsWorkspace(t, repoRoot)
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "br.args")
+	brPath := filepath.Join(binDir, "br")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$BR_LOG"
+case "$*" in
+  "--no-daemon ready --parent debug-root --recursive --json")
+    printf '%s\n' '[{"id":"task-a","issue_type":"task","status":"open"}]'
+    exit 0
+    ;;
+  "--no-daemon show debug-root --json")
+    printf '%s\n' '[{"id":"debug-root","title":"Debug Root","status":"open"}]'
+    exit 0
+    ;;
+  "--no-daemon show task-a --json")
+    printf '%s\n' '[{"id":"task-a","title":"Task A","description":"first","status":"open"}]'
+    exit 0
+    ;;
+  "--no-daemon dep list debug-root --json"|"--no-daemon dep list task-a --json")
+    printf '%s\n' '[]'
+    exit 0
+    ;;
+esac
+printf 'unexpected br args: %s\n' "$*" >&2
+exit 2
+`
+	if err := os.WriteFile(brPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake br: %v", err)
+	}
+	t.Setenv("BR_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	queuePath := filepath.Join(t.TempDir(), "queue.db")
+	eventsPath := filepath.Join(t.TempDir(), "source-br.events.jsonl")
+	stdoutText, stderrText := captureOutput(t, func() {
+		code := RunMain([]string{
+			"source", "br",
+			"--repo", repoRoot,
+			"--queue", queuePath,
+			"--preset", "debug-preset",
+			"--root", "debug-root",
+			"--name", "local-br",
+			"--once",
+			"--stream",
+			"--events", eventsPath,
+		}, func(context.Context, runConfig) error {
+			t.Fatalf("legacy run function should not be called for source br")
+			return nil
+		})
+		if code != 0 {
+			t.Fatalf("source br smoke exit code = %d, want 0", code)
+		}
+	})
+	if stderrText != "" {
+		t.Fatalf("source br smoke stderr = %q, want empty", stderrText)
+	}
+
+	assertSourceBRStreamEvents(t, stdoutText, "local-br")
+	eventsBytes, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read source br events log: %v", err)
+	}
+	assertSourceBRStreamEvents(t, string(eventsBytes), "local-br")
+
+	store, err := workqueue.Open(queuePath)
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	defer store.Close()
+	claimed, err := store.Claim("runner-a", []string{"debug-preset"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("expected queued br implement item")
+	}
+	if claimed.Kind != workitem.KindImplement || claimed.Source != "local-br" || claimed.SourceRef != "task-a" || claimed.Preset != "debug-preset" {
+		t.Fatalf("unexpected queued item: %#v", claimed)
+	}
+	payload, err := workitem.DecodeImplementPayload(claimed.Payload)
+	if err != nil {
+		t.Fatalf("decode queued implement payload: %v", err)
+	}
+	if payload.TaskID != "task-a" || payload.Title != "Task A" || payload.Description != "first" {
+		t.Fatalf("unexpected queued payload: %#v", payload)
+	}
+	if got := payload.PromptContext.Metadata["queue_root"]; got != "debug-root" {
+		t.Fatalf("payload queue_root metadata = %q, want debug-root", got)
+	}
+
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read br log: %v", err)
+	}
+	for _, expected := range []string{
+		"--no-daemon ready --parent debug-root --recursive --json",
+		"--no-daemon show debug-root --json",
+		"--no-daemon show task-a --json",
+		"--no-daemon dep list task-a --json",
+	} {
+		if !strings.Contains(string(logged), expected) {
+			t.Fatalf("br calls missing %q in %q", expected, string(logged))
+		}
+	}
+}
+
 func TestBuildSourceBRRunBundleRequiresBeadsWorkspace(t *testing.T) {
 	repoRoot := t.TempDir()
 	_, err := buildSourceBRRunBundle(context.Background(), sourceBRCommandConfig{
@@ -75,6 +190,34 @@ func TestBuildSourceBRRunBundleRequiresBeadsWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "br init") {
 		t.Fatalf("expected br init remediation, got %q", err.Error())
+	}
+}
+
+func assertSourceBRStreamEvents(t *testing.T, raw string, sourceName string) {
+	t.Helper()
+	decoder := contracts.NewEventDecoder(bytes.NewReader([]byte(raw)))
+	seen := map[contracts.EventType]bool{}
+	for {
+		event, err := decoder.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode source br event stream %q: %v", raw, err)
+		}
+		if event.Metadata["source"] != sourceName {
+			t.Fatalf("event source metadata = %q, want %q in %#v", event.Metadata["source"], sourceName, event)
+		}
+		seen[event.Type] = true
+	}
+	for _, eventType := range []contracts.EventType{
+		contracts.EventTypeRunStarted,
+		contracts.EventTypeRunnerHeartbeat,
+		contracts.EventTypeRunFinished,
+	} {
+		if !seen[eventType] {
+			t.Fatalf("source br event stream missing %s in %q", eventType, raw)
+		}
 	}
 }
 

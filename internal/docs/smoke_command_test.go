@@ -29,6 +29,30 @@ func TestMakefileHasAgentTUISmokeTarget(t *testing.T) {
 	if !strings.Contains(makefile, "$(MAKE) smoke-config-commands") {
 		t.Fatalf("smoke-agent-tui target must include smoke-config-commands coverage")
 	}
+	if !strings.Contains(makefile, "$(MAKE) smoke-source-br") {
+		t.Fatalf("smoke-agent-tui target must include smoke-source-br coverage")
+	}
+}
+
+func TestMakefileHasSourceBRSmokeTarget(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	makefilePath := filepath.Join(repoRoot, "Makefile")
+	contents, err := os.ReadFile(makefilePath)
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+
+	makefile := string(contents)
+	if !strings.Contains(makefile, "smoke-source-br:") {
+		t.Fatalf("Makefile missing smoke-source-br target")
+	}
+	if !strings.Contains(makefile, "TestSourceBRCommandManualDebugSmoke") {
+		t.Fatalf("smoke-source-br target must run source br manual debug smoke coverage")
+	}
 }
 
 func TestMakefileHasEventStreamSmokeTarget(t *testing.T) {

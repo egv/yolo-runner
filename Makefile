@@ -4,9 +4,13 @@ test:
 smoke-agent-tui:
 	go test ./cmd/yolo-agent ./cmd/yolo-tui
 	$(MAKE) smoke-config-commands
+	$(MAKE) smoke-source-br
 
 smoke-config-commands:
 	go test ./cmd/yolo-agent -run 'TestE2E_ConfigCommands_(InitThenValidateHappyPath|ValidateMissingFileFallsBackToDefaults|ValidateInvalidValuesReportsDeterministicDiagnostics|ValidateMissingAuthEnvReportsRemediation)$$' -count=1
+
+smoke-source-br:
+	go test ./cmd/yolo-agent -run 'TestSourceBRCommandManualDebugSmoke$$' -count=1
 
 smoke-event-stream:
 	$(MAKE) smoke-agent-tui
