@@ -113,6 +113,7 @@ For normal operations, prefer `yolo-agent watch`; it supervises the configured s
 Operator commands:
 
 - Source adapters: `yolo-agent source <arcpr|startrek> --profile <name> --queue ~/.yolo-runner/queue.db`
+- Beads debug source: `yolo-agent source br --repo . --queue ~/.yolo-runner/queue.db --preset <preset> [--root <epic-id>] [--name <source-name>] --once --stream --events <path>`
 - Runner daemons: `yolo-agent runner --queue ~/.yolo-runner/queue.db --environments ~/.yolo-runner/environments.yaml --presets <preset>[,<preset>]`
 - Queue inspection: the queue is plain SQLite at `~/.yolo-runner/queue.db` (tables `work_items`, `work_results`, `item_deps`, `runners`); a `yolo-agent queue` operator CLI (`ls`/`submit`/`retry`/`cancel`/`gc`) is planned.
 - Merged event stream: `yolo-agent events follow --since 1h | yolo-tui --events-stdin`

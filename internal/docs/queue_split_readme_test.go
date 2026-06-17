@@ -11,6 +11,7 @@ func TestReadmeDocumentsQueueSplitOperatorTopology(t *testing.T) {
 	required := []string{
 		"### Queue-split runner topology",
 		"`yolo-agent source <arcpr|startrek> --profile <name> --queue ~/.yolo-runner/queue.db`",
+		"`yolo-agent source br --repo . --queue ~/.yolo-runner/queue.db --preset <preset> [--root <epic-id>] [--name <source-name>] --once --stream --events <path>`",
 		"`yolo-agent runner --queue ~/.yolo-runner/queue.db --environments ~/.yolo-runner/environments.yaml --presets <preset>[,<preset>]`",
 		"a `yolo-agent queue` operator CLI (`ls`/`submit`/`retry`/`cancel`/`gc`) is planned",
 		"`yolo-agent events follow --since 1h | yolo-tui --events-stdin`",
