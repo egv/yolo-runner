@@ -47,6 +47,24 @@ func TestSourcePollResumeNeedsInfoTasksSubmitsFreshPreflight(t *testing.T) {
 	if err := store.Complete(oldItem.ID, workqueue.Result{Payload: json.RawMessage(`{"verdict":"needs_info"}`)}); err != nil {
 		t.Fatalf("Complete(old preflight) error = %v", err)
 	}
+	state, err := OpenState(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenState() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Errorf("Close(state) error = %v", err)
+		}
+	})
+	if err := state.RecordPreflightWriteback(ctx, PreflightWritebackRecord{
+		IdempotencyKey: oldKey,
+		ItemID:         oldItem.ID,
+		IssueID:        "VAY-42",
+		Verdict:        workitem.PreflightVerdictNeedsInfo,
+		CommentID:      "comment-1",
+	}); err != nil {
+		t.Fatalf("RecordPreflightWriteback() error = %v", err)
+	}
 
 	backend := &fakeStartrekDiscoveryBackend{
 		resumed: []string{"VAY-42"},
@@ -85,6 +103,7 @@ func TestSourcePollResumeNeedsInfoTasksSubmitsFreshPreflight(t *testing.T) {
 	src := &Source{
 		SourceName:     "startrek-st-dev",
 		Backend:        backend,
+		State:          state,
 		Queue:          store,
 		Queues:         []Queue{{Key: "VAY"}},
 		Preset:         "st-dev",
@@ -127,6 +146,89 @@ func TestSourcePollResumeNeedsInfoTasksSubmitsFreshPreflight(t *testing.T) {
 	}
 	if extra != nil {
 		t.Fatalf("expected exactly one resumed preflight item, got extra %#v", extra)
+	}
+}
+
+func TestSourcePollSkipsIssueWithUnresolvedNeedsInfoWriteback(t *testing.T) {
+	ctx := context.Background()
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open(queue) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close(queue) error = %v", err)
+		}
+	})
+	state, err := OpenState(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenState() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Errorf("Close(state) error = %v", err)
+		}
+	})
+	if err := state.RecordPreflightWriteback(ctx, PreflightWritebackRecord{
+		IdempotencyKey: "st/VAY-42/preflight/rev1",
+		ItemID:         "item-1",
+		IssueID:        "VAY-42",
+		Verdict:        workitem.PreflightVerdictNeedsInfo,
+		CommentID:      "comment-1",
+	}); err != nil {
+		t.Fatalf("RecordPreflightWriteback() error = %v", err)
+	}
+
+	backend := &fakeStartrekDiscoveryBackend{
+		tree: contracts.TaskTree{
+			Root: contracts.Task{ID: "VAY", Title: "Queue root", Status: contracts.TaskStatusOpen},
+			Tasks: map[string]contracts.Task{
+				"VAY": {
+					ID:     "VAY",
+					Title:  "Queue root",
+					Status: contracts.TaskStatusOpen,
+				},
+				"VAY-42": {
+					ID:       "VAY-42",
+					Title:    "Clarify ownership",
+					Status:   contracts.TaskStatusOpen,
+					ParentID: "VAY",
+					Metadata: map[string]string{"revision": "rev2"},
+				},
+			},
+			Relations: []contracts.TaskRelation{{
+				FromID: "VAY",
+				ToID:   "VAY-42",
+				Type:   contracts.RelationParent,
+			}},
+		},
+		details: map[string]contracts.Task{
+			"VAY-42": {
+				ID:       "VAY-42",
+				Title:    "Clarify ownership",
+				Status:   contracts.TaskStatusOpen,
+				Metadata: map[string]string{"revision": "rev2"},
+			},
+		},
+	}
+	src := &Source{
+		SourceName:     "startrek-st-dev",
+		Backend:        backend,
+		State:          state,
+		Queue:          store,
+		Queues:         []Queue{{Key: "VAY"}},
+		Preset:         "st-dev",
+		ReadyLabel:     "yolo-agent-ready",
+		NeedsInfoLabel: "needs-info",
+		Marker:         "needs-info",
+	}
+
+	submissions, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(submissions) != 0 {
+		t.Fatalf("Poll() submissions = %#v, want none while needs-info is unresolved", submissions)
 	}
 }
 

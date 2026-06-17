@@ -605,6 +605,48 @@ WHERE idempotency_key = ?`, idempotencyKey).Scan(
 	return record, true, nil
 }
 
+func (s *StateStore) GetLatestPreflightWritebackForIssue(ctx context.Context, issueID string) (PreflightWritebackRecord, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.db == nil {
+		return PreflightWritebackRecord{}, false, errors.New("startrek source state store is not initialized")
+	}
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return PreflightWritebackRecord{}, false, errors.New("startrek preflight writeback issue id is required")
+	}
+
+	var record PreflightWritebackRecord
+	var verdict string
+	var createdAt string
+	var updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT idempotency_key, item_id, issue_id, verdict, comment_id, created_at, updated_at
+FROM preflight_writebacks
+WHERE issue_id = ?
+ORDER BY created_at DESC, updated_at DESC
+LIMIT 1`, issueID).Scan(
+		&record.IdempotencyKey,
+		&record.ItemID,
+		&record.IssueID,
+		&verdict,
+		&record.CommentID,
+		&createdAt,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return PreflightWritebackRecord{}, false, nil
+	}
+	if err != nil {
+		return PreflightWritebackRecord{}, false, fmt.Errorf("get latest startrek preflight writeback for issue %q: %w", issueID, err)
+	}
+	record.Verdict = workitem.PreflightVerdict(verdict)
+	record.CreatedAt = parseSourceStateTime(createdAt)
+	record.UpdatedAt = parseSourceStateTime(updatedAt)
+	return record, true, nil
+}
+
 func formatSourceStateTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }

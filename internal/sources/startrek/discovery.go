@@ -82,6 +82,16 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 				continue
 			}
 			task := TrackerWatchStartrekTaskFromTree(summary, tree.Tasks)
+			resumedTask := resumedIssue(resumed, task.ID)
+			if !resumedTask {
+				hasNeedsInfoWriteback, err := s.hasNeedsInfoWriteback(ctx, task.ID)
+				if err != nil {
+					return nil, err
+				}
+				if hasNeedsInfoWriteback {
+					continue
+				}
+			}
 			hasOpenItem, err := s.hasOpenQueueItem(task.ID)
 			if err != nil {
 				return nil, err
@@ -98,7 +108,7 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			if err != nil {
 				return nil, err
 			}
-			submission, err := s.preflightSubmission(ctx, queue, task, queueRoot, summary.Priority, resumedIssue(resumed, task.ID))
+			submission, err := s.preflightSubmission(ctx, queue, task, queueRoot, summary.Priority, resumedTask)
 			if err != nil {
 				return nil, err
 			}
@@ -127,6 +137,18 @@ func (s *Source) hasOpenQueueItem(sourceRef string) (bool, error) {
 		return false, errors.New("startrek source queue is required")
 	}
 	return s.Queue.HasOpenItem(s.Name(), sourceRef)
+}
+
+func (s *Source) hasNeedsInfoWriteback(ctx context.Context, sourceRef string) (bool, error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if sourceRef == "" || s == nil || s.State == nil {
+		return false, nil
+	}
+	record, ok, err := s.State.GetLatestPreflightWritebackForIssue(ctx, sourceRef)
+	if err != nil {
+		return false, err
+	}
+	return ok && record.Verdict == workitem.PreflightVerdictNeedsInfo, nil
 }
 
 func (s *Source) preflightTaskDetails(ctx context.Context, backend DiscoveryBackend, task contracts.Task) (contracts.Task, error) {
