@@ -537,7 +537,7 @@ func (s defaultWatchSourceStarter) StartSource(ctx context.Context, source watch
 		}
 		if err := validateBRWorkspace(sourceRepo); err != nil {
 			cancel()
-			return nil, err
+			return nil, fmt.Errorf("br source %q watch.sources[].repo %q must contain a .beads workspace; run br init in that repo: %w", source.Name, sourceRepo, err)
 		}
 		go func() {
 			done <- defaultRunSourceBR(runCtx, sourceBRCommandConfig{
