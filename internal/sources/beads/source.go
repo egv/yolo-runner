@@ -148,6 +148,13 @@ func (s *Source) plan(ctx context.Context, terminalItems map[string]string) ([]p
 		if _, terminal := terminalItems[node.ID]; terminal {
 			continue
 		}
+		hasOpenItem, err := s.hasOpenQueueItem(node.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hasOpenItem {
+			continue
+		}
 		submission, err := s.submissionForTask(rootID, node.Task, node.Priority)
 		if err != nil {
 			return nil, err
@@ -178,6 +185,13 @@ func (s *Source) planWorkspaceReady(ctx context.Context, terminalItems map[strin
 			continue
 		}
 		if _, terminal := terminalItems[taskID]; terminal {
+			continue
+		}
+		hasOpenItem, err := s.hasOpenQueueItem(taskID)
+		if err != nil {
+			return nil, err
+		}
+		if hasOpenItem {
 			continue
 		}
 		submission, err := s.submissionForTask("", task, taskMetadataPriority(task))
@@ -223,6 +237,18 @@ func (s *Source) enqueuePlanned(planned []plannedSubmission, terminalItems map[s
 		submissions = append(submissions, plan.submission)
 	}
 	return submissions, nil
+}
+
+func (s *Source) hasOpenQueueItem(taskID string) (bool, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" || s == nil || s.Queue == nil {
+		return false, nil
+	}
+	hasOpenItem, err := s.Queue.HasOpenItem(s.Name(), taskID)
+	if err != nil {
+		return false, fmt.Errorf("check open beads queue item for task %q: %w", taskID, err)
+	}
+	return hasOpenItem, nil
 }
 
 func isTerminalQueueState(state string) bool {

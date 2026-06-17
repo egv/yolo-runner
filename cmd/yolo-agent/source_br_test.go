@@ -124,7 +124,7 @@ exit 2
 	if got, want := len(firstSubmissions), 1; got != want {
 		t.Fatalf("Poll(first) submissions = %d, want %d", got, want)
 	}
-	if got, want := len(secondSubmissions), 1; got != want {
+	if got, want := len(secondSubmissions), 0; got != want {
 		t.Fatalf("Poll(second) submissions = %d, want %d", got, want)
 	}
 

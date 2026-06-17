@@ -85,7 +85,7 @@ func TestReconcileRestartResumesBlockedTaskWithoutDuplicatingCompletedWork(t *te
 	if err != nil {
 		t.Fatalf("Reconcile(restart) error = %v", err)
 	}
-	if got, want := submissionRefs(restartedSubmissions), []string{"task-b"}; !reflect.DeepEqual(got, want) {
+	if got, want := submissionRefs(restartedSubmissions), []string{}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile(restart) source refs = %#v, want %#v", got, want)
 	}
 
@@ -169,7 +169,7 @@ func TestReconcileSkipsConsumedTerminalResultWithoutDuplicatingCompletedWork(t *
 	if err != nil {
 		t.Fatalf("Reconcile(restart) error = %v", err)
 	}
-	if got, want := submissionRefs(restartedSubmissions), []string{"task-b"}; !reflect.DeepEqual(got, want) {
+	if got, want := submissionRefs(restartedSubmissions), []string{}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile(restart) source refs = %#v, want %#v", got, want)
 	}
 
@@ -292,7 +292,7 @@ func TestReconcileWithoutRootDoesNotDuplicateWorkspaceReadyTasks(t *testing.T) {
 	if got, want := submissionRefs(firstSubmissions), []string{"task-a"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile(first) source refs = %#v, want %#v", got, want)
 	}
-	if got, want := submissionRefs(secondSubmissions), []string{"task-a"}; !reflect.DeepEqual(got, want) {
+	if got, want := submissionRefs(secondSubmissions), []string{}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile(second) source refs = %#v, want %#v", got, want)
 	}
 
