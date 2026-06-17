@@ -179,11 +179,35 @@ presets:
       max_concurrent: 2
     env:
       passthrough: [ARC_TOKEN]
+
+  local:
+    workspace:
+      strategy: git-clone
+      origin: /path/to/yolo-runner
+      base_branch: main
+    landing:
+      type: git-merge
+    agent:
+      backend: codex
+      model: gpt-5.5
+      runner_timeout: 20m
+      watchdog_timeout: 10m
+      watchdog_interval: 5s
+    limits:
+      max_concurrent: 1
 ```
 
 The Startrek queue `preset` is optional. If it is omitted, the source falls back to the source/profile preset. Set it per queue when one Startrek profile watches several queues that need different workspaces, landing policy, or model limits.
 
-For br sources, `preset` is required because br has no profile-to-preset mapping. `repo` defaults to the supervisor repo and must contain `.beads`; if validation fails with a missing workspace, run `br init` in that repo or point `watch.sources[].repo` at the correct br workspace. `root` is optional. When omitted, the source polls the whole workspace through `br --no-daemon ready --limit 0 --json`; when set, it keeps the existing root-scoped task-tree behavior.
+## br Watch Runbook
+
+br watch uses the same watcher -> sink -> runner model as Startrek and Arc PR watch:
+
+- The watcher is the `br` source. It polls ready Beads Rust tasks and converts each ready task into an `implement` work item.
+- The sink is the SQLite work queue at `watch.queue_path`, usually `.yolo-runner/watch.db`.
+- The runner is a pool whose `presets` include the br source preset. Runner daemons claim queued items, materialize the preset workspace, execute the implementation flow, and write results back to the queue for the source to consume.
+
+For br sources, `preset` is required because br has no profile-to-preset mapping. `repo` defaults to the supervisor repo and must contain `.beads`. `root` is optional. When omitted, the source polls the whole workspace through `br --no-daemon ready --limit 0 --json`; when set, it keeps the existing root-scoped task-tree behavior.
 
 Workspace-wide br watch:
 
@@ -217,6 +241,68 @@ watch:
       source: local-beads-epic
       presets: [local]
 ```
+
+Missing `.beads`:
+
+`watch`, `config validate`, and `source br` fail fast when `watch.sources[].repo` does not contain a `.beads` directory. Remediate by initializing the configured repo or by pointing the source at the repo that already owns the br workspace:
+
+```bash
+cd <repo-from-watch.sources[].repo>
+br init
+```
+
+```yaml
+watch:
+  sources:
+    - name: local-beads
+      type: br
+      repo: /path/to/repo-with/.beads
+      preset: local
+```
+
+Manual br start:
+
+Use split-process mode when validating one br source or one runner pool. Omit `--root yolo-epic` for workspace-wide polling; add `--once` for a single poll-and-reconcile pass.
+
+```bash
+./bin/yolo-agent runner \
+  --queue .yolo-runner/watch.db \
+  --environments ~/.yolo-runner/environments.yaml \
+  --presets local \
+  --runner-id debug-br-runner \
+  --capacity 1
+
+./bin/yolo-agent source br \
+  --repo . \
+  --name local-beads \
+  --preset local \
+  --root yolo-epic \
+  --queue .yolo-runner/watch.db
+```
+
+Monitor br watch:
+
+Use `--tui` when the supervisor owns the process. For split-process debugging, merge the per-process event logs into the same TUI:
+
+```bash
+./bin/yolo-agent events follow --since 1h | ./bin/yolo-tui --events-stdin
+```
+
+Stop br watch:
+
+For supervisor mode, press Ctrl-C in the `yolo-agent watch` terminal; the supervisor cancels sources and stops runner pools before exiting. In split-process mode, press Ctrl-C in the `source br` terminal and each `runner` terminal.
+
+Recovery for br watch:
+
+Restarting `watch` is usually enough. Expired queue leases are requeued automatically, and stale rows in the queue's `runners` table are harmless. Use manual cleanup only when abandoning or retrying interrupted work:
+
+```bash
+br update <task-id> --status open
+br sync --flush-only
+rm -rf /tmp/yolo-runner-clones/<item-id>
+```
+
+If the interrupted run used the legacy direct path instead of queue-backed watch, remove `.yolo-runner/clones/<task-id>` instead. Do not clear `.yolo-runner/scheduler-state.json` for queue-backed watch runs; the queue is the source of runtime state.
 
 ## Run
 
@@ -290,7 +376,7 @@ For normal queue-backed runs, restarting `watch` is enough. Expired queue leases
 Use manual cleanup only after an interrupted operator session or when intentionally abandoning in-flight work:
 
 1. Stop the `yolo-agent watch` process.
-2. Remove stale direct-run clones for affected tasks: `.yolo-runner/clones/<task-id>`.
+2. Remove stale queue-runner clones for affected items: `/tmp/yolo-runner-clones/<item-id>`. If the interrupted run used the legacy direct path, remove `.yolo-runner/clones/<task-id>` instead.
 3. If a source-specific state DB should forget prior writebacks, back it up before deletion, for example `.yolo-runner/arcpr-source-state.db`.
 4. For Startrek issues, remove `yolo-agent-in-progress`; re-add `yolo-agent-ready` only when the issue should be retried.
 5. For Beads tasks, move interrupted items back to open and flush JSONL:
