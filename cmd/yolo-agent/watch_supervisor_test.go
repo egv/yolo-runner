@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -118,6 +119,8 @@ func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 	origBundle := newSourceBRRunBundle
 	t.Cleanup(func() { newSourceBRRunBundle = origBundle })
 
+	repoRoot := t.TempDir()
+	mkdirBeadsWorkspace(t, repoRoot)
 	queuePath := filepath.Join(t.TempDir(), "watch.db")
 	var assertionStore *workqueue.Store
 	newSourceBRRunBundle = func(_ context.Context, cfg sourceBRCommandConfig) (sourceBRRunBundle, error) {
@@ -155,7 +158,7 @@ func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 	handle, err := (defaultWatchSourceStarter{}).StartSource(ctx, watchSourceConfig{
 		Name:   "br-source",
 		Type:   watchSourceBR,
-		Repo:   "/repo",
+		Repo:   repoRoot,
 		Preset: "yolo-runner",
 	}, queuePath)
 	if err != nil {
@@ -177,6 +180,29 @@ func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 		}
 		return depth
 	}, 1)
+}
+
+func TestDefaultWatchSourceStarterRejectsBRSourceWithoutBeadsWorkspace(t *testing.T) {
+	repoRoot := t.TempDir()
+	queuePath := filepath.Join(t.TempDir(), "watch.db")
+
+	handle, err := (defaultWatchSourceStarter{}).StartSource(context.Background(), watchSourceConfig{
+		Name:   "br-source",
+		Type:   watchSourceBR,
+		Repo:   repoRoot,
+		Preset: "yolo-runner",
+	}, queuePath)
+	if handle != nil {
+		if stopErr := handle.Stop(); stopErr != nil {
+			t.Fatalf("Stop() error = %v", stopErr)
+		}
+	}
+	if err == nil {
+		t.Fatalf("expected br source startup to fail without .beads")
+	}
+	if !strings.Contains(err.Error(), "br init") {
+		t.Fatalf("expected br init remediation, got %q", err.Error())
+	}
 }
 
 type fakeSourcehostSource struct {
