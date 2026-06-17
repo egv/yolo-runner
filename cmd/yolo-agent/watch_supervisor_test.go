@@ -179,6 +179,44 @@ func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 	}, 1)
 }
 
+func TestDefaultWatchSourceStarterDefaultsBRRepoToWatchRepo(t *testing.T) {
+	origBundle := newSourceBRRunBundle
+	t.Cleanup(func() { newSourceBRRunBundle = origBundle })
+
+	repoRoot := t.TempDir()
+	queuePath := filepath.Join(t.TempDir(), "watch.db")
+	called := make(chan sourceBRCommandConfig, 1)
+	newSourceBRRunBundle = func(_ context.Context, cfg sourceBRCommandConfig) (sourceBRRunBundle, error) {
+		called <- cfg
+		return sourceBRRunBundle{}, context.Canceled
+	}
+
+	handle, err := (defaultWatchSourceStarter{repoRoot: repoRoot}).StartSource(context.Background(), watchSourceConfig{
+		Name:   "br-source",
+		Type:   watchSourceBR,
+		Preset: "yolo-runner",
+		Root:   "yolo-epic",
+	}, queuePath)
+	if err != nil {
+		t.Fatalf("StartSource(br) error = %v", err)
+	}
+	if err := handle.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("source handle Wait() error = %v, want context.Canceled", err)
+	}
+
+	select {
+	case got := <-called:
+		if got.repoRoot != repoRoot {
+			t.Fatalf("br source repoRoot = %q, want watch repo %q", got.repoRoot, repoRoot)
+		}
+		if got.sourceName != "br-source" || got.queuePath != queuePath || got.preset != "yolo-runner" || got.rootID != "yolo-epic" {
+			t.Fatalf("unexpected br source config: %#v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for br source bundle")
+	}
+}
+
 type fakeSourcehostSource struct {
 	name        string
 	submissions []workqueue.Submission

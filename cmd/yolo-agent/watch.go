@@ -528,9 +528,13 @@ func (s defaultWatchSourceStarter) StartSource(ctx context.Context, source watch
 			})
 		}()
 	case watchSourceBR:
+		sourceRepo := strings.TrimSpace(source.Repo)
+		if sourceRepo == "" {
+			sourceRepo = s.repoRoot
+		}
 		go func() {
 			done <- defaultRunSourceBR(runCtx, sourceBRCommandConfig{
-				repoRoot:   source.Repo,
+				repoRoot:   sourceRepo,
 				sourceName: source.Name,
 				queuePath:  queuePath,
 				preset:     source.Preset,
