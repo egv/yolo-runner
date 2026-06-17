@@ -74,20 +74,27 @@ landing:
 watch:
   queue_path: .yolo-runner/watch.db
   sources:
-    - name: br-upgrade
-      type: br
-      repo: .
-      preset: beads
-      root: yolo-c2au
+    - name: startrek-adapta
+      type: startrek
+      profile: startrek-adapta
+    - name: arcpr
+      type: arcpr
+      profile: arcpr
   runner_pools:
-    - name: br-upgrade-implementers
-      source: br-upgrade
-      presets: [beads]
+    - name: startrek-adapta-implementers
+      source: startrek-adapta
+      presets: [startrek-adapta]
       min_replicas: 1
-      max_replicas: 3
+      max_replicas: 1
       capacity: 1
+    - name: arcpr-reviewers
+      source: arcpr
+      presets: [arcpr]
+      min_replicas: 1
+      max_replicas: 2
+      capacity: 2
   autoscale:
-    min_runners: 1
+    min_runners: 2
     max_runners: 3
   tui:
     default_mode: stream
