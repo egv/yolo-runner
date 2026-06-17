@@ -612,6 +612,7 @@ func (s defaultWatchRunnerStarter) StartRunner(ctx context.Context, pool watchRu
 	}
 	handlers := defaultRunnerKindRegistry()
 	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
+	handlers[workitem.KindSplit] = newRunnerSplitKindHandler(newRunnerSplitAgentResolverForPresets(environmentPresets))
 	daemon, err := newRunnerDaemon(daemonCfg, store, runners, runnerDaemonBuildOptions{
 		handlers:           handlers,
 		environmentPresets: environmentPresets,

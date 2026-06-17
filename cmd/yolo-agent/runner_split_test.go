@@ -11,6 +11,7 @@ import (
 
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -145,6 +146,77 @@ func TestRunnerSplitHandlerWritesSplitResultRow(t *testing.T) {
 		if !strings.Contains(request.Prompt, want) {
 			t.Fatalf("split runner prompt missing %q:\n%s", want, request.Prompt)
 		}
+	}
+}
+
+func TestRunnerSplitKindHandlerUsesResolvedPresetAgent(t *testing.T) {
+	payload, err := json.Marshal(workitem.SplitPayload{
+		Task: workitem.TaskPayload{
+			ID:          "LUMI-27",
+			Title:       "Выдача ачивки за прохождение экскурсии",
+			Description: "Split Startrek parent work into implementable tasks.",
+			Status:      contracts.TaskStatusOpen,
+			ParentID:    "LUMI",
+		},
+		QueueRoot: workitem.TaskPayload{
+			ID:     "LUMI",
+			Title:  "LUMI",
+			Status: contracts.TaskStatusOpen,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal split payload: %v", err)
+	}
+
+	fakeAgent := &runnerSplitFakeAgentRunner{output: runnerSplitStrictJSONOutput()}
+	handler := newRunnerSplitKindHandler(func(context.Context, workitem.Item) (runnerSplitAgent, error) {
+		return runnerSplitAgent{
+			Runner: fakeAgent,
+			Agent: envpreset.ResolvedAgent{
+				Backend:       "codex",
+				Model:         "gpt-test",
+				RunnerTimeout: 2 * time.Minute,
+			},
+			RepoRoot: "/repo/root",
+		}, nil
+	})
+
+	item := workitem.Item{
+		ID:             "split-item",
+		Kind:           workitem.KindSplit,
+		Source:         "startrek-startrek-adapta",
+		SourceRef:      "LUMI-27",
+		IdempotencyKey: "st/LUMI-27/split/rev",
+		Preset:         "startrek-lumi",
+		Payload:        payload,
+	}
+	result, err := handler(context.Background(), item, envpreset.Workspace{})
+	if err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+
+	var splitResult workitem.SplitResult
+	if err := json.Unmarshal(result.Payload, &splitResult); err != nil {
+		t.Fatalf("unmarshal split result %s: %v", result.Payload, err)
+	}
+	if len(splitResult.Tasks) != 2 {
+		t.Fatalf("split result tasks len = %d, want 2", len(splitResult.Tasks))
+	}
+	if len(fakeAgent.requests) != 1 {
+		t.Fatalf("agent requests len = %d, want 1", len(fakeAgent.requests))
+	}
+	request := fakeAgent.requests[0]
+	if request.Model != "gpt-test" {
+		t.Fatalf("request model = %q, want gpt-test", request.Model)
+	}
+	if request.RepoRoot != "/repo/root" {
+		t.Fatalf("request repo root = %q, want /repo/root", request.RepoRoot)
+	}
+	if request.Timeout != 2*time.Minute {
+		t.Fatalf("request timeout = %s, want 2m", request.Timeout)
+	}
+	if request.Metadata["phase"] != "split" || request.Metadata["preset"] != "startrek-lumi" || request.Metadata["source_ref"] != "LUMI-27" {
+		t.Fatalf("unexpected request metadata: %#v", request.Metadata)
 	}
 }
 
