@@ -9,6 +9,14 @@
 
 ## Standard Operator Flow
 
+For queue-backed Startrek or Arc PR operations, prefer the watch supervisor:
+
+```
+./bin/yolo-agent watch --repo . --environments ~/.yolo-runner/environments.yaml --tui
+```
+
+Use `--events "runner-logs/watch-$(date +%Y%m%d_%H%M%S).events.jsonl"` when the run needs an artifact for review or replay. `watch.tui.default_mode: ui` makes the TUI the config default; `watch.tui.default_mode: stream` keeps NDJSON on stdout unless `--tui` is supplied.
+
 Run the production monitor pipeline over stdin:
 
 ```
@@ -21,7 +29,7 @@ This single-process pipe is the legacy direct path, and is still the simplest wa
 
 ## Queue-Split Multi-Process Flow
 
-When running the queue-split topology (separate `source` and `runner` processes), there is no single stdout to pipe. Each process appends JSONL to its own `~/.yolo-runner/events/<proc>.jsonl` file. Merge-tail them into the TUI:
+When debugging the queue-split topology with separate `source` and `runner` processes, there is no single stdout to pipe. Each process appends JSONL to its own `~/.yolo-runner/events/<proc>.jsonl` file. Merge-tail them into the TUI:
 
 ```
 yolo-agent events follow --since 1h | yolo-tui --events-stdin

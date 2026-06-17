@@ -111,6 +111,24 @@ If a run is interrupted, reset state before restarting:
 
 ## yolo-agent Examples
 
+### Watch supervisor + TUI streaming
+
+Use this for queue-backed Startrek and Arc PR operation from `.yolo-runner/config.yaml`.
+
+```bash
+export STARTREK_TOKEN=<startrek-api-token>
+export ARC_TOKEN=<arc-token>
+
+./bin/yolo-agent config validate --repo .
+./bin/yolo-agent watch \
+  --repo . \
+  --environments ~/.yolo-runner/environments.yaml \
+  --events "runner-logs/watch-$(date +%Y%m%d_%H%M%S).events.jsonl" \
+  --tui
+```
+
+Use `--stream` instead of `--tui` when another process will consume NDJSON or service logs.
+
 ### GitHub profile + TUI streaming
 
 ```bash

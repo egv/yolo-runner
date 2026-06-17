@@ -1,11 +1,11 @@
 # yolo-runner v3: Queue-Centric Split — Runners and Source Adapters
 
 Status: APPROVED 2026-06-12
-Scope: local-first, single-host, multi-process. No network bus (the NATS distributed mode was deliberately removed and is not coming back).
+Scope: local-first, single-host, multi-process, with an in-process supervisor for normal operator runs. No network bus (the NATS distributed mode was deliberately removed and is not coming back).
 
 ## Summary
 
-SQLite **is** the broker. Source adapter processes write typed work items into a shared WAL-mode SQLite queue and consume typed results from it; runner processes claim items with leases, materialize a workspace from a named **environment preset**, run the model pipeline, and write a result row. Runners never know source semantics — no Startrek labels, no PR comment formats in runner code. Every process appends JSONL events to its own file; a merge-tail command feeds the existing `yolo-tui` unchanged.
+SQLite **is** the broker. Source adapter runtimes write typed work items into a shared WAL-mode SQLite queue and consume typed results from it; runner runtimes claim items with leases, materialize a workspace from a named **environment preset**, run the model pipeline, and write a result row. Runners never know source semantics — no Startrek labels, no PR comment formats in runner code. The runtimes can be started as separate processes or supervised by `yolo-agent watch`; both modes use the same queue and event protocol. Every process appends JSONL events to its own file, and the watch supervisor can also stream directly into the existing `yolo-tui`.
 
 Decisions locked with the owner:
 1. Separate processes on one host, durable local queue (no bus).
@@ -37,6 +37,7 @@ Decisions locked with the owner:
 
   events: every process appends ~/.yolo-runner/events/{proc-id}.jsonl
   `yolo-agent events follow | yolo-tui --events-stdin`   (TUI unchanged)
+  preferred supervisor: `yolo-agent watch --tui`
 ```
 
 | Command | Owns | Replaces |
@@ -44,10 +45,10 @@ Decisions locked with the owner:
 | `yolo-agent runner [--presets a,b] [--concurrency N]` | claim loop, preset materialization, per-kind execution, heartbeats, results | embedded `agent.Loop` worker pool, `arc-pr-review-runner` child processes |
 | `yolo-agent source --profile <name> [--once]` | poll loop, result-consumer loop, source writebacks, source-local state DB | `tracker-watch`, `arc-review-watch` |
 | `yolo-agent queue <ls\|submit\|retry\|cancel\|gc>` | operator CLI over queue.db | hand-editing scheduler-state.json |
-| `yolo-agent up` (optional) | supervisor: spawn configured sources + N runners, restart with backoff | — |
+| `yolo-agent watch` | supervisor: start configured sources, autoscale runner pools, stream/TUI events | manual source+runner+events orchestration |
 | `yolo-agent events follow [--since]` | merge-tail all event files → NDJSON stdout | per-command `--events` plumbing |
 
-Lifecycle: all processes are peers around queue.db — a runner does not need sources running and vice versa (the decoupling test). Singleton flocks per source profile and runner id (`tracker_watch_lock_unix.go` pattern); heartbeat rows reusing the `arcreview/state` pattern; reaping of expired leases is opportunistic in every process's poll tick (`restartStaleArcReviewSessions` pattern — no mandatory daemon).
+Lifecycle: separate source and runner processes are peers around queue.db — a runner does not need sources running and vice versa (the decoupling test). `yolo-agent watch` supervises the same runtimes in one process for normal operations. Singleton flocks per source profile and runner id (`tracker_watch_lock_unix.go` pattern); heartbeat rows reusing the `arcreview/state` pattern; reaping of expired leases is opportunistic in every process's poll tick (`restartStaleArcReviewSessions` pattern — no mandatory daemon).
 
 ## Work item model
 
@@ -139,6 +140,7 @@ presets:
 - Items carry the preset **name**; the runner resolves at claim time (config drift is a feature — lets you hotfix model choice for queued items; the resolved preset hash is recorded in the result for audit). Secrets never enter queue.db.
 - Materialization: `git-clone` → existing `agent.GitCloneManager`; `arc-shared` → shared mount + per-item branch via `vcs/arc`, serialized by a per-preset flock (landing-lock pattern); `path` → run in place (model-only kinds: preflight/split).
 - Landing policy comes from the preset, not the source: `git-merge` (merge+push, landing lock), `arc-pr` (deferred PR, current behavior), `none` (report branch, source decides).
+- Startrek queues may set `preset` per queue. This lets one Startrek source watch many queues while routing each queue's work to the correct workspace, landing policy, model, and concurrency limit.
 
 ## Source adapter contract
 

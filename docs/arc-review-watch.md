@@ -2,7 +2,7 @@
 
 `yolo-agent arc-review-watch` is a compatibility shim. It prints a deprecation notice and delegates to `yolo-agent source arcpr` with the same `--repo`, `--profile`, `--once`, `--events`, and `--stream` values.
 
-Use `source arcpr` for new runs:
+Use `yolo-agent watch` for normal long-running Arc PR review. Use `source arcpr` for focused debugging:
 
 ```bash
 ./bin/yolo-agent source arcpr --repo . --profile arc-review --queue .yolo-runner/queue.db --once
@@ -51,6 +51,24 @@ arc_review_watch:
   allow_ship: false
   objects_base_dir: ~/.yolo-runner/pr-objects
   mounts_base_dir: ~/.yolo-runner/pr-mounts
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: arc-review
+      type: arcpr
+      profile: arc-review
+  runner_pools:
+    - name: arc-reviewers
+      source: arc-review
+      presets: [arc-review]
+      min_replicas: 1
+      max_replicas: 3
+      capacity: 2
+  autoscale:
+    min_runners: 1
+    max_runners: 3
+  tui:
+    default_mode: stream
 ```
 
 Important fields:
@@ -70,7 +88,17 @@ Validate the file before a live run:
 
 ## Running
 
-Prefer the source command:
+Prefer the watch supervisor:
+
+```bash
+./bin/yolo-agent watch \
+  --repo . \
+  --environments ~/.yolo-runner/environments.yaml \
+  --events "runner-logs/watch-arcpr-$(date +%Y%m%d_%H%M%S).events.jsonl" \
+  --tui
+```
+
+Use the source command when debugging discovery/writeback without a supervisor:
 
 ```bash
 ./bin/yolo-agent source arcpr --repo . --profile arc-review --queue .yolo-runner/queue.db --events "runner-logs/source-arcpr-$(date +%Y%m%d_%H%M%S).events.jsonl" --stream | ./bin/yolo-tui --events-stdin
@@ -82,7 +110,7 @@ The deprecated shim is equivalent except that it has no `--queue` flag, so the w
 ./bin/yolo-agent arc-review-watch --repo . --profile arc-review --once
 ```
 
-Run queue workers separately:
+Run queue workers separately only in split-process fallback mode:
 
 ```bash
 ./bin/yolo-agent runner --queue .yolo-runner/queue.db --presets arc-review

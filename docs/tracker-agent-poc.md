@@ -2,6 +2,8 @@
 
 Use this runbook to operate the tracker-agent PoC from the yolo-runner repo root. The PoC root epic ID is `yolo-tracker-agent-poc-vay`.
 
+For production-style queue-backed operation, prefer `yolo-agent watch`; it starts the Startrek source and runner pools in one process and can open the TUI directly. The legacy direct epic command remains useful for local beads-only validation, and the split `source`/`runner` commands remain useful for debugging.
+
 ## Configuration
 
 Configure the tracker profile, tracker-agent polling labels, and Arc PR landing in `.yolo-runner/config.yaml`.
@@ -20,6 +22,7 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
+            preset: startrek-poc
             root: .yolo-runner/arc-mounts/vay
             arc_mount:
               enabled: true
@@ -53,9 +56,29 @@ tracker_agent:
 landing:
   type: arc-pr
   title_template: "Land {{ .TaskID }}: {{ .TaskTitle }}"
+watch:
+  queue_path: .yolo-runner/watch.db
+  sources:
+    - name: startrek-poc
+      type: startrek
+      profile: startrek-poc
+  runner_pools:
+    - name: startrek-poc-runners
+      source: startrek-poc
+      presets: [startrek-poc]
+      min_replicas: 1
+      max_replicas: 3
+      capacity: 1
+  autoscale:
+    min_runners: 1
+    max_runners: 3
+  tui:
+    default_mode: stream
 ```
 
 `startrek-poc` is the watcher profile. The `beads` profile is the local task-management profile used by the PoC epic run.
+
+`queues[].preset` routes each Startrek queue to a runner preset. Use it when one Startrek profile watches several queues that need different Arcadia subpaths, landing policy, model choice, or concurrency limits. If omitted, the Startrek source falls back to the source/profile preset.
 
 When `arc_mount.enabled` is true, `root` is the Arc mount path. If `root` is omitted, the watcher uses `.yolo-runner/arc-mounts/<queue-key>`. Before preflight/implementation, the watcher creates the mount with `arc mount`, using the per-queue `store` and shared `object_store`. If it created the mount during the poll, it runs `arc unmount --forget <mount>` when the queue attempt finishes. If the mount already existed, the watcher reuses it and leaves it mounted.
 
@@ -69,7 +92,7 @@ export GITHUB_TOKEN=<github-token>
 export YOLO_AGENT_BACKEND=codex
 ```
 
-`STARTREK_TOKEN` is required for `tracker-watch` with the `startrek-poc` profile. `GITHUB_TOKEN` is required only when the selected tracker profile or surrounding workflow uses GitHub. Arc PR landing uses the local `arc` CLI and an Arcadia root from the queue config.
+`STARTREK_TOKEN` is required for `watch`, `source startrek`, and `tracker-watch` with the `startrek-poc` profile. `GITHUB_TOKEN` is required only when the selected tracker profile or surrounding workflow uses GitHub. Arc PR landing uses the local `arc` CLI and an Arcadia root from the queue config.
 
 ## Dry Run
 
@@ -81,7 +104,24 @@ Verify the watcher can load config and acquire the lock without mutating Startre
 
 Use `--once` for manual checks. Omit `--once` only when running the watcher as a long-lived process.
 
-## Run
+## Watch Supervisor Run
+
+Validate config, then start the source and runner pool from one process:
+
+```bash
+./bin/yolo-agent config validate --repo .
+./bin/yolo-agent watch \
+  --repo . \
+  --environments ~/.yolo-runner/environments.yaml \
+  --events "runner-logs/startrek-poc-watch-$(date +%Y%m%d_%H%M%S).events.jsonl" \
+  --tui
+```
+
+Use `--stream` instead of `--tui` for service logs or when another process will consume NDJSON.
+
+Before the run, commit and push the task/config changes that task clones must see.
+
+## Direct Beads Epic Run
 
 Run the PoC epic through the beads profile:
 
@@ -95,21 +135,19 @@ For a config-driven run, keep the same root and profile but rely on `.yolo-runne
 ./bin/yolo-agent --repo . --root yolo-tracker-agent-poc-vay --profile beads --stream | ./bin/yolo-tui --events-stdin
 ```
 
-Before either run, commit and push the task/config changes that task clones must see.
+## Queue-Split Manual Run
 
-## Queue-Split Run (current architecture)
-
-`tracker-watch` is a deprecated compatibility shim. The current architecture runs the Startrek adapter and the runner as separate processes around the SQLite work queue:
+`tracker-watch` is a deprecated compatibility shim. `watch` is the preferred queue-backed operator path. Use the manual split-process form when debugging the Startrek source or a runner independently:
 
 ```bash
 # 1. Define a preset named after the profile in ~/.yolo-runner/environments.yaml
 #    (see docs/environment-presets.md). 2. Start a runner that serves it:
-./bin/yolo-agent runner --queue .yolo-runner/queue.db \
+./bin/yolo-agent runner --queue .yolo-runner/watch.db \
   --environments ~/.yolo-runner/environments.yaml --presets startrek-poc
 
 # 3. Start the Startrek source: it polls the queue, submits preflight/split/implement
 #    work items, and writes results back (labels, transitions, comments, subtasks):
-./bin/yolo-agent source startrek --repo . --profile startrek-poc --queue .yolo-runner/queue.db
+./bin/yolo-agent source startrek --repo . --profile startrek-poc --queue .yolo-runner/watch.db
 
 # 4. Watch the merged event stream:
 ./bin/yolo-agent events follow | ./bin/yolo-tui --events-stdin
@@ -138,7 +176,7 @@ Keep label names stable across watcher and operator reset steps. If a custom lab
 
 Use this reset when an operator stops a run or a watcher process exits midway:
 
-1. Stop `yolo-agent` and any long-lived `yolo-agent tracker-watch` process.
+1. Stop `yolo-agent watch` and any long-lived `yolo-agent tracker-watch` or `source startrek` process.
 2. Remove stale lock files: `rm -f .yolo-runner/tracker-agent.lock`.
 3. For interrupted Startrek issues, remove `yolo-agent-in-progress`; re-add `yolo-agent-ready` only when the issue should be retried.
 4. If a preflight question was posted, leave `needs-info` in place until the author replies.

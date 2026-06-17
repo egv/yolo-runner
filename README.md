@@ -108,12 +108,15 @@ These UI dependencies are mandatory for GUI workflow evolution and should be tre
 
 Queue-split runs use separate source and runner processes around one local SQLite queue. Source processes poll external systems, enqueue typed work, and write results back. Runner processes claim queued work, materialize a workspace from an environment preset, execute the model pipeline, and record the result.
 
+For normal operations, prefer `yolo-agent watch`; it supervises the configured sources and autoscaled runner pools in one process. Use the separate commands below as fallback or focused debugging tools.
+
 Operator commands:
 
 - Source adapters: `yolo-agent source <arcpr|startrek> --profile <name> --queue ~/.yolo-runner/queue.db`
 - Runner daemons: `yolo-agent runner --queue ~/.yolo-runner/queue.db --environments ~/.yolo-runner/environments.yaml --presets <preset>[,<preset>]`
 - Queue inspection: the queue is plain SQLite at `~/.yolo-runner/queue.db` (tables `work_items`, `work_results`, `item_deps`, `runners`); a `yolo-agent queue` operator CLI (`ls`/`submit`/`retry`/`cancel`/`gc`) is planned.
 - Merged event stream: `yolo-agent events follow --since 1h | yolo-tui --events-stdin`
+- Supervisor: `yolo-agent watch --repo . --environments ~/.yolo-runner/environments.yaml --tui`
 
 Environment presets live in `~/.yolo-runner/environments.yaml`. Work items carry only the preset name; runners resolve workspace strategy, landing policy, agent backend/model, concurrency limits, and environment passthrough at claim time. See [docs/environment-presets.md](docs/environment-presets.md) for the full schema and a copy-ready [example](docs/environments.example.yaml).
 
@@ -268,6 +271,8 @@ export ARC_TOKEN=<arc-token>
 ./bin/yolo-agent config validate --repo .
 ./bin/yolo-agent watch --repo . --environments ~/.yolo-runner/environments.yaml --tui
 ```
+
+See [docs/watch-supervisor.md](docs/watch-supervisor.md) for the full watch supervisor playbook, multi-queue Startrek preset routing, autoscaler tuning, recovery steps, and manual split-process fallback commands.
 
 ## What It Does
 
@@ -540,11 +545,11 @@ If a run is interrupted, reset state before restarting:
 
 ### Tracker agent PoC runbook
 
-Operator steps for the Startrek tracker-agent PoC, including the beads-profile epic command, Arc PR landing config, labels, dry-run checks, and reset procedure, are documented in `docs/tracker-agent-poc.md`.
+Operator steps for the Startrek tracker-agent PoC, including watch supervisor startup, per-queue preset routing, the legacy beads-profile epic command, Arc PR landing config, labels, dry-run checks, and reset procedure, are documented in `docs/tracker-agent-poc.md`.
 
 ### Arc review watch operator runbook
 
-Operator steps for `yolo-agent arc-review-watch`, including config, dry-run startup, event/TUI usage, SQLite reset, stale process recovery, ship instructions, and first-run `allow_ship: false` guidance, are documented in `docs/arc-review-watch.md`.
+Operator steps for Arc PR review via `yolo-agent watch`, the `source arcpr` fallback, legacy `yolo-agent arc-review-watch`, event/TUI usage, SQLite reset, stale process recovery, ship instructions, and first-run `allow_ship: false` guidance are documented in `docs/arc-review-watch.md`.
 
 ### `--runner-timeout` profiles (`yolo-agent`)
 

@@ -1,8 +1,9 @@
 # Architecture
 
 This document reflects the current runtime architecture: a queue-centric split
-into **source-adapter** processes and **runner** processes coordinated through a
-durable local SQLite work queue. There is no network bus — the earlier
+into **source-adapter** runtimes and **runner** runtimes coordinated through a
+durable local SQLite work queue. They can run as separate operator-managed
+processes, or under the `yolo-agent watch` supervisor. There is no network bus — the earlier
 NATS/Redis "distributed" mode was removed. The project ships two binaries:
 `yolo-agent` (multi-command) and `yolo-tui`.
 
@@ -26,6 +27,10 @@ flowchart TB
     SourceHost["internal/sourcehost<br/>poll + result-consume + reap + lock"]
   end
 
+  subgraph WatchProc["Watch supervisor — yolo-agent watch"]
+    Watch["cmd/yolo-agent watch<br/>start sources + autoscale pools"]
+  end
+
   subgraph RunnerProcs["Runner processes — yolo-agent runner --presets <p>"]
     Daemon["cmd/yolo-agent runner daemon"]
     Materialize["internal/envpreset<br/>workspace materialization"]
@@ -44,8 +49,11 @@ flowchart TB
   end
 
   User --> Sources
+  User --> WatchProc
   User --> RunnerProcs
   User --> LegacyProc
+  WatchProc --> Sources
+  WatchProc --> RunnerProcs
 
   SrcStartrek --> StartrekAPI
   SrcArcpr --> ArcanumAPI
@@ -159,6 +167,9 @@ file. `yolo-agent events follow` merge-tails them by timestamp into the
 unchanged `yolo-tui` stdin protocol. Events carry optional `proc` and `item_id`
 fields so a multi-process run can be grouped in the UI.
 
+`yolo-agent watch --tui` uses the same event protocol but launches `yolo-tui`
+for the operator. `--stream` keeps NDJSON on stdout for pipes and service logs.
+
 ```mermaid
 flowchart LR
   SourceProc["source process"] --> F1["events/source-*.jsonl"]
@@ -168,6 +179,19 @@ flowchart LR
   Follow --> TUI["yolo-tui --events-stdin"]
   TUI --> Monitor["internal/ui/monitor"]
 ```
+
+## Watch Supervisor
+
+`yolo-agent watch` reads the `watch:` block in `.yolo-runner/config.yaml`,
+starts all configured `startrek` and `arcpr` sources in-process, and manages
+runner pools with `min_replicas`, `max_replicas`, and `capacity`. Autoscaling is
+queue-depth based per pool and bounded by `watch.autoscale.min_runners` and
+`watch.autoscale.max_runners`.
+
+The supervisor does not replace queue claim limits. Preset-level
+`limits.max_concurrent` still comes from the environment preset and remains the
+final concurrency gate at claim time. This lets one Startrek profile watch many
+queues while each queue routes to the preset that owns its workspace and limits.
 
 ## Legacy Direct Path
 
