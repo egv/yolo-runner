@@ -94,6 +94,9 @@ func TestSourceHandleSplitResultCreatesSubtasksEnqueuesImplementDepsAndRecordsSt
 	if err != nil {
 		t.Fatalf("HandleResult(split) error = %v", err)
 	}
+	if !tracker.hasRemovedLabel("VAY-42", "yolo-agent-ready") {
+		t.Fatalf("split writeback did not remove parent ready label; removals=%#v", tracker.removedLabels)
+	}
 	assertSplitImplementFollowUps(t, followUps, []string{
 		"st/VAY-43/implement/rev7",
 		"st/VAY-44/implement/rev7",
@@ -239,10 +242,11 @@ func assertSplitImplementFollowUps(t *testing.T, followUps []workqueue.Submissio
 }
 
 type fakeSplitWritebackTracker struct {
-	issueIDs []string
-	creates  []trackerstartrek.IssueCreateOptions
-	tasks    map[string]contracts.Task
-	comments []trackerstartrek.IssueComment
+	issueIDs      []string
+	creates       []trackerstartrek.IssueCreateOptions
+	tasks         map[string]contracts.Task
+	comments      []trackerstartrek.IssueComment
+	removedLabels []splitWritebackLabelCall
 }
 
 func (f *fakeSplitWritebackTracker) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
@@ -288,7 +292,8 @@ func (f *fakeSplitWritebackTracker) GetIssueComments(_ context.Context, issueID 
 	return comments, nil
 }
 
-func (f *fakeSplitWritebackTracker) RemoveLabel(context.Context, string, string) error {
+func (f *fakeSplitWritebackTracker) RemoveLabel(_ context.Context, issueID string, label string) error {
+	f.removedLabels = append(f.removedLabels, splitWritebackLabelCall{IssueID: issueID, Label: label})
 	return nil
 }
 
@@ -313,6 +318,20 @@ func (f *fakeSplitWritebackTracker) CreateIssueComment(_ context.Context, _ stri
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+type splitWritebackLabelCall struct {
+	IssueID string
+	Label   string
+}
+
+func (f *fakeSplitWritebackTracker) hasRemovedLabel(issueID string, label string) bool {
+	for _, call := range f.removedLabels {
+		if call.IssueID == issueID && call.Label == label {
 			return true
 		}
 	}

@@ -91,6 +91,9 @@ func (s *Source) handleSplitResult(ctx context.Context, item workitem.Item, resu
 	if err != nil {
 		return nil, err
 	}
+	if err := s.Tracker.RemoveLabel(ctx, parentID, s.readyLabel()); err != nil {
+		return nil, fmt.Errorf("remove startrek ready label from split parent %q: %w", parentID, err)
+	}
 
 	tasks, err := orderedSplitWritebackTasks(output.Tasks, output.Order)
 	if err != nil {
