@@ -207,6 +207,7 @@ type trackerWatchStartrekBackend interface {
 	RemoveLabel(ctx context.Context, issueID string, label string) error
 	AddLabel(ctx context.Context, issueID string, label string) error
 	CreateIssue(ctx context.Context, opts startrek.IssueCreateOptions) (startrek.Issue, error)
+	CreateIssueLink(ctx context.Context, opts startrek.IssueLinkCreateOptions) error
 	GetIssueComments(ctx context.Context, issueID string) ([]startrek.IssueComment, error)
 	CreateIssueComment(ctx context.Context, issueID string, opts startrek.IssueCommentCreateOptions) (startrek.IssueComment, error)
 }

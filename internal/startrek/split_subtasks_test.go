@@ -10,7 +10,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 )
 
-func TestSplitSubtaskCreationServiceCreatesTrackerSubtasksWithBodiesAndLabels(t *testing.T) {
+func TestSplitSubtaskCreationServiceCreatesTrackerSubtasksWithBodiesLabelsAndLinks(t *testing.T) {
 	tracker := &fakeSplitSubtaskTracker{
 		issueIDs: []string{"VAY-43", "VAY-44"},
 	}
@@ -84,8 +84,13 @@ func TestSplitSubtaskCreationServiceCreatesTrackerSubtasksWithBodiesAndLabels(t 
 	if second.QueueKey != "VAY" || second.ParentID != "VAY-42" || second.Title != "T21 Parse strict splitter output" {
 		t.Fatalf("unexpected second create options: %#v", second)
 	}
-	if got, want := second.Labels, []string{"yolo-agent-ready", "agent:subtask", "depends-on:VAY-43"}; !reflect.DeepEqual(got, want) {
+	if got, want := second.Labels, []string{"yolo-agent-ready", "agent:subtask"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected second labels:\n got %#v\nwant %#v", got, want)
+	}
+	if got, want := tracker.links, []IssueLinkCreateOptions{
+		{IssueID: "VAY-44", Relationship: "depends_on", RelatedIssueID: "VAY-43"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected dependency links:\n got %#v\nwant %#v", got, want)
 	}
 	for _, want := range []string{
 		"### Task: T21 Parse strict splitter output",
@@ -236,6 +241,7 @@ func TestSplitSubtaskCreationServiceEmbedsContextFromMappedStartrekDescription(t
 type fakeSplitSubtaskTracker struct {
 	issueIDs []string
 	creates  []IssueCreateOptions
+	links    []IssueLinkCreateOptions
 }
 
 func (f *fakeSplitSubtaskTracker) CreateIssue(_ context.Context, opts IssueCreateOptions) (Issue, error) {
@@ -250,4 +256,9 @@ func (f *fakeSplitSubtaskTracker) CreateIssue(_ context.Context, opts IssueCreat
 		Labels:      append([]string(nil), opts.Labels...),
 		ParentID:    opts.ParentID,
 	}, nil
+}
+
+func (f *fakeSplitSubtaskTracker) CreateIssueLink(_ context.Context, opts IssueLinkCreateOptions) error {
+	f.links = append(f.links, opts)
+	return nil
 }

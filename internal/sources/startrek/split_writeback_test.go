@@ -108,8 +108,13 @@ func TestSourceHandleSplitResultCreatesSubtasksEnqueuesImplementDepsAndRecordsSt
 	if !containsString(tracker.creates[0].Labels, "yolo-agent-ready") || !containsString(tracker.creates[0].Labels, "agent:subtask") {
 		t.Fatalf("first subtask labels = %#v, want ready and subtask labels", tracker.creates[0].Labels)
 	}
-	if !containsString(tracker.creates[1].Labels, "depends-on:VAY-43") {
-		t.Fatalf("second subtask labels = %#v, want depends-on:VAY-43", tracker.creates[1].Labels)
+	if containsString(tracker.creates[1].Labels, "depends-on:VAY-43") {
+		t.Fatalf("second subtask labels = %#v, did not expect dependency tag", tracker.creates[1].Labels)
+	}
+	if got, want := tracker.links, []trackerstartrek.IssueLinkCreateOptions{
+		{IssueID: "VAY-44", Relationship: "depends_on", RelatedIssueID: "VAY-43"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected split dependency links:\n got %#v\nwant %#v", got, want)
 	}
 
 	first, err := queue.Claim("runner-a", []string{"adapta"}, time.Minute)
@@ -244,6 +249,7 @@ func assertSplitImplementFollowUps(t *testing.T, followUps []workqueue.Submissio
 type fakeSplitWritebackTracker struct {
 	issueIDs      []string
 	creates       []trackerstartrek.IssueCreateOptions
+	links         []trackerstartrek.IssueLinkCreateOptions
 	tasks         map[string]contracts.Task
 	comments      []trackerstartrek.IssueComment
 	removedLabels []splitWritebackLabelCall
@@ -280,6 +286,11 @@ func (f *fakeSplitWritebackTracker) CreateIssue(_ context.Context, opts trackers
 		Labels:      append([]string(nil), opts.Labels...),
 		ParentID:    opts.ParentID,
 	}, nil
+}
+
+func (f *fakeSplitWritebackTracker) CreateIssueLink(_ context.Context, opts trackerstartrek.IssueLinkCreateOptions) error {
+	f.links = append(f.links, opts)
+	return nil
 }
 
 func (f *fakeSplitWritebackTracker) GetIssueComments(_ context.Context, issueID string) ([]trackerstartrek.IssueComment, error) {

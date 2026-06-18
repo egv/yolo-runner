@@ -369,18 +369,13 @@ func (s *trackerWatchSplitPRStorage) CreateIssue(_ context.Context, opts startre
 
 	issueID := fmt.Sprintf("VAY-%d", s.nextIssueIndex)
 	s.nextIssueIndex++
-	dependencies := trackerWatchDependencyIDsFromLabels(opts.Labels)
-	metadata := map[string]string{}
-	if len(dependencies) > 0 {
-		metadata["dependencies"] = strings.Join(dependencies, ",")
-	}
 	task := contracts.Task{
 		ID:          issueID,
 		Title:       strings.TrimSpace(opts.Title),
 		Description: strings.TrimSpace(opts.Description),
 		Status:      contracts.TaskStatusOpen,
 		ParentID:    strings.TrimSpace(opts.ParentID),
-		Metadata:    metadata,
+		Metadata:    map[string]string{},
 	}
 	s.tasks[issueID] = task
 	s.relations = append(s.relations, contracts.TaskRelation{
@@ -388,12 +383,6 @@ func (s *trackerWatchSplitPRStorage) CreateIssue(_ context.Context, opts startre
 		ToID:   issueID,
 		Type:   contracts.RelationParent,
 	})
-	for _, dependencyID := range dependencies {
-		s.relations = append(s.relations,
-			contracts.TaskRelation{FromID: issueID, ToID: dependencyID, Type: contracts.RelationDependsOn},
-			contracts.TaskRelation{FromID: dependencyID, ToID: issueID, Type: contracts.RelationBlocks},
-		)
-	}
 	return startrek.Issue{
 		ID:          issueID,
 		Title:       task.Title,
@@ -401,6 +390,30 @@ func (s *trackerWatchSplitPRStorage) CreateIssue(_ context.Context, opts startre
 		Labels:      append([]string(nil), opts.Labels...),
 		ParentID:    task.ParentID,
 	}, nil
+}
+
+func (s *trackerWatchSplitPRStorage) CreateIssueLink(_ context.Context, opts startrek.IssueLinkCreateOptions) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issueID := strings.TrimSpace(opts.IssueID)
+	relatedIssueID := strings.TrimSpace(opts.RelatedIssueID)
+	if issueID == "" || relatedIssueID == "" {
+		return nil
+	}
+	task := s.tasks[issueID]
+	task.ID = issueID
+	if task.Metadata == nil {
+		task.Metadata = map[string]string{}
+	}
+	dependencies := appendDependencyID(task.Metadata["dependencies"], relatedIssueID)
+	task.Metadata["dependencies"] = strings.Join(dependencies, ",")
+	s.tasks[issueID] = task
+	s.relations = append(s.relations,
+		contracts.TaskRelation{FromID: issueID, ToID: relatedIssueID, Type: contracts.RelationDependsOn},
+		contracts.TaskRelation{FromID: relatedIssueID, ToID: issueID, Type: contracts.RelationBlocks},
+	)
+	return nil
 }
 
 func (s *trackerWatchSplitPRStorage) GetIssueComments(_ context.Context, issueID string) ([]startrek.IssueComment, error) {
@@ -504,20 +517,30 @@ func matchingComments(comments []string, needle string) []string {
 	return matches
 }
 
-func trackerWatchDependencyIDsFromLabels(labels []string) []string {
-	ids := make([]string, 0)
-	for _, label := range labels {
-		dependencyID, ok := strings.CutPrefix(strings.TrimSpace(label), "depends-on:")
-		if ok && strings.TrimSpace(dependencyID) != "" {
-			ids = append(ids, strings.TrimSpace(dependencyID))
-		}
-	}
-	return ids
-}
-
 func cloneTrackerWatchTask(task contracts.Task) contracts.Task {
 	task.Metadata = cloneStringMapForTrackerWatchTest(task.Metadata)
 	return task
+}
+
+func appendDependencyID(existing string, dependencyID string) []string {
+	dependencyID = strings.TrimSpace(dependencyID)
+	ids := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, raw := range strings.Split(existing, ",") {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		seen[strings.ToLower(id)] = struct{}{}
+		ids = append(ids, id)
+	}
+	if dependencyID != "" {
+		key := strings.ToLower(dependencyID)
+		if _, ok := seen[key]; !ok {
+			ids = append(ids, dependencyID)
+		}
+	}
+	return ids
 }
 
 func cloneStringMapForTrackerWatchTest(values map[string]string) map[string]string {

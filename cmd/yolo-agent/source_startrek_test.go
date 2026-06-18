@@ -726,6 +726,10 @@ func (b *fakeSourceStartrekPollBackend) CreateIssue(context.Context, startrek.Is
 	return startrek.Issue{}, nil
 }
 
+func (b *fakeSourceStartrekPollBackend) CreateIssueLink(context.Context, startrek.IssueLinkCreateOptions) error {
+	return nil
+}
+
 func (b *fakeSourceStartrekPollBackend) GetIssueComments(context.Context, string) ([]startrek.IssueComment, error) {
 	return nil, nil
 }

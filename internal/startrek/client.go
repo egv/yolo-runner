@@ -802,6 +802,14 @@ func issueCommentsPath(issueID string) (string, error) {
 	return requestPath + "/comments", nil
 }
 
+func issueLinksPath(issueID string) (string, error) {
+	requestPath, err := issuePath(issueID)
+	if err != nil {
+		return "", err
+	}
+	return requestPath + "/links", nil
+}
+
 func issueTransitionsPath(issueID string) (string, error) {
 	requestPath, err := issuePath(issueID)
 	if err != nil {

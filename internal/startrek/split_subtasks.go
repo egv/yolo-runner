@@ -11,7 +11,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/agent/splitter"
 )
 
-const startrekDependencyLabelPrefix = "depends-on:"
+const startrekDependsOnRelationship = "depends_on"
 
 var (
 	markdownDocLinkPattern = regexp.MustCompile(`\[[^\]\n]+\]\((https?://[^)\s]+)\)`)
@@ -26,8 +26,15 @@ type IssueCreateOptions struct {
 	Labels      []string
 }
 
+type IssueLinkCreateOptions struct {
+	IssueID        string
+	Relationship   string
+	RelatedIssueID string
+}
+
 type SplitSubtaskCreationTracker interface {
 	CreateIssue(ctx context.Context, opts IssueCreateOptions) (Issue, error)
+	CreateIssueLink(ctx context.Context, opts IssueLinkCreateOptions) error
 }
 
 type SplitSubtaskCreationService struct {
@@ -86,7 +93,7 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 			ParentID:    parentID,
 			Title:       splitSubtaskTitle(task),
 			Description: buildSplitSubtaskBody(task, splitSubtaskContext(input, tasks, task)),
-			Labels:      splitSubtaskLabels(s.effectiveReadyLabel(), s.effectiveSubtaskLabel(), task.DependsOn, result.IssueIDsBySplitTaskID),
+			Labels:      splitSubtaskLabels(s.effectiveReadyLabel(), s.effectiveSubtaskLabel()),
 		})
 		if err != nil {
 			return SplitSubtasksResult{}, fmt.Errorf("create startrek subtask for split task %q: %w", taskID, err)
@@ -98,6 +105,16 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 		}
 		result.IssueIDsBySplitTaskID[taskID] = issueID
 		result.Issues = append(result.Issues, issue)
+
+		for _, dependencyID := range splitDependencyIssueIDs(task.DependsOn, result.IssueIDsBySplitTaskID) {
+			if err := s.Tracker.CreateIssueLink(ctx, IssueLinkCreateOptions{
+				IssueID:        issueID,
+				Relationship:   startrekDependsOnRelationship,
+				RelatedIssueID: dependencyID,
+			}); err != nil {
+				return SplitSubtasksResult{}, fmt.Errorf("create startrek dependency link %q -> %q for split task %q: %w", issueID, dependencyID, taskID, err)
+			}
+		}
 	}
 
 	return result, nil
@@ -139,11 +156,45 @@ func (c *Client) CreateIssue(ctx context.Context, opts IssueCreateOptions) (Issu
 	return mapIssue(rawIssue)
 }
 
+func (c *Client) CreateIssueLink(ctx context.Context, opts IssueLinkCreateOptions) error {
+	issueID := strings.TrimSpace(opts.IssueID)
+	if issueID == "" {
+		return errors.New("startrek issue link source issue id is required")
+	}
+	relationship := strings.TrimSpace(opts.Relationship)
+	if relationship == "" {
+		return errors.New("startrek issue link relationship is required")
+	}
+	relatedIssueID := strings.TrimSpace(opts.RelatedIssueID)
+	if relatedIssueID == "" {
+		return errors.New("startrek issue link related issue id is required")
+	}
+	requestPath, err := issueLinksPath(issueID)
+	if err != nil {
+		return err
+	}
+	requestBody := startrekIssueLinkCreateRequest{
+		Relationship: relationship,
+		Issue:        relatedIssueID,
+	}
+	if err := c.DoJSON(ctx, http.MethodPost, requestPath, requestBody, nil); err != nil {
+		return fmt.Errorf("create startrek issue link %q %s %q: %w", issueID, relationship, relatedIssueID, err)
+	}
+	return nil
+}
+
 func (b *StorageBackend) CreateIssue(ctx context.Context, opts IssueCreateOptions) (Issue, error) {
 	if b == nil || b.client == nil {
 		return Issue{}, errors.New("startrek storage backend is not initialized")
 	}
 	return b.client.CreateIssue(ctx, opts)
+}
+
+func (b *StorageBackend) CreateIssueLink(ctx context.Context, opts IssueLinkCreateOptions) error {
+	if b == nil || b.client == nil {
+		return errors.New("startrek storage backend is not initialized")
+	}
+	return b.client.CreateIssueLink(ctx, opts)
 }
 
 type startrekIssueCreateRequest struct {
@@ -153,6 +204,11 @@ type startrekIssueCreateRequest struct {
 	MarkupType  string   `json:"markupType,omitempty"`
 	Parent      string   `json:"parent,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+}
+
+type startrekIssueLinkCreateRequest struct {
+	Relationship string `json:"relationship"`
+	Issue        string `json:"issue"`
 }
 
 func orderedSplitSubtasks(tasks []splitter.Task) ([]splitter.Task, error) {
@@ -539,8 +595,8 @@ func normalizedSplitItems(items []string) []string {
 	return normalized
 }
 
-func splitSubtaskLabels(readyLabel string, subtaskLabel string, dependsOn []string, createdIssueIDs map[string]string) []string {
-	labels := make([]string, 0, 2+len(dependsOn))
+func splitSubtaskLabels(readyLabel string, subtaskLabel string) []string {
+	labels := make([]string, 0, 2)
 	seen := map[string]struct{}{}
 	appendLabel := func(label string) {
 		label = strings.TrimSpace(label)
@@ -556,15 +612,25 @@ func splitSubtaskLabels(readyLabel string, subtaskLabel string, dependsOn []stri
 
 	appendLabel(readyLabel)
 	appendLabel(subtaskLabel)
+	return labels
+}
 
+func splitDependencyIssueIDs(dependsOn []string, createdIssueIDs map[string]string) []string {
+	ids := make([]string, 0, len(dependsOn))
+	seen := map[string]struct{}{}
 	for _, dependency := range dependsOn {
 		dependencyID := splitDependencyIssueID(dependency, createdIssueIDs)
 		if dependencyID == "" {
 			continue
 		}
-		appendLabel(startrekDependencyLabelPrefix + dependencyID)
+		key := strings.ToLower(dependencyID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, dependencyID)
 	}
-	return labels
+	return ids
 }
 
 func splitDependencyIssueID(dependency string, createdIssueIDs map[string]string) string {

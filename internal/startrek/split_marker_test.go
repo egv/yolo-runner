@@ -80,6 +80,7 @@ func TestIdempotentSplitSubtaskCreationServicePersistsMarkerAndReusesExistingSub
 
 func TestIdempotentSplitSubtaskCreationServiceUsesStorageBackedStartrekMarker(t *testing.T) {
 	var createIssueCount int
+	var createLinkBodies []startrekIssueLinkCreateRequest
 	var markerCommentTexts []string
 
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
@@ -118,6 +119,13 @@ func TestIdempotentSplitSubtaskCreationServiceUsesStorageBackedStartrekMarker(t 
 				"createdBy": {"id": "112233", "display": "Ada Lovelace"},
 				"updatedAt": "2026-05-28T01:03:03.000+0000"
 			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/v3/issues/VAY-44/links":
+			var body startrekIssueLinkCreateRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode issue link request: %v", err)
+			}
+			createLinkBodies = append(createLinkBodies, body)
+			return jsonResponse(http.StatusCreated, `{}`), nil
 		case req.Method == http.MethodPost && req.URL.Path == "/v3/issues/VAY-42/comments":
 			var body startrekIssueCommentCreateRequest
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -159,6 +167,9 @@ func TestIdempotentSplitSubtaskCreationServiceUsesStorageBackedStartrekMarker(t 
 	if got, want := createIssueCount, 2; got != want {
 		t.Fatalf("expected first split to create %d subtasks, got %d", want, got)
 	}
+	if got, want := createLinkBodies, []startrekIssueLinkCreateRequest{{Relationship: "depends_on", Issue: "VAY-43"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected first split dependency links:\n got %#v\nwant %#v", got, want)
+	}
 	if got, want := len(markerCommentTexts), 1; got != want {
 		t.Fatalf("expected first split to persist one marker comment, got %d", got)
 	}
@@ -183,11 +194,15 @@ func TestIdempotentSplitSubtaskCreationServiceUsesStorageBackedStartrekMarker(t 
 	if got, want := len(markerCommentTexts), 1; got != want {
 		t.Fatalf("expected rerun not to write another marker comment, got %d comments want %d", got, want)
 	}
+	if got, want := len(createLinkBodies), 1; got != want {
+		t.Fatalf("expected rerun not to create another issue link, got %d links want %d", got, want)
+	}
 }
 
 type fakeSplitMarkerTracker struct {
 	issueIDs []string
 	creates  []IssueCreateOptions
+	links    []IssueLinkCreateOptions
 	tasks    map[string]contracts.Task
 }
 
@@ -230,6 +245,11 @@ func (f *fakeSplitMarkerTracker) CreateIssue(_ context.Context, opts IssueCreate
 		Labels:      append([]string(nil), opts.Labels...),
 		ParentID:    opts.ParentID,
 	}, nil
+}
+
+func (f *fakeSplitMarkerTracker) CreateIssueLink(_ context.Context, opts IssueLinkCreateOptions) error {
+	f.links = append(f.links, opts)
+	return nil
 }
 
 func splitMarkerIssueIDs(issues []Issue) []string {

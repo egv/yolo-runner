@@ -591,6 +591,7 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 	}
 
 	createdIssues := make([]createdIssue, 0, 2)
+	createdLinks := map[string][]string{}
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
 		case "POST /v3/issues/":
@@ -626,6 +627,16 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 				t.Fatalf("marshal create response: %v", err)
 			}
 			return jsonResponse(http.StatusOK, string(raw)), nil
+		case "POST /v3/issues/VAY-44/links":
+			var body startrekIssueLinkCreateRequest
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode create link request body: %v", err)
+			}
+			if body.Relationship != "depends_on" || body.Issue != "VAY-43" {
+				t.Fatalf("unexpected create link body: %#v", body)
+			}
+			createdLinks["VAY-44"] = append(createdLinks["VAY-44"], body.Issue)
+			return jsonResponse(http.StatusCreated, `{}`), nil
 		case "POST /v3/issues/_search":
 			payload := []map[string]any{
 				{
@@ -642,7 +653,7 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 				},
 			}
 			for i, issue := range createdIssues {
-				payload = append(payload, map[string]any{
+				item := map[string]any{
 					"key":         issue.Key,
 					"summary":     issue.Summary,
 					"description": issue.Description,
@@ -655,7 +666,15 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 						"display": "Ada Lovelace",
 					},
 					"updatedAt": fmt.Sprintf("2026-05-28T01:%02d:00.000+0000", 3+i),
-				})
+				}
+				if dependencies := createdLinks[issue.Key]; len(dependencies) > 0 {
+					refs := make([]map[string]string, 0, len(dependencies))
+					for _, dependency := range dependencies {
+						refs = append(refs, map[string]string{"key": dependency})
+					}
+					item["dependsOn"] = refs
+				}
+				payload = append(payload, item)
 			}
 
 			raw, err := json.Marshal(payload)
