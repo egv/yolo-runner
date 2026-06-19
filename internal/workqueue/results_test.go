@@ -106,6 +106,73 @@ func TestCompleteListAndMarkConsumedEnqueuesFollowUpsTransactionally(t *testing.
 	}
 }
 
+func TestBlockedResultDoesNotSatisfyDependencies(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	parent, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "source-a",
+		SourceRef:      "TASK-parent",
+		IdempotencyKey: "source-a/TASK-parent/implement",
+		Preset:         "linux",
+		Payload:        json.RawMessage(`{"task_id":"TASK-parent"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit(parent) error = %v", err)
+	}
+	child, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "source-a",
+		SourceRef:      "TASK-child",
+		IdempotencyKey: "source-a/TASK-child/implement",
+		Preset:         "linux",
+		Payload:        json.RawMessage(`{"task_id":"TASK-child"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit(child) error = %v", err)
+	}
+	insertWorkQueueDependency(t, store.db, child.ID, parent.ID)
+
+	if err := store.Block(parent.ID, Result{
+		Payload: json.RawMessage(`{"status":"blocked","reason":"runner timeout"}`),
+	}); err != nil {
+		t.Fatalf("Block(parent) error = %v", err)
+	}
+
+	assertWorkQueueState(t, store.db, parent.ID, "blocked")
+	results, err := store.ListUnconsumedResults("source-a")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("ListUnconsumedResults() len = %d, want 1", len(results))
+	}
+	if results[0].Item.ID != parent.ID || results[0].Item.State != "blocked" {
+		t.Fatalf("blocked result item = %#v, want parent in blocked state", results[0].Item)
+	}
+	if results[0].Result.Status != ResultStatusBlocked {
+		t.Fatalf("blocked result status = %q, want blocked", results[0].Result.Status)
+	}
+
+	claimed, err := store.Claim("runner-a", []string{"linux"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(child blocked by parent) error = %v", err)
+	}
+	if claimed != nil {
+		t.Fatalf("Claim(child blocked by parent) = %q, want nil", claimed.ID)
+	}
+	assertWorkQueueState(t, store.db, child.ID, "pending")
+}
+
 func TestRequeueStaleRequeuesThenFailsWithSynthesizedResult(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	store, err := Open(dbPath)

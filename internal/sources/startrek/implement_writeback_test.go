@@ -24,6 +24,8 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 		tests := []struct {
 			name              string
 			taskID            string
+			taskTitle         string
+			taskDescription   string
 			queueStatus       workqueue.ResultStatus
 			result            workitem.ImplementResult
 			wantStatus        contracts.TaskStatus
@@ -95,6 +97,42 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 				},
 			},
 			{
+				name:        "blocked russian task",
+				taskID:      "VAY-46",
+				taskTitle:   "Добавить ачивку Uzbekistan",
+				queueStatus: workqueue.ResultStatusBlocked,
+				result: workitem.ImplementResult{
+					Status: string(contracts.RunnerResultBlocked),
+					Reason: "runner timeout after 20m0s",
+				},
+				wantStatus: contracts.TaskStatusBlocked,
+				wantData: map[string]string{
+					"triage_status":                "blocked",
+					"triage_reason":                "runner timeout after 20m0s",
+					"decision":                     "blocked",
+					"reason":                       "runner timeout after 20m0s",
+					"needs_info_marker":            "needs-info",
+					"needs_info_marker_comment_id": "comment-1",
+					"needs_info_marker_created_at": "2026-06-12T12:00:01Z",
+				},
+				wantCommentMarker: "needs-info",
+				wantCommentText: []string{
+					"Перед запуском yolo-runner нужно уточнить детали.",
+					"Кратко:",
+					"Запуск yolo-runner остановился по таймауту до завершения задачи.",
+					"Вопросы:",
+					"перезапустить после исправления причины таймаута",
+				},
+				wantOps: []string{
+					"data VAY-46 decision=blocked reason=runner timeout after 20m0s triage_reason=runner timeout after 20m0s triage_status=blocked",
+					"status VAY-46 blocked",
+					"remove VAY-46 yolo-agent-in-progress",
+					"add VAY-46 needs-info",
+					"comment VAY-46 marker=needs-info author=author-46",
+					"data VAY-46 needs_info_marker=needs-info needs_info_marker_comment_id=comment-1 needs_info_marker_created_at=2026-06-12T12:00:01Z",
+				},
+			},
+			{
 				name:        "failed",
 				taskID:      "VAY-45",
 				queueStatus: workqueue.ResultStatusFailed,
@@ -131,13 +169,21 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				taskTitle := tt.taskTitle
+				if strings.TrimSpace(taskTitle) == "" {
+					taskTitle = tt.name + " task"
+				}
+				taskDescription := tt.taskDescription
+				if strings.TrimSpace(taskDescription) == "" {
+					taskDescription = "Author: Example (" + strings.ToLower(strings.ReplaceAll(tt.taskID, "VAY-", "author-")) + ")"
+				}
 				state := openStartrekSourceState(t)
 				tracker := &fakeImplementWritebackTracker{
 					tasks: map[string]contracts.Task{
 						tt.taskID: {
 							ID:          tt.taskID,
-							Title:       tt.name + " task",
-							Description: "Author: Example (" + strings.ToLower(strings.ReplaceAll(tt.taskID, "VAY-", "author-")) + ")",
+							Title:       taskTitle,
+							Description: taskDescription,
 							Status:      contracts.TaskStatusInProgress,
 							Metadata:    map[string]string{},
 						},
@@ -153,8 +199,8 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 
 				item := implementWritebackItem(t, "item-"+tt.taskID, tt.taskID, "st/"+tt.taskID+"/implement/rev7", contracts.Task{
 					ID:          tt.taskID,
-					Title:       tt.name + " task",
-					Description: "Author: Example (" + strings.ToLower(strings.ReplaceAll(tt.taskID, "VAY-", "author-")) + ")",
+					Title:       taskTitle,
+					Description: taskDescription,
 				})
 				followUps, err := src.HandleResult(ctx, item, implementWritebackResult(t, item.ID, tt.queueStatus, tt.result))
 				if err != nil {

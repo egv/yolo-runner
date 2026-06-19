@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	trackerstartrek "github.com/egv/yolo-runner/v2/internal/startrek"
@@ -154,7 +155,7 @@ func (s *Source) handleImplementResult(ctx context.Context, item workitem.Item, 
 			Marker:          s.marker(),
 		}).Apply(ctx, trackerstartrek.NeedsInfoTransitionInput{
 			IssueID:    taskID,
-			Summary:    implementResult.Reason,
+			Summary:    implementBlockedSummary(task, implementResult),
 			Questions:  implementBlockedQuestions(task, implementResult),
 			SummoneeID: SummoneeIDFromTask(task),
 		})
@@ -534,6 +535,19 @@ func copyStartrekResultArtifact(data map[string]string, result workitem.Implemen
 
 func implementBlockedQuestions(task contracts.Task, result workitem.ImplementResult) []string {
 	reason := firstNonEmptyStartrekString(result.Reason, result.Artifacts["triage_reason"], result.Artifacts["reason"])
+	if startrekTaskLooksRussian(task) {
+		if reason != "" {
+			if implementBlockedReasonLooksTimeout(reason) {
+				return []string{"Запуск yolo-runner остановился по таймауту до завершения. Нужно продолжить задачу вручную или перезапустить после исправления причины таймаута?"}
+			}
+			return []string{"Нужно уточнить блокер реализации: " + reason}
+		}
+		title := strings.TrimSpace(task.Title)
+		if title != "" {
+			return []string{fmt.Sprintf("Что блокирует реализацию задачи %q?", title)}
+		}
+		return []string{"Что блокирует реализацию задачи?"}
+	}
 	if reason != "" {
 		return []string{reason}
 	}
@@ -542,6 +556,34 @@ func implementBlockedQuestions(task contracts.Task, result workitem.ImplementRes
 		return []string{fmt.Sprintf("Please clarify the blocker for %q.", title)}
 	}
 	return []string{"Please clarify the implementation blocker."}
+}
+
+func implementBlockedSummary(task contracts.Task, result workitem.ImplementResult) string {
+	reason := firstNonEmptyStartrekString(result.Reason, result.Artifacts["triage_reason"], result.Artifacts["reason"])
+	if !startrekTaskLooksRussian(task) {
+		return reason
+	}
+	if reason == "" {
+		return "Реализация заблокирована и требует уточнения."
+	}
+	if implementBlockedReasonLooksTimeout(reason) {
+		return "Запуск yolo-runner остановился по таймауту до завершения задачи."
+	}
+	return "Реализация заблокирована: " + reason
+}
+
+func implementBlockedReasonLooksTimeout(reason string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	return strings.Contains(normalized, "timeout") || strings.Contains(normalized, "timed out")
+}
+
+func startrekTaskLooksRussian(task contracts.Task) bool {
+	for _, r := range task.Title + "\n" + task.Description {
+		if unicode.In(r, unicode.Cyrillic) {
+			return true
+		}
+	}
+	return false
 }
 
 func postImplementationCompletedComment(ctx context.Context, tracker implementProgressCommentTracker, issueID string, result workitem.ImplementResult) (trackerstartrek.IssueComment, error) {

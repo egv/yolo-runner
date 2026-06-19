@@ -17,6 +17,7 @@ const (
 	ResultStatusBlocked   ResultStatus = "blocked"
 	ResultStatusFailed    ResultStatus = "failed"
 
+	itemStateBlocked   = "blocked"
 	itemStateRunning   = "running"
 	itemStateFailed    = "failed"
 	itemStateCancelled = "cancelled"
@@ -53,11 +54,12 @@ func (s *Store) Complete(itemID string, result Result) error {
 	return s.finishItem(itemID, itemStateDone, result)
 }
 
-// Block writes a blocked work result and moves the item to done for source
-// consumption. The queue item itself has no separate blocked state.
+// Block writes a blocked work result and moves the item to blocked for source
+// consumption. Blocked items are terminal, but they must not satisfy
+// dependencies for downstream work.
 func (s *Store) Block(itemID string, result Result) error {
 	result.Status = ResultStatusBlocked
-	return s.finishItem(itemID, itemStateDone, result)
+	return s.finishItem(itemID, itemStateBlocked, result)
 }
 
 // Fail writes a failed work result and moves the item to failed.
@@ -440,12 +442,13 @@ SET state = ?,
 	heartbeat_at = '',
 	updated_at = ?
 WHERE id = ?
-	AND state NOT IN (?, ?, ?)`
+	AND state NOT IN (?, ?, ?, ?)`
 	args := []any{
 		terminalState,
 		formatQueueTime(now),
 		itemID,
 		itemStateDone,
+		itemStateBlocked,
 		itemStateFailed,
 		itemStateCancelled,
 	}

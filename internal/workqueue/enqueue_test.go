@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/egv/yolo-runner/v2/internal/workitem"
@@ -146,6 +147,7 @@ func assertDepsForItem(t *testing.T, store *Store, itemID string, want []string)
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read item_deps for item %q: %v", itemID, err)
 	}
+	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("deps for item %q = %#v, want %#v", itemID, got, want)
 	}
