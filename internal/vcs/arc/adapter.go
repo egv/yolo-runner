@@ -68,7 +68,7 @@ func (a *Adapter) Checkout(_ context.Context, ref string) error {
 }
 
 func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {
-	if _, err := a.runArc("add", "."); err != nil {
+	if err := a.stageAll(); err != nil {
 		return "", err
 	}
 	if _, err := a.runArc("commit", "-m", message); err != nil {
@@ -81,6 +81,25 @@ func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(sha), nil
+}
+
+func (a *Adapter) stageAll() error {
+	if _, err := a.runArc("add", "-u", "."); err != nil {
+		return err
+	}
+	status, err := a.runArc("status", "--short")
+	if err != nil {
+		return err
+	}
+	for _, path := range untrackedStatusPaths(status) {
+		if _, err := a.runArc("add", path); err != nil {
+			if isMissingWorkingTreePathError(err) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) CreatePR(_ context.Context, title string, body string) (string, error) {
@@ -138,4 +157,24 @@ func isNoChangesCommitError(err error) bool {
 		strings.Contains(message, "no changes added to commit") ||
 		strings.Contains(message, "no changes to commit") ||
 		strings.Contains(message, "working tree clean")
+}
+
+func untrackedStatusPaths(status string) []string {
+	var paths []string
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "?? ") {
+			if path := strings.TrimSpace(strings.TrimPrefix(line, "?? ")); path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths
+}
+
+func isMissingWorkingTreePathError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such file or directory")
 }
