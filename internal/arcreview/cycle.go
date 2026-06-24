@@ -26,6 +26,7 @@ type PRReviewCycleConfig struct {
 	ModelHelper           PRReviewCycleModelHelper
 	ReviewApplier         PRReviewCycleReviewApplier
 	ReplyApplier          PRReviewCycleReplyApplier
+	ResolveApplier        PRReviewCycleResolveApplier
 	ShipGate              PRReviewCycleShipGate
 }
 
@@ -62,6 +63,10 @@ type PRReviewCycleReviewApplier interface {
 
 type PRReviewCycleReplyApplier interface {
 	Apply(ctx context.Context, state PRRuntimeState, payload []byte) (ReplyResult, error)
+}
+
+type PRReviewCycleResolveApplier interface {
+	Apply(ctx context.Context, state PRRuntimeState, payload []byte) (ResolveResult, error)
 }
 
 type PRReviewCycleShipGate interface {
