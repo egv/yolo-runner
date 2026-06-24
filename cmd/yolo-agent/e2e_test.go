@@ -1713,6 +1713,9 @@ func (f *fakeVCS) MergeToMain(context.Context, string) error {
 func (f *fakeVCS) PushBranch(context.Context, string) error { return nil }
 func (f *fakeVCS) PushMain(context.Context) error           { return nil }
 
+func (f *fakeVCS) CheckoutPRBranch(context.Context, string) (string, error) { return "", nil }
+func (f *fakeVCS) PushPRBranch(context.Context, string) error               { return nil }
+
 func mustCreateTicket(t *testing.T, runner localRunner, title string, issueType string, priority string, parent string) string {
 	t.Helper()
 	args := []string{"tk", "create", title, "-t", issueType, "-p", priority}

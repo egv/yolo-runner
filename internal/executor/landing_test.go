@@ -264,6 +264,14 @@ func (v *landingFakeVCS) PushMain(context.Context) error {
 	return nil
 }
 
+func (v *landingFakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (v *landingFakeVCS) PushPRBranch(context.Context, string) error {
+	return nil
+}
+
 type landingFakeArcPRVCS struct {
 	landingFakeVCS
 }

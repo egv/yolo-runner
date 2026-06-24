@@ -84,6 +84,16 @@ func (a *VCSAdapter) PushMain(context.Context) error {
 	return err
 }
 
+// CheckoutPRBranch is a no-op on the git backend: landing a fix onto an
+// existing PR branch is an Arc-only flow today.
+func (a *VCSAdapter) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (a *VCSAdapter) PushPRBranch(context.Context, string) error {
+	return nil
+}
+
 func (a *VCSAdapter) commitAll(message string) (string, error) {
 	if _, err := a.runGit("add", "."); err != nil {
 		return "", err

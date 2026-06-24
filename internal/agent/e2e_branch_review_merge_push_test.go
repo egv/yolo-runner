@@ -236,6 +236,11 @@ func (v *contentionLandingVCS) CreateTaskBranch(_ context.Context, taskID string
 
 func (v *contentionLandingVCS) Checkout(context.Context, string) error { return nil }
 
+func (v *contentionLandingVCS) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+func (v *contentionLandingVCS) PushPRBranch(context.Context, string) error { return nil }
+
 func (v *contentionLandingVCS) CommitAll(context.Context, string) (string, error) { return "", nil }
 
 func (v *contentionLandingVCS) MergeToMain(_ context.Context, branch string) error {

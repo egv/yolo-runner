@@ -129,6 +129,11 @@ func (v *runnerFinalizeFakeVCS) PushBranch(context.Context, string) error { retu
 
 func (v *runnerFinalizeFakeVCS) PushMain(context.Context) error { return nil }
 
+func (v *runnerFinalizeFakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+func (v *runnerFinalizeFakeVCS) PushPRBranch(context.Context, string) error { return nil }
+
 func (v *runnerFinalizeFakeVCS) CreatePR(_ context.Context, title string, body string) (string, error) {
 	v.createPRCalls = append(v.createPRCalls, title+"\n"+body)
 	return v.prURL, nil

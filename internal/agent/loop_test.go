@@ -2360,6 +2360,14 @@ func (f *fakeVCS) PushMain(context.Context) error {
 	return f.pushErr
 }
 
+func (f *fakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeVCS) PushPRBranch(context.Context, string) error {
+	return nil
+}
+
 type fakeArcPRVCS struct {
 	fakeVCS
 }
