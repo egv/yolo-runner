@@ -171,6 +171,9 @@ func (fakeVCS) PushBranch(context.Context, string) error { return nil }
 
 func (fakeVCS) PushMain(context.Context) error { return nil }
 
+func (fakeVCS) CheckoutPRBranch(context.Context, string) (string, error) { return "", nil }
+func (fakeVCS) PushPRBranch(context.Context, string) error               { return nil }
+
 func TestEventDefaults(t *testing.T) {
 	event := Event{Type: EventTypeTaskStarted, TaskID: "t-1", Timestamp: time.Now().UTC()}
 	if event.Type == "" || event.TaskID == "" || event.Timestamp.IsZero() {

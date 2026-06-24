@@ -319,4 +319,12 @@ type VCS interface {
 	MergeToMain(ctx context.Context, sourceBranch string) error
 	PushBranch(ctx context.Context, branch string) error
 	PushMain(ctx context.Context) error
+
+	// CheckoutPRBranch resolves the branch backing an existing PR (identified
+	// by prID) and returns its name. The PR working tree is prepared by the
+	// caller; the VCS only reports the current branch where the backend does
+	// not perform the checkout itself.
+	CheckoutPRBranch(ctx context.Context, prID string) (string, error)
+	// PushPRBranch force-pushes the current branch to update an existing PR.
+	PushPRBranch(ctx context.Context, prID string) error
 }

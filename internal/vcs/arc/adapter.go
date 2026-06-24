@@ -67,6 +67,17 @@ func (a *Adapter) Checkout(_ context.Context, ref string) error {
 	return err
 }
 
+// CheckoutPRBranch resolves the name of the branch currently checked out for
+// the PR. The PR working tree is prepared elsewhere (e.g. `arc pr checkout`),
+// so the adapter only reports the current branch here.
+func (a *Adapter) CheckoutPRBranch(context.Context, string) (string, error) {
+	out, err := a.runArc("rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {
 	if err := a.stageAll(); err != nil {
 		return "", err
@@ -125,6 +136,14 @@ func (a *Adapter) PushBranch(context.Context, string) error {
 
 func (a *Adapter) PushMain(context.Context) error {
 	return nil
+}
+
+// PushPRBranch force-pushes the current branch to update an existing Arc PR.
+// Per Arcanum conventions an existing PR is updated by re-checking it out,
+// amending the commit, and pushing with -f.
+func (a *Adapter) PushPRBranch(context.Context, string) error {
+	_, err := a.runArc("push", "-f")
+	return err
 }
 
 func parsePRURL(output string) (string, error) {

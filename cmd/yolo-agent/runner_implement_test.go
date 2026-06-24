@@ -258,6 +258,14 @@ func (v *runnerImplementFakeVCS) PushMain(context.Context) error {
 	return nil
 }
 
+func (v *runnerImplementFakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+
+func (v *runnerImplementFakeVCS) PushPRBranch(context.Context, string) error {
+	return nil
+}
+
 func TestRunnerImplementHandlerRejectsNonIsolatedWorkspace(t *testing.T) {
 	handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
 		t.Fatal("resolver must not run when the workspace has no VCS")

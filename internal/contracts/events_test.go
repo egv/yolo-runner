@@ -310,6 +310,9 @@ func (v *eventPRVCS) PushBranch(context.Context, string) error { return nil }
 
 func (v *eventPRVCS) PushMain(context.Context) error { return nil }
 
+func (v *eventPRVCS) CheckoutPRBranch(context.Context, string) (string, error) { return "", nil }
+func (v *eventPRVCS) PushPRBranch(context.Context, string) error               { return nil }
+
 func (v *eventPRVCS) CreatePR(context.Context, string, string) (string, error) {
 	return "https://arc.example.test/review/123", nil
 }
