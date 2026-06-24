@@ -134,12 +134,13 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			return nil, err
 		}
 		var unansweredCommentIDs []string
+		var triggeringReplies map[string]string
 		if strings.TrimSpace(reviewedRevision) == revision {
 			state, err := s.stateFetcher().FetchPRRuntimeState(ctx, "", prID)
 			if err != nil {
 				return nil, fmt.Errorf("fetch arc PR runtime state for comments for %q: %w", prID, err)
 			}
-			unansweredCommentIDs, err = s.unansweredCommentIDs(ctx, prID, state.Comments)
+			unansweredCommentIDs, triggeringReplies, err = s.unansweredCommentIDs(ctx, prID, state.Comments)
 			if err != nil {
 				return nil, err
 			}
@@ -162,7 +163,7 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			Kind:           workitem.KindPRReview,
 			Source:         s.Name(),
 			SourceRef:      "pr:" + prID,
-			IdempotencyKey: prReviewIdempotencyKey(s.Name(), prID, revision, unansweredCommentIDs),
+			IdempotencyKey: prReviewIdempotencyKey(s.Name(), prID, revision, unansweredCommentIDs, triggeringReplies),
 			Preset:         preset,
 			Priority:       s.Priority,
 			Payload:        payload,
@@ -198,10 +199,10 @@ func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 	return discovered, nil
 }
 
-func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments []arcreview.PRComment) ([]string, error) {
+func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments []arcreview.PRComment) ([]string, map[string]string, error) {
 	answeredIDs, err := s.State.ListAnsweredCommentIDs(ctx, prID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	answered := make(map[string]bool, len(answeredIDs))
 	for _, id := range answeredIDs {
@@ -211,18 +212,51 @@ func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments
 		}
 	}
 
+	threadStates, err := s.State.ListThreadStates(ctx, prID)
+	if err != nil {
+		return nil, nil, err
+	}
+	stateByID := make(map[string]arcreviewstate.ThreadState, len(threadStates))
+	for _, ts := range threadStates {
+		if id := strings.TrimSpace(ts.CommentID); id != "" {
+			stateByID[id] = ts
+		}
+	}
+
+	repliesByRoot := repliesByThreadRoot(comments)
+
 	seen := map[string]bool{}
 	var unanswered []string
+	triggering := map[string]string{}
 	for _, comment := range comments {
 		id := strings.TrimSpace(comment.ID)
-		if id == "" || comment.Resolved || comment.Answered || answered[id] || seen[id] {
+		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
-		unanswered = append(unanswered, id)
+		if comment.Resolved {
+			continue
+		}
+
+		// Genuinely unanswered comment: surface it for triage.
+		if !comment.Answered && !answered[id] {
+			unanswered = append(unanswered, id)
+			continue
+		}
+
+		// Already answered comment: re-engage only when a tracked thread has a
+		// genuinely new reply from someone other than the agent (s.Reviewer).
+		state, tracked := stateByID[id]
+		if !tracked {
+			continue
+		}
+		if trigger := newestUnseenNonSelfReply(repliesByRoot[id], state, s.Reviewer); trigger != nil {
+			unanswered = append(unanswered, id)
+			triggering[id] = trigger.ID
+		}
 	}
 	sort.Strings(unanswered)
-	return unanswered, nil
+	return unanswered, triggering, nil
 }
 
 func (s *Source) lister() PRLister {
@@ -242,17 +276,17 @@ func (s *Source) stateFetcher() PRStateFetcher {
 	return arcanumPRStateFetcher{}
 }
 
-func prReviewIdempotencyKey(sourceName string, prID string, revision string, commentIDs []string) string {
+func prReviewIdempotencyKey(sourceName string, prID string, revision string, commentIDs []string, triggeringReplies map[string]string) string {
 	return strings.Join([]string{
 		strings.TrimSpace(sourceName),
 		"pr-review",
 		strings.TrimSpace(prID),
 		strings.TrimSpace(revision),
-		commentSetHash(commentIDs),
+		commentSetHash(commentIDs, triggeringReplies),
 	}, "/")
 }
 
-func commentSetHash(commentIDs []string) string {
+func commentSetHash(commentIDs []string, triggeringReplies map[string]string) string {
 	normalized := normalizeStrings(commentIDs)
 	sort.Strings(normalized)
 
@@ -260,8 +294,108 @@ func commentSetHash(commentIDs []string) string {
 	for _, id := range normalized {
 		hash.Write([]byte(id))
 		hash.Write([]byte{0})
+		if reply := strings.TrimSpace(triggeringReplies[id]); reply != "" {
+			hash.Write([]byte("reply="))
+			hash.Write([]byte(reply))
+			hash.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// repliesByThreadRoot groups reply comments under the root review comment of
+// their thread. A reply's ThreadID points at its direct parent, so replies are
+// resolved to their root by walking the parent chain. Direct and nested replies
+// both land under the same root.
+func repliesByThreadRoot(comments []arcreview.PRComment) map[string][]arcreview.PRComment {
+	parentOf := make(map[string]string)
+	exists := make(map[string]bool)
+	for _, comment := range comments {
+		id := strings.TrimSpace(comment.ID)
+		if id == "" {
+			continue
+		}
+		exists[id] = true
+		if parent := strings.TrimSpace(comment.ThreadID); parent != "" {
+			parentOf[id] = parent
+		}
+	}
+
+	replies := make(map[string][]arcreview.PRComment)
+	for _, comment := range comments {
+		id := strings.TrimSpace(comment.ID)
+		if id == "" || strings.TrimSpace(comment.ThreadID) == "" {
+			continue
+		}
+		root := threadRootOf(id, parentOf, exists)
+		replies[root] = append(replies[root], comment)
+	}
+	return replies
+}
+
+func threadRootOf(id string, parentOf map[string]string, exists map[string]bool) string {
+	seen := map[string]bool{}
+	cur := id
+	for {
+		if seen[cur] {
+			return cur
+		}
+		seen[cur] = true
+		parent := parentOf[cur]
+		if parent == "" || parent == cur || !exists[parent] {
+			return cur
+		}
+		cur = parent
+	}
+}
+
+// newestUnseenNonSelfReply returns the newest reply in a thread that the agent
+// has not yet seen and that was not posted by the agent itself, or nil if there
+// is no such reply to re-engage on.
+func newestUnseenNonSelfReply(replies []arcreview.PRComment, state arcreviewstate.ThreadState, reviewer string) *arcreview.PRComment {
+	var newest *arcreview.PRComment
+	for i := range replies {
+		reply := &replies[i]
+		if isSelfReply(reply.Author, reviewer) {
+			continue
+		}
+		if !isUnseenReply(reply, state) {
+			continue
+		}
+		if newerReply(newest, reply) {
+			newest = reply
+		}
+	}
+	return newest
+}
+
+func isUnseenReply(reply *arcreview.PRComment, state arcreviewstate.ThreadState) bool {
+	if id := strings.TrimSpace(reply.ID); id != "" && id == strings.TrimSpace(state.LastSeenReplyID) {
+		return false
+	}
+	if state.LastSeenReplyAt.IsZero() {
+		return true
+	}
+	return reply.CreatedAt.After(state.LastSeenReplyAt)
+}
+
+func newerReply(current *arcreview.PRComment, candidate *arcreview.PRComment) bool {
+	if current == nil {
+		return true
+	}
+	if !candidate.CreatedAt.Equal(current.CreatedAt) {
+		return candidate.CreatedAt.After(current.CreatedAt)
+	}
+	return strings.TrimSpace(candidate.ID) > strings.TrimSpace(current.ID)
+}
+
+func isSelfReply(author string, reviewer string) bool {
+	author = strings.TrimSpace(author)
+	reviewer = strings.TrimSpace(reviewer)
+	if author == "" || reviewer == "" {
+		return false
+	}
+	return strings.EqualFold(author, reviewer)
 }
 
 func normalizeStrings(values []string) []string {
