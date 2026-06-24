@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
@@ -423,7 +424,7 @@ func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName
 		t.Fatalf("submission preset = %q, want %q", got.Preset, preset)
 	}
 
-	wantKey := strings.Join([]string{sourceName, "pr-review", prID, revision, testCommentSetHash(comments)}, "/")
+	wantKey := strings.Join([]string{sourceName, "pr-review", prID, revision, testCommentSetHash(comments, nil)}, "/")
 	if got.IdempotencyKey != wantKey {
 		t.Fatalf("submission idempotency key = %q, want %q", got.IdempotencyKey, wantKey)
 	}
@@ -437,13 +438,18 @@ func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName
 	}
 }
 
-func testCommentSetHash(commentIDs []string) string {
+func testCommentSetHash(commentIDs []string, triggering map[string]string) string {
 	normalized := append([]string(nil), commentIDs...)
 	sort.Strings(normalized)
 	hash := sha256.New()
 	for _, id := range normalized {
 		hash.Write([]byte(id))
 		hash.Write([]byte{0})
+		if reply := strings.TrimSpace(triggering[id]); reply != "" {
+			hash.Write([]byte("reply="))
+			hash.Write([]byte(reply))
+			hash.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -457,4 +463,160 @@ func prReviewReplies(commentIDs []string) []workitem.PRReviewReply {
 		})
 	}
 	return replies
+}
+
+func arcPRReviewSourceWithComments(state *arcreviewstate.Store, reviewer string, comments []arcreview.PRComment) *Source {
+	return &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Reviewer:   reviewer,
+		State:      state,
+		Lister: PRListerFunc(func(_ context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{{ID: "101", FromID: "rev-1", Status: "open"}}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{
+				PRID:     prID,
+				Revision: "rev-1",
+				Details:  arcreview.PRDetails{ID: prID, Status: "open", Revision: "rev-1"},
+				Comments: comments,
+			}, nil
+		}),
+	}
+}
+
+func threadContinuationBaseState(t *testing.T, ctx context.Context) *arcreviewstate.Store {
+	t.Helper()
+	state := openDiscoveryTestState(t)
+	if err := state.StoreReviewedRevision(ctx, "101", "rev-1"); err != nil {
+		t.Fatalf("StoreReviewedRevision() error = %v", err)
+	}
+	if err := state.StoreAnsweredCommentIDs(ctx, "101", []string{"c1"}); err != nil {
+		t.Fatalf("StoreAnsweredCommentIDs() error = %v", err)
+	}
+	return state
+}
+
+func TestSourcePollReSurfacesAnsweredThreadOnNewNonSelfReply(t *testing.T) {
+	ctx := context.Background()
+	state := threadContinuationBaseState(t, ctx)
+
+	lastSeen := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if err := state.RecordThreadAnswered(ctx, "101", "c1", "r-agent", lastSeen); err != nil {
+		t.Fatalf("RecordThreadAnswered() error = %v", err)
+	}
+
+	comments := []arcreview.PRComment{
+		{ID: "c1", Author: "reviewer-bob", Body: "please fix", CreatedAt: lastSeen.Add(-2 * time.Hour)},
+		{ID: "r-agent", ThreadID: "c1", Author: "yolo-agent", Body: "on it", Answered: true, CreatedAt: lastSeen},
+		{ID: "r-new", ThreadID: "c1", Author: "reviewer-bob", Body: "still broken", Answered: true, CreatedAt: lastSeen.Add(time.Hour)},
+	}
+	src := arcPRReviewSourceWithComments(state, "yolo-agent", comments)
+
+	first, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(first) error = %v", err)
+	}
+	second, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(second) error = %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("Poll() was not stable across polls\nfirst:  %#v\nsecond: %#v", first, second)
+	}
+	if len(first) != 1 {
+		t.Fatalf("Poll() returned %d submissions, want 1 re-surfaced thread: %#v", len(first), first)
+	}
+
+	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-new"})}, "/")
+	if first[0].IdempotencyKey != wantKey {
+		t.Fatalf("IdempotencyKey = %q, want %q", first[0].IdempotencyKey, wantKey)
+	}
+	payload, err := workitem.DecodePRReviewPayload(first[0].Payload)
+	if err != nil {
+		t.Fatalf("DecodePRReviewPayload() error = %v", err)
+	}
+	if want := []string{"c1"}; !reflect.DeepEqual(payload.UnansweredCommentIDs, want) {
+		t.Fatalf("UnansweredCommentIDs = %#v, want %#v", payload.UnansweredCommentIDs, want)
+	}
+}
+
+func TestSourcePollDoesNotReSurfaceAnsweredThreadOnNewSelfReply(t *testing.T) {
+	ctx := context.Background()
+	state := threadContinuationBaseState(t, ctx)
+
+	lastSeen := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if err := state.RecordThreadAnswered(ctx, "101", "c1", "r-agent", lastSeen); err != nil {
+		t.Fatalf("RecordThreadAnswered() error = %v", err)
+	}
+
+	comments := []arcreview.PRComment{
+		{ID: "c1", Author: "reviewer-bob", Body: "please fix", CreatedAt: lastSeen.Add(-2 * time.Hour)},
+		{ID: "r-agent", ThreadID: "c1", Author: "yolo-agent", Body: "on it", Answered: true, CreatedAt: lastSeen},
+		{ID: "r-self", ThreadID: "c1", Author: "yolo-agent", Body: "already handled", Answered: true, CreatedAt: lastSeen.Add(time.Hour)},
+	}
+	src := arcPRReviewSourceWithComments(state, "yolo-agent", comments)
+
+	subs, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("Poll() returned %#v, want no submissions for a self reply", subs)
+	}
+}
+
+func TestSourcePollSilencesAnsweredThreadAfterLastSeenAdvances(t *testing.T) {
+	ctx := context.Background()
+	state := threadContinuationBaseState(t, ctx)
+
+	lastSeen := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	rNewAt := lastSeen.Add(time.Hour)
+	if err := state.RecordThreadAnswered(ctx, "101", "c1", "r-new", rNewAt); err != nil {
+		t.Fatalf("RecordThreadAnswered() error = %v", err)
+	}
+
+	comments := []arcreview.PRComment{
+		{ID: "c1", Author: "reviewer-bob", Body: "please fix", CreatedAt: lastSeen.Add(-2 * time.Hour)},
+		{ID: "r-agent", ThreadID: "c1", Author: "yolo-agent", Body: "on it", Answered: true, CreatedAt: lastSeen},
+		{ID: "r-new", ThreadID: "c1", Author: "reviewer-bob", Body: "still broken", Answered: true, CreatedAt: rNewAt},
+	}
+	src := arcPRReviewSourceWithComments(state, "yolo-agent", comments)
+
+	subs, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(subs) != 0 {
+		t.Fatalf("Poll() returned %#v, want no submissions once last_seen advanced", subs)
+	}
+}
+
+func TestSourcePollReSurfacesAnsweredThreadOnNestedNonSelfReply(t *testing.T) {
+	ctx := context.Background()
+	state := threadContinuationBaseState(t, ctx)
+
+	lastSeen := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if err := state.RecordThreadAnswered(ctx, "101", "c1", "r-agent", lastSeen); err != nil {
+		t.Fatalf("RecordThreadAnswered() error = %v", err)
+	}
+
+	comments := []arcreview.PRComment{
+		{ID: "c1", Author: "reviewer-bob", Body: "please fix", CreatedAt: lastSeen.Add(-2 * time.Hour)},
+		{ID: "r-agent", ThreadID: "c1", Author: "yolo-agent", Body: "on it", Answered: true, CreatedAt: lastSeen},
+		{ID: "r-nested", ThreadID: "r-agent", Author: "reviewer-bob", Body: "reply to the agent", Answered: true, CreatedAt: lastSeen.Add(time.Hour)},
+	}
+	src := arcPRReviewSourceWithComments(state, "yolo-agent", comments)
+
+	subs, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("Poll() returned %d submissions, want 1 nested re-surface: %#v", len(subs), subs)
+	}
+	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-nested"})}, "/")
+	if subs[0].IdempotencyKey != wantKey {
+		t.Fatalf("IdempotencyKey = %q, want %q", subs[0].IdempotencyKey, wantKey)
+	}
 }

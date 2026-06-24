@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 )
@@ -20,7 +21,7 @@ func TestOpenInitializesSourceStateTablesIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	assertTablesExist(t, store.db, "answered_comments", "reviewed_revisions")
+	assertTablesExist(t, store.db, "answered_comments", "reviewed_revisions", "comment_thread_state")
 	assertTablesMissing(t, store.db, "pr_sessions", "pr_events", "heartbeats")
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -35,7 +36,7 @@ func TestOpenInitializesSourceStateTablesIdempotently(t *testing.T) {
 			t.Errorf("Close() error = %v", err)
 		}
 	})
-	assertTablesExist(t, reopened.db, "answered_comments", "reviewed_revisions")
+	assertTablesExist(t, reopened.db, "answered_comments", "reviewed_revisions", "comment_thread_state")
 	assertTablesMissing(t, reopened.db, "pr_sessions", "pr_events", "heartbeats")
 }
 
@@ -143,5 +144,95 @@ func assertTablesMissing(t *testing.T, db *sql.DB, tableNames ...string) {
 		if err != sql.ErrNoRows {
 			t.Fatalf("table %q exists after state trim; scan name=%q err=%v", tableName, name, err)
 		}
+	}
+}
+
+func openStateTestStore(t *testing.T) *Store {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	return store
+}
+
+func TestRecordThreadAnsweredRoundTripsAndUpsertsLastSeen(t *testing.T) {
+	ctx := context.Background()
+	store := openStateTestStore(t)
+
+	got, err := store.GetThreadState(ctx, "PR-1", "c1")
+	if err != nil {
+		t.Fatalf("GetThreadState(missing) error = %v", err)
+	}
+	if got.CommentID != "" {
+		t.Fatalf("GetThreadState(missing) = %#v, want empty thread state", got)
+	}
+
+	firstSeen := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	if err := store.RecordThreadAnswered(ctx, "PR-1", "c1", "r1", firstSeen); err != nil {
+		t.Fatalf("RecordThreadAnswered(r1) error = %v", err)
+	}
+
+	got, err = store.GetThreadState(ctx, "PR-1", "c1")
+	if err != nil {
+		t.Fatalf("GetThreadState(after r1) error = %v", err)
+	}
+	if got.PRID != "PR-1" || got.CommentID != "c1" {
+		t.Fatalf("GetThreadState identity = %#v, want PR-1/c1", got)
+	}
+	if got.LastSeenReplyID != "r1" {
+		t.Fatalf("LastSeenReplyID = %q, want r1", got.LastSeenReplyID)
+	}
+	if !got.LastSeenReplyAt.Equal(firstSeen) {
+		t.Fatalf("LastSeenReplyAt = %v, want %v", got.LastSeenReplyAt, firstSeen)
+	}
+	if got.AnsweredAt.IsZero() {
+		t.Fatalf("AnsweredAt was not recorded")
+	}
+	if got.UpdatedAt.IsZero() {
+		t.Fatalf("UpdatedAt was not recorded")
+	}
+	firstAnsweredAt := got.AnsweredAt
+
+	secondSeen := firstSeen.Add(time.Hour)
+	if err := store.RecordThreadAnswered(ctx, "PR-1", "c1", "r2", secondSeen); err != nil {
+		t.Fatalf("RecordThreadAnswered(r2) error = %v", err)
+	}
+	got, err = store.GetThreadState(ctx, "PR-1", "c1")
+	if err != nil {
+		t.Fatalf("GetThreadState(after r2) error = %v", err)
+	}
+	if got.LastSeenReplyID != "r2" {
+		t.Fatalf("upsert LastSeenReplyID = %q, want r2", got.LastSeenReplyID)
+	}
+	if !got.LastSeenReplyAt.Equal(secondSeen) {
+		t.Fatalf("upsert LastSeenReplyAt = %v, want %v", got.LastSeenReplyAt, secondSeen)
+	}
+	if !got.AnsweredAt.Equal(firstAnsweredAt) {
+		t.Fatalf("upsert AnsweredAt = %v, want unchanged %v", got.AnsweredAt, firstAnsweredAt)
+	}
+
+	states, err := store.ListThreadStates(ctx, "PR-1")
+	if err != nil {
+		t.Fatalf("ListThreadStates(PR-1) error = %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("ListThreadStates(PR-1) = %#v, want 1 state", states)
+	}
+	if states[0].LastSeenReplyID != "r2" {
+		t.Fatalf("ListThreadStates()[0].LastSeenReplyID = %q, want r2", states[0].LastSeenReplyID)
+	}
+
+	other, err := store.ListThreadStates(ctx, "PR-2")
+	if err != nil {
+		t.Fatalf("ListThreadStates(PR-2) error = %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("ListThreadStates(PR-2) = %#v, want none", other)
 	}
 }
