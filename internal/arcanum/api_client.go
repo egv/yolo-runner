@@ -99,6 +99,14 @@ func (c *APIClient) PostJSON(ctx context.Context, path string, requestBody any, 
 	return c.doJSON(ctx, http.MethodPost, path, requestBody, responseBody)
 }
 
+// PatchJSON sends a PATCH to the Arcanum API. Mirrors PostJSON/GetJSON as a
+// one-liner over doJSON. The resolve client uses POST today (see
+// resolve_client.go); PATCH is the documented fallback candidate for the
+// resolve endpoint and is exposed here so it is available once confirmed.
+func (c *APIClient) PatchJSON(ctx context.Context, path string, requestBody any, responseBody any) error {
+	return c.doJSON(ctx, http.MethodPatch, path, requestBody, responseBody)
+}
+
 func (c *APIClient) doJSON(ctx context.Context, method string, path string, requestBody any, responseBody any) error {
 	if c == nil {
 		return errors.New("Arcanum API client is nil")
