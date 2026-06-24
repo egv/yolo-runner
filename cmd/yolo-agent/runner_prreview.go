@@ -95,6 +95,7 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		LinkedTicketTracker: runtime.LinkedTicketTracker,
 	}
 
+	mode := strings.TrimSpace(payload.Mode)
 	capture := &runnerPRReviewResultCapture{}
 	_, err = runArcPRReviewCycle(ctx, arcPRReviewCycleConfig{
 		PRID:                  strings.TrimSpace(payload.PRID),
@@ -105,6 +106,7 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		MaxRetries:            runtime.MaxRetries,
 		Metadata:              runnerPRReviewMetadata(item, runtime.Metadata),
 		AllowShip:             payload.Ship,
+		Mode:                  mode,
 		StateFetcher:          runtime.StateFetcher,
 		ProjectContextFetcher: projectContextFetcher,
 		RevisionStore:         runnerPRReviewPayloadRevisionStore{payload: payload},
@@ -122,6 +124,7 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 				Store:  runnerPRReviewNoopAnsweredCommentStore{},
 			},
 			capture: capture,
+			mode:    mode,
 		},
 		ShipGate: runnerPRReviewCapturingShipGate{capture: capture},
 	})
@@ -251,8 +254,51 @@ func (c *runnerPRReviewResultCapture) captureReview(state arcreview.PRRuntimeSta
 	c.result.RevisionReviewed = runnerPRReviewCurrentRevision(state)
 }
 
-func (c *runnerPRReviewResultCapture) captureReply(result arcreview.ReplyResult) {
+func (c *runnerPRReviewResultCapture) captureReply(result arcreview.ReplyResult, mode string, payload []byte) {
+	if runnerPRReviewIsAuthorMode(mode) {
+		c.result.CommentDecisions = runnerPRReviewCommentDecisions(payload)
+		return
+	}
 	c.result.Replies = runnerPRReviewReplies(result.Replies)
+}
+
+// runnerPRReviewIsAuthorMode reports whether a pr-review payload selects author
+// mode, where the agent triages review comments on its own PR. An empty or
+// "reviewer" mode is the default reviewer mode.
+func runnerPRReviewIsAuthorMode(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), workitem.PRReviewModeAuthor)
+}
+
+// runnerPRReviewCommentDecisions maps the author-mode model output into the
+// queue result schema, mirroring runnerPRReviewReplies for the reviewer path.
+func runnerPRReviewCommentDecisions(payload []byte) []workitem.PRReviewCommentDecision {
+	decisions, err := arcreview.ParseAuthorDecisionResult(payload)
+	if err != nil || len(decisions.Decisions) == 0 {
+		return nil
+	}
+	out := make([]workitem.PRReviewCommentDecision, 0, len(decisions.Decisions))
+	for _, decision := range decisions.Decisions {
+		out = append(out, workitem.PRReviewCommentDecision{
+			CommentID: strings.TrimSpace(decision.CommentID),
+			Decision:  strings.TrimSpace(decision.Decision),
+			Language:  strings.TrimSpace(decision.Language),
+			ReplyBody: strings.TrimSpace(decision.ReplyBody),
+			Rationale: strings.TrimSpace(decision.Rationale),
+			Scope:     runnerPRReviewImplementScope(decision.Scope),
+		})
+	}
+	return out
+}
+
+func runnerPRReviewImplementScope(scope *arcreview.AuthorImplementScope) *workitem.PRReviewImplementScope {
+	if scope == nil {
+		return nil
+	}
+	return &workitem.PRReviewImplementScope{
+		Title:        strings.TrimSpace(scope.Title),
+		Instructions: strings.TrimSpace(scope.Instructions),
+		TargetFiles:  scope.TargetFiles,
+	}
 }
 
 func (c *runnerPRReviewResultCapture) captureShip(state arcreview.PRRuntimeState) {
@@ -280,6 +326,7 @@ func (a runnerPRReviewCapturingReviewApplier) Apply(ctx context.Context, state a
 type runnerPRReviewCapturingReplyApplier struct {
 	inner   arcreview.ReplyApplier
 	capture *runnerPRReviewResultCapture
+	mode    string
 }
 
 func (a runnerPRReviewCapturingReplyApplier) Apply(ctx context.Context, state arcreview.PRRuntimeState, payload []byte) (arcreview.ReplyResult, error) {
@@ -288,7 +335,7 @@ func (a runnerPRReviewCapturingReplyApplier) Apply(ctx context.Context, state ar
 		return arcreview.ReplyResult{}, err
 	}
 	if a.capture != nil {
-		a.capture.captureReply(result)
+		a.capture.captureReply(result, a.mode, payload)
 	}
 	return result, nil
 }

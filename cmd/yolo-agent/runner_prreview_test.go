@@ -531,3 +531,273 @@ func assertRunnerPRReviewArcCalls(t *testing.T, path string, want []runnerPRRevi
 		}
 	}
 }
+
+func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	installRunnerPRReviewFakeArc(t)
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:                 "42",
+		Revision:             "r7",
+		Mode:                 workitem.PRReviewModeAuthor,
+		UnansweredCommentIDs: []string{"comment-1"},
+	})
+	if err != nil {
+		t.Fatalf("marshal PR review payload: %v", err)
+	}
+	submitted, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcreview",
+		SourceRef:      "42:r7",
+		IdempotencyKey: "arcreview/42/r7",
+		Preset:         "arc",
+		Payload:        payload,
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	claimed, err := store.Claim("runner-prreview", []string{"arc"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("Claim() returned nil")
+	}
+
+	fetcher := &runnerPRReviewFakeFetcher{state: arcreview.PRRuntimeState{
+		PRID:     "42",
+		Revision: "r7",
+		Details: arcreview.PRDetails{
+			ID:       "42",
+			Status:   "open",
+			Revision: "r7",
+		},
+		Comments: []arcreview.PRComment{
+			{ID: "comment-1", Body: "Can this return nil?", Answered: false},
+		},
+		ChangedFiles: []arcreview.PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
+		},
+	}}
+	runner := &fakeArcPRReviewModelRunner{payload: []byte(`{
+		"comment_decisions": [
+			{
+				"comment_id": "comment-1",
+				"decision": "resolve",
+				"language": "en",
+				"reply_body": "The nil path is guarded above.",
+				"rationale": "Question answered by the guard."
+			}
+		]
+	}`)}
+
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPRReview: newRunnerPRReviewKindHandler(func(_ context.Context, _ workitem.Item, workspace envpreset.Workspace, _ workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+				return runnerPRReviewRuntime{
+					StateFetcher: fetcher,
+					ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
+						return runArcPRReviewModel(ctx, runner, input)
+					}),
+					Model:    "gpt-prreview-test",
+					RepoRoot: workspace.Path,
+					Timeout:  4 * time.Second,
+				}, nil
+			}),
+		},
+		environmentPresets: runnerDaemonTestPresets("arc"),
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
+			return envpreset.Workspace{Path: filepath.Join(t.TempDir(), "unused-shared-arcadia")}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-prreview",
+			heartbeatInterval: time.Hour,
+		},
+	}
+	if err := daemon.runClaimedItem(context.Background(), *claimed); err != nil {
+		t.Fatalf("runClaimedItem() error = %v", err)
+	}
+
+	// Author mode builds the author prompt, not the reviewer prompt.
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner requests = %d, want 1", len(runner.requests))
+	}
+	prompt := runner.requests[0].Prompt
+	if !strings.Contains(prompt, "Action: author_review") {
+		t.Fatalf("expected author-mode prompt to contain %q, got:\n%s", "Action: author_review", prompt)
+	}
+	if strings.Contains(prompt, "Action: review_revision") {
+		t.Fatalf("author-mode prompt must not contain %q, got:\n%s", "Action: review_revision", prompt)
+	}
+
+	// Author mode captures per-comment decisions into CommentDecisions.
+	results, err := store.ListUnconsumedResults("arcreview")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("ListUnconsumedResults() len = %d, want 1", len(results))
+	}
+	if results[0].Item.ID != submitted.ID {
+		t.Fatalf("result item ID = %q, want %q", results[0].Item.ID, submitted.ID)
+	}
+
+	var result workitem.PRReviewResult
+	if err := json.Unmarshal(results[0].Result.Payload, &result); err != nil {
+		t.Fatalf("unmarshal PR review result payload %s: %v", results[0].Result.Payload, err)
+	}
+	want := workitem.PRReviewResult{
+		CommentDecisions: []workitem.PRReviewCommentDecision{
+			{
+				CommentID: "comment-1",
+				Decision:  workitem.PRReviewCommentDecisionResolve,
+				Language:  "en",
+				ReplyBody: "The nil path is guarded above.",
+				Rationale: "Question answered by the guard.",
+			},
+		},
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
+	}
+}
+
+func TestRunnerPRReviewHandlerReviewerAnswerModeIsUnchanged(t *testing.T) {
+	// The default reviewer mode on the answer path must keep building the
+	// reviewer prompt and capturing replies (not author comment decisions).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	installRunnerPRReviewFakeArc(t)
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:                 "42",
+		Revision:             "r7",
+		UnansweredCommentIDs: []string{"comment-1"},
+	})
+	if err != nil {
+		t.Fatalf("marshal PR review payload: %v", err)
+	}
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcreview",
+		SourceRef:      "42:r7",
+		IdempotencyKey: "arcreview/42/r7/reviewer-answer",
+		Preset:         "arc",
+		Payload:        payload,
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	claimed, err := store.Claim("runner-prreview", []string{"arc"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("Claim() returned nil")
+	}
+
+	fetcher := &runnerPRReviewFakeFetcher{state: arcreview.PRRuntimeState{
+		PRID:     "42",
+		Revision: "r7",
+		Details: arcreview.PRDetails{
+			ID:       "42",
+			Status:   "open",
+			Revision: "r7",
+		},
+		Comments: []arcreview.PRComment{
+			{ID: "comment-1", Body: "Can this return nil?", Answered: false},
+		},
+		ChangedFiles: []arcreview.PRChangedFile{
+			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
+		},
+	}}
+	runner := &fakeArcPRReviewModelRunner{payload: []byte(`{
+		"replies": [
+			{"comment_id": "comment-1", "body": "The nil path is guarded above."}
+		]
+	}`)}
+
+	daemon := runnerDaemon{
+		store: store,
+		handlers: runnerKindRegistry{
+			workitem.KindPRReview: newRunnerPRReviewKindHandler(func(_ context.Context, _ workitem.Item, workspace envpreset.Workspace, _ workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+				return runnerPRReviewRuntime{
+					StateFetcher: fetcher,
+					ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
+						return runArcPRReviewModel(ctx, runner, input)
+					}),
+					Model:    "gpt-prreview-test",
+					RepoRoot: workspace.Path,
+					Timeout:  4 * time.Second,
+				}, nil
+			}),
+		},
+		environmentPresets: runnerDaemonTestPresets("arc"),
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
+			return envpreset.Workspace{Path: filepath.Join(t.TempDir(), "unused-shared-arcadia")}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			runnerID:          "runner-prreview",
+			heartbeatInterval: time.Hour,
+		},
+	}
+	if err := daemon.runClaimedItem(context.Background(), *claimed); err != nil {
+		t.Fatalf("runClaimedItem() error = %v", err)
+	}
+
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner requests = %d, want 1", len(runner.requests))
+	}
+	prompt := runner.requests[0].Prompt
+	if !strings.Contains(prompt, "Action: review_revision") {
+		t.Fatalf("expected reviewer prompt to contain %q, got:\n%s", "Action: review_revision", prompt)
+	}
+	if strings.Contains(prompt, "Action: author_review") {
+		t.Fatalf("reviewer prompt must not contain %q, got:\n%s", "Action: author_review", prompt)
+	}
+
+	results, err := store.ListUnconsumedResults("arcreview")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("ListUnconsumedResults() len = %d, want 1", len(results))
+	}
+	var result workitem.PRReviewResult
+	if err := json.Unmarshal(results[0].Result.Payload, &result); err != nil {
+		t.Fatalf("unmarshal PR review result payload %s: %v", results[0].Result.Payload, err)
+	}
+	want := workitem.PRReviewResult{
+		Replies: []workitem.PRReviewReply{
+			{CommentID: "comment-1", Body: "The nil path is guarded above."},
+		},
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
+	}
+}
