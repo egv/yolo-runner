@@ -11,19 +11,29 @@ import (
 type Kind string
 
 const (
-	KindImplement Kind = "implement"
-	KindReview    Kind = "review"
-	KindPreflight Kind = "preflight"
-	KindSplit     Kind = "split"
-	KindPRReview  Kind = "pr-review"
-	KindFinalize  Kind = "finalize"
+	KindImplement        Kind = "implement"
+	KindReview           Kind = "review"
+	KindPreflight        Kind = "preflight"
+	KindSplit            Kind = "split"
+	KindPRReview         Kind = "pr-review"
+	KindResolvePRComment Kind = "resolve-pr-comment"
+	KindFinalize         Kind = "finalize"
+)
+
+// PR review modes discriminate pr-review work items. The default reviewer
+// mode (the pre-existing behavior) is the empty string; "reviewer" is an
+// accepted human-readable alias. Author mode is set explicitly by the source
+// so the agent triages review comments on its own PR on the author's behalf.
+const (
+	PRReviewModeReviewer = ""
+	PRReviewModeAuthor   = "author"
 )
 
 var ErrInvalidKind = errors.New("invalid work item kind")
 
 func (k Kind) IsValid() bool {
 	switch k {
-	case KindImplement, KindReview, KindPreflight, KindSplit, KindPRReview, KindFinalize:
+	case KindImplement, KindReview, KindPreflight, KindSplit, KindPRReview, KindResolvePRComment, KindFinalize:
 		return true
 	default:
 		return false
