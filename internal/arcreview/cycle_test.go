@@ -154,3 +154,38 @@ func (g *fakePRReviewCycleShipGate) GateAndShip(_ context.Context, request ShipG
 	g.calls = append(g.calls, request)
 	return ShipGateResult{}, nil
 }
+
+func TestPRReviewCycleThreadsModeIntoModelInput(t *testing.T) {
+	// The pr-review mode (reviewer default vs author) is threaded from the
+	// cycle config into the model input so the model helper can pick the right
+	// prompt. Both modes route through the answer action here.
+	for _, mode := range []string{"author", ""} {
+		state := PRRuntimeState{
+			PRID:     "42",
+			Revision: "r2",
+			Details:  PRDetails{ID: "42", Status: "open", Revision: "r2"},
+			Comments: []PRComment{{ID: "comment-1", Body: "Question?", Answered: false}},
+		}
+		fetcher := &fakePRReviewCycleFetcher{state: state}
+		store := &fakePRReviewCycleRevisionStore{revision: "r2"}
+		model := &fakePRReviewCycleModelHelper{payload: []byte("{}")}
+		replyApplier := &fakePRReviewCycleReplyApplier{}
+
+		if _, err := RunPRReviewCycle(context.Background(), PRReviewCycleConfig{
+			Mode:          mode,
+			PRID:          "42",
+			StateFetcher:  fetcher,
+			RevisionStore: store,
+			ModelHelper:   model,
+			ReplyApplier:  replyApplier,
+		}); err != nil {
+			t.Fatalf("RunPRReviewCycle() mode=%q error = %v", mode, err)
+		}
+		if len(model.calls) != 1 {
+			t.Fatalf("mode=%q model calls = %d, want 1", mode, len(model.calls))
+		}
+		if got := model.calls[0].Mode; got != mode {
+			t.Fatalf("mode=%q model input mode = %q, want %q", mode, got, mode)
+		}
+	}
+}

@@ -26,7 +26,7 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 	var output bytes.Buffer
 	request := contracts.RunnerRequest{
 		TaskID:     arcPRReviewModelTaskID(input.State),
-		Prompt:     arcreview.BuildReviewRevisionPrompt(input.State, input.ProjectContext),
+		Prompt:     arcPRReviewPrompt(input),
 		Mode:       contracts.RunnerModeReview,
 		Model:      input.Model,
 		RepoRoot:   input.RepoRoot,
@@ -76,6 +76,16 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 		_ = os.WriteFile(filepath.Join(dir, arcPRReviewModelTaskID(input.State)+".out"), raw, 0o644)
 	}
 	return raw, nil
+}
+
+// arcPRReviewPrompt selects the model prompt for a pr-review work item. Author
+// mode triages review comments on the author's own PR; the default reviewer
+// mode reviews the current revision.
+func arcPRReviewPrompt(input arcPRReviewModelInput) string {
+	if runnerPRReviewIsAuthorMode(input.Mode) {
+		return arcreview.BuildAuthorModePrompt(input.State, input.ProjectContext)
+	}
+	return arcreview.BuildReviewRevisionPrompt(input.State, input.ProjectContext)
 }
 
 func arcPRReviewModelTaskID(state arcreview.PRRuntimeState) string {

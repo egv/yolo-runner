@@ -20,6 +20,12 @@ type PRReviewCycleConfig struct {
 	Metadata   map[string]string
 	AllowShip  bool
 
+	// Mode selects the pr-review mode (see the PRReviewMode* constants in the
+	// workitem package): the default reviewer mode, or author mode, where the
+	// agent triages review comments on its own PR. It is threaded into the model
+	// input so the model helper can build the matching prompt.
+	Mode string
+
 	StateFetcher          PRReviewCycleStateFetcher
 	ProjectContextFetcher PRReviewCycleProjectContextFetcher
 	RevisionStore         PRReviewCycleRevisionStore
@@ -45,6 +51,7 @@ type PRReviewCycleProjectContextFetcher interface {
 type PRReviewModelInput struct {
 	State          PRRuntimeState
 	ProjectContext ProjectContext
+	Mode           string
 	Model          string
 	RepoRoot       string
 	Timeout        time.Duration
@@ -176,6 +183,7 @@ func prReviewCycleModelInput(cfg PRReviewCycleConfig, state PRRuntimeState, proj
 	return PRReviewModelInput{
 		State:          state,
 		ProjectContext: projectContext,
+		Mode:           cfg.Mode,
 		Model:          cfg.Model,
 		RepoRoot:       cfg.RepoRoot,
 		Timeout:        cfg.Timeout,
