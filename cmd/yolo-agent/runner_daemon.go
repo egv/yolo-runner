@@ -53,9 +53,10 @@ type runnerKindRegistry map[workitem.Kind]runnerKindHandler
 type runnerWorkspaceMaterializer func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error)
 
 // runnerKindIsolated reports whether a work kind writes code and therefore
-// needs a fully isolated, VCS-bearing workspace. Read-only model kinds
-// (preflight, split) produce a decision and write back over the source API, so
-// they get a lightweight parallel-safe read view instead.
+// needs a fully isolated, VCS-bearing workspace. Kinds that never write code —
+// read-only model kinds (preflight, split) and the resolve-pr-comment stub,
+// whose effect is applied by the owning source's HandleResult — get a
+// lightweight parallel-safe read view instead.
 func runnerKindIsolated(kind workitem.Kind) bool {
 	switch kind {
 	case workitem.KindImplement, workitem.KindFinalize:
@@ -591,6 +592,7 @@ func defaultRunnerKindRegistry() runnerKindRegistry {
 	registry[workitem.KindPreflight] = newRunnerPreflightKindHandler(defaultRunnerPreflightAgentResolver)
 	registry[workitem.KindPRReview] = newRunnerPRReviewKindHandler(defaultRunnerPRReviewRuntimeResolver)
 	registry[workitem.KindFinalize] = newRunnerFinalizeKindHandler()
+	registry[workitem.KindResolvePRComment] = echoRunnerKindHandler
 	return registry
 }
 
@@ -604,6 +606,15 @@ func stubRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Wo
 		return workqueue.Result{}, err
 	}
 	return workqueue.Result{Payload: payload}, nil
+}
+
+// echoRunnerKindHandler is a stub handler that echoes the item payload back as
+// its result. It performs no work itself: kinds whose effect is applied by the
+// owning source's HandleResult (resolve-pr-comment resolves a comment through
+// internal/sources/arcpr/writeback.go) only need a completed result so the
+// queue marks the item done. The runner never writes to Arcanum directly.
+func echoRunnerKindHandler(_ context.Context, item workitem.Item, _ envpreset.Workspace) (workqueue.Result, error) {
+	return workqueue.Result{Payload: item.Payload}, nil
 }
 
 func loadRunnerEnvironmentPresets(path string, requiredPresets []string) (map[string]envpreset.Preset, error) {
