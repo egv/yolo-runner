@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
@@ -833,4 +834,214 @@ func (c *fakeArcPRWritebackClient) Ship(_ context.Context, prID string) error {
 func (c *fakeArcPRWritebackClient) ResolveComment(_ context.Context, prID string, commentID string) error {
 	c.resolved = append(c.resolved, arcPRWritebackResolve{prID: prID, commentID: commentID})
 	return nil
+}
+
+// arcPRAuthorImplementTestSource builds a Source wired to in-memory fakes plus a
+// real work queue for an author-mode implement fan-out scenario. The fetched PR
+// carries a single unresolved, unanswered comment "comment-1" and exposes the PR
+// author/branch the spawned implement item must carry.
+func arcPRAuthorImplementTestSource(t *testing.T, client *fakeArcPRWritebackClient, authorMode, fanOut bool) *Source {
+	t.Helper()
+	state := openDiscoveryTestState(t)
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details: arcreview.PRDetails{
+				ID:       "42",
+				Status:   "open",
+				Revision: "r7",
+				Author:   "alice",
+				Branch:   "users/alice/pr-42",
+			},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "Please add a nil guard here.", Answered: false},
+			},
+		},
+	}
+	queue, err := workqueue.Open(filepath.Join(t.TempDir(), "arcpr-queue.db"))
+	if err != nil {
+		t.Fatalf("workqueue.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := queue.Close(); err != nil {
+			t.Errorf("queue.Close() error = %v", err)
+		}
+	})
+	return &Source{
+		SourceName:             "arcpr-adapta",
+		Preset:                 "adapta",
+		AuthorModeEnabled:      authorMode,
+		ImplementFanOutEnabled: fanOut,
+		State:                  state,
+		StateFetcher:           fetcher,
+		Queue:                  queue,
+		ResolveApplier: arcreview.ResolveApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+}
+
+func TestSourceHandleResultFansOutImplementSubmissionForAuthorImplementDecision(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, true, true)
+	state := src.State
+	queue := src.Queue
+
+	item := workitem.Item{
+		ID:        "review-item-1",
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Preset:    "adapta",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{
+					CommentID: "comment-1",
+					Decision:  workitem.PRReviewCommentDecisionImplement,
+					Scope: &workitem.PRReviewImplementScope{
+						Title:        "Add nil guard",
+						Instructions: "Return early when the value is nil.",
+						TargetFiles:  []string{"internal/foo/bar.go"},
+					},
+				},
+			},
+		}),
+	}
+
+	submissions, err := src.HandleResult(ctx, item, result)
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(submissions) != 1 {
+		t.Fatalf("submissions = %d, want 1: %#v", len(submissions), submissions)
+	}
+
+	got := submissions[0]
+	wantKey := "arcpr/42/implement/comment-1/dbb7b294e78f" // sha256("r7")[:12]
+	if got.Kind != workitem.KindImplement {
+		t.Fatalf("submission kind = %q, want implement", got.Kind)
+	}
+	if got.Source != "arcpr-adapta" {
+		t.Fatalf("submission source = %q, want arcpr-adapta", got.Source)
+	}
+	if got.SourceRef != "pr:42" {
+		t.Fatalf("submission source ref = %q, want pr:42", got.SourceRef)
+	}
+	if got.IdempotencyKey != wantKey {
+		t.Fatalf("submission idempotency key = %q, want %q", got.IdempotencyKey, wantKey)
+	}
+	if got.Preset != "adapta" {
+		t.Fatalf("submission preset = %q, want adapta", got.Preset)
+	}
+
+	var payload workitem.ImplementPayload
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal implement payload: %v", err)
+	}
+	if payload.Title != "Add nil guard" {
+		t.Fatalf("implement title = %q, want \"Add nil guard\"", payload.Title)
+	}
+	if payload.Description != "Return early when the value is nil." {
+		t.Fatalf("implement description = %q, want the decision scope instructions", payload.Description)
+	}
+	wantMeta := map[string]string{
+		"arc_pr_id":      "42",
+		"arc_comment_id": "comment-1",
+		"arc_pr_branch":  "users/alice/pr-42",
+		"arc_pr_author":  "alice",
+		"origin":         "arcpr-author",
+	}
+	if !reflect.DeepEqual(payload.PromptContext.Metadata, wantMeta) {
+		t.Fatalf("implement metadata mismatch:\n got: %#v\nwant: %#v", payload.PromptContext.Metadata, wantMeta)
+	}
+
+	// The implement item was actually enqueued and is claimable.
+	claimed, err := queue.Claim("runner-a", []string{"adapta"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("Claim() returned nil, want the spawned implement item")
+	}
+	if claimed.Kind != workitem.KindImplement || claimed.IdempotencyKey != wantKey {
+		t.Fatalf("claimed item = kind %q key %q, want implement %q", claimed.Kind, claimed.IdempotencyKey, wantKey)
+	}
+
+	// The comment -> implement item mapping was recorded for later resolution.
+	record, ok, err := state.GetCommentImplementItem(ctx, "42", "comment-1")
+	if err != nil {
+		t.Fatalf("GetCommentImplementItem() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("comment implement item mapping was not recorded")
+	}
+	if record.ImplementItemID != claimed.ID {
+		t.Fatalf("recorded implement item id = %q, want claimed id %q", record.ImplementItemID, claimed.ID)
+	}
+	if record.IdempotencyKey != wantKey {
+		t.Fatalf("recorded idempotency key = %q, want %q", record.IdempotencyKey, wantKey)
+	}
+	if record.ReviewItemID != "review-item-1" {
+		t.Fatalf("recorded review item id = %q, want review-item-1", record.ReviewItemID)
+	}
+
+	// The implement decision must NOT resolve the comment here.
+	if len(client.resolved) != 0 {
+		t.Fatalf("implement decision resolved comment, want left open: %#v", client.resolved)
+	}
+}
+
+func TestSourceHandleResultSkipsImplementFanOutWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, true, false)
+	queue := src.Queue
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{
+					CommentID: "comment-1",
+					Decision:  workitem.PRReviewCommentDecisionImplement,
+					Scope: &workitem.PRReviewImplementScope{
+						Title:        "Add nil guard",
+						Instructions: "Return early when the value is nil.",
+					},
+				},
+			},
+		}),
+	}
+
+	submissions, err := src.HandleResult(ctx, item, result)
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(submissions) != 0 {
+		t.Fatalf("submissions = %#v, want none when fan-out disabled", submissions)
+	}
+	if claimed, err := queue.Claim("runner-a", []string{"adapta"}, time.Minute); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	} else if claimed != nil {
+		t.Fatalf("implement item enqueued when fan-out disabled: %#v", claimed)
+	}
 }
