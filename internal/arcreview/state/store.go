@@ -27,6 +27,20 @@ type ThreadState struct {
 	UpdatedAt       time.Time
 }
 
+// CommentImplementItemRecord maps a review comment to the implement work item
+// spawned to address it, so the comment is resolved only after that implement
+// item (and any sibling items for the same comment) land. Mirrors the startrek
+// split_subtask_items comment->child mapping.
+type CommentImplementItemRecord struct {
+	PRID            string    `json:"pr_id"`
+	CommentID       string    `json:"comment_id"`
+	ImplementItemID string    `json:"implement_item_id"`
+	IdempotencyKey  string    `json:"idempotency_key"`
+	ReviewItemID    string    `json:"review_item_id"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
 func Open(path string) (*Store, error) {
 	if err := ensureStateParentDir(path); err != nil {
 		return nil, err
@@ -85,6 +99,17 @@ CREATE TABLE IF NOT EXISTS reviewed_revisions (
 		last_seen_reply_at TEXT NOT NULL DEFAULT '',
 		answered_at TEXT NOT NULL DEFAULT '',
 		updated_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (pr_id, comment_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS comment_implement_items (
+		pr_id TEXT NOT NULL,
+		comment_id TEXT NOT NULL,
+		implement_item_id TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		review_item_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
 		PRIMARY KEY (pr_id, comment_id)
 	);`
 
@@ -299,6 +324,123 @@ ORDER BY comment_id`, prID)
 		return nil, fmt.Errorf("read thread states for PR %q: %w", prID, err)
 	}
 	return states, nil
+}
+
+func (s *Store) RecordCommentImplementItem(ctx context.Context, record CommentImplementItemRecord) error {
+	prID := strings.TrimSpace(record.PRID)
+	if prID == "" {
+		return fmt.Errorf("PR ID is required")
+	}
+	commentID := strings.TrimSpace(record.CommentID)
+	if commentID == "" {
+		return fmt.Errorf("comment ID is required")
+	}
+	implementItemID := strings.TrimSpace(record.ImplementItemID)
+	if implementItemID == "" {
+		return fmt.Errorf("implement item ID is required")
+	}
+	idempotencyKey := strings.TrimSpace(record.IdempotencyKey)
+	if idempotencyKey == "" {
+		return fmt.Errorf("idempotency key is required")
+	}
+	record.ReviewItemID = strings.TrimSpace(record.ReviewItemID)
+
+	now := time.Now().UTC()
+	formattedNow := formatTime(now)
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO comment_implement_items (pr_id, comment_id, implement_item_id, idempotency_key, review_item_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(pr_id, comment_id) DO UPDATE SET
+	implement_item_id = excluded.implement_item_id,
+	idempotency_key = excluded.idempotency_key,
+	review_item_id = excluded.review_item_id,
+	updated_at = excluded.updated_at`,
+		prID,
+		commentID,
+		implementItemID,
+		idempotencyKey,
+		record.ReviewItemID,
+		formattedNow,
+		formattedNow,
+	); err != nil {
+		return fmt.Errorf("record comment implement item for PR %q comment %q: %w", prID, commentID, err)
+	}
+	return nil
+}
+
+func (s *Store) GetCommentImplementItem(ctx context.Context, prID string, commentID string) (CommentImplementItemRecord, bool, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return CommentImplementItemRecord{}, false, fmt.Errorf("PR ID is required")
+	}
+	commentID = strings.TrimSpace(commentID)
+	if commentID == "" {
+		return CommentImplementItemRecord{}, false, fmt.Errorf("comment ID is required")
+	}
+
+	var record CommentImplementItemRecord
+	var createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT pr_id, comment_id, implement_item_id, idempotency_key, review_item_id, created_at, updated_at
+FROM comment_implement_items
+WHERE pr_id = ? AND comment_id = ?`, prID, commentID).Scan(
+		&record.PRID,
+		&record.CommentID,
+		&record.ImplementItemID,
+		&record.IdempotencyKey,
+		&record.ReviewItemID,
+		&createdAt,
+		&updatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return CommentImplementItemRecord{}, false, nil
+	}
+	if err != nil {
+		return CommentImplementItemRecord{}, false, fmt.Errorf("get comment implement item for PR %q comment %q: %w", prID, commentID, err)
+	}
+	record.CreatedAt = parseTime(createdAt)
+	record.UpdatedAt = parseTime(updatedAt)
+	return record, true, nil
+}
+
+func (s *Store) ListCommentImplementItems(ctx context.Context, prID string) ([]CommentImplementItemRecord, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return nil, fmt.Errorf("PR ID is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT pr_id, comment_id, implement_item_id, idempotency_key, review_item_id, created_at, updated_at
+FROM comment_implement_items
+WHERE pr_id = ?
+ORDER BY comment_id`, prID)
+	if err != nil {
+		return nil, fmt.Errorf("list comment implement items for PR %q: %w", prID, err)
+	}
+	defer rows.Close()
+
+	var records []CommentImplementItemRecord
+	for rows.Next() {
+		var record CommentImplementItemRecord
+		var createdAt, updatedAt string
+		if err := rows.Scan(
+			&record.PRID,
+			&record.CommentID,
+			&record.ImplementItemID,
+			&record.IdempotencyKey,
+			&record.ReviewItemID,
+			&createdAt,
+			&updatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan comment implement item for PR %q: %w", prID, err)
+		}
+		record.CreatedAt = parseTime(createdAt)
+		record.UpdatedAt = parseTime(updatedAt)
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read comment implement items for PR %q: %w", prID, err)
+	}
+	return records, nil
 }
 
 func normalizeAnsweredCommentIDs(commentIDs []string) ([]string, error) {
