@@ -59,6 +59,7 @@ type Source struct {
 	APIClient           *arcanum.APIClient
 	ReplyApplier        arcreview.PRReviewCycleReplyApplier
 	ReviewApplier       arcreview.PRReviewCycleReviewApplier
+	ResolveApplier      arcreview.PRReviewCycleResolveApplier
 	ShipGate            arcreview.PRReviewCycleShipGate
 	// Queue is the work queue the orchestration layer fans author-mode work
 	// into. It is optional at the Source/discovery layer (wired by cmd) and
