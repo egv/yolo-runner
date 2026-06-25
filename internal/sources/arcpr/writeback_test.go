@@ -523,6 +523,78 @@ func TestSourceHandleResultSkipsAuthorArgueRepliesWhenAuthorModeDisabled(t *test
 	}
 }
 
+func TestSourceHandleResultPostsAuthorResolveReplyWithFooterAndResolvesComment(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorResolveTestSource(t, client, "alice", true, true)
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionResolve, ReplyBody: "Good catch \u2014 documented in r7."},
+			},
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+
+	wantReplies := []arcPRWritebackReply{
+		{prID: "42", commentID: "comment-1", body: arcreview.WithDisclosureFooter("Good catch \u2014 documented in r7.", "alice")},
+	}
+	if !reflect.DeepEqual(client.replies, wantReplies) {
+		t.Fatalf("posted replies mismatch:\n got: %#v\nwant: %#v", client.replies, wantReplies)
+	}
+	if !reflect.DeepEqual(client.resolved, []arcPRWritebackResolve{{prID: "42", commentID: "comment-1"}}) {
+		t.Fatalf("resolved comments mismatch:\n got: %#v\nwant [{prID:42 commentID:comment-1}]", client.resolved)
+	}
+}
+
+func TestSourceHandleResultSkipsAuthorResolveWhenResolveDisabled(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorResolveTestSource(t, client, "alice", true, false)
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionResolve, ReplyBody: "Good catch \u2014 documented in r7."},
+			},
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(client.replies) != 0 {
+		t.Fatalf("posted replies when Resolve disabled: %#v", client.replies)
+	}
+	if len(client.resolved) != 0 {
+		t.Fatalf("resolved comments when Resolve disabled: %#v", client.resolved)
+	}
+}
+
 // arcPRAuthorArgueTestSource builds a Source wired to in-memory fakes for an
 // author-mode argue scenario. The fetched PR carries a single unanswered comment
 // "comment-1" authored against the given PR author.
@@ -546,6 +618,39 @@ func arcPRAuthorArgueTestSource(t *testing.T, client *fakeArcPRWritebackClient, 
 		State:             state,
 		StateFetcher:      fetcher,
 		ReplyApplier: arcreview.ReplyApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+}
+
+// arcPRAuthorResolveTestSource builds a Source wired to in-memory fakes for
+// an author-mode resolve scenario. The fetched PR carries a single
+// unresolved, unanswered comment "comment-1" authored against the PR author.
+func arcPRAuthorResolveTestSource(t *testing.T, client *fakeArcPRWritebackClient, author string, authorMode, resolveEnabled bool) *Source {
+	t.Helper()
+	state := openDiscoveryTestState(t)
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7", Author: author},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "Please document this option.", Answered: false},
+			},
+		},
+	}
+	return &Source{
+		SourceName:        "arcpr-adapta",
+		AuthorModeEnabled: authorMode,
+		ResolveEnabled:    resolveEnabled,
+		State:             state,
+		StateFetcher:      fetcher,
+		ReplyApplier: arcreview.ReplyApplier{
+			Client: client,
+			Store:  state,
+		},
+		ResolveApplier: arcreview.ResolveApplier{
 			Client: client,
 			Store:  state,
 		},
@@ -592,6 +697,7 @@ func (f *fakeArcPRWritebackStateFetcher) FetchPRRuntimeState(_ context.Context, 
 
 type fakeArcPRWritebackClient struct {
 	replies   []arcPRWritebackReply
+	resolved  []arcPRWritebackResolve
 	summaries []arcPRWritebackSummary
 	ships     []string
 }
@@ -600,6 +706,11 @@ type arcPRWritebackReply struct {
 	prID      string
 	commentID string
 	body      string
+}
+
+type arcPRWritebackResolve struct {
+	prID      string
+	commentID string
 }
 
 type arcPRWritebackSummary struct {
@@ -624,5 +735,10 @@ func (c *fakeArcPRWritebackClient) PostReviewSummary(_ context.Context, prID str
 
 func (c *fakeArcPRWritebackClient) Ship(_ context.Context, prID string) error {
 	c.ships = append(c.ships, prID)
+	return nil
+}
+
+func (c *fakeArcPRWritebackClient) ResolveComment(_ context.Context, prID string, commentID string) error {
+	c.resolved = append(c.resolved, arcPRWritebackResolve{prID: prID, commentID: commentID})
 	return nil
 }

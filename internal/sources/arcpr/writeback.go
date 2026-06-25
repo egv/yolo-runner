@@ -65,12 +65,14 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 
 	replies := resultPayload.Replies
 	var arguedCommentIDs []string
+	var resolveReplies []workitem.PRReviewReply
 	if payload.Mode == workitem.PRReviewModeAuthor && s.AuthorModeEnabled {
 		argueReplies := authorArgueReplies(resultPayload.CommentDecisions, state.Details.Author, s.AutoArgueEnabled)
 		for _, reply := range argueReplies {
 			arguedCommentIDs = append(arguedCommentIDs, reply.CommentID)
 			replies = append(replies, reply)
 		}
+		resolveReplies = authorResolveReplies(resultPayload.CommentDecisions, state.Details.Author, s.ResolveEnabled)
 	}
 
 	repliedCommentIDs := resultReplyCommentIDs(replies)
@@ -88,6 +90,17 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	for _, commentID := range arguedCommentIDs {
 		if err := s.State.RecordThreadAnswered(ctx, prID, commentID, "", time.Now()); err != nil {
 			return nil, fmt.Errorf("record arc PR thread answered for %q: %w", commentID, err)
+		}
+	}
+
+	// Author-mode resolve decisions post their disclosure-footer'd reply and
+	// resolve the comment via the resolve applier. They are kept out of `replies`
+	// above: the reply and resolve appliers share the answered gate, so routing
+	// the resolve reply through the reply applier would short-circuit the resolve
+	// applier (and vice versa) - see applyPRReviewResolveDecisions.
+	if len(resolveReplies) > 0 {
+		if err := s.applyPRReviewResolveDecisions(ctx, writebackState, resolveReplies); err != nil {
+			return nil, fmt.Errorf("apply arc PR resolve decisions: %w", err)
 		}
 	}
 
@@ -180,6 +193,132 @@ func (s *Source) applyPRReviewReplies(ctx context.Context, state arcreview.PRRun
 	}
 	_, err = applier.Apply(ctx, state, payload)
 	return err
+}
+
+// applyPRReviewResolveDecisions posts the disclosure-footer'd reply for each
+// author-mode "resolve" decision and then resolves the comment via the
+// resolve applier. The reply and resolve appliers both gate on the shared
+// answered set and both mark handled comments answered, so the resolve reply
+// is posted directly here (rather than through the reply applier): routing it
+// through the reply applier would mark the comment answered and make the
+// resolve applier skip it, while resolving first would make the reply applier
+// skip the reply. Comments already answered/resolved are skipped so a retry
+// never double-posts or double-resolves.
+func (s *Source) applyPRReviewResolveDecisions(ctx context.Context, state arcreview.PRRuntimeState, replies []workitem.PRReviewReply) error {
+	if len(replies) == 0 {
+		return nil
+	}
+	prID := currentStatePRID(state, "")
+	if prID == "" {
+		return errors.New("arc PR ID is required")
+	}
+	handled, err := s.handledCommentSet(ctx, prID, state.Comments)
+	if err != nil {
+		return err
+	}
+	replyClient, err := s.replyCommentClient()
+	if err != nil {
+		return err
+	}
+	var resolveIDs []string
+	for _, reply := range replies {
+		commentID := strings.TrimSpace(reply.CommentID)
+		if commentID == "" {
+			return errors.New("arc PR resolve reply comment ID is required")
+		}
+		if handled[commentID] {
+			continue
+		}
+		body := strings.TrimSpace(reply.Body)
+		if body == "" {
+			return fmt.Errorf("arc PR resolve reply body is required for comment %q", commentID)
+		}
+		if err := replyClient.PostCommentReply(ctx, prID, commentID, body); err != nil {
+			return fmt.Errorf("post arc PR resolve reply %q: %w", commentID, err)
+		}
+		resolveIDs = append(resolveIDs, commentID)
+	}
+	if len(resolveIDs) == 0 {
+		return nil
+	}
+	applier, err := s.resolveApplier()
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(arcreview.ResolveResult{ResolvedCommentIDs: resolveIDs})
+	if err != nil {
+		return fmt.Errorf("marshal arc PR resolve result: %w", err)
+	}
+	if _, err := applier.Apply(ctx, state, payload); err != nil {
+		return fmt.Errorf("apply arc PR resolve: %w", err)
+	}
+	return nil
+}
+
+// replyCommentClient returns the Arcanum reply client backing the reply
+// applier, used to post resolve replies directly (see
+// applyPRReviewResolveDecisions).
+func (s *Source) replyCommentClient() (arcreview.ReplyArcanumClient, error) {
+	applier, err := s.replyApplier()
+	if err != nil {
+		return nil, err
+	}
+	replyApplier, ok := applier.(arcreview.ReplyApplier)
+	if !ok || replyApplier.Client == nil {
+		return nil, errors.New("arcpr source: reply Arcanum client is required to post resolve replies")
+	}
+	return replyApplier.Client, nil
+}
+
+// handledCommentSet mirrors the resolve applier's gating set: persisted
+// answered IDs plus comments flagged Answered or Resolved in the fetched
+// state. Resolve decisions skip these so a retry never double-posts or
+// double-resolves.
+func (s *Source) handledCommentSet(ctx context.Context, prID string, comments []arcreview.PRComment) (map[string]bool, error) {
+	answeredIDs, err := s.State.ListAnsweredCommentIDs(ctx, prID)
+	if err != nil {
+		return nil, fmt.Errorf("list answered comment IDs: %w", err)
+	}
+	handled := make(map[string]bool, len(answeredIDs)+len(comments))
+	for _, id := range answeredIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			handled[id] = true
+		}
+	}
+	for _, comment := range comments {
+		id := strings.TrimSpace(comment.ID)
+		if id != "" && (comment.Answered || comment.Resolved) {
+			handled[id] = true
+		}
+	}
+	return handled, nil
+}
+
+// authorResolveReplies builds disclosure-footer'd replies for each "resolve"
+// decision when resolveEnabled is set. The caller gates entry on author mode
+// (payload.Mode == PRReviewModeAuthor && AuthorModeEnabled); resolveEnabled
+// further opts the resolve disposition into posting and resolving. Argue and
+// implement decisions are handled by other writeback paths and are ignored
+// here.
+func authorResolveReplies(decisions []workitem.PRReviewCommentDecision, author string, resolveEnabled bool) []workitem.PRReviewReply {
+	if !resolveEnabled {
+		return nil
+	}
+	var replies []workitem.PRReviewReply
+	for _, decision := range decisions {
+		if strings.TrimSpace(decision.Decision) != workitem.PRReviewCommentDecisionResolve {
+			continue
+		}
+		commentID := strings.TrimSpace(decision.CommentID)
+		if commentID == "" || strings.TrimSpace(decision.ReplyBody) == "" {
+			continue
+		}
+		replies = append(replies, workitem.PRReviewReply{
+			CommentID: commentID,
+			Body:      arcreview.WithDisclosureFooter(decision.ReplyBody, author),
+		})
+	}
+	return replies
 }
 
 // authorArgueReplies builds disclosure-footer'd replies for each "argue"
