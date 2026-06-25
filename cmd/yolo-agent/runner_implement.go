@@ -6,12 +6,65 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/executor"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
+
+// runnerImplementPreparePRCheckout is a seam over arcanum.PreparePRCheckout so
+// the author-mode (arcpr-author) branch can be tested without a real arc mount.
+var runnerImplementPreparePRCheckout = arcanum.PreparePRCheckout
+
+// runnerImplementPRLanding captures the per-PR checkout used when an implement
+// item targets an existing Arc PR (metadata origin == "arcpr-author"). When
+// disabled, the handler uses the normal materialized workspace + task branch.
+type runnerImplementPRLanding struct {
+	enabled   bool
+	prID      string
+	mountPath string
+	cleanupFn func() error
+}
+
+func (l runnerImplementPRLanding) cleanup() {
+	if l.cleanupFn != nil {
+		_ = l.cleanupFn()
+	}
+}
+
+// resolveRunnerImplementPRLanding prepares a per-PR checkout for author-mode
+// implement items so their fixes land on the existing PR branch (via
+// push_existing_pr) instead of creating a new task branch off main.
+func resolveRunnerImplementPRLanding(payload workitem.ImplementPayload, itemID string) (runnerImplementPRLanding, error) {
+	none := runnerImplementPRLanding{}
+	meta := payload.PromptContext.Metadata
+	if strings.TrimSpace(meta["origin"]) != "arcpr-author" {
+		return none, nil
+	}
+	prID := strings.TrimSpace(meta["arc_pr_id"])
+	if prID == "" {
+		return none, fmt.Errorf("arcpr-author implement item %q missing arc_pr_id metadata", itemID)
+	}
+	checkout, err := runnerImplementPreparePRCheckout(prID)
+	if err != nil {
+		return none, fmt.Errorf("prepare arc PR checkout for %q: %w", prID, err)
+	}
+	mountPath := strings.TrimSpace(checkout.MountPath)
+	if mountPath == "" {
+		if checkout.Cleanup != nil {
+			_ = checkout.Cleanup()
+		}
+		return none, fmt.Errorf("arc PR checkout for %q returned empty mount path", prID)
+	}
+	return runnerImplementPRLanding{
+		enabled:   true,
+		prID:      prID,
+		mountPath: mountPath,
+		cleanupFn: checkout.Cleanup,
+	}, nil
+}
 
 type runnerImplementExecutor struct {
 	Runner  contracts.AgentRunner
@@ -43,10 +96,29 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			return workqueue.Result{}, fmt.Errorf("implement runner for preset %q is nil", item.Preset)
 		}
 
+		prLanding, err := resolveRunnerImplementPRLanding(payload, item.ID)
+		if err != nil {
+			return workqueue.Result{}, err
+		}
+		defer prLanding.cleanup()
+
+		repoRoot := strings.TrimSpace(workspace.Path)
+		landingMode := ""
+		mergeOnSuccess := runnerImplementShouldLand(resolved.Landing)
+		prIDForLanding := ""
+		if prLanding.enabled {
+			// Author-mode implement items land on the existing PR branch via a
+			// per-PR checkout + push_existing_pr, not a task branch off main.
+			repoRoot = prLanding.mountPath
+			landingMode = executor.LandingModePushExistingPR
+			mergeOnSuccess = true
+			prIDForLanding = prLanding.prID
+		}
+
 		exec := &executor.Executor{
 			Runner:            resolved.Runner,
 			Events:            resolved.Events,
-			RepoRoot:          strings.TrimSpace(workspace.Path),
+			RepoRoot:          repoRoot,
 			VCS:               workspace.VCS,
 			ParentID:          strings.TrimSpace(payload.PromptContext.ParentID),
 			Backend:           resolved.Agent.Backend,
@@ -56,7 +128,9 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			WatchdogInterval:  resolved.Agent.WatchdogInterval,
 			MaxRetries:        runnerImplementMaxRetries(item),
 			RequireReview:     true,
-			MergeOnSuccess:    runnerImplementShouldLand(resolved.Landing),
+			MergeOnSuccess:    mergeOnSuccess,
+			LandingMode:       landingMode,
+			PRIDForLanding:    prIDForLanding,
 			WorkerID:          strings.TrimSpace(item.ClaimedBy),
 			Priority:          item.Priority,
 			QualityGateTools:  nil,

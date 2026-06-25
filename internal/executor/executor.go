@@ -154,16 +154,28 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 	taskBranch := ""
 	taskVCS := e.vcsForRepo(repoRoot)
 	if taskVCS != nil {
-		if err := taskVCS.EnsureMain(ctx); err != nil {
-			return workitem.ImplementResult{}, err
-		}
-		branch, err := taskVCS.CreateTaskBranch(ctx, task.ID)
-		if err != nil {
-			return workitem.ImplementResult{}, err
-		}
-		taskBranch = branch
-		if err := taskVCS.Checkout(ctx, branch); err != nil {
-			return workitem.ImplementResult{}, err
+		if strings.TrimSpace(e.LandingMode) == LandingModePushExistingPR {
+			// PR-branch landing: the workspace is a per-PR checkout that already
+			// has the PR branch current. Preserve it — do NOT EnsureMain or
+			// CreateTaskBranch (which would branch off main) — and resolve the
+			// current branch name so the landing guard admits the item.
+			branch, err := taskVCS.CheckoutPRBranch(ctx, strings.TrimSpace(e.PRIDForLanding))
+			if err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			taskBranch = strings.TrimSpace(branch)
+		} else {
+			if err := taskVCS.EnsureMain(ctx); err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			branch, err := taskVCS.CreateTaskBranch(ctx, task.ID)
+			if err != nil {
+				return workitem.ImplementResult{}, err
+			}
+			taskBranch = branch
+			if err := taskVCS.Checkout(ctx, branch); err != nil {
+				return workitem.ImplementResult{}, err
+			}
 		}
 	}
 

@@ -264,8 +264,14 @@ func (v *landingFakeVCS) PushMain(context.Context) error {
 	return nil
 }
 
-func (v *landingFakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
-	return "", nil
+func (v *landingFakeVCS) CheckoutPRBranch(_ context.Context, prID string) (string, error) {
+	v.calls = append(v.calls, "checkout_pr_branch:"+prID)
+	// A real arc PR checkout has the PR branch current; return a non-empty
+	// branch so the executor's landing guard admits push_existing_pr items.
+	if strings.TrimSpace(prID) == "" {
+		return "pr-branch", nil
+	}
+	return "pr-" + prID, nil
 }
 
 func (v *landingFakeVCS) PushPRBranch(context.Context, string) error {

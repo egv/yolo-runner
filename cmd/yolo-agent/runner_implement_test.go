@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
@@ -224,8 +225,11 @@ func (f *runnerImplementFakeAgent) Run(_ context.Context, request contracts.Runn
 }
 
 type runnerImplementFakeVCS struct {
-	ensureMainCalled bool
-	checkedOut       string
+	ensureMainCalled       bool
+	checkedOut             string
+	createTaskBranchCalled bool
+	checkoutPRBranchPR     string
+	pushPRBranchPR         string
 }
 
 func (v *runnerImplementFakeVCS) EnsureMain(context.Context) error {
@@ -234,6 +238,7 @@ func (v *runnerImplementFakeVCS) EnsureMain(context.Context) error {
 }
 
 func (v *runnerImplementFakeVCS) CreateTaskBranch(_ context.Context, taskID string) (string, error) {
+	v.createTaskBranchCalled = true
 	return "task/" + taskID, nil
 }
 
@@ -258,11 +263,16 @@ func (v *runnerImplementFakeVCS) PushMain(context.Context) error {
 	return nil
 }
 
-func (v *runnerImplementFakeVCS) CheckoutPRBranch(context.Context, string) (string, error) {
-	return "", nil
+func (v *runnerImplementFakeVCS) CheckoutPRBranch(_ context.Context, prID string) (string, error) {
+	v.checkoutPRBranchPR = prID
+	if strings.TrimSpace(prID) == "" {
+		return "pr-branch", nil
+	}
+	return "pr-" + prID, nil
 }
 
-func (v *runnerImplementFakeVCS) PushPRBranch(context.Context, string) error {
+func (v *runnerImplementFakeVCS) PushPRBranch(_ context.Context, prID string) error {
+	v.pushPRBranchPR = prID
 	return nil
 }
 
@@ -286,5 +296,179 @@ func TestRunnerImplementHandlerRejectsNonIsolatedWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "isolated") {
 		t.Fatalf("error should explain the isolation requirement, got: %v", err)
+	}
+}
+
+func TestResolveRunnerImplementPRLanding(t *testing.T) {
+	t.Run("non-author is disabled", func(t *testing.T) {
+		got, err := resolveRunnerImplementPRLanding(workitem.ImplementPayload{
+			PromptContext: workitem.ImplementPromptContext{Metadata: map[string]string{"origin": "startrek"}},
+		}, "item-1")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if got.enabled {
+			t.Fatal("non-author item must not enable PR landing")
+		}
+	})
+
+	t.Run("author without arc_pr_id errors", func(t *testing.T) {
+		if _, err := resolveRunnerImplementPRLanding(workitem.ImplementPayload{
+			PromptContext: workitem.ImplementPromptContext{Metadata: map[string]string{"origin": "arcpr-author"}},
+		}, "item-1"); err == nil {
+			t.Fatal("expected error for arcpr-author item missing arc_pr_id")
+		}
+	})
+
+	t.Run("author uses seam checkout and cleans up", func(t *testing.T) {
+		prev := runnerImplementPreparePRCheckout
+		t.Cleanup(func() { runnerImplementPreparePRCheckout = prev })
+		cleanupCalled := false
+		runnerImplementPreparePRCheckout = func(prID string) (*arcanum.PRCheckout, error) {
+			if prID != "123" {
+				t.Fatalf("seam prID = %q, want 123", prID)
+			}
+			return &arcanum.PRCheckout{MountPath: "/tmp/pr-mount", Cleanup: func() error { cleanupCalled = true; return nil }}, nil
+		}
+		got, err := resolveRunnerImplementPRLanding(workitem.ImplementPayload{
+			PromptContext: workitem.ImplementPromptContext{Metadata: map[string]string{"origin": "arcpr-author", "arc_pr_id": "123"}},
+		}, "item-1")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !got.enabled || got.prID != "123" || got.mountPath != "/tmp/pr-mount" {
+			t.Fatalf("landing = %+v", got)
+		}
+		got.cleanup()
+		if !cleanupCalled {
+			t.Fatal("checkout Cleanup must be wired through")
+		}
+	})
+}
+
+func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
+	// Override PreparePRCheckout so author-mode items use an in-process mount
+	// path instead of a real arc mount.
+	prMount := t.TempDir()
+	prev := runnerImplementPreparePRCheckout
+	t.Cleanup(func() { runnerImplementPreparePRCheckout = prev })
+	runnerImplementPreparePRCheckout = func(string) (*arcanum.PRCheckout, error) {
+		return &arcanum.PRCheckout{MountPath: prMount, Cleanup: func() error { return nil }}, nil
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	payload := marshalRunnerImplementPayload(t, workitem.ImplementPayload{
+		TaskID:      "PR-999-fix",
+		Title:       "Fix PR comment",
+		Description: "Author-mode fix spawned from a PR comment.",
+		PromptContext: workitem.ImplementPromptContext{
+			Prompt:   "Apply the reviewer's valid suggestion.",
+			ParentID: "yolo-g8e",
+			Metadata: map[string]string{"origin": "arcpr-author", "arc_pr_id": "PR-999"},
+		},
+		BaseBranch: "main",
+	})
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "arcpr",
+		SourceRef:      "pr:PR-999",
+		IdempotencyKey: "arcpr/PR-999/implement/PR-999-fix",
+		Preset:         "arcpr",
+		Payload:        payload,
+		MaxAttempts:    3,
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	runners, err := openRunnerRegistry(dbPath)
+	if err != nil {
+		t.Fatalf("openRunnerRegistry() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runners.Close(); err != nil {
+			t.Errorf("runner registry Close() error = %v", err)
+		}
+	})
+	if err := runners.Register("runner-arcpr-test", []string{"arcpr"}, 1); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	fakeRunner := &runnerImplementFakeAgent{results: []contracts.RunnerResult{
+		{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"commit_sha": "pr-fix-sha"}},
+		{Status: contracts.RunnerResultCompleted, ReviewReady: true, Artifacts: map[string]string{"review_verdict": "pass"}},
+	}}
+	fakeVCS := &runnerImplementFakeVCS{}
+	daemon := runnerDaemon{
+		store:   store,
+		runners: runners,
+		handlers: runnerKindRegistry{
+			workitem.KindImplement: newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+				return runnerImplementExecutor{
+					Runner: fakeRunner,
+					Agent: envpreset.ResolvedAgent{
+						Backend:          "fake",
+						Model:            "m",
+						RunnerTimeout:    3 * time.Second,
+						WatchdogTimeout:  7 * time.Second,
+						WatchdogInterval: time.Second,
+					},
+					Landing: envpreset.LandingTypeGitMerge,
+				}, nil
+			}),
+		},
+		environmentPresets: map[string]envpreset.Preset{
+			"arcpr": {
+				Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath},
+				Landing:   envpreset.Landing{Type: envpreset.LandingTypeGitMerge},
+			},
+		},
+		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
+			return envpreset.Workspace{Path: prMount, VCS: fakeVCS, Cleanup: func() error { return nil }}, nil
+		},
+		cfg: runnerDaemonCommandConfig{
+			presets:           []string{"arcpr"},
+			runnerID:          "runner-arcpr-test",
+			once:              true,
+			pollInterval:      time.Millisecond,
+			heartbeatInterval: time.Hour,
+			leaseTTL:          time.Minute,
+		},
+	}
+
+	if err := daemon.Run(context.Background()); err != nil {
+		t.Fatalf("daemon Run() error = %v", err)
+	}
+
+	results, err := store.ListUnconsumedResults("arcpr")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("ListUnconsumedResults len = %d, want 1", len(results))
+	}
+	if results[0].Result.Status != workqueue.ResultStatusCompleted {
+		t.Fatalf("result status = %q, want completed", results[0].Result.Status)
+	}
+
+	// Author-mode implement items must reuse the existing PR branch (via
+	// CheckoutPRBranch) and land by force-pushing it — never CreateTaskBranch.
+	if fakeVCS.createTaskBranchCalled {
+		t.Fatal("CreateTaskBranch must NOT be called for arcpr-author implement items")
+	}
+	if fakeVCS.checkoutPRBranchPR != "PR-999" {
+		t.Fatalf("CheckoutPRBranch pr = %q, want PR-999", fakeVCS.checkoutPRBranchPR)
+	}
+	if fakeVCS.pushPRBranchPR != "PR-999" {
+		t.Fatalf("PushPRBranch pr = %q, want PR-999", fakeVCS.pushPRBranchPR)
 	}
 }
