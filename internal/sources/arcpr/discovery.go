@@ -60,6 +60,31 @@ type Source struct {
 	ReplyApplier        arcreview.PRReviewCycleReplyApplier
 	ReviewApplier       arcreview.PRReviewCycleReviewApplier
 	ShipGate            arcreview.PRReviewCycleShipGate
+	// Queue is the work queue the orchestration layer fans author-mode work
+	// into. It is optional at the Source/discovery layer (wired by cmd) and
+	// discovery must never assume it is present.
+	Queue *workqueue.Store
+	// Author-mode gates default to true (enforced by NewSource). Each gate opts
+	// the author-mode triage into one behavior; clearing one disables only that
+	// behavior while leaving the rest on.
+	AuthorModeEnabled      bool
+	AutoArgueEnabled       bool
+	ResolveEnabled         bool
+	ImplementFanOutEnabled bool
+}
+
+// NewSource returns an arcpr Source with the author-mode behaviors enabled by
+// default. The gates are plain bools whose zero value is false, so NewSource is
+// the single place that enforces the default-true intent; callers then assign
+// the connection-scoped fields (State, Lister, APIClient, Queue, ...) on the
+// returned value. Discovery is Queue-nil-safe.
+func NewSource() *Source {
+	return &Source{
+		AuthorModeEnabled:      true,
+		AutoArgueEnabled:       true,
+		ResolveEnabled:         true,
+		ImplementFanOutEnabled: true,
+	}
 }
 
 type discoveredPR struct {

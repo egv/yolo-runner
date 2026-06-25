@@ -176,21 +176,23 @@ func buildSourceArcPRRunBundle(ctx context.Context, cfg sourceArcPRCommandConfig
 		return sourceArcPRRunBundle{}, fmt.Errorf("build Arcanum API client: %w", err)
 	}
 
-	source := &arcpr.Source{
-		SourceName:     sourceArcPRSourceName(cfg.profile),
-		Preset:         cfg.profile,
-		Reviewer:       reviewWatchConfig.Reviewer,
-		ObjectsBaseDir: reviewWatchConfig.ObjectsBaseDir,
-		MountsBaseDir:  reviewWatchConfig.MountsBaseDir,
-		AllowShip:      reviewWatchConfig.AllowShip,
-		State:          state,
-		Lister:         sourceArcPRReviewLister(),
-		StateFetcher:   sourceArcPRStateFetcher,
-		APIClient:      apiClient,
-		ReplyApplier:   sourceArcPRReplyApplier,
-		ReviewApplier:  sourceArcPRReviewApplier,
-		ShipGate:       sourceArcPRShipGate,
-	}
+	// NewSource seeds the author-mode gates (default true); cmd then wires the
+	// connection-scoped fields plus the orchestration Queue handle.
+	source := arcpr.NewSource()
+	source.SourceName = sourceArcPRSourceName(cfg.profile)
+	source.Preset = cfg.profile
+	source.Reviewer = reviewWatchConfig.Reviewer
+	source.ObjectsBaseDir = reviewWatchConfig.ObjectsBaseDir
+	source.MountsBaseDir = reviewWatchConfig.MountsBaseDir
+	source.AllowShip = reviewWatchConfig.AllowShip
+	source.State = state
+	source.Lister = sourceArcPRReviewLister()
+	source.StateFetcher = sourceArcPRStateFetcher
+	source.APIClient = apiClient
+	source.ReplyApplier = sourceArcPRReplyApplier
+	source.ReviewApplier = sourceArcPRReviewApplier
+	source.ShipGate = sourceArcPRShipGate
+	source.Queue = store
 
 	return sourceArcPRRunBundle{
 		Source: source,
