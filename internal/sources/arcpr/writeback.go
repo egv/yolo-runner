@@ -20,7 +20,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if item.Kind != workitem.KindPRReview && item.Kind != workitem.KindResolvePRComment {
+	if item.Kind != workitem.KindPRReview && item.Kind != workitem.KindResolvePRComment && item.Kind != workitem.KindImplement {
 		return nil, nil
 	}
 	if s == nil {
@@ -35,6 +35,15 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 
 	if item.Kind == workitem.KindResolvePRComment {
 		return s.handleResolvePRCommentResult(ctx, item)
+	}
+
+	// An author-mode implement item (origin arcpr-author) resolves its review
+	// comment only after it lands. finalizeCommentResolveIfComplete is a no-op
+	// for any other implement item, so routing all KindImplement results through
+	// it is safe; blocked/failed results were screened out by the completed-status
+	// guard above, so a comment is never resolved against a failed implementation.
+	if item.Kind == workitem.KindImplement {
+		return s.finalizeCommentResolveIfComplete(ctx, item, result)
 	}
 
 	payload, err := workitem.DecodePRReviewPayload(item.Payload)
