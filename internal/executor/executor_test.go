@@ -144,6 +144,51 @@ func TestExecutorExecuteRunsImplementPipeline(t *testing.T) {
 			t.Fatalf("expected landing lock/unlock once, got lock=%d unlock=%d", lock.lockCalls, lock.unlockCalls)
 		}
 	})
+
+	t.Run("push existing pr", func(t *testing.T) {
+		runner := &executorFakeRunner{results: []contracts.RunnerResult{
+			{Status: contracts.RunnerResultCompleted},
+		}}
+		vcs := &executorPushExistingPRVCS{}
+		lock := &landingRecordingLock{}
+		exec := &Executor{
+			Runner:         runner,
+			RepoRoot:       t.TempDir(),
+			ParentID:       "root",
+			Backend:        "codex",
+			Model:          "gpt-test",
+			MergeOnSuccess: true,
+			LandingMode:    LandingModePushExistingPR,
+			PRIDForLanding: "777",
+			VCSFactory: func(string) contracts.VCS {
+				return vcs
+			},
+			LandingLock: lock,
+		}
+
+		result, err := exec.Execute(context.Background(), executorPayload("t-4"))
+		if err != nil {
+			t.Fatalf("Execute failed: %v", err)
+		}
+		if result.Status != string(contracts.RunnerResultCompleted) {
+			t.Fatalf("expected completed result, got %#v", result)
+		}
+		if len(vcs.pushPRBranchCalls) != 1 || vcs.pushPRBranchCalls[0] != "777" {
+			t.Fatalf("expected one PushPRBranch call for pr 777, got %v", vcs.pushPRBranchCalls)
+		}
+		if vcs.createPRCalls != 0 {
+			t.Fatalf("expected no CreatePR call during push_existing_pr landing, got %d", vcs.createPRCalls)
+		}
+		if landingContainsCallPrefix(vcs.calls, "merge_to_main:") {
+			t.Fatalf("did not expect merge_to_main during push_existing_pr landing, got %v", vcs.calls)
+		}
+		if want := "https://a.yandex-team.ru/review/777"; result.PRURL != want {
+			t.Fatalf("expected existing PR url %q, got %q", want, result.PRURL)
+		}
+		if lock.lockCalls != 1 || lock.unlockCalls != 1 {
+			t.Fatalf("expected landing lock/unlock once, got lock=%d unlock=%d", lock.lockCalls, lock.unlockCalls)
+		}
+	})
 }
 
 func executorPayload(taskID string) workitem.ImplementPayload {
@@ -172,4 +217,20 @@ func (r *executorFakeRunner) Run(_ context.Context, request contracts.RunnerRequ
 	result := r.results[0]
 	r.results = r.results[1:]
 	return result, nil
+}
+
+type executorPushExistingPRVCS struct {
+	landingFakeVCS
+	pushPRBranchCalls []string
+	createPRCalls     int
+}
+
+func (v *executorPushExistingPRVCS) PushPRBranch(_ context.Context, prID string) error {
+	v.pushPRBranchCalls = append(v.pushPRBranchCalls, prID)
+	return nil
+}
+
+func (v *executorPushExistingPRVCS) CreatePR(context.Context, string, string) (string, error) {
+	v.createPRCalls++
+	return "https://example.test/pr/new", nil
 }

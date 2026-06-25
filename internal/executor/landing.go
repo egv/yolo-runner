@@ -12,6 +12,14 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/scheduler"
 )
 
+// LandingMode controls how the landing section publishes changes.
+const (
+	// LandingModeNewPR creates a new pull request (default landing behavior).
+	LandingModeNewPR = "new_pr"
+	// LandingModePushExistingPR force-pushes to an existing PR branch instead of creating a new PR.
+	LandingModePushExistingPR = "push_existing_pr"
+)
+
 type LandingLock interface {
 	Lock()
 	Unlock()
@@ -46,6 +54,8 @@ type LandingOptions struct {
 	HeartbeatInterval    time.Duration
 	NoOutputWarningAfter time.Duration
 	Runtime              TaskRuntimeConfig
+	LandingMode          string
+	PRIDForLanding       string
 }
 
 type LandingEventContext struct {
@@ -129,6 +139,27 @@ func RunLanding(ctx context.Context, task contracts.Task, deps LandingDependenci
 			if autoCommitSHA != "" {
 				_ = emitLandingEvent(ctx, deps.Events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: eventContext.WorkerID, ClonePath: taskRepoRoot, QueuePos: eventContext.QueuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, ""), Timestamp: time.Now().UTC()})
 			}
+		}
+
+		if strings.TrimSpace(options.LandingMode) == LandingModePushExistingPR {
+			prID := strings.TrimSpace(options.PRIDForLanding)
+			if err := taskVCS.PushPRBranch(ctx, prID); err != nil {
+				landingReason = err.Error()
+				_ = landingState.Apply(scheduler.LandingEventFailedPermanent)
+				_ = emitLandingEvent(ctx, deps.Events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: eventContext.WorkerID, ClonePath: taskRepoRoot, QueuePos: eventContext.QueuePos, Metadata: buildLandingMetadata(string(landingState.State()), attempt, landingReason), Timestamp: time.Now().UTC()})
+				landingBlocked = true
+				break
+			}
+			prURL := existingArcPRURL(prID)
+			_ = landingState.Apply(scheduler.LandingEventSucceeded)
+			_ = emitLandingEvent(ctx, deps.Events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: eventContext.WorkerID, ClonePath: taskRepoRoot, QueuePos: eventContext.QueuePos, Metadata: buildLandingMetadata(string(landingState.State()), 0, ""), Timestamp: time.Now().UTC()})
+			emitMergeQueueEvent(contracts.EventTypeMergeLanded, appendLandingDecisionMetadata(map[string]string{
+				"landing_status":  string(landingState.State()),
+				"landing_attempt": fmt.Sprintf("%d", attempt),
+				"pr_url":          prURL,
+				"landing_mode":    LandingModePushExistingPR,
+			}, "landed", landingReason))
+			break
 		}
 
 		if isDeferredPRLandingVCS(taskVCS) {
@@ -253,6 +284,19 @@ func isDeferredPRLandingVCS(vcs contracts.VCS) bool {
 	}
 	_, ok := vcs.(landingPullRequestCreator)
 	return ok
+}
+
+// arcPRReviewURLPrefix is the Arcanum web base used to build an existing
+// PR URL from its id.
+const arcPRReviewURLPrefix = "https://a.yandex-team.ru/review/"
+
+// existingArcPRURL builds the Arcanum review URL for an existing PR id.
+func existingArcPRURL(prID string) string {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return ""
+	}
+	return arcPRReviewURLPrefix + prID
 }
 
 func runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task, deps LandingDependencies, options LandingOptions, eventContext LandingEventContext, mergeFailureReason string) contracts.RunnerResult {
