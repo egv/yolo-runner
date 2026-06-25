@@ -285,6 +285,20 @@ func (s *Source) reviewApplier() (arcreview.PRReviewCycleReviewApplier, error) {
 	}, nil
 }
 
+func (s *Source) resolveApplier() (arcreview.PRReviewCycleResolveApplier, error) {
+	if s.ResolveApplier != nil {
+		return s.ResolveApplier, nil
+	}
+	apiClient, err := s.arcanumAPIClient()
+	if err != nil {
+		return nil, err
+	}
+	return arcreview.ResolveApplier{
+		Client: arcanum.NewResolveArcanumClient(apiClient),
+		Store:  s.State,
+	}, nil
+}
+
 func (s *Source) shipGate(workspace string) (arcreview.PRReviewCycleShipGate, error) {
 	if s.ShipGate != nil {
 		return s.ShipGate, nil
