@@ -2,6 +2,8 @@ package arcpr
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +72,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	replies := resultPayload.Replies
 	var arguedCommentIDs []string
 	var resolveReplies []workitem.PRReviewReply
+	var implementSubmissions []workqueue.Submission
 	if payload.Mode == workitem.PRReviewModeAuthor && s.AuthorModeEnabled {
 		argueReplies := authorArgueReplies(resultPayload.CommentDecisions, state.Details.Author, s.AutoArgueEnabled)
 		for _, reply := range argueReplies {
@@ -77,6 +80,10 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 			replies = append(replies, reply)
 		}
 		resolveReplies = authorResolveReplies(resultPayload.CommentDecisions, state.Details.Author, s.ResolveEnabled)
+		implementSubmissions, err = s.enqueueAuthorImplementSubmissions(ctx, item, prID, payload, state, resultPayload)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	repliedCommentIDs := resultReplyCommentIDs(replies)
@@ -134,7 +141,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 		}
 	}
 
-	return nil, nil
+	return implementSubmissions, nil
 }
 
 // handleResolvePRCommentResult consumes a resolve-pr-comment result: it decodes
@@ -394,6 +401,145 @@ func authorArgueReplies(decisions []workitem.PRReviewCommentDecision, author str
 		})
 	}
 	return replies
+}
+
+// enqueueAuthorImplementSubmissions fans out one implement work item per
+// author-mode "implement" decision. Each item carries the PR, comment, branch,
+// and author metadata the runner needs to land the fix on the PR branch (task
+// 13); the comment -> implement-item mapping is recorded (task 9) so the comment
+// is resolved only after the item lands (task 11). The caller gates entry on
+// author mode (payload.Mode == PRReviewModeAuthor && AuthorModeEnabled);
+// implementFanOut further opts the implement disposition into fanning out. The
+// comment is NOT resolved here - resolution happens after the implement item
+// lands.
+func (s *Source) enqueueAuthorImplementSubmissions(ctx context.Context, item workitem.Item, prID string, payload workitem.PRReviewPayload, state arcreview.PRRuntimeState, result workitem.PRReviewResult) ([]workqueue.Submission, error) {
+	if !s.ImplementFanOutEnabled {
+		return nil, nil
+	}
+	decisions := authorImplementDecisions(result.CommentDecisions)
+	if len(decisions) == 0 {
+		return nil, nil
+	}
+	if s.Queue == nil {
+		return nil, errors.New("arcpr source: work queue is required to fan out author-mode implement tasks")
+	}
+	branch := strings.TrimSpace(state.Details.Branch)
+	author := strings.TrimSpace(state.Details.Author)
+	revHash := revisionHash(payload.Revision)
+	submissions := make([]workqueue.Submission, 0, len(decisions))
+	for _, decision := range decisions {
+		commentID := strings.TrimSpace(decision.CommentID)
+		if commentID == "" {
+			return nil, errors.New("arc PR implement decision comment ID is required")
+		}
+		submission, err := authorImplementSubmission(s.Name(), prID, commentID, revHash, item, decision, branch, author)
+		if err != nil {
+			return nil, err
+		}
+		queued, err := s.Queue.EnqueueWithDeps(submission, nil)
+		if err != nil {
+			return nil, fmt.Errorf("enqueue arc PR implement item for comment %q: %w", commentID, err)
+		}
+		if err := s.RecordCommentImplementItem(ctx, CommentImplementItemRecord{
+			PRID:            prID,
+			CommentID:       commentID,
+			ImplementItemID: queued.ID,
+			IdempotencyKey:  submission.IdempotencyKey,
+			ReviewItemID:    item.ID,
+		}); err != nil {
+			return nil, err
+		}
+		submissions = append(submissions, submission)
+	}
+	return submissions, nil
+}
+
+// authorImplementSubmission builds the implement work item submission for a
+// single "implement" decision. Title and Description come from the decision
+// scope; the prompt metadata carries the Arc PR context the runner needs to land
+// the fix on the PR branch.
+func authorImplementSubmission(sourceName string, prID string, commentID string, revHash string, item workitem.Item, decision workitem.PRReviewCommentDecision, branch string, author string) (workqueue.Submission, error) {
+	title, description := authorImplementScopeText(decision.Scope, commentID)
+	payload, err := json.Marshal(workitem.ImplementPayload{
+		Title:       title,
+		Description: description,
+		PromptContext: workitem.ImplementPromptContext{
+			Metadata: authorImplementMetadata(prID, commentID, branch, author),
+		},
+	})
+	if err != nil {
+		return workqueue.Submission{}, fmt.Errorf("encode arc PR implement submission for comment %q: %w", commentID, err)
+	}
+	return workqueue.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         sourceName,
+		SourceRef:      "pr:" + prID,
+		IdempotencyKey: "arcpr/" + prID + "/implement/" + commentID + "/" + revHash,
+		Preset:         strings.TrimSpace(item.Preset),
+		Priority:       item.Priority,
+		Payload:        payload,
+		MaxAttempts:    item.MaxAttempts,
+	}, nil
+}
+
+// authorImplementDecisions selects the "implement" dispositions with a usable
+// comment ID. Resolve and argue decisions are handled by other writeback paths
+// and are ignored here.
+func authorImplementDecisions(decisions []workitem.PRReviewCommentDecision) []workitem.PRReviewCommentDecision {
+	var implement []workitem.PRReviewCommentDecision
+	for _, decision := range decisions {
+		if strings.TrimSpace(decision.Decision) != workitem.PRReviewCommentDecisionImplement {
+			continue
+		}
+		if strings.TrimSpace(decision.CommentID) == "" {
+			continue
+		}
+		implement = append(implement, decision)
+	}
+	return implement
+}
+
+// authorImplementScopeText renders the implement item's Title/Description from a
+// decision scope, with a comment-derived fallback title when the scope omits one.
+func authorImplementScopeText(scope *workitem.PRReviewImplementScope, commentID string) (string, string) {
+	var title, instructions string
+	if scope != nil {
+		title = strings.TrimSpace(scope.Title)
+		instructions = strings.TrimSpace(scope.Instructions)
+	}
+	if title == "" {
+		title = "Address review comment " + commentID
+	}
+	return title, instructions
+}
+
+// authorImplementMetadata carries the Arc PR context the runner needs to land the
+// fix on the PR branch and attribute it to the PR author. origin marks the item
+// as an author-mode fan-out so downstream handling knows its lifecycle.
+func authorImplementMetadata(prID string, commentID string, branch string, author string) map[string]string {
+	metadata := map[string]string{
+		"arc_pr_id":      prID,
+		"arc_comment_id": commentID,
+		"origin":         "arcpr-author",
+	}
+	if branch != "" {
+		metadata["arc_pr_branch"] = branch
+	}
+	if author != "" {
+		metadata["arc_pr_author"] = author
+	}
+	return metadata
+}
+
+// revisionHash returns a stable, slash-free digest of a PR revision for use in
+// implement idempotency keys.
+func revisionHash(revision string) string {
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(revision))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func (s *Source) applyPRReview(ctx context.Context, state arcreview.PRRuntimeState, prID string, revision string, result workitem.PRReviewResult) error {
