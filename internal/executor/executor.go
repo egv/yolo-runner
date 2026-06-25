@@ -51,6 +51,8 @@ type Executor struct {
 	AllowLowQuality      bool
 	RequireReview        bool
 	MergeOnSuccess       bool
+	LandingMode          string
+	PRIDForLanding       string
 
 	WorkerID string
 	QueuePos int
@@ -305,6 +307,8 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 					HeartbeatInterval:    e.HeartbeatInterval,
 					NoOutputWarningAfter: e.NoOutputWarningAfter,
 					Runtime:              runtime,
+					LandingMode:          e.LandingMode,
+					PRIDForLanding:       e.PRIDForLanding,
 				}, LandingEventContext{
 					TaskBranch: taskBranch,
 					WorkerID:   workerID,
