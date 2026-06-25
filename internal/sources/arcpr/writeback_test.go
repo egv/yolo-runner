@@ -380,6 +380,178 @@ esac
 	}
 }
 
+func TestSourceHandleResultPostsAuthorArgueRepliesWithDisclosureFooter(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorArgueTestSource(t, client, "alice", true, true)
+	state := src.State
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionArgue, ReplyBody: "This behavior is intentional."},
+			},
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+
+	wantReplies := []arcPRWritebackReply{
+		{prID: "42", commentID: "comment-1", body: arcreview.WithDisclosureFooter("This behavior is intentional.", "alice")},
+	}
+	if !reflect.DeepEqual(client.replies, wantReplies) {
+		t.Fatalf("posted replies mismatch:\n got: %#v\nwant: %#v", client.replies, wantReplies)
+	}
+
+	answered, err := state.ListAnsweredCommentIDs(ctx, "42")
+	if err != nil {
+		t.Fatalf("ListAnsweredCommentIDs() error = %v", err)
+	}
+	if !reflect.DeepEqual(answered, []string{"comment-1"}) {
+		t.Fatalf("answered comments = %#v, want [comment-1]", answered)
+	}
+
+	thread, err := state.GetThreadState(ctx, "42", "comment-1")
+	if err != nil {
+		t.Fatalf("GetThreadState() error = %v", err)
+	}
+	if thread.AnsweredAt.IsZero() {
+		t.Fatalf("thread not marked answered: %#v", thread)
+	}
+	if thread.LastSeenReplyAt.IsZero() {
+		t.Fatalf("thread watermark not recorded: %#v", thread)
+	}
+	if len(client.summaries) != 0 || len(client.ships) != 0 {
+		t.Fatalf("author argue posted reviews/ships, want none: summaries=%#v ships=%#v", client.summaries, client.ships)
+	}
+}
+
+func TestSourceHandleResultSkipsAuthorArgueRepliesWhenAutoArgueDisabled(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorArgueTestSource(t, client, "alice", true, false)
+	state := src.State
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionArgue, ReplyBody: "This behavior is intentional."},
+			},
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(client.replies) != 0 {
+		t.Fatalf("posted replies when AutoArgue disabled: %#v", client.replies)
+	}
+	answered, err := state.ListAnsweredCommentIDs(ctx, "42")
+	if err != nil {
+		t.Fatalf("ListAnsweredCommentIDs() error = %v", err)
+	}
+	if len(answered) != 0 {
+		t.Fatalf("answered comments when AutoArgue disabled: %#v", answered)
+	}
+	thread, err := state.GetThreadState(ctx, "42", "comment-1")
+	if err != nil {
+		t.Fatalf("GetThreadState() error = %v", err)
+	}
+	if !thread.AnsweredAt.IsZero() {
+		t.Fatalf("thread marked answered when AutoArgue disabled: %#v", thread)
+	}
+}
+
+func TestSourceHandleResultSkipsAuthorArgueRepliesWhenAuthorModeDisabled(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorArgueTestSource(t, client, "alice", false, true)
+	state := src.State
+
+	item := workitem.Item{
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionArgue, ReplyBody: "This behavior is intentional."},
+			},
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(client.replies) != 0 {
+		t.Fatalf("posted replies when AuthorMode disabled: %#v", client.replies)
+	}
+	thread, err := state.GetThreadState(ctx, "42", "comment-1")
+	if err != nil {
+		t.Fatalf("GetThreadState() error = %v", err)
+	}
+	if !thread.AnsweredAt.IsZero() {
+		t.Fatalf("thread marked answered when AuthorMode disabled: %#v", thread)
+	}
+}
+
+// arcPRAuthorArgueTestSource builds a Source wired to in-memory fakes for an
+// author-mode argue scenario. The fetched PR carries a single unanswered comment
+// "comment-1" authored against the given PR author.
+func arcPRAuthorArgueTestSource(t *testing.T, client *fakeArcPRWritebackClient, author string, authorMode, autoArgue bool) *Source {
+	t.Helper()
+	state := openDiscoveryTestState(t)
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7", Author: author},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "This looks wrong.", Answered: false},
+			},
+		},
+	}
+	return &Source{
+		SourceName:        "arcpr-adapta",
+		AuthorModeEnabled: authorMode,
+		AutoArgueEnabled:  autoArgue,
+		State:             state,
+		StateFetcher:      fetcher,
+		ReplyApplier: arcreview.ReplyApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+}
+
 func arcPRWritebackRuntimeState(commentsAnswered bool, checks []arcreview.PRCheck) arcreview.PRRuntimeState {
 	return arcreview.PRRuntimeState{
 		PRID:     "42",
