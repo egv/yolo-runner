@@ -595,6 +595,98 @@ func TestSourceHandleResultSkipsAuthorResolveWhenResolveDisabled(t *testing.T) {
 	}
 }
 
+func TestSourceHandleResultResolvesCommentForResolvePRCommentKind(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	client := &fakeArcPRWritebackClient{}
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7"},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "Please resolve this once the fix lands."},
+			},
+		},
+	}
+	src := &Source{
+		SourceName:   "arcpr-adapta",
+		State:        state,
+		StateFetcher: fetcher,
+		ResolveApplier: arcreview.ResolveApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindResolvePRComment,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.ResolvePRCommentPayload{
+			PRID:      "42",
+			CommentID: "comment-1",
+		}),
+	}
+	result := workqueue.Result{Status: workqueue.ResultStatusCompleted}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if !reflect.DeepEqual(client.resolved, []arcPRWritebackResolve{{prID: "42", commentID: "comment-1"}}) {
+		t.Fatalf("resolved comments mismatch:\n got: %#v\nwant [{prID:42 commentID:comment-1}]", client.resolved)
+	}
+	answered, err := state.ListAnsweredCommentIDs(ctx, "42")
+	if err != nil {
+		t.Fatalf("ListAnsweredCommentIDs() error = %v", err)
+	}
+	if !reflect.DeepEqual(answered, []string{"comment-1"}) {
+		t.Fatalf("answered comments = %#v, want [comment-1]", answered)
+	}
+	if len(client.replies) != 0 || len(client.summaries) != 0 || len(client.ships) != 0 {
+		t.Fatalf("resolve-pr-comment posted replies/summaries/ships, want none: replies=%#v summaries=%#v ships=%#v", client.replies, client.summaries, client.ships)
+	}
+}
+
+func TestSourceHandleResultIgnoresUnrelatedKindsForResolvePRComment(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	client := &fakeArcPRWritebackClient{}
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7"},
+			Comments: []arcreview.PRComment{
+				{ID: "comment-1", Body: "Please resolve this once the fix lands."},
+			},
+		},
+	}
+	src := &Source{
+		SourceName:   "arcpr-adapta",
+		State:        state,
+		StateFetcher: fetcher,
+		ResolveApplier: arcreview.ResolveApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindImplement,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.ResolvePRCommentPayload{
+			PRID:      "42",
+			CommentID: "comment-1",
+		}),
+	}
+	result := workqueue.Result{Status: workqueue.ResultStatusCompleted}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if len(client.resolved) != 0 {
+		t.Fatalf("unrelated kind resolved comments, want none: %#v", client.resolved)
+	}
+}
+
 // arcPRAuthorArgueTestSource builds a Source wired to in-memory fakes for an
 // author-mode argue scenario. The fetched PR carries a single unanswered comment
 // "comment-1" authored against the given PR author.

@@ -18,7 +18,7 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if item.Kind != workitem.KindPRReview {
+	if item.Kind != workitem.KindPRReview && item.Kind != workitem.KindResolvePRComment {
 		return nil, nil
 	}
 	if s == nil {
@@ -29,6 +29,10 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	}
 	if result.Status != "" && result.Status != workqueue.ResultStatusCompleted {
 		return nil, nil
+	}
+
+	if item.Kind == workitem.KindResolvePRComment {
+		return s.handleResolvePRCommentResult(ctx, item)
 	}
 
 	payload, err := workitem.DecodePRReviewPayload(item.Payload)
@@ -130,6 +134,51 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 		}
 	}
 
+	return nil, nil
+}
+
+// handleResolvePRCommentResult consumes a resolve-pr-comment result: it decodes
+// the payload, fetches writeback state for the PR, and resolves the single
+// comment via the resolve applier. Unlike author-mode resolve decisions, this
+// kind only resolves - the reply or implement task that addressed the comment
+// has already landed (or the comment is to be closed without a reply).
+func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem.Item) (submissions []workqueue.Submission, err error) {
+	payload, err := workitem.DecodeResolvePRCommentPayload(item.Payload)
+	if err != nil {
+		return nil, err
+	}
+	prID := fallbackText(payload.PRID, strings.TrimPrefix(strings.TrimSpace(item.SourceRef), "pr:"))
+	if prID == "" {
+		return nil, errors.New("arc PR ID is required")
+	}
+	state, _, cleanup, err := s.fetchWritebackState(ctx, prID)
+	if err != nil {
+		return nil, err
+	}
+	if cleanup != nil {
+		defer func() {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				if err != nil {
+					err = errors.Join(err, cleanupErr)
+					return
+				}
+				err = cleanupErr
+			}
+		}()
+	}
+	writebackState := stateWithWritebackIdentity(state, prID, "")
+
+	resolvePayload, err := json.Marshal(arcreview.ResolveResult{ResolvedCommentIDs: []string{payload.CommentID}})
+	if err != nil {
+		return nil, fmt.Errorf("marshal arc PR resolve result: %w", err)
+	}
+	applier, err := s.resolveApplier()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := applier.Apply(ctx, writebackState, resolvePayload); err != nil {
+		return nil, fmt.Errorf("apply arc PR resolve: %w", err)
+	}
 	return nil, nil
 }
 
