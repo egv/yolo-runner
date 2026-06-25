@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
@@ -62,13 +63,31 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 	gateStateBase := stateWithWritebackIdentity(state, prID, "")
 	writebackState := stateWithWritebackIdentity(state, prID, payload.Revision)
 
-	repliedCommentIDs := resultReplyCommentIDs(resultPayload.Replies)
-	if len(resultPayload.Replies) > 0 {
-		if err := s.applyPRReviewReplies(ctx, writebackState, resultPayload); err != nil {
+	replies := resultPayload.Replies
+	var arguedCommentIDs []string
+	if payload.Mode == workitem.PRReviewModeAuthor && s.AuthorModeEnabled {
+		argueReplies := authorArgueReplies(resultPayload.CommentDecisions, state.Details.Author, s.AutoArgueEnabled)
+		for _, reply := range argueReplies {
+			arguedCommentIDs = append(arguedCommentIDs, reply.CommentID)
+			replies = append(replies, reply)
+		}
+	}
+
+	repliedCommentIDs := resultReplyCommentIDs(replies)
+	if len(replies) > 0 {
+		if err := s.applyPRReviewReplies(ctx, writebackState, replies); err != nil {
 			return nil, fmt.Errorf("apply arc PR replies: %w", err)
 		}
 		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, repliedCommentIDs); err != nil {
 			return nil, err
+		}
+	}
+
+	// Author-mode argue replies close out their threads: mark them answered so a
+	// reviewer's genuinely new reply (not a self reply) re-surfaces the thread.
+	for _, commentID := range arguedCommentIDs {
+		if err := s.State.RecordThreadAnswered(ctx, prID, commentID, "", time.Now()); err != nil {
+			return nil, fmt.Errorf("record arc PR thread answered for %q: %w", commentID, err)
 		}
 	}
 
@@ -148,19 +167,45 @@ func (s *Source) writebackWorkspaces() []string {
 	return normalizeStrings(append([]string{s.WritebackWorkspace}, s.WritebackWorkspaces...))
 }
 
-func (s *Source) applyPRReviewReplies(ctx context.Context, state arcreview.PRRuntimeState, result workitem.PRReviewResult) error {
+func (s *Source) applyPRReviewReplies(ctx context.Context, state arcreview.PRRuntimeState, replies []workitem.PRReviewReply) error {
 	applier, err := s.replyApplier()
 	if err != nil {
 		return err
 	}
 	payload, err := json.Marshal(arcreview.ReplyResult{
-		Replies: reviewRepliesFromResult(result.Replies),
+		Replies: reviewRepliesFromResult(replies),
 	})
 	if err != nil {
 		return fmt.Errorf("marshal reply result: %w", err)
 	}
 	_, err = applier.Apply(ctx, state, payload)
 	return err
+}
+
+// authorArgueReplies builds disclosure-footer'd replies for each "argue"
+// decision when autoArgueEnabled is set. The caller gates entry on author mode
+// (payload.Mode == PRReviewModeAuthor && AuthorModeEnabled); autoArgueEnabled
+// further opts the argue disposition into posting. Resolve and implement
+// decisions are handled by other writeback paths and are ignored here.
+func authorArgueReplies(decisions []workitem.PRReviewCommentDecision, author string, autoArgueEnabled bool) []workitem.PRReviewReply {
+	if !autoArgueEnabled {
+		return nil
+	}
+	var replies []workitem.PRReviewReply
+	for _, decision := range decisions {
+		if strings.TrimSpace(decision.Decision) != workitem.PRReviewCommentDecisionArgue {
+			continue
+		}
+		commentID := strings.TrimSpace(decision.CommentID)
+		if commentID == "" || strings.TrimSpace(decision.ReplyBody) == "" {
+			continue
+		}
+		replies = append(replies, workitem.PRReviewReply{
+			CommentID: commentID,
+			Body:      arcreview.WithDisclosureFooter(decision.ReplyBody, author),
+		})
+	}
+	return replies
 }
 
 func (s *Source) applyPRReview(ctx context.Context, state arcreview.PRRuntimeState, prID string, revision string, result workitem.PRReviewResult) error {
