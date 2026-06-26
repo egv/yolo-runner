@@ -69,8 +69,8 @@ func TestArcReviewDocsDescribeCrossProjectPRReviewModel(t *testing.T) {
 	runbookRequired := []string{
 		"API-backed",
 		"Arcanum public API",
-		"/api/v1/public/review-requests?status=open&reviewer=<login>",
-		"/api/v1/public/review-requests?status=open&author=<login>",
+		"/api/v1/review-requests?query=subscriber(<login>);open()&fields=review_requests(...)",
+		"/api/v1/review-requests?query=author(<login>);open()&fields=review_requests(...)",
 		"No mounted Arc workspace is needed for discovery",
 		"Each PR review work item receives an isolated checkout",
 		"auto-detects the project root from changed files",

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -18,11 +19,17 @@ func TestPRListArcanumClientReviewerQueryUsesOAuthAndFilters(t *testing.T) {
 			t.Fatalf("path = %q, want /api/v1/review-requests", got)
 		}
 		query := r.URL.Query()
-		if got := query.Get("status"); got != "open" {
-			t.Fatalf("status = %q, want open", got)
+		if got := query.Get("query"); got != "subscriber(alice);open()" {
+			t.Fatalf("query = %q, want subscriber(alice);open()", got)
 		}
-		if got := query.Get("reviewer"); got != "alice" {
-			t.Fatalf("reviewer = %q, want alice", got)
+		if fields := query.Get("fields"); !strings.Contains(fields, "review_requests(") {
+			t.Fatalf("fields = %q, want a review_requests(...) projection", fields)
+		}
+		if got := query.Get("status"); got != "" {
+			t.Fatalf("status = %q, want empty (open-ness is the open() predicate)", got)
+		}
+		if got := query.Get("reviewer"); got != "" {
+			t.Fatalf("reviewer = %q, want empty (filter is in the query DSL)", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "OAuth api-token" {
 			t.Fatalf("Authorization = %q, want OAuth api-token", got)
@@ -66,11 +73,14 @@ func TestPRListArcanumClientAuthorQueryUsesOAuthAndFilters(t *testing.T) {
 			t.Fatalf("path = %q, want /api/v1/review-requests", got)
 		}
 		query := r.URL.Query()
-		if got := query.Get("status"); got != "open" {
-			t.Fatalf("status = %q, want open", got)
+		if got := query.Get("query"); got != "author(alice);open()" {
+			t.Fatalf("query = %q, want author(alice);open()", got)
 		}
-		if got := query.Get("author"); got != "alice" {
-			t.Fatalf("author = %q, want alice", got)
+		if fields := query.Get("fields"); !strings.Contains(fields, "review_requests(") {
+			t.Fatalf("fields = %q, want a review_requests(...) projection", fields)
+		}
+		if got := query.Get("author"); got != "" {
+			t.Fatalf("author = %q, want empty (filter is in the query DSL)", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "OAuth api-token" {
 			t.Fatalf("Authorization = %q, want OAuth api-token", got)
@@ -123,8 +133,8 @@ func TestListReviewPRsWithClientDedupeReviewerThenAuthor(t *testing.T) {
 			t.Fatalf("Authorization = %q, want OAuth test-token", got)
 		}
 
-		switch {
-		case query.Get("reviewer") == "alice":
+		switch q := query.Get("query"); {
+		case q == "subscriber(alice);open()":
 			requests = append(requests, "reviewer")
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`{
@@ -136,7 +146,7 @@ func TestListReviewPRsWithClientDedupeReviewerThenAuthor(t *testing.T) {
 				t.Fatalf("write reviewer response: %v", err)
 			}
 
-		case query.Get("author") == "alice":
+		case q == "author(alice);open()":
 			requests = append(requests, "author")
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`{"data":[

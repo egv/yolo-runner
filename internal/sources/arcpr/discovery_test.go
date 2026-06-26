@@ -199,14 +199,8 @@ func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePi
 			t.Fatalf("path = %q, want /api/v1/review-requests", got)
 		}
 		query := r.URL.Query()
-		if got := query.Get("status"); got != "open" {
-			t.Fatalf("status = %q, want open", got)
-		}
-
-		reviewer := query.Get("reviewer")
-		author := query.Get("author")
-		switch {
-		case reviewer == "alice" && author == "":
+		switch q := query.Get("query"); {
+		case q == "subscriber(alice);open()":
 			listCalls = append(listCalls, "reviewer")
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`[
@@ -216,7 +210,7 @@ func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePi
 ]`)); err != nil {
 				t.Fatalf("write reviewer response: %v", err)
 			}
-		case author == "alice" && reviewer == "":
+		case q == "author(alice);open()":
 			listCalls = append(listCalls, "author")
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`{"data":[{"id":"103","from_id":"rev-3","status":"open","summary":"authored head","author":"alice"}]}`)); err != nil {

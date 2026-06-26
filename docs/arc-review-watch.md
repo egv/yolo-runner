@@ -16,8 +16,10 @@ The Arc PR source is cross-project and API-backed. It discovers PRs for the conf
 
 Discovery uses these API paths:
 
-- **Reviewer** PRs assigned to that login from `/api/v1/public/review-requests?status=open&reviewer=<login>`.
-- **Authored** PRs created by that login from `/api/v1/public/review-requests?status=open&author=<login>`.
+- **Reviewer** PRs the login is subscribed to from `/api/v1/review-requests?query=subscriber(<login>);open()&fields=review_requests(...)`.
+- **Authored** PRs created by that login from `/api/v1/review-requests?query=author(<login>);open()&fields=review_requests(...)`.
+
+Arcanum's review-request collection is not a plain filtered GET: it returns an empty `{"data":{}}` unless the row selection is expressed in its query DSL (`query=...;open()`) **and** the columns are projected via `fields=review_requests(...)`; the items then appear under `data.review_requests`. `reviewer(<login>)` is not a valid predicate, so reviewer PRs use `subscriber(<login>)`. The list API exposes no commit SHA in projection, so `active_diff_set(id)` — which changes on every push — is used as the revision change-token for idempotency and re-review-on-update.
 
 The source records the PR id, head revision, unanswered comments, and `allow_ship` flag in a queue item for the profile's preset.
 
