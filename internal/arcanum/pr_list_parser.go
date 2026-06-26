@@ -41,7 +41,7 @@ func prListItems(data []byte) ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("parse arc pr list JSON: %w", err)
 	}
 
-	for _, key := range []string{"pull_requests", "pullRequests", "prs", "items", "result", "data"} {
+	for _, key := range []string{"review_requests", "reviewRequests", "pull_requests", "pullRequests", "prs", "items", "result", "data"} {
 		raw := object[key]
 		if len(raw) == 0 {
 			continue
@@ -94,6 +94,20 @@ func parsePRSummary(raw json.RawMessage) (PRSummary, error) {
 	summary := firstScalar(item, "summary", "title", "name")
 	fromBranch := firstScalar(item, "from_branch", "fromBranch", "source_branch", "sourceBranch")
 	toBranch := firstScalar(item, "to_branch", "toBranch", "target_branch", "targetBranch", "base_branch", "baseBranch")
+	fromID := firstScalar(item, "from_id", "fromId", "head_id", "headId", "head_commit", "headCommit", "revision", "current_revision", "currentRevision")
+
+	// Arcanum's HTTP list API nests branches under "vcs" and exposes the per-push
+	// identifier as active_diff_set.id; fall back to those when the flat fields
+	// (emitted by the arc CLI) are absent.
+	if fromBranch == "" {
+		fromBranch = nestedScalar(item, "vcs", "from_branch", "fromBranch", "source_branch", "sourceBranch")
+	}
+	if toBranch == "" {
+		toBranch = nestedScalar(item, "vcs", "to_branch", "toBranch", "target_branch", "targetBranch", "base_branch", "baseBranch")
+	}
+	if fromID == "" {
+		fromID = nestedScalar(item, "active_diff_set", "id")
+	}
 
 	return PRSummary{
 		ID:         firstScalar(item, "id", "number", "pr_id", "pull_request_id"),
@@ -103,11 +117,26 @@ func parsePRSummary(raw json.RawMessage) (PRSummary, error) {
 		Reviewers:  firstPeopleList(item, "reviewers", "reviewer_logins"),
 		Branch:     firstNonEmpty(toBranch, firstScalar(item, "branch"), fromBranch),
 		FromBranch: fromBranch,
-		FromID:     firstScalar(item, "from_id", "fromId", "head_id", "headId", "head_commit", "headCommit", "revision", "current_revision", "currentRevision"),
+		FromID:     fromID,
 		ToBranch:   toBranch,
 		Status:     firstScalar(item, "status", "state"),
 		Issues:     firstIssueList(item, "issues", "linked_issues", "linkedIssues"),
 	}, nil
+}
+
+// nestedScalar reads a scalar from a nested object (e.g. vcs.from_branch or
+// active_diff_set.id) emitted by Arcanum's HTTP list API. Returns "" when the
+// object or none of the fields are present.
+func nestedScalar(item map[string]json.RawMessage, objectKey string, fieldKeys ...string) string {
+	raw := item[objectKey]
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err != nil {
+		return ""
+	}
+	return firstScalar(nested, fieldKeys...)
 }
 
 func firstScalar(item map[string]json.RawMessage, keys ...string) string {

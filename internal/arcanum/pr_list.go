@@ -203,10 +203,38 @@ func (c *PRListArcanumClient) api() (*APIClient, error) {
 	return c.apiClient, nil
 }
 
+// arcReviewRequestListLimit bounds a single review-request listing page. Arcanum
+// caps projection to the requested fields, so a generous page is cheap; 1000
+// matches other internal clients (bazel-steward) and covers any realistic user.
+const arcReviewRequestListLimit = "1000"
+
+// reviewRequestsPath builds the Arcanum review-request collection query.
+//
+// Arcanum's /v1/review-requests is not a plain GET-with-filters: it returns an
+// empty {"data":{}} unless BOTH (a) the row selection is expressed in Arcanum's
+// query DSL via the `query` param and (b) the columns are projected via
+// `fields=review_requests(...)`. The DSL predicate selecting authored PRs is
+// author(<login>); there is no reviewer(<login>) predicate, so PRs the user is
+// asked to review are selected with subscriber(<login>). open() keeps only open
+// review requests.
+//
+// active_diff_set(id) is the only per-push identifier the list API exposes (no
+// commit SHA is available in list projection); it changes on every push, so it
+// serves as the revision change-token used downstream for idempotency and
+// re-review-on-update. vcs(from_branch,to_branch) feeds the branch fields.
 func reviewRequestsPath(filter string, user string) string {
+	user = strings.TrimSpace(user)
+	predicate := "author"
+	if filter == "reviewer" {
+		predicate = "subscriber"
+	}
+
 	query := url.Values{}
-	query.Set("status", "open")
-	query.Set(filter, strings.TrimSpace(user))
+	query.Set("query", predicate+"("+user+");open()")
+	query.Set("fields", "review_requests(id,author,summary,status,active_diff_set(id),vcs(from_branch,to_branch))")
+	query.Set("order", "-updated_at")
+	query.Set("limit", arcReviewRequestListLimit)
+	query.Set("offset", "0")
 	return "/v1/review-requests?" + query.Encode()
 }
 

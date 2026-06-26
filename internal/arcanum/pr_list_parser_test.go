@@ -149,3 +149,52 @@ func TestParsePRListJSONAcceptsNestedDataItemsWrapper(t *testing.T) {
 		t.Fatalf("ParsePRListJSON(nested data items wrapper) = %#v, want %#v", got, want)
 	}
 }
+
+// TestParsePRListJSONArcanumHTTPShape locks in the contract returned by the
+// Arcanum /v1/review-requests collection (query DSL + fields projection): the
+// items live under data.review_requests, branches nest under vcs, and the only
+// per-push identifier is active_diff_set.id (used as the revision change-token).
+// Regression for the discovery bug where the collection returned {data:{}}.
+func TestParsePRListJSONArcanumHTTPShape(t *testing.T) {
+	fixture := []byte(`{
+  "data": {
+    "review_requests": [
+      {
+        "id": 14107203,
+        "author": {"name": "genaevstratov"},
+        "summary": "Add Dino Messenger Deploy env helper",
+        "vcs": {"from_branch": "users/genaevstratov/dino-messenger-deploy-env", "to_branch": "trunk"},
+        "status": "published",
+        "reviewers": []
+      }
+    ]
+  }
+}`)
+
+	got, err := ParsePRListJSON(fixture)
+	if err != nil {
+		t.Fatalf("ParsePRListJSON(arcanum http shape) error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ParsePRListJSON(arcanum http shape) len = %d, want 1", len(got))
+	}
+	pr := got[0]
+	if pr.ID != "14107203" {
+		t.Errorf("ID = %q, want 14107203", pr.ID)
+	}
+	if pr.Author != "genaevstratov" {
+		t.Errorf("Author = %q, want genaevstratov", pr.Author)
+	}
+	if pr.Summary != "Add Dino Messenger Deploy env helper" {
+		t.Errorf("Summary = %q", pr.Summary)
+	}
+	if pr.Status != "published" {
+		t.Errorf("Status = %q, want published", pr.Status)
+	}
+	if pr.FromBranch != "users/genaevstratov/dino-messenger-deploy-env" {
+		t.Errorf("FromBranch = %q", pr.FromBranch)
+	}
+	if pr.ToBranch != "trunk" {
+		t.Errorf("ToBranch = %q, want trunk", pr.ToBranch)
+	}
+}
