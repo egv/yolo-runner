@@ -39,6 +39,26 @@ func Open(path string) (*Store, error) {
 	return store, nil
 }
 
+func OpenReadOnly(path string) (*Store, error) {
+	dbPath, err := resolveQueuePath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return nil, fmt.Errorf("open read-only workqueue db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	store := &Store{db: db}
+	if err := store.configureReadOnlyPragmas(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
 func resolveQueuePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path != "" {
@@ -101,6 +121,16 @@ func (s *Store) configurePragmas() error {
 	}
 	if !strings.EqualFold(journalMode, "wal") {
 		return fmt.Errorf("set workqueue journal_mode WAL: got %q", journalMode)
+	}
+	return nil
+}
+
+func (s *Store) configureReadOnlyPragmas() error {
+	if _, err := s.db.Exec(fmt.Sprintf("PRAGMA busy_timeout = %d", queueBusyTimeoutMillis)); err != nil {
+		return fmt.Errorf("set read-only workqueue busy_timeout: %w", err)
+	}
+	if _, err := s.db.Exec("PRAGMA query_only = 1"); err != nil {
+		return fmt.Errorf("set read-only workqueue query_only: %w", err)
 	}
 	return nil
 }
@@ -243,7 +273,8 @@ func (s *Store) createIndexes() error {
 	const indexes = `
 CREATE INDEX IF NOT EXISTS idx_items_claim ON work_items(state, preset, priority DESC, created_at);
 CREATE INDEX IF NOT EXISTS idx_items_source ON work_items(source, state);
-CREATE INDEX IF NOT EXISTS idx_items_lease ON work_items(state, lease_expires_at);`
+CREATE INDEX IF NOT EXISTS idx_items_lease ON work_items(state, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_items_claimed_by ON work_items(claimed_by);`
 
 	if _, err := s.db.Exec(indexes); err != nil {
 		return fmt.Errorf("initialize workqueue indexes: %w", err)

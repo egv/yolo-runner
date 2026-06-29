@@ -3,6 +3,7 @@ package workqueue
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -17,7 +18,7 @@ func TestOpenInitializesSchemaIdempotentlyAndMigratesMissingColumns(t *testing.T
 	}
 	assertQueuePragmas(t, store.db)
 	assertTablesExist(t, store.db, "work_items", "work_results", "item_deps", "runners")
-	assertIndexesExist(t, store.db, "idx_items_claim", "idx_items_source", "idx_items_lease")
+	assertIndexesExist(t, store.db, "idx_items_claim", "idx_items_source", "idx_items_lease", "idx_items_claimed_by")
 	assertColumnsExist(t, store.db, "work_items", workItemColumns...)
 	assertColumnsExist(t, store.db, "work_results", workResultColumns...)
 	assertColumnsExist(t, store.db, "item_deps", itemDepColumns...)
@@ -49,6 +50,56 @@ func TestOpenInitializesSchemaIdempotentlyAndMigratesMissingColumns(t *testing.T
 	})
 	assertColumnsExist(t, migrated.db, "work_items", workItemColumns...)
 	assertTablesExist(t, migrated.db, "work_results", "item_deps", "runners")
+}
+
+func TestOpenReadOnlyReadsExistingQueueAndRejectsWrites(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+
+	writer, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("writer Close() error = %v", err)
+		}
+	})
+
+	insertWorkItem(t, writer.db, "item-1")
+
+	reader, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadOnly() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("reader Close() error = %v", err)
+		}
+	})
+
+	var gotPayload string
+	if err := reader.db.QueryRow("SELECT payload FROM work_items WHERE id = ?", "item-1").Scan(&gotPayload); err != nil {
+		t.Fatalf("read work item via read-only handle: %v", err)
+	}
+	if gotPayload != `{"hello":"world"}` {
+		t.Fatalf("payload = %q, want %q", gotPayload, `{"hello":"world"}`)
+	}
+
+	if _, err := reader.db.Exec("UPDATE work_items SET state = ? WHERE id = ?", "done", "item-1"); err == nil {
+		t.Fatalf("write via read-only handle succeeded, want error")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "readonly") && !strings.Contains(strings.ToLower(err.Error()), "query") {
+		t.Fatalf("write via read-only handle error = %v, want readonly/query_only error", err)
+	}
+}
+
+func TestOpenReadOnlyMissingPathErrors(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing", "queue.db")
+
+	store, err := OpenReadOnly(dbPath)
+	if err == nil {
+		_ = store.Close()
+		t.Fatalf("OpenReadOnly() succeeded for missing path")
+	}
 }
 
 var workItemColumns = []string{
@@ -120,6 +171,52 @@ CREATE TABLE work_items (
 );`)
 	if err != nil {
 		t.Fatalf("create old work_items table: %v", err)
+	}
+}
+
+func insertWorkItem(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+
+	_, err := db.Exec(`
+INSERT INTO work_items (
+	id,
+	kind,
+	source,
+	source_ref,
+	idempotency_key,
+	preset,
+	priority,
+	payload,
+	state,
+	attempt,
+	max_attempts,
+	not_before,
+	claimed_by,
+	lease_expires_at,
+	heartbeat_at,
+	created_at,
+	updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id,
+		"task",
+		"test",
+		id,
+		"idempotency-"+id,
+		"default",
+		1,
+		`{"hello":"world"}`,
+		"open",
+		0,
+		3,
+		"",
+		"",
+		"",
+		"",
+		"2026-06-29T00:00:00Z",
+		"2026-06-29T00:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("insert work item: %v", err)
 	}
 }
 
