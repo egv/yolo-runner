@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -164,6 +165,97 @@ func TestGitCloneManagerCreatesIsolatedParallelClones(t *testing.T) {
 	if len(entries) != 0 {
 		t.Fatalf("expected clone base dir to be empty after cleanup, got %d entries", len(entries))
 	}
+}
+
+func TestGitCloneManagerWritesBypassPermissionsAndInheritsSourceEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, repoRoot, "add", "README.md")
+	runGit(t, repoRoot, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	// Source repo carries z.ai auth in .claude/_settings.json (the deliberately
+	// renamed, untracked form). The clone must inherit its env block so claude
+	// authenticates without relying on the launcher's environment.
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir source .claude: %v", err)
+	}
+	srcSettings := `{"env":{"ANTHROPIC_AUTH_TOKEN":"tok-123","ANTHROPIC_BASE_URL":"https://api.z.ai/api/anthropic"}}`
+	if err := os.WriteFile(filepath.Join(repoRoot, ".claude", "_settings.json"), []byte(srcSettings), 0o644); err != nil {
+		t.Fatalf("write source settings: %v", err)
+	}
+
+	manager := NewGitCloneManager(t.TempDir())
+	clonePath, err := manager.CloneForTask(context.Background(), "t-settings", repoRoot)
+	if err != nil {
+		t.Fatalf("clone failed: %v", err)
+	}
+	defer func() { _ = manager.Cleanup("t-settings") }()
+
+	settings := readCloneSettings(t, clonePath)
+	perms, _ := settings["permissions"].(map[string]any)
+	if perms == nil || perms["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("expected permissions.defaultMode=bypassPermissions, got %#v", settings["permissions"])
+	}
+	env, _ := settings["env"].(map[string]any)
+	if env == nil || env["ANTHROPIC_AUTH_TOKEN"] != "tok-123" || env["ANTHROPIC_BASE_URL"] != "https://api.z.ai/api/anthropic" {
+		t.Fatalf("expected inherited z.ai env, got %#v", settings["env"])
+	}
+}
+
+func TestGitCloneManagerPreservesCommittedCloneSettings(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	// A committed .claude/settings.json with a custom key the clone must keep.
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	committed := `{"permissions":{"defaultMode":"acceptEdits"},"customKey":"keep-me"}`
+	if err := os.WriteFile(filepath.Join(repoRoot, ".claude", "settings.json"), []byte(committed), 0o644); err != nil {
+		t.Fatalf("write committed settings: %v", err)
+	}
+	runGit(t, repoRoot, "add", "-A")
+	runGit(t, repoRoot, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	manager := NewGitCloneManager(t.TempDir())
+	clonePath, err := manager.CloneForTask(context.Background(), "t-preserve", repoRoot)
+	if err != nil {
+		t.Fatalf("clone failed: %v", err)
+	}
+	defer func() { _ = manager.Cleanup("t-preserve") }()
+
+	settings := readCloneSettings(t, clonePath)
+	if settings["customKey"] != "keep-me" {
+		t.Fatalf("expected committed customKey preserved, got %#v", settings["customKey"])
+	}
+	// bypassPermissions is forced even over a committed defaultMode.
+	perms, _ := settings["permissions"].(map[string]any)
+	if perms == nil || perms["defaultMode"] != "bypassPermissions" {
+		t.Fatalf("expected forced bypassPermissions, got %#v", settings["permissions"])
+	}
+}
+
+func readCloneSettings(t *testing.T, clonePath string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(clonePath, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read clone settings: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("parse clone settings: %v", err)
+	}
+	return settings
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
