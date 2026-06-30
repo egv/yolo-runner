@@ -62,7 +62,7 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			},
 			mode:         contracts.RunnerModeImplement,
 			wantType:     contracts.TaskSessionEventTypeLifecycle,
-			wantProgress: string(contracts.EventTypeRunnerProgress),
+			wantProgress: string(contracts.EventTypeAgentProgress),
 			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
 				t.Helper()
 				if event.SessionID != "thread-1" {
@@ -87,7 +87,7 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			},
 			mode:         contracts.RunnerModeImplement,
 			wantType:     contracts.TaskSessionEventTypeLifecycle,
-			wantProgress: string(contracts.EventTypeRunnerProgress),
+			wantProgress: string(contracts.EventTypeAgentProgress),
 			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
 				t.Helper()
 				if event.Lifecycle == nil || event.Lifecycle.State != contracts.TaskSessionLifecycleRunning {
@@ -114,7 +114,7 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			},
 			mode:         contracts.RunnerModeImplement,
 			wantType:     contracts.TaskSessionEventTypeProgress,
-			wantProgress: string(contracts.EventTypeRunnerProgress),
+			wantProgress: string(contracts.EventTypeAgentProgress),
 			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
 				t.Helper()
 				if event.Progress == nil || event.Progress.Phase != "command_execution" {
@@ -144,7 +144,7 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			},
 			mode:         contracts.RunnerModeImplement,
 			wantType:     contracts.TaskSessionEventTypeApprovalRequired,
-			wantProgress: string(contracts.EventTypeRunnerWarning),
+			wantProgress: string(contracts.EventTypeAgentBlocked),
 			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
 				t.Helper()
 				if event.Approval == nil {
@@ -174,7 +174,7 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 			},
 			mode:         contracts.RunnerModeImplement,
 			wantType:     contracts.TaskSessionEventTypeOutput,
-			wantProgress: string(contracts.EventTypeRunnerOutput),
+			wantProgress: string(contracts.EventTypeAgentText),
 			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
 				t.Helper()
 				if progress.Message != "all tests passed" {
@@ -243,6 +243,159 @@ func TestRunnerProgressFromAppServerNotificationPreservesDeltaWhitespace(t *test
 			}
 		})
 	}
+}
+
+func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *testing.T) {
+	messages := []contracts.JSONRPCMessage{
+		{
+			Method: "item/agentMessage/delta",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "msg-1",
+				"delta":    "I will inspect the adapter.",
+			},
+		},
+		{
+			Method: "item/agentMessage/delta",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "msg-empty",
+				"delta":    "",
+			},
+		},
+		{
+			Method: "item/completed",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"item": map[string]any{
+					"id":         "cmd-1",
+					"type":       "commandExecution",
+					"command":    []any{"go", "test", "./internal/codex/"},
+					"cwd":        "/repo",
+					"status":     "completed",
+					"exitCode":   float64(0),
+					"durationMs": float64(321),
+				},
+			},
+		},
+		{
+			Method: "item/completed",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"item": map[string]any{
+					"id":     "edit-1",
+					"type":   "fileChange",
+					"status": "completed",
+					"changes": []any{
+						map[string]any{"path": "internal/codex/runner_adapter.go", "kind": "modify"},
+					},
+				},
+			},
+		},
+		{
+			Method: "item/commandExecution/requestApproval",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "cmd-denied",
+				"id":       "approval-1",
+				"reason":   "permission denied",
+				"command":  []any{"git", "push"},
+			},
+		},
+		{
+			Method: "error",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"error": map[string]any{
+					"message": "usage limit reached",
+					"codexErrorInfo": map[string]any{
+						"type":           "UsageLimitExceeded",
+						"httpStatusCode": float64(429),
+					},
+				},
+			},
+		},
+		{
+			Method: "thread/tokenUsage/updated",
+			Params: map[string]any{
+				"threadId":     "thread-1",
+				"inputTokens":  float64(42),
+				"outputTokens": float64(7),
+				"totalTokens":  float64(49),
+			},
+		},
+	}
+
+	updates := []contracts.RunnerProgress{}
+	for _, message := range messages {
+		progress, _, ok := RunnerProgressFromAppServerNotification(message, contracts.RunnerModeImplement)
+		if ok {
+			updates = append(updates, progress)
+		}
+	}
+
+	if len(progressByType(updates, contracts.EventTypeAgentText)) != 1 {
+		t.Fatalf("expected one non-empty agent_text event, got %#v", updates)
+	}
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/codex/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" || commandRun.Metadata["duration_ms"] != "321" {
+		t.Fatalf("expected command result metadata, got %#v", commandRun.Metadata)
+	}
+	toolInvoked := findProgressByType(updates, contracts.EventTypeToolInvoked)
+	if toolInvoked == nil {
+		t.Fatalf("expected tool_invoked progress, got %#v", updates)
+	}
+	if toolInvoked.Metadata["tool"] != "fileChange" || toolInvoked.Metadata["target"] != "internal/codex/runner_adapter.go" || toolInvoked.Metadata["outcome"] != "completed" {
+		t.Fatalf("unexpected tool_invoked metadata %#v", toolInvoked.Metadata)
+	}
+	blocked := progressByType(updates, contracts.EventTypeAgentBlocked)
+	if len(blocked) != 2 {
+		t.Fatalf("expected approval and error agent_blocked events, got %#v", updates)
+	}
+	if blocked[0].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("expected permission denial reason, got %#v", blocked[0].Metadata)
+	}
+	if blocked[1].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[1].Metadata["http_status_code"] != "429" {
+		t.Fatalf("expected rate limit blocked metadata, got %#v", blocked[1].Metadata)
+	}
+	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
+	if tokenUsage == nil {
+		t.Fatalf("expected token_usage progress, got %#v", updates)
+	}
+	if tokenUsage.Metadata["input_tokens"] != "42" || tokenUsage.Metadata["output_tokens"] != "7" || tokenUsage.Metadata["total_tokens"] != "49" {
+		t.Fatalf("unexpected token usage metadata %#v", tokenUsage.Metadata)
+	}
+}
+
+func progressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) []contracts.RunnerProgress {
+	matches := []contracts.RunnerProgress{}
+	for _, update := range updates {
+		if update.Type == string(eventType) {
+			matches = append(matches, update)
+		}
+	}
+	return matches
+}
+
+func findProgressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) *contracts.RunnerProgress {
+	for i := range updates {
+		if updates[i].Type == string(eventType) {
+			return &updates[i]
+		}
+	}
+	return nil
 }
 
 func TestAppServerTaskSessionRuntimeStartInitializesSessionWithoutStartingTurn(t *testing.T) {
@@ -1461,8 +1614,8 @@ func TestNormalizeAppServerNotificationMapsCompletionIntoReviewArtifacts(t *test
 	if !ok {
 		t.Fatalf("expected completion progress")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerProgress) {
-		t.Fatalf("expected runner_progress type, got %q", progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentProgress) {
+		t.Fatalf("expected agent_progress type, got %q", progress.Type)
 	}
 	if progress.Metadata["reason"] != "end_turn" {
 		t.Fatalf("expected completion reason metadata, got %#v", progress.Metadata)
@@ -1534,10 +1687,10 @@ func TestCLIRunnerAdapterRunsCodexAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "runner_output" || updates[0].Message != "working line" {
+	if updates[0].Type != string(contracts.EventTypeAgentText) || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "runner_output" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != string(contracts.EventTypeAgentText) || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 
@@ -1766,22 +1919,22 @@ func TestCLIRunnerAdapterMapsAppServerNotificationsIntoProgressAndReviewCompleti
 	if len(updates) != 6 {
 		t.Fatalf("expected 6 mapped progress updates, got %d: %#v", len(updates), updates)
 	}
-	if updates[0].Type != string(contracts.EventTypeRunnerProgress) || updates[0].Metadata["state"] != string(contracts.TaskSessionLifecycleReady) {
+	if updates[0].Type != string(contracts.EventTypeAgentProgress) || updates[0].Metadata["state"] != string(contracts.TaskSessionLifecycleReady) {
 		t.Fatalf("expected thread started lifecycle progress, got %#v", updates[0])
 	}
-	if updates[1].Type != string(contracts.EventTypeRunnerProgress) || updates[1].Metadata["turn_id"] != "turn-1" {
+	if updates[1].Type != string(contracts.EventTypeAgentProgress) || updates[1].Metadata["turn_id"] != "turn-1" {
 		t.Fatalf("expected turn started progress, got %#v", updates[1])
 	}
-	if updates[2].Type != string(contracts.EventTypeRunnerProgress) || updates[2].Message != "Run tests" {
+	if updates[2].Type != string(contracts.EventTypeAgentProgress) || updates[2].Message != "Run tests" {
 		t.Fatalf("expected item progress, got %#v", updates[2])
 	}
-	if updates[3].Type != string(contracts.EventTypeRunnerOutput) || updates[3].Message != "running tests" {
+	if updates[3].Type != string(contracts.EventTypeAgentText) || updates[3].Message != "running tests" {
 		t.Fatalf("expected delta output progress, got %#v", updates[3])
 	}
-	if updates[4].Type != string(contracts.EventTypeRunnerWarning) || updates[4].Metadata["approval_id"] != "approval-1" {
-		t.Fatalf("expected approval warning progress, got %#v", updates[4])
+	if updates[4].Type != string(contracts.EventTypeAgentBlocked) || updates[4].Metadata["approval_id"] != "approval-1" {
+		t.Fatalf("expected approval blocked progress, got %#v", updates[4])
 	}
-	if updates[5].Type != string(contracts.EventTypeRunnerProgress) || updates[5].Metadata["reason"] != "end_turn" {
+	if updates[5].Type != string(contracts.EventTypeAgentProgress) || updates[5].Metadata["reason"] != "end_turn" {
 		t.Fatalf("expected completion progress with reason metadata, got %#v", updates[5])
 	}
 	if result.Status != contracts.RunnerResultCompleted {
@@ -2038,7 +2191,7 @@ func TestCLIRunnerAdapterUsesAppServerJSONRPCProductionPath(t *testing.T) {
 	if updates[3].Metadata["item_type"] != "mcpToolCall" {
 		t.Fatalf("expected tool progress metadata, got %#v", updates[3])
 	}
-	if updates[4].Type != string(contracts.EventTypeRunnerOutput) || updates[4].Message != "running tests" {
+	if updates[4].Type != string(contracts.EventTypeAgentText) || updates[4].Message != "running tests" {
 		t.Fatalf("expected delta runner output, got %#v", updates[4])
 	}
 	if updates[5].Metadata["approval_id"] != "approval-1" {
@@ -2272,8 +2425,8 @@ func TestCLIRunnerAdapterAppServerHandlesUserInputRequestsAndTeardown(t *testing
 	if len(updates) != 2 {
 		t.Fatalf("expected user-input warning plus completion progress, got %d: %#v", len(updates), updates)
 	}
-	if updates[0].Type != string(contracts.EventTypeRunnerWarning) || updates[0].Message != "Choose a path" {
-		t.Fatalf("expected user-input warning progress, got %#v", updates[0])
+	if updates[0].Type != string(contracts.EventTypeAgentBlocked) || updates[0].Message != "Choose a path" {
+		t.Fatalf("expected user-input blocked progress, got %#v", updates[0])
 	}
 	if updates[1].Metadata["reason"] != "end_turn" {
 		t.Fatalf("expected completion reason metadata, got %#v", updates[1])

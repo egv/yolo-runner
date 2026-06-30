@@ -87,10 +87,36 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 			completion.Artifacts = nil
 		}
 		return event, completion, true
+	case "error":
+		errorInfo := lookupMap(params, "error")
+		if errorInfo == nil {
+			errorInfo = params
+		}
+		detail := coalesceMessage(extractText(errorInfo), extractText(params), "codex error")
+		metadata = setMetadataValue(metadata, "reason", string(blockReasonFromCodexError(errorInfo)))
+		metadata = setMetadataValue(metadata, "detail", detail)
+		metadata = setMetadataValue(metadata, "error_type", lookupString(errorInfo, "type", "code"))
+		metadata = setMetadataValue(metadata, "http_status_code", anyString(lookupAny(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info"), "httpStatusCode", "http_status_code", "status")))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked)
+		event.Message = detail
+		return event, nil, true
+	case "thread/tokenUsage/updated":
+		metadata = setMetadataValue(metadata, "input_tokens", anyString(lookupAny(params, "inputTokens", "input_tokens")))
+		metadata = setMetadataValue(metadata, "output_tokens", anyString(lookupAny(params, "outputTokens", "output_tokens")))
+		metadata = setMetadataValue(metadata, "total_tokens", anyString(lookupAny(params, "totalTokens", "total_tokens")))
+		if len(metadata) == 0 {
+			return contracts.TaskSessionEvent{}, nil, false
+		}
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeTokenUsage)
+		event.Message = "token usage updated"
+		return event, nil, true
 	case "item/commandExecution/requestApproval":
 		command := stringSlice(lookupSlice(params, "command"))
 		approvalID := lookupString(params, "id", "approvalId", "approval_id")
 		metadata = setMetadataValue(metadata, "approval_id", approvalID)
+		metadata = setMetadataValue(metadata, "reason", string(contracts.BlockReasonPermissionDenied))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventTypeApprovalRequired
 		event.Message = coalesceMessage(
@@ -151,6 +177,29 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 		return event, nil, true
 	}
 
+	if isCommandExecutionItem(itemType) && strings.HasSuffix(method, "/completed") {
+		command := commandString(item)
+		metadata = setMetadataValue(metadata, "command", command)
+		metadata = setMetadataValue(metadata, "cwd", lookupString(item, "cwd"))
+		metadata = setMetadataValue(metadata, "exit_code", anyString(lookupAny(item, "exitCode", "exit_code")))
+		metadata = setMetadataValue(metadata, "duration_ms", anyString(lookupAny(item, "durationMs", "duration_ms")))
+		metadata = setMetadataValue(metadata, "outcome", coalesceMessage(lookupString(item, "status", "outcome"), commandOutcome(item)))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeCommandRun)
+		event.Message = coalesceMessage(command, lookupString(item, "title", "name"), "command completed")
+		return event, nil, true
+	}
+
+	if isToolItem(itemType) && strings.HasSuffix(method, "/completed") {
+		metadata = setMetadataValue(metadata, "tool", itemType)
+		metadata = setMetadataValue(metadata, "target", toolTarget(item))
+		metadata = setMetadataValue(metadata, "outcome", coalesceMessage(lookupString(item, "status", "outcome"), "completed"))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeToolInvoked)
+		event.Message = coalesceMessage(lookupString(item, "title", "name"), toolTarget(item), itemType)
+		return event, nil, true
+	}
+
 	if strings.HasSuffix(method, "/delta") {
 		event.Type = contracts.TaskSessionEventTypeOutput
 		if raw, ok := lookupRawString(params, "delta", "text", "message"); ok {
@@ -188,6 +237,12 @@ func RunnerProgressFromAppServerNotification(message contracts.JSONRPCMessage, m
 	progress, ok := contracts.NormalizeTaskSessionEvent(event)
 	if !ok {
 		return contracts.RunnerProgress{}, nil, false
+	}
+	if reason := strings.TrimSpace(event.Metadata["reason"]); reason != "" && event.Type == contracts.TaskSessionEventTypeApprovalRequired {
+		if progress.Metadata == nil {
+			progress.Metadata = map[string]string{}
+		}
+		progress.Metadata["reason"] = reason
 	}
 	return progress, completion, true
 }
@@ -314,6 +369,18 @@ func lookupRawString(data map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
+func lookupAny(data map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if data == nil {
+			return nil
+		}
+		if value, ok := data[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
 func hasRawString(data map[string]any, keys ...string) bool {
 	_, ok := lookupRawString(data, keys...)
 	return ok
@@ -367,6 +434,116 @@ func stringSlice(values []any) []string {
 		}
 	}
 	return out
+}
+
+func anyString(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return strings.TrimSpace(typed.String())
+	case float64:
+		return fmt.Sprintf("%g", typed)
+	case float32:
+		return fmt.Sprintf("%g", typed)
+	case int:
+		return fmt.Sprintf("%d", typed)
+	case int64:
+		return fmt.Sprintf("%d", typed)
+	case int32:
+		return fmt.Sprintf("%d", typed)
+	case uint:
+		return fmt.Sprintf("%d", typed)
+	case uint64:
+		return fmt.Sprintf("%d", typed)
+	case uint32:
+		return fmt.Sprintf("%d", typed)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	default:
+		return ""
+	}
+}
+
+func commandString(item map[string]any) string {
+	if command := lookupString(item, "command"); command != "" {
+		return command
+	}
+	parts := stringSlice(lookupSlice(item, "command"))
+	if len(parts) == 0 {
+		parts = stringSlice(lookupSlice(item, "args", "argv"))
+	}
+	return strings.Join(parts, " ")
+}
+
+func commandOutcome(item map[string]any) string {
+	exitCode := strings.TrimSpace(anyString(lookupAny(item, "exitCode", "exit_code")))
+	if exitCode == "" {
+		return ""
+	}
+	if exitCode == "0" {
+		return "ok"
+	}
+	return "error"
+}
+
+func isCommandExecutionItem(itemType string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(itemType), "_", ""))
+	return normalized == "commandexecution"
+}
+
+func isToolItem(itemType string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(itemType), "_", ""))
+	switch normalized {
+	case "", "commandexecution", "agentmessage":
+		return false
+	default:
+		return true
+	}
+}
+
+func toolTarget(item map[string]any) string {
+	for _, key := range []string{"path", "filePath", "file_path", "target"} {
+		if target := lookupString(item, key); target != "" {
+			return target
+		}
+	}
+	for _, change := range lookupSlice(item, "changes") {
+		mapped, ok := change.(map[string]any)
+		if !ok {
+			continue
+		}
+		if target := lookupString(mapped, "path", "filePath", "file_path", "target"); target != "" {
+			return target
+		}
+	}
+	return ""
+}
+
+func blockReasonFromCodexError(errorInfo map[string]any) contracts.BlockReason {
+	errorText := strings.ToLower(strings.Join(filterEmpty([]string{
+		lookupString(errorInfo, "type", "code", "message"),
+		extractText(errorInfo),
+		extractText(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info")),
+	}), " "))
+	status := anyString(lookupAny(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info"), "httpStatusCode", "http_status_code", "status"))
+	switch {
+	case status == "429" || strings.Contains(errorText, "rate") || strings.Contains(errorText, "limit"):
+		return contracts.BlockReasonRateLimited
+	case status == "401" || status == "403" || strings.Contains(errorText, "auth") || strings.Contains(errorText, "unauthorized"):
+		return contracts.BlockReasonAuth
+	case strings.Contains(errorText, "permission") || strings.Contains(errorText, "denied"):
+		return contracts.BlockReasonPermissionDenied
+	default:
+		return contracts.BlockReasonOther
+	}
 }
 
 func coalesceMessage(values ...string) string {
