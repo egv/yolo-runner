@@ -3,10 +3,12 @@ package sourcehost_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/sourcehost"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -108,9 +110,118 @@ func TestRunPollsAndConsumesResultsThroughWorkqueue(t *testing.T) {
 	}
 }
 
+func TestRunEmitsAgentHeartbeatAfterSuccessfulIteration(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{name: "fake-source"}
+	if err := sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true, ProcID: "sourcehost-1", EventSink: sink}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	event, ok := sourcehostEventByType(sink.events, contracts.EventTypeAgentHeartbeat)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeAgentHeartbeat, sink.events)
+	}
+	if event.Metadata["component"] != "sourcehost" || event.Metadata["source"] != "fake-source" || event.Metadata["proc"] != "sourcehost-1" {
+		t.Fatalf("heartbeat metadata = %#v", event.Metadata)
+	}
+}
+
+func TestRunEmitsAgentProgressWhenReapingStaleItems(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	item, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPreflight,
+		Source:         "fake-source",
+		SourceRef:      "TASK-STALE",
+		IdempotencyKey: "fake-source/TASK-STALE/preflight",
+		Preset:         "linux",
+		Payload:        json.RawMessage(`{"task_id":"TASK-STALE"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	claimed, err := store.Claim("runner-a", []string{"linux"}, time.Nanosecond)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil || claimed.ID != item.ID {
+		t.Fatalf("claimed item = %#v, want %q", claimed, item.ID)
+	}
+	time.Sleep(time.Millisecond)
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{name: "fake-source"}
+	if err := sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true, ProcID: "sourcehost-1", EventSink: sink}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	event, ok := sourcehostEventByType(sink.events, contracts.EventTypeAgentProgress)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeAgentProgress, sink.events)
+	}
+	if event.Metadata["reaped"] != "1" {
+		t.Fatalf("progress metadata = %#v, want reaped=1", event.Metadata)
+	}
+}
+
+func TestRunEmitsAgentProgressWarningAfterFailedIteration(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{name: "fake-source", pollErr: errors.New("poll failed")}
+	err = sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true, ProcID: "sourcehost-1", EventSink: sink})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want poll failure")
+	}
+
+	event, ok := sourcehostEventByType(sink.events, contracts.EventTypeAgentProgress)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeAgentProgress, sink.events)
+	}
+	if event.Metadata["level"] != "warning" || event.Metadata["source"] != "fake-source" {
+		t.Fatalf("warning metadata = %#v", event.Metadata)
+	}
+}
+
 type fakeSourcehostSource struct {
 	name            string
 	pollSubmissions []workqueue.Submission
+	pollErr         error
 	followUps       []workqueue.Submission
 	handled         []handledSourcehostResult
 }
@@ -125,10 +236,31 @@ func (s *fakeSourcehostSource) Name() string {
 }
 
 func (s *fakeSourcehostSource) Poll(context.Context) ([]workqueue.Submission, error) {
+	if s.pollErr != nil {
+		return nil, s.pollErr
+	}
 	return s.pollSubmissions, nil
 }
 
 func (s *fakeSourcehostSource) HandleResult(_ context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
 	s.handled = append(s.handled, handledSourcehostResult{item: item, result: result})
 	return s.followUps, nil
+}
+
+type sourcehostRecordingSink struct {
+	events []contracts.Event
+}
+
+func (s *sourcehostRecordingSink) Emit(_ context.Context, event contracts.Event) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func sourcehostEventByType(events []contracts.Event, eventType contracts.EventType) (contracts.Event, bool) {
+	for _, event := range events {
+		if event.Type == eventType {
+			return event, true
+		}
+	}
+	return contracts.Event{}, false
 }

@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -183,6 +184,79 @@ func TestCLIRunnerAdapterExtractsStructuredReviewFailFeedback(t *testing.T) {
 	}
 	if result.Artifacts["review_fail_feedback"] != "missing e2e assertion for retry path" {
 		t.Fatalf("expected review_fail_feedback artifact, got %#v", result.Artifacts)
+	}
+}
+
+func TestStdinTaskSessionExecuteEmitsPermissionDeniedAgentBlocked(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+
+	detail := "Claude requested permissions for Bash, but you haven't granted them."
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintf(stdoutW, `{"type":"assistant","message":{"content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":%q}]}]}}`+"\n", detail)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	var progress []contracts.RunnerProgress
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, e contracts.TaskSessionEvent) error {
+		if p, ok := contracts.NormalizeTaskSessionEvent(e); ok {
+			progress = append(progress, p)
+		}
+		return nil
+	})
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p", EventSink: sink}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+
+	var blocked []contracts.RunnerProgress
+	for _, p := range progress {
+		if p.Type == string(contracts.EventTypeAgentBlocked) {
+			blocked = append(blocked, p)
+		}
+	}
+	if len(blocked) != 1 {
+		t.Fatalf("got %d agent_blocked progress events; want 1; progress=%#v", len(blocked), progress)
+	}
+	if blocked[0].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("reason = %q; want %q", blocked[0].Metadata["reason"], contracts.BlockReasonPermissionDenied)
+	}
+	if blocked[0].Metadata["detail"] != detail {
+		t.Fatalf("detail = %q; want %q", blocked[0].Metadata["detail"], detail)
+	}
+}
+
+func TestStdinTaskSessionExecuteDropsEmptyAssistantText(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	go io.Copy(io.Discard, stdinR) //nolint:errcheck
+	sess := newTestSession(stdinW, stdoutR)
+
+	go func() {
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"system","subtype":"init"}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"bash"}]}}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"assistant","message":{"content":[{"type":"text","text":""}]}}`)
+		_, _ = fmt.Fprintln(stdoutW, `{"type":"result","subtype":"success"}`)
+		_ = stdoutW.Close()
+	}()
+
+	var progress []contracts.RunnerProgress
+	sink := contracts.TaskSessionEventSinkFunc(func(_ context.Context, e contracts.TaskSessionEvent) error {
+		if p, ok := contracts.NormalizeTaskSessionEvent(e); ok {
+			progress = append(progress, p)
+		}
+		return nil
+	})
+	if err := sess.Execute(t.Context(), contracts.TaskSessionExecuteRequest{Prompt: "p", EventSink: sink}); err != nil {
+		t.Fatalf("Execute() = %v; want nil", err)
+	}
+	for _, p := range progress {
+		if p.Type == string(contracts.EventTypeAgentText) || (p.Type == string(contracts.EventTypeRunnerOutput) && strings.TrimSpace(p.Message) == "") {
+			t.Fatalf("empty agent text/output should be dropped, got progress=%#v", progress)
+		}
 	}
 }
 

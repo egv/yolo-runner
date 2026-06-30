@@ -444,9 +444,17 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 	seen := map[string]bool{}
 	for _, line := range lines {
 		var event struct {
-			Type   string `json:"type"`
-			Proc   string `json:"proc"`
-			ItemID string `json:"item_id"`
+			Type        string `json:"type"`
+			Proc        string `json:"proc"`
+			ItemID      string `json:"item_id"`
+			Attempt     int    `json:"attempt"`
+			RetryCount  int    `json:"retry_count"`
+			MaxAttempts int    `json:"max_attempts"`
+			Source      string `json:"source"`
+			SourceRef   string `json:"source_ref"`
+			Kind        string `json:"kind"`
+			Preset      string `json:"preset"`
+			RunnerID    string `json:"runner_id"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("unmarshal event line %q: %v", line, err)
@@ -457,9 +465,15 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 		if event.ItemID != item.ID {
 			t.Fatalf("event item_id = %q, want %q in line %q", event.ItemID, item.ID, line)
 		}
+		if event.Attempt != 1 || event.RetryCount != 0 || event.MaxAttempts != 3 {
+			t.Fatalf("event attempt fields = attempt %d retry %d max %d, want 1/0/3 in line %q", event.Attempt, event.RetryCount, event.MaxAttempts, line)
+		}
+		if event.Source != "test-source" || event.SourceRef != "TASK-HEARTBEAT" || event.Kind != string(workitem.KindSplit) || event.Preset != "linux" || event.RunnerID != "runner-heartbeat" {
+			t.Fatalf("event identity fields missing or wrong in line %q", line)
+		}
 		seen[event.Type] = true
 	}
-	for _, eventType := range []contracts.EventType{contracts.EventTypeRunnerStarted, contracts.EventTypeRunnerFinished} {
+	for _, eventType := range []contracts.EventType{contracts.EventTypeAgentStarted, contracts.EventTypeAgentFinished} {
 		if !seen[string(eventType)] {
 			t.Fatalf("runner events missing %q; got %q", eventType, string(raw))
 		}
