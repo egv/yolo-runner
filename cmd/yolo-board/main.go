@@ -113,6 +113,7 @@ type boardModel struct {
 	snapshot     boardSnapshot
 	events       []contracts.Event
 	runnerDetail string
+	collectorCur int
 	waitingForDB bool
 	errLine      string
 	streamDone   bool
@@ -189,6 +190,15 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "down", "j":
+			count := len(collectorRows(m.snapshot, m.events))
+			if m.collectorCur < count-1 {
+				m.collectorCur++
+			}
+		case "up", "k":
+			if m.collectorCur > 0 {
+				m.collectorCur--
+			}
 		case "enter":
 			if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
@@ -201,7 +211,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m boardModel) View() string {
-	if m.waitingForDB && m.snapshot.itemCount() == 0 {
+	if m.waitingForDB && m.snapshot.itemCount() == 0 && len(collectorRows(m.snapshot, m.events)) == 0 {
 		return "waiting for queue DB\n"
 	}
 	line := fmt.Sprintf("polling %d items across %d sources", m.snapshot.itemCount(), m.snapshot.sourceCount())
@@ -211,7 +221,7 @@ func (m boardModel) View() string {
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
 	}
-	return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
+	return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {
