@@ -388,18 +388,31 @@ func (e *claudeStreamProgressEmitter) emitCommandRun(tool claudePendingTool, res
 	if strings.TrimSpace(tool.Command) == "" {
 		return
 	}
+	detail := resultText(result)
+	if result.IsError && stdinLooksLikePermissionDenied(detail) {
+		e.emit(contracts.RunnerProgress{
+			Type:    string(contracts.EventTypeAgentBlocked),
+			Message: detail,
+			Metadata: map[string]string{
+				"reason": string(contracts.BlockReasonPermissionDenied),
+				"detail": detail,
+				"tool":   tool.Name,
+			},
+			Timestamp: e.now().UTC(),
+		})
+	}
 	metadata := map[string]string{
 		"tool":    tool.Name,
 		"command": tool.Command,
 	}
-	if exitCode, ok := claudeExtractExitCode(resultText(result)); ok {
+	if exitCode, ok := claudeExtractExitCode(detail); ok {
 		metadata["exit_code"] = strconv.Itoa(exitCode)
 	}
-	if durationMS, ok := claudeExtractDurationMS(resultText(result)); ok {
+	if durationMS, ok := claudeExtractDurationMS(detail); ok {
 		metadata["duration_ms"] = strconv.FormatInt(durationMS, 10)
 	}
 	if result.IsError {
-		metadata["outcome"] = "error"
+		metadata["outcome"] = claudeToolOutcome(result)
 	} else {
 		metadata["outcome"] = "ok"
 	}

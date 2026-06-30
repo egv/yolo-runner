@@ -91,6 +91,15 @@ type boardStoreOpener func(string) (boardStore, error)
 
 type streamMsg interface{}
 
+type boardTab int
+
+const (
+	boardTabCollectors boardTab = iota
+	boardTabQueue
+	boardTabRunners
+	boardTabCount
+)
+
 type pollTickMsg struct{}
 type pollMsg struct {
 	snapshot boardSnapshot
@@ -119,6 +128,7 @@ type boardModel struct {
 	stream           <-chan streamMsg
 	snapshot         boardSnapshot
 	events           []contracts.Event
+	activeTab        boardTab
 	runnerDetail     string
 	collectorDetail  string
 	collectorItems   []workitem.Item
@@ -211,32 +221,43 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab":
+			if m.runnerDetail == "" && m.collectorDetail == "" {
+				m.activeTab = (m.activeTab + 1) % boardTabCount
+			}
 		case "down", "j":
-			count := len(collectorRows(m.snapshot, m.events))
-			if m.collectorCur < count-1 {
-				m.collectorCur++
+			if m.activeTab == boardTabCollectors {
+				count := len(collectorRows(m.snapshot, m.events))
+				if m.collectorCur < count-1 {
+					m.collectorCur++
+				}
 			}
 		case "up", "k":
-			if m.collectorCur > 0 {
+			if m.activeTab == boardTabCollectors && m.collectorCur > 0 {
 				m.collectorCur--
 			}
 		case "enter":
-			rows := collectorRows(m.snapshot, m.events)
-			if len(rows) > 0 {
-				if m.collectorCur >= len(rows) {
-					m.collectorCur = len(rows) - 1
+			switch m.activeTab {
+			case boardTabCollectors:
+				rows := collectorRows(m.snapshot, m.events)
+				if len(rows) > 0 {
+					if m.collectorCur >= len(rows) {
+						m.collectorCur = len(rows) - 1
+					}
+					if m.collectorCur < 0 {
+						m.collectorCur = 0
+					}
+					m.collectorDetail = rows[m.collectorCur].name
+					m.collectorItems = collectorItemsForSource(m.snapshot.items, m.collectorDetail)
+					m.collectorResults = collectorResultsForSource(m.snapshot.unconsumedResults, m.collectorDetail)
+					if m.store != nil {
+						return m, collectorDetailCmd(m.store, m.collectorDetail)
+					}
 				}
-				if m.collectorCur < 0 {
-					m.collectorCur = 0
+			case boardTabRunners:
+				if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+					m.runnerDetail = m.snapshot.runners[0].ID
 				}
-				m.collectorDetail = rows[m.collectorCur].name
-				m.collectorItems = collectorItemsForSource(m.snapshot.items, m.collectorDetail)
-				m.collectorResults = collectorResultsForSource(m.snapshot.unconsumedResults, m.collectorDetail)
-				if m.store != nil {
-					return m, collectorDetailCmd(m.store, m.collectorDetail)
-				}
-			} else if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
-				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
 			m.runnerDetail = ""
@@ -262,7 +283,14 @@ func (m boardModel) View() string {
 	if m.collectorDetail != "" {
 		return line + "\n\n" + renderCollectorDetail(m.collectorDetail, m.collectorItems, m.collectorResults, m.events, time.Now().UTC())
 	}
-	return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
+	switch m.activeTab {
+	case boardTabQueue:
+		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC())
+	case boardTabRunners:
+		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
+	default:
+		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
+	}
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {

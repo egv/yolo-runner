@@ -199,6 +199,28 @@ func TestRunnerImplementHandlerWritesExecutorResultThroughQueue(t *testing.T) {
 	}
 }
 
+func TestRunnerImplementResolverForPresetsPreservesEventSink(t *testing.T) {
+	eventSink := &runnerImplementRecordingEventSink{}
+	resolver := newRunnerImplementExecutorResolverForPresets(map[string]envpreset.Preset{
+		"dogfood": {
+			Workspace: envpreset.Workspace{Strategy: envpreset.WorkspaceStrategyPath, Path: t.TempDir()},
+			Landing:   envpreset.Landing{Type: envpreset.LandingTypeNone},
+			Agent: envpreset.Agent{
+				Backend: "claude",
+				Model:   "fixture",
+			},
+		},
+	}, eventSink)
+
+	resolved, err := resolver(context.Background(), workitem.Item{Preset: "dogfood"}, envpreset.Workspace{})
+	if err != nil {
+		t.Fatalf("resolver returned error: %v", err)
+	}
+	if resolved.Events != eventSink {
+		t.Fatalf("resolver dropped event sink: got %#v want %#v", resolved.Events, eventSink)
+	}
+}
+
 func marshalRunnerImplementPayload(t *testing.T, payload workitem.ImplementPayload) json.RawMessage {
 	t.Helper()
 
@@ -222,6 +244,12 @@ func (f *runnerImplementFakeAgent) Run(_ context.Context, request contracts.Runn
 	result := f.results[0]
 	f.results = f.results[1:]
 	return result, nil
+}
+
+type runnerImplementRecordingEventSink struct{}
+
+func (*runnerImplementRecordingEventSink) Emit(context.Context, contracts.Event) error {
+	return nil
 }
 
 type runnerImplementFakeVCS struct {
