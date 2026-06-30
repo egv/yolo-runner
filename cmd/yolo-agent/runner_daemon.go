@@ -149,13 +149,14 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		return err
 	}
 	handlers := defaultRunnerKindRegistry()
-	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
+	eventSink := defaultRunnerDaemonEventSink(cfg.runnerID)
+	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets, eventSink))
 
 	daemon, err := newRunnerDaemon(cfg, store, runners, runnerDaemonBuildOptions{
 		handlers:           handlers,
 		environmentPresets: environmentPresets,
 		materializer:       envpreset.MaterializeWorkspace,
-		eventSink:          defaultRunnerDaemonEventSink(cfg.runnerID),
+		eventSink:          eventSink,
 	})
 	if err != nil {
 		return err
