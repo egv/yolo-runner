@@ -102,7 +102,11 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		progress(contracts.RunnerProgress{Type: progressType, Message: normalized, Timestamp: time.Now().UTC()})
 	}
 	if a.runWithACP == nil {
-		err = RunWithACPAndProgress(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, onLineUpdate, progress, builtCommand...)
+		defaultLineUpdate := onLineUpdate
+		if progress != nil {
+			defaultLineUpdate = nil
+		}
+		err = RunWithACPAndProgress(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, defaultLineUpdate, progress, builtCommand...)
 	} else {
 		err = run(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, onLineUpdate, builtCommand...)
 	}
