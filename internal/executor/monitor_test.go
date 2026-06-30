@@ -16,7 +16,10 @@ func TestRunWithMonitoringEmitsHeartbeatAndProgressEvents(t *testing.T) {
 			Status: contracts.RunnerResultCompleted,
 		},
 		progress: []contracts.RunnerProgress{
-			{Type: "runner_output", Message: "line output", Metadata: map[string]string{"stream": "stdout"}},
+			{Type: "agent_text", Message: "line output", Metadata: map[string]string{"stream": "stdout"}},
+			{Type: "tool_invoked", Message: "go test ./..."},
+			{Type: "command_run", Message: "go test ./...", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+			{Type: "agent_blocked", Message: "stall warning"},
 		},
 	}
 	sink := &monitorRecordingSink{}
@@ -25,11 +28,14 @@ func TestRunWithMonitoringEmitsHeartbeatAndProgressEvents(t *testing.T) {
 		TaskID: "t-1",
 		Mode:   contracts.RunnerModeImplement,
 	}, MonitorEventContext{
-		TaskID:    "t-1",
-		TaskTitle: "Task 1",
-		WorkerID:  "worker-1",
-		ClonePath: "/tmp/clone",
-		QueuePos:  2,
+		TaskID:      "t-1",
+		TaskTitle:   "Task 1",
+		WorkerID:    "worker-1",
+		ClonePath:   "/tmp/clone",
+		QueuePos:    2,
+		Attempt:     2,
+		RetryCount:  1,
+		MaxAttempts: 3,
 	}, MonitorOptions{
 		HeartbeatInterval:    5 * time.Millisecond,
 		NoOutputWarningAfter: 100 * time.Millisecond,
@@ -42,18 +48,44 @@ func TestRunWithMonitoringEmitsHeartbeatAndProgressEvents(t *testing.T) {
 	}
 	events := sink.Events()
 
-	if got := eventsByType(events, contracts.EventTypeRunnerHeartbeat); len(got) == 0 {
+	heartbeats := eventsByType(events, contracts.EventTypeAgentHeartbeat)
+	if len(heartbeats) == 0 {
 		t.Fatalf("expected heartbeat events")
 	}
-	outputs := eventsByType(events, contracts.EventTypeRunnerOutput)
+	assertTopLevelAttemptFields(t, heartbeats[0], 2, 1, 3)
+	outputs := eventsByType(events, contracts.EventTypeAgentText)
 	if len(outputs) != 1 {
-		t.Fatalf("expected one runner output event, got %d", len(outputs))
+		t.Fatalf("expected one agent text event, got %d", len(outputs))
 	}
+	assertTopLevelAttemptFields(t, outputs[0], 2, 1, 3)
 	if outputs[0].TaskID != "t-1" || outputs[0].TaskTitle != "Task 1" || outputs[0].WorkerID != "worker-1" || outputs[0].ClonePath != "/tmp/clone" || outputs[0].QueuePos != 2 {
 		t.Fatalf("output event did not preserve monitor context: %#v", outputs[0])
 	}
 	if outputs[0].Message != "line output" || outputs[0].Metadata["stream"] != "stdout" {
 		t.Fatalf("unexpected output event payload: %#v", outputs[0])
+	}
+	commands := eventsByType(events, contracts.EventTypeCommandRun)
+	if len(commands) != 1 {
+		t.Fatalf("expected one command_run event, got %d", len(commands))
+	}
+	assertTopLevelAttemptFields(t, commands[0], 2, 1, 3)
+	if commands[0].Metadata["exit_code"] != "0" || commands[0].Metadata["duration_ms"] != "125" {
+		t.Fatalf("expected command_run to preserve exit_code and duration metadata, got %#v", commands[0])
+	}
+	blocked := eventsByType(events, contracts.EventTypeAgentBlocked)
+	if len(blocked) != 1 {
+		t.Fatalf("expected one agent_blocked event, got %d", len(blocked))
+	}
+	assertTopLevelAttemptFields(t, blocked[0], 2, 1, 3)
+	if blocked[0].Reason != contracts.BlockReasonOther {
+		t.Fatalf("expected default blocked reason other, got %q", blocked[0].Reason)
+	}
+}
+
+func assertTopLevelAttemptFields(t *testing.T, event contracts.Event, attempt int, retryCount int, maxAttempts int) {
+	t.Helper()
+	if event.Attempt != attempt || event.RetryCount != retryCount || event.MaxAttempts != maxAttempts {
+		t.Fatalf("expected top-level attempt fields %d/%d/%d, got %#v", attempt, retryCount, maxAttempts, event)
 	}
 }
 
@@ -128,9 +160,6 @@ func TestRunWithMonitoringPreservesCanonicalRunnerProgressTypes(t *testing.T) {
 		if got := eventsByType(sink.Events(), eventType); len(got) != 1 {
 			t.Fatalf("expected one %s event, got %d; events=%#v", eventType, len(got), sink.Events())
 		}
-	}
-	if got := eventsByType(sink.Events(), contracts.EventTypeRunnerProgress); len(got) != 0 {
-		t.Fatalf("canonical events must not be collapsed to runner_progress: %#v", got)
 	}
 }
 

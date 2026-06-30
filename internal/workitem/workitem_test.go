@@ -20,13 +20,13 @@ func TestKindValidation(t *testing.T) {
 	}
 
 	wantValues := map[Kind]string{
-		KindImplement:         "implement",
-		KindReview:            "review",
-		KindPreflight:         "preflight",
-		KindSplit:             "split",
-		KindPRReview:          "pr-review",
-		KindResolvePRComment:  "resolve-pr-comment",
-		KindFinalize:          "finalize",
+		KindImplement:        "implement",
+		KindReview:           "review",
+		KindPreflight:        "preflight",
+		KindSplit:            "split",
+		KindPRReview:         "pr-review",
+		KindResolvePRComment: "resolve-pr-comment",
+		KindFinalize:         "finalize",
 	}
 
 	for _, kind := range validKinds {

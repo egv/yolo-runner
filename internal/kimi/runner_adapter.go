@@ -2,12 +2,14 @@ package kimi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,9 +109,21 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		}
 		request.OnProgress(progress)
 	}
+	emitStructuredProgress := func(progress contracts.RunnerProgress) {
+		if request.OnProgress == nil {
+			return
+		}
+		if progress.Timestamp.IsZero() {
+			progress.Timestamp = a.now().UTC()
+		}
+		request.OnProgress(progress)
+	}
+	streamProgress := newKimiStreamProgressEmitter(emitStructuredProgress, a.now)
 
 	stdoutWriter := newLineWriter(stdoutFile, func(line string) {
-		emitProgress("stdout", line)
+		if !streamProgress.HandleLine(line) {
+			emitProgress("stdout", line)
+		}
 	})
 	stderrWriter := newLineWriter(stderrFile, func(line string) {
 		emitProgress("stderr", line)
@@ -243,6 +257,374 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 		}
 	}
 	return contracts.BuildRunnerArtifacts("kimi", request, result, extras)
+}
+
+type kimiStreamProgressEmitter struct {
+	emit         func(contracts.RunnerProgress)
+	now          func() time.Time
+	pendingTools map[string]kimiPendingTool
+}
+
+type kimiPendingTool struct {
+	ID      string
+	Name    string
+	Command string
+	Target  string
+}
+
+type kimiStreamEvent struct {
+	Type      string                     `json:"type"`
+	Subtype   string                     `json:"subtype"`
+	ID        string                     `json:"id"`
+	Name      string                     `json:"name"`
+	Input     map[string]any             `json:"input"`
+	ToolUseID string                     `json:"tool_use_id"`
+	IsError   bool                       `json:"is_error"`
+	Text      string                     `json:"text"`
+	Narration string                     `json:"narration"`
+	Message   json.RawMessage            `json:"message"`
+	Content   []kimiNestedContent        `json:"content"`
+	Usage     map[string]json.RawMessage `json:"usage"`
+}
+
+type kimiStreamMessage struct {
+	Text      string                     `json:"text"`
+	Narration string                     `json:"narration"`
+	Content   []kimiStreamContent        `json:"content"`
+	Usage     map[string]json.RawMessage `json:"usage"`
+}
+
+type kimiStreamContent struct {
+	Type      string              `json:"type"`
+	ID        string              `json:"id"`
+	Name      string              `json:"name"`
+	Input     map[string]any      `json:"input"`
+	ToolUseID string              `json:"tool_use_id"`
+	IsError   bool                `json:"is_error"`
+	Text      string              `json:"text"`
+	Narration string              `json:"narration"`
+	Content   []kimiNestedContent `json:"content"`
+}
+
+type kimiNestedContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func newKimiStreamProgressEmitter(emit func(contracts.RunnerProgress), now func() time.Time) *kimiStreamProgressEmitter {
+	if now == nil {
+		now = time.Now
+	}
+	return &kimiStreamProgressEmitter{
+		emit:         emit,
+		now:          now,
+		pendingTools: map[string]kimiPendingTool{},
+	}
+}
+
+func (e *kimiStreamProgressEmitter) HandleLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if e == nil || e.emit == nil || trimmed == "" || !strings.HasPrefix(trimmed, "{") {
+		return false
+	}
+	var event kimiStreamEvent
+	if err := json.Unmarshal([]byte(trimmed), &event); err != nil {
+		return false
+	}
+	message, messageText := kimiDecodeStreamMessage(event.Message)
+
+	handled := false
+	if e.emitTokenUsage(event.Usage) {
+		handled = true
+	}
+	if e.emitTokenUsage(message.Usage) {
+		handled = true
+	}
+	if e.emitBlockedEvent(event.Type, event.Subtype, messageText, message.Text, event.Text, event.Narration) {
+		handled = true
+	}
+	if !kimiIsBlockedEventType(event.Type, event.Subtype) {
+		if e.emitNarration(event.Text) || e.emitNarration(event.Narration) || e.emitNarration(message.Text) || e.emitNarration(message.Narration) {
+			handled = true
+		}
+	}
+
+	if event.Type == "tool_use" {
+		e.recordToolUse(kimiStreamContent{Type: "tool_use", ID: event.ID, Name: event.Name, Input: event.Input})
+		return true
+	}
+	if event.Type == "tool_result" {
+		e.emitToolResult(kimiStreamContent{
+			Type:      "tool_result",
+			ToolUseID: event.ToolUseID,
+			IsError:   event.IsError,
+			Text:      event.Text,
+			Content:   event.Content,
+		})
+		return true
+	}
+
+	for _, content := range message.Content {
+		if e.handleContent(content) {
+			handled = true
+		}
+	}
+	for _, content := range event.Content {
+		if text := strings.TrimSpace(content.Text); text != "" {
+			if e.emitNarration(text) {
+				handled = true
+			}
+		}
+	}
+	return handled || event.Type != ""
+}
+
+func kimiDecodeStreamMessage(raw json.RawMessage) (kimiStreamMessage, string) {
+	if len(raw) == 0 {
+		return kimiStreamMessage{}, ""
+	}
+	var message kimiStreamMessage
+	if err := json.Unmarshal(raw, &message); err == nil {
+		return message, strings.TrimSpace(message.Text)
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return kimiStreamMessage{Text: text}, strings.TrimSpace(text)
+	}
+	return kimiStreamMessage{}, ""
+}
+
+func (e *kimiStreamProgressEmitter) handleContent(content kimiStreamContent) bool {
+	switch content.Type {
+	case "text", "narration", "":
+		return e.emitNarration(content.Text) || e.emitNarration(content.Narration)
+	case "tool_use":
+		e.recordToolUse(content)
+		return true
+	case "tool_result":
+		e.emitToolResult(content)
+		return true
+	case "error", "denial":
+		return e.emitBlocked(strings.TrimSpace(content.Text), content.Type)
+	default:
+		return false
+	}
+}
+
+func (e *kimiStreamProgressEmitter) recordToolUse(content kimiStreamContent) {
+	id := strings.TrimSpace(content.ID)
+	name := strings.TrimSpace(content.Name)
+	if id == "" || name == "" {
+		return
+	}
+	e.pendingTools[id] = kimiPendingTool{
+		ID:      id,
+		Name:    name,
+		Command: kimiInputString(content.Input, "command", "cmd"),
+		Target:  kimiToolTarget(content.Input),
+	}
+}
+
+func (e *kimiStreamProgressEmitter) emitToolResult(content kimiStreamContent) {
+	id := strings.TrimSpace(content.ToolUseID)
+	if id == "" {
+		if content.IsError {
+			e.emitBlocked(resultText(content), "error")
+		}
+		return
+	}
+	tool, ok := e.pendingTools[id]
+	if !ok {
+		if content.IsError {
+			e.emitBlocked(resultText(content), "error")
+		}
+		return
+	}
+	delete(e.pendingTools, id)
+	if content.IsError {
+		e.emitBlocked(resultText(content), "error")
+	}
+	if strings.EqualFold(tool.Name, "bash") || strings.EqualFold(tool.Name, "shell") || strings.EqualFold(tool.Name, "command") {
+		e.emitCommandRun(tool, content)
+	}
+}
+
+func (e *kimiStreamProgressEmitter) emitCommandRun(tool kimiPendingTool, result kimiStreamContent) {
+	if strings.TrimSpace(tool.Command) == "" {
+		return
+	}
+	metadata := map[string]string{
+		"tool":    tool.Name,
+		"command": tool.Command,
+	}
+	if result.IsError {
+		metadata["outcome"] = "error"
+	} else {
+		metadata["outcome"] = "ok"
+	}
+	text := resultText(result)
+	if exitCode, ok := kimiExtractExitCode(text); ok {
+		metadata["exit_code"] = strconv.Itoa(exitCode)
+	}
+	if durationMS, ok := kimiExtractDurationMS(text); ok {
+		metadata["duration_ms"] = strconv.FormatInt(durationMS, 10)
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeCommandRun),
+		Message:   tool.Command,
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+}
+
+func (e *kimiStreamProgressEmitter) emitNarration(text string) bool {
+	message := normalizeLine(text)
+	if message == "" {
+		return false
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeAgentText),
+		Message:   message,
+		Metadata:  map[string]string{"source": "stdout"},
+		Timestamp: e.now().UTC(),
+	})
+	return true
+}
+
+func (e *kimiStreamProgressEmitter) emitBlockedEvent(eventType string, subtype string, candidates ...string) bool {
+	if !kimiIsBlockedEventType(eventType, subtype) {
+		return false
+	}
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	for _, candidate := range candidates {
+		if e.emitBlocked(candidate, eventType) {
+			return true
+		}
+	}
+	return e.emitBlocked(eventType, eventType)
+}
+
+func kimiIsBlockedEventType(eventType string, subtype string) bool {
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	subtype = strings.ToLower(strings.TrimSpace(subtype))
+	return eventType == "error" || eventType == "denial" || eventType == "denied" || subtype == "error" || subtype == "denial" || subtype == "denied"
+}
+
+func (e *kimiStreamProgressEmitter) emitBlocked(message string, reason string) bool {
+	message = normalizeLine(message)
+	if message == "" {
+		return false
+	}
+	metadata := map[string]string{}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		metadata["reason"] = reason
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeAgentBlocked),
+		Message:   message,
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+	return true
+}
+
+func (e *kimiStreamProgressEmitter) emitTokenUsage(usage map[string]json.RawMessage) bool {
+	if len(usage) == 0 {
+		return false
+	}
+	metadata := map[string]string{}
+	for key, raw := range usage {
+		value, ok := kimiJSONNumberString(raw)
+		if !ok {
+			continue
+		}
+		metadata[key] = value
+	}
+	if len(metadata) == 0 {
+		return false
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeTokenUsage),
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+	return true
+}
+
+func kimiInputString(input map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := input[key]
+		if !ok {
+			continue
+		}
+		if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func kimiToolTarget(input map[string]any) string {
+	return kimiInputString(input, "file_path", "path", "notebook_path", "url", "pattern")
+}
+
+func resultText(content kimiStreamContent) string {
+	var parts []string
+	if content.Text != "" {
+		parts = append(parts, content.Text)
+	}
+	for _, nested := range content.Content {
+		if nested.Text != "" {
+			parts = append(parts, nested.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+var kimiExitCodePattern = regexp.MustCompile(`(?im)\b(?:exit[_ ]code|Exit code)\s*:?\s*(-?\d+)\b`)
+var kimiDurationPattern = regexp.MustCompile(`(?im)\b(?:duration[_ ]ms|duration)\s*:?\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|millisecond(?:s)?|s|sec|second(?:s)?)?\b`)
+
+func kimiExtractExitCode(text string) (int, bool) {
+	matches := kimiExitCodePattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	value, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func kimiExtractDurationMS(text string) (int64, bool) {
+	matches := kimiDurationPattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	unit := "ms"
+	if len(matches) > 2 && strings.TrimSpace(matches[2]) != "" {
+		unit = strings.ToLower(matches[2])
+	}
+	if strings.HasPrefix(unit, "s") {
+		value *= 1000
+	}
+	return int64(value), true
+}
+
+func kimiJSONNumberString(raw json.RawMessage) (string, bool) {
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String(), true
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	}
+	return "", false
 }
 
 func hasStructuredPassVerdict(logPath string) bool {

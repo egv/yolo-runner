@@ -64,10 +64,10 @@ func TestCLIRunnerAdapterRunsKimiAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "runner_output" || updates[0].Message != "working line" {
+	if updates[0].Type != "agent_text" || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "runner_output" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != "agent_text" || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 
@@ -110,6 +110,116 @@ func TestCLIRunnerAdapterBuildsCommandFromConfiguredArgsTemplate(t *testing.T) {
 	expected := []string{"--backend=kimi", "--model", "kimi-k2", "--prompt", "implement feature", "--task-id=task-1", "--repo=" + repoRoot, "--mode=implement"}
 	if !reflect.DeepEqual(gotSpec.Args, expected) {
 		t.Fatalf("unexpected templated args: %#v", gotSpec.Args)
+	}
+}
+
+func TestCLIRunnerAdapterEmitsCanonicalEventsFromKimiJSONL(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("kimi-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"  "}],"usage":{"input_tokens":3,"output_tokens":5}}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"text","text":"working through it"},{"type":"tool_use","id":"toolu_1","name":"bash","input":{"command":"go test ./internal/kimi/"}}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":[{"type":"text","text":"exit_code: 0\nduration_ms: 321\nok"}]}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"denial","message":"permission required for network"}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-canonical",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	textEvents := findProgressByTypeAll(updates, contracts.EventTypeAgentText)
+	if len(textEvents) != 1 {
+		t.Fatalf("expected one non-empty agent_text event, got %#v", textEvents)
+	}
+	if textEvents[0].Message != "working through it" {
+		t.Fatalf("agent_text message = %q", textEvents[0].Message)
+	}
+
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/kimi/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" {
+		t.Fatalf("exit_code = %q", commandRun.Metadata["exit_code"])
+	}
+	if commandRun.Metadata["duration_ms"] != "321" {
+		t.Fatalf("duration_ms = %q", commandRun.Metadata["duration_ms"])
+	}
+
+	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
+	if tokenUsage == nil {
+		t.Fatalf("expected token_usage progress, got %#v", updates)
+	}
+	if tokenUsage.Metadata["input_tokens"] != "3" {
+		t.Fatalf("input_tokens = %q", tokenUsage.Metadata["input_tokens"])
+	}
+	if tokenUsage.Metadata["output_tokens"] != "5" {
+		t.Fatalf("output_tokens = %q", tokenUsage.Metadata["output_tokens"])
+	}
+
+	blocked := findProgressByType(updates, contracts.EventTypeAgentBlocked)
+	if blocked == nil {
+		t.Fatalf("expected agent_blocked progress, got %#v", updates)
+	}
+	if blocked.Message != "permission required for network" {
+		t.Fatalf("agent_blocked message = %q", blocked.Message)
+	}
+}
+
+func TestCLIRunnerAdapterEmitsCommandRunForFailedKimiCommandToolResult(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("kimi-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_fail","name":"bash","input":{"command":"go test ./internal/kimi/"}}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_fail","is_error":true,"content":[{"type":"text","text":"exit_code: 1\nduration_ms: 99\nFAIL"}]}]}}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-canonical-failed-command",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	blocked := findProgressByType(updates, contracts.EventTypeAgentBlocked)
+	if blocked == nil {
+		t.Fatalf("expected agent_blocked progress, got %#v", updates)
+	}
+	if blocked.Message != "exit_code: 1 duration_ms: 99 FAIL" {
+		t.Fatalf("agent_blocked message = %q", blocked.Message)
+	}
+
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress for failed command, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/kimi/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["outcome"] != "error" {
+		t.Fatalf("outcome = %q", commandRun.Metadata["outcome"])
+	}
+	if commandRun.Metadata["exit_code"] != "1" {
+		t.Fatalf("exit_code = %q", commandRun.Metadata["exit_code"])
+	}
+	if commandRun.Metadata["duration_ms"] != "99" {
+		t.Fatalf("duration_ms = %q", commandRun.Metadata["duration_ms"])
 	}
 }
 
@@ -229,4 +339,23 @@ func TestCLIRunnerAdapterMapsGenericErrorToFailed(t *testing.T) {
 	if !strings.Contains(result.Reason, "kimi failed") {
 		t.Fatalf("expected failure reason to contain kimi failed, got %q", result.Reason)
 	}
+}
+
+func findProgressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) *contracts.RunnerProgress {
+	for i := range updates {
+		if updates[i].Type == string(eventType) {
+			return &updates[i]
+		}
+	}
+	return nil
+}
+
+func findProgressByTypeAll(updates []contracts.RunnerProgress, eventType contracts.EventType) []contracts.RunnerProgress {
+	matches := []contracts.RunnerProgress{}
+	for _, update := range updates {
+		if update.Type == string(eventType) {
+			matches = append(matches, update)
+		}
+	}
+	return matches
 }

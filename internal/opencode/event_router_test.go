@@ -266,38 +266,38 @@ func (e *fakeRunnerEvent) RunnerEventTitle() string   { return e.title }
 func (e *fakeRunnerEvent) RunnerEventThought() string { return e.thought }
 func (e *fakeRunnerEvent) RunnerEventMessage() string { return e.message }
 
-// TestEventRouter_RunnerCmdStartedAppendsNewEntry verifies that runner_cmd_started
+// TestEventRouter_RunnerCmdStartedAppendsNewEntry verifies that tool_invoked
 // events append a new tool entry to the bubble store.
 func TestEventRouter_RunnerCmdStartedAppendsNewEntry(t *testing.T) {
 	store := NewLogBubbleStore()
 	router := NewEventRouter(store)
 
-	event := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Running Read"}
+	event := &fakeRunnerEvent{eventType: "tool_invoked", message: "⏳ Running Read"}
 	if err := router.RouteRunnerEvent(event); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	bubbles := store.GetBubbles()
 	if len(bubbles) != 1 {
-		t.Fatalf("expected 1 bubble after runner_cmd_started, got %d", len(bubbles))
+		t.Fatalf("expected 1 bubble after tool_invoked, got %d", len(bubbles))
 	}
 	if !containsString(bubbles[0], "⏳ Running Read") {
 		t.Errorf("expected bubble to contain message, got: %s", bubbles[0])
 	}
 }
 
-// TestEventRouter_RunnerCmdFinishedMutatesExistingEntry verifies that runner_cmd_finished
-// updates the last runner_cmd_started entry in place (same position, same count).
+// TestEventRouter_RunnerCmdFinishedMutatesExistingEntry verifies that command_run
+// updates the last tool_invoked entry in place (same position, same count).
 func TestEventRouter_RunnerCmdFinishedMutatesExistingEntry(t *testing.T) {
 	store := NewLogBubbleStore()
 	router := NewEventRouter(store)
 
-	startEvent := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Running Read"}
+	startEvent := &fakeRunnerEvent{eventType: "tool_invoked", message: "⏳ Running Read"}
 	if err := router.RouteRunnerEvent(startEvent); err != nil {
 		t.Fatalf("unexpected error routing started: %v", err)
 	}
 
-	finishEvent := &fakeRunnerEvent{eventType: "runner_cmd_finished", message: "✅ Running Read"}
+	finishEvent := &fakeRunnerEvent{eventType: "command_run", message: "✅ Running Read"}
 	if err := router.RouteRunnerEvent(finishEvent); err != nil {
 		t.Fatalf("unexpected error routing finished: %v", err)
 	}
@@ -320,12 +320,12 @@ func TestEventRouter_RunnerCmdOrderStabilityWithOtherBubbles(t *testing.T) {
 	// Add a regular log entry before the cmd
 	store.AddLogEntry("task started")
 
-	startEvent := &fakeRunnerEvent{eventType: "runner_cmd_started", message: "⏳ Reading"}
+	startEvent := &fakeRunnerEvent{eventType: "tool_invoked", message: "⏳ Reading"}
 	router.RouteRunnerEvent(startEvent)
 
 	store.AddLogEntry("other output")
 
-	finishEvent := &fakeRunnerEvent{eventType: "runner_cmd_finished", message: "✅ Reading"}
+	finishEvent := &fakeRunnerEvent{eventType: "command_run", message: "✅ Reading"}
 	router.RouteRunnerEvent(finishEvent)
 
 	bubbles := store.GetBubbles()

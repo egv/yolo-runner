@@ -95,9 +95,9 @@ func (er *EventRouter) RouteRunnerEvent(event RunnerEvent) error {
 	entry := strings.Join(parts, " ")
 
 	switch event.RunnerEventType() {
-	case "runner_cmd_started":
+	case "tool_invoked":
 		er.store.AppendRunnerCmdEntry(entry)
-	case "runner_cmd_finished":
+	case "command_run":
 		er.store.MutateLastRunnerCmdEntry(entry)
 	default:
 		er.store.AddLogEntry(entry)

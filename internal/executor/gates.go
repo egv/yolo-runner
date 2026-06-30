@@ -106,17 +106,7 @@ func RunQualityGate(ctx context.Context, task contracts.Task, deps GateDependenc
 			for key, value := range qualityMetadata {
 				warningMetadata[key] = value
 			}
-			_ = emitGateEvent(ctx, deps.Events, contracts.Event{
-				Type:      contracts.EventTypeRunnerWarning,
-				TaskID:    task.ID,
-				TaskTitle: task.Title,
-				WorkerID:  eventContext.WorkerID,
-				ClonePath: eventContext.ClonePath,
-				QueuePos:  eventContext.QueuePos,
-				Message:   "quality gate threshold overridden by --allow-low-quality",
-				Metadata:  warningMetadata,
-				Timestamp: time.Now().UTC(),
-			})
+			_ = emitGateEvent(ctx, deps.Events, buildAgentEvent(contracts.EventTypeAgentBlocked, task.ID, task.Title, eventContext.WorkerID, eventContext.ClonePath, eventContext.QueuePos, "quality gate threshold overridden by --allow-low-quality", warningMetadata, time.Now().UTC()))
 			return false, nil
 		}
 
@@ -204,17 +194,7 @@ func RunQualityGate(ctx context.Context, task contracts.Task, deps GateDependenc
 		for key, value := range qualityMetadata {
 			warningMetadata[key] = value
 		}
-		_ = emitGateEvent(ctx, deps.Events, contracts.Event{
-			Type:      contracts.EventTypeRunnerWarning,
-			TaskID:    task.ID,
-			TaskTitle: task.Title,
-			WorkerID:  eventContext.WorkerID,
-			ClonePath: eventContext.ClonePath,
-			QueuePos:  eventContext.QueuePos,
-			Message:   "quality gate threshold overridden by --allow-low-quality",
-			Metadata:  warningMetadata,
-			Timestamp: time.Now().UTC(),
-		})
+		_ = emitGateEvent(ctx, deps.Events, buildAgentEvent(contracts.EventTypeAgentBlocked, task.ID, task.Title, eventContext.WorkerID, eventContext.ClonePath, eventContext.QueuePos, "quality gate threshold overridden by --allow-low-quality", warningMetadata, time.Now().UTC()))
 		return false, nil
 	}
 

@@ -13,7 +13,7 @@ import (
 func TestWithClonedMetadataIsSafeAgainstProducerMutation(t *testing.T) {
 	metadata := map[string]string{"sequence": "0"}
 	event := Event{
-		Type:      EventTypeRunnerOutput,
+		Type:      EventTypeAgentText,
 		TaskID:    "task-1",
 		Message:   "line",
 		Metadata:  metadata,

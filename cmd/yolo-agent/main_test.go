@@ -1586,7 +1586,7 @@ func TestRunWithComponentsStreamCoalescesRunnerOutputByDefault(t *testing.T) {
 
 	repoRoot := initGitRepo(t)
 	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
-	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "runner_output", Message: "1"}, {Type: "runner_output", Message: "2"}, {Type: "runner_output", Message: "3"}, {Type: "runner_output", Message: "4"}}}
+	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "agent_text", Message: "1"}, {Type: "agent_text", Message: "2"}, {Type: "agent_text", Message: "3"}, {Type: "agent_text", Message: "4"}}}
 	cfg := runConfig{repoRoot: repoRoot, rootID: "root", stream: true, streamOutputInterval: time.Hour, streamOutputBuffer: 2}
 
 	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
@@ -1606,8 +1606,8 @@ func TestRunWithComponentsStreamCoalescesRunnerOutputByDefault(t *testing.T) {
 	}
 
 	out := string(data)
-	if got := strings.Count(out, `"type":"runner_output"`); got != 2 {
-		t.Fatalf("expected coalesced runner_output count=2, got %d output=%q", got, out)
+	if got := strings.Count(out, `"type":"agent_text"`); got != 2 {
+		t.Fatalf("expected coalesced agent_text count=2, got %d output=%q", got, out)
 	}
 	if !strings.Contains(out, `"coalesced_outputs":"1"`) {
 		t.Fatalf("expected coalescing metadata in output, got %q", out)
@@ -1627,7 +1627,7 @@ func TestRunWithComponentsVerboseStreamEmitsAllRunnerOutput(t *testing.T) {
 
 	repoRoot := initGitRepo(t)
 	mgr := &testTaskManager{tasks: []contracts.Task{{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen}}}
-	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "runner_output", Message: "1"}, {Type: "runner_output", Message: "2"}, {Type: "runner_output", Message: "3"}, {Type: "runner_output", Message: "4"}}}
+	runner := &progressRunner{updates: []contracts.RunnerProgress{{Type: "agent_text", Message: "1"}, {Type: "agent_text", Message: "2"}, {Type: "agent_text", Message: "3"}, {Type: "agent_text", Message: "4"}}}
 	cfg := runConfig{repoRoot: repoRoot, rootID: "root", stream: true, verboseStream: true, streamOutputInterval: time.Hour, streamOutputBuffer: 2}
 
 	runErr := runWithComponents(context.Background(), cfg, mgr, runner, nil)
@@ -1647,8 +1647,8 @@ func TestRunWithComponentsVerboseStreamEmitsAllRunnerOutput(t *testing.T) {
 	}
 
 	out := string(data)
-	if got := strings.Count(out, `"type":"runner_output"`); got != 4 {
-		t.Fatalf("expected full runner_output count=4, got %d output=%q", got, out)
+	if got := strings.Count(out, `"type":"agent_text"`); got != 4 {
+		t.Fatalf("expected full agent_text count=4, got %d output=%q", got, out)
 	}
 }
 
@@ -1813,12 +1813,12 @@ func TestMirrorEventSinkEmitDoesNotBlockWhenQueueFull(t *testing.T) {
 	block := make(chan struct{})
 	wrapped := newMirrorEventSink(blockingSink{block: block}, 1)
 
-	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
+	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
 		t.Fatalf("first emit failed: %v", err)
 	}
 
 	start := time.Now()
-	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeRunnerOutput, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
+	if err := wrapped.Emit(context.Background(), contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "t-1", Timestamp: time.Now().UTC()}); err != nil {
 		t.Fatalf("second emit failed: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 20*time.Millisecond {

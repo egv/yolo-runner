@@ -326,8 +326,8 @@ func TestNormalizeACPPromptResponseMaxTokensIsWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true for max_tokens")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerWarning) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentBlocked, progress.Type)
 	}
 	if progress.Message != "max_tokens" {
 		t.Fatalf("expected message 'max_tokens', got %q", progress.Message)
@@ -340,8 +340,8 @@ func TestNormalizeACPPromptResponseMaxTurnRequestsIsWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true for max_turn_requests")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerWarning) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentBlocked, progress.Type)
 	}
 	if progress.Message != "max_turn_requests" {
 		t.Fatalf("expected message 'max_turn_requests', got %q", progress.Message)
@@ -354,8 +354,8 @@ func TestNormalizeACPPromptResponseRefusalIsWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true for refusal")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerWarning) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentBlocked, progress.Type)
 	}
 	if progress.Message != "refusal" {
 		t.Fatalf("expected message 'refusal', got %q", progress.Message)
@@ -368,8 +368,8 @@ func TestNormalizeACPPromptResponseCancelledIsWarning(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true for cancelled")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerWarning) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerWarning, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentBlocked, progress.Type)
 	}
 	if progress.Message != "cancelled" {
 		t.Fatalf("expected message 'cancelled', got %q", progress.Message)

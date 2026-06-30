@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,9 +108,20 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		}
 		request.OnProgress(progress)
 	}
+	emitStructuredProgress := func(progress contracts.RunnerProgress) {
+		if request.OnProgress == nil {
+			return
+		}
+		if progress.Timestamp.IsZero() {
+			progress.Timestamp = a.now().UTC()
+		}
+		request.OnProgress(progress)
+	}
+	streamProgress := newClaudeStreamProgressEmitter(emitStructuredProgress, a.now)
 
 	stdoutWriter := newLineWriter(stdoutFile, func(line string) {
 		emitProgress("stdout", line)
+		streamProgress.HandleLine(line)
 	})
 	stderrWriter := newLineWriter(stderrFile, func(line string) {
 		emitProgress("stderr", line)
@@ -243,6 +255,288 @@ func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.Runn
 		}
 	}
 	return contracts.BuildRunnerArtifacts("claude", request, result, extras)
+}
+
+type claudeStreamProgressEmitter struct {
+	emit         func(contracts.RunnerProgress)
+	now          func() time.Time
+	pendingTools map[string]claudePendingTool
+}
+
+type claudePendingTool struct {
+	ID      string
+	Name    string
+	Command string
+	Target  string
+}
+
+type claudeStreamEvent struct {
+	Type      string                `json:"type"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Input     map[string]any        `json:"input"`
+	ToolUseID string                `json:"tool_use_id"`
+	IsError   bool                  `json:"is_error"`
+	Text      string                `json:"text"`
+	Content   []claudeNestedContent `json:"content"`
+	Message   struct {
+		Usage   map[string]json.RawMessage `json:"usage"`
+		Content []claudeStreamContent      `json:"content"`
+	} `json:"message"`
+}
+
+type claudeStreamContent struct {
+	Type      string                `json:"type"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
+	Input     map[string]any        `json:"input"`
+	ToolUseID string                `json:"tool_use_id"`
+	IsError   bool                  `json:"is_error"`
+	Text      string                `json:"text"`
+	Content   []claudeNestedContent `json:"content"`
+}
+
+type claudeNestedContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+func newClaudeStreamProgressEmitter(emit func(contracts.RunnerProgress), now func() time.Time) *claudeStreamProgressEmitter {
+	if now == nil {
+		now = time.Now
+	}
+	return &claudeStreamProgressEmitter{
+		emit:         emit,
+		now:          now,
+		pendingTools: map[string]claudePendingTool{},
+	}
+}
+
+func (e *claudeStreamProgressEmitter) HandleLine(line string) {
+	if e == nil || e.emit == nil || strings.TrimSpace(line) == "" || !strings.HasPrefix(strings.TrimSpace(line), "{") {
+		return
+	}
+	var event claudeStreamEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
+	}
+	if event.Type == "tool_use" {
+		e.recordToolUse(claudeStreamContent{
+			Type:  "tool_use",
+			ID:    event.ID,
+			Name:  event.Name,
+			Input: event.Input,
+		})
+		return
+	}
+	if event.Type == "tool_result" {
+		e.emitToolResult(claudeStreamContent{
+			Type:      "tool_result",
+			ToolUseID: event.ToolUseID,
+			IsError:   event.IsError,
+			Text:      event.Text,
+			Content:   event.Content,
+		})
+		return
+	}
+	if event.Type != "assistant" {
+		return
+	}
+	e.emitTokenUsage(event.Message.Usage)
+	for _, content := range event.Message.Content {
+		switch content.Type {
+		case "tool_use":
+			e.recordToolUse(content)
+		case "tool_result":
+			e.emitToolResult(content)
+		}
+	}
+}
+
+func (e *claudeStreamProgressEmitter) recordToolUse(content claudeStreamContent) {
+	id := strings.TrimSpace(content.ID)
+	name := strings.TrimSpace(content.Name)
+	if id == "" || name == "" {
+		return
+	}
+	e.pendingTools[id] = claudePendingTool{
+		ID:      id,
+		Name:    name,
+		Command: claudeInputString(content.Input, "command"),
+		Target:  claudeToolTarget(content.Input),
+	}
+}
+
+func (e *claudeStreamProgressEmitter) emitToolResult(content claudeStreamContent) {
+	id := strings.TrimSpace(content.ToolUseID)
+	if id == "" {
+		return
+	}
+	tool, ok := e.pendingTools[id]
+	if !ok {
+		return
+	}
+	delete(e.pendingTools, id)
+	if strings.EqualFold(tool.Name, "bash") {
+		e.emitCommandRun(tool, content)
+		return
+	}
+	e.emitToolInvoked(tool, content)
+}
+
+func (e *claudeStreamProgressEmitter) emitCommandRun(tool claudePendingTool, result claudeStreamContent) {
+	if strings.TrimSpace(tool.Command) == "" {
+		return
+	}
+	metadata := map[string]string{
+		"tool":    tool.Name,
+		"command": tool.Command,
+	}
+	if exitCode, ok := claudeExtractExitCode(resultText(result)); ok {
+		metadata["exit_code"] = strconv.Itoa(exitCode)
+	}
+	if durationMS, ok := claudeExtractDurationMS(resultText(result)); ok {
+		metadata["duration_ms"] = strconv.FormatInt(durationMS, 10)
+	}
+	if result.IsError {
+		metadata["outcome"] = "error"
+	} else {
+		metadata["outcome"] = "ok"
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeCommandRun),
+		Message:   tool.Command,
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+}
+
+func (e *claudeStreamProgressEmitter) emitToolInvoked(tool claudePendingTool, result claudeStreamContent) {
+	metadata := map[string]string{
+		"tool":    tool.Name,
+		"outcome": claudeToolOutcome(result),
+	}
+	if strings.TrimSpace(tool.Target) != "" {
+		metadata["target"] = tool.Target
+		metadata["path"] = tool.Target
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeToolInvoked),
+		Message:   strings.TrimSpace(tool.Name),
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+}
+
+func (e *claudeStreamProgressEmitter) emitTokenUsage(usage map[string]json.RawMessage) {
+	if len(usage) == 0 {
+		return
+	}
+	metadata := map[string]string{}
+	for key, raw := range usage {
+		value, ok := claudeJSONNumberString(raw)
+		if !ok {
+			continue
+		}
+		metadata[key] = value
+	}
+	if len(metadata) == 0 {
+		return
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeTokenUsage),
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+}
+
+func claudeInputString(input map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := input[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return typed
+			}
+		}
+	}
+	return ""
+}
+
+func claudeToolTarget(input map[string]any) string {
+	return claudeInputString(input, "file_path", "path", "notebook_path", "url", "pattern")
+}
+
+func resultText(content claudeStreamContent) string {
+	var parts []string
+	if content.Text != "" {
+		parts = append(parts, content.Text)
+	}
+	for _, nested := range content.Content {
+		if nested.Text != "" {
+			parts = append(parts, nested.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func claudeToolOutcome(result claudeStreamContent) string {
+	if !result.IsError {
+		return "ok"
+	}
+	if stdinLooksLikePermissionDenied(resultText(result)) {
+		return "denied"
+	}
+	return "error"
+}
+
+var claudeExitCodePattern = regexp.MustCompile(`(?im)\b(?:exit[_ ]code|Exit code)\s*:?\s*(-?\d+)\b`)
+var claudeDurationPattern = regexp.MustCompile(`(?im)\b(?:duration[_ ]ms|duration)\s*:?\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|millisecond(?:s)?|s|sec|second(?:s)?)?\b`)
+
+func claudeExtractExitCode(text string) (int, bool) {
+	matches := claudeExitCodePattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	value, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func claudeExtractDurationMS(text string) (int64, bool) {
+	matches := claudeDurationPattern.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(matches[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	unit := "ms"
+	if len(matches) > 2 && strings.TrimSpace(matches[2]) != "" {
+		unit = strings.ToLower(matches[2])
+	}
+	if strings.HasPrefix(unit, "s") {
+		value *= 1000
+	}
+	return int64(value), true
+}
+
+func claudeJSONNumberString(raw json.RawMessage) (string, bool) {
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String(), true
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return strconv.FormatFloat(value, 'f', -1, 64), true
+	}
+	return "", false
 }
 
 func hasStructuredPassVerdict(logPath string) bool {

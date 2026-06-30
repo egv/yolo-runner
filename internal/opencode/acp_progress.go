@@ -262,7 +262,7 @@ func NormalizeACPPromptResponse(resp *acp.PromptResponse) (contracts.RunnerProgr
 	case acp.StopReasonEndTurn:
 		progressType = contracts.EventTypeAgentFinished
 	case acp.StopReasonMaxTokens, acp.StopReasonMaxTurnRequests, acp.StopReasonRefusal, acp.StopReasonCancelled:
-		progressType = contracts.EventTypeRunnerWarning
+		progressType = contracts.EventTypeAgentBlocked
 	default:
 		return contracts.RunnerProgress{}, false
 	}

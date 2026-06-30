@@ -64,15 +64,15 @@ Persisted env loading path used by Gemini CLI docs:
 
 Proposed yolo-runner mapping from Gemini stream output (aligned to existing event contract):
 
-- `init` -> `runner_progress`
-- `message` -> `runner_output`
-- `message` thought/reasoning payloads -> `runner_progress` with `metadata["phase"]=thought`
-- `tool_use` -> `runner_progress` with `metadata["phase"]=tool_call`
-- `tool_result` -> `runner_output` with `metadata["phase"]=tool_result`
-- `error` -> `runner_warning`
-- `result` -> emit final `runner_output` containing `result` payload and follow with
-  `runner_finished` metadata (`result: completed`, `reason: result`) for completion.
-- `runner_progress` metadata should include a `reason` field for lifecycle transitions like `init`, `tool_call`, `tool_result`, and `thought`.
+- `init` -> `agent_progress`
+- `message` -> `agent_text`
+- `message` thought/reasoning payloads -> `agent_progress` with `metadata["phase"]=thought`
+- `tool_use` -> `agent_progress` with `metadata["phase"]=tool_call`
+- `tool_result` -> `agent_text` with `metadata["phase"]=tool_result`
+- `error` -> `agent_blocked`
+- `result` -> emit final `agent_text` containing `result` payload and follow with
+  `agent_finished` metadata (`result: completed`, `reason: result`) for completion.
+- `agent_progress` metadata should include a `reason` field for lifecycle transitions like `init`, `tool_call`, `tool_result`, and `thought`.
 
 There is no `runner_tool_call` or `runner_completion` event in the current yolo-runner schema, so implementers must not emit those types directly.
 

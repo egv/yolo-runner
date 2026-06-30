@@ -438,6 +438,18 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 	if stdout == nil {
 		return errors.New("claude stdout pipe is nil")
 	}
+	streamProgress := newClaudeStreamProgressEmitter(func(progress contracts.RunnerProgress) {
+		if req.EventSink == nil {
+			return
+		}
+		_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
+			Type:      contracts.TaskSessionEventType(progress.Type),
+			SessionID: s.id,
+			Message:   progress.Message,
+			Timestamp: progress.Timestamp,
+			Metadata:  progress.Metadata,
+		})
+	}, time.Now)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -477,6 +489,7 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 		if s.logFile != nil {
 			_, _ = fmt.Fprintf(s.logFile, "%s\n", line)
 		}
+		streamProgress.HandleLine(string(line))
 		switch msg.Type {
 		case "result":
 			if msg.Subtype == "success" {

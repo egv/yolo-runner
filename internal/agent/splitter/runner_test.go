@@ -161,7 +161,7 @@ func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
 	progress := make([]contracts.RunnerProgress, 0, len(chunks))
 	for _, chunk := range chunks {
 		progress = append(progress, contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: chunk,
 		})
 	}
@@ -183,6 +183,41 @@ func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
 	}
 }
 
+func TestRunnerNormalizesCommandLifecycleToSingleCommandRun(t *testing.T) {
+	output := strictJSONOutputFixture(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"none"}),
+	)
+	agent := &fakeSplitterAgentRunner{progress: []contracts.RunnerProgress{
+		{Type: string(contracts.EventTypeToolInvoked), Message: "cmd start"},
+		{Type: string(contracts.EventTypeCommandRun), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+		{Type: string(contracts.EventTypeAgentText), Message: output},
+	}}
+	runner := NewRunner(agent)
+	var progress []contracts.RunnerProgress
+
+	_, err := runner.Run(context.Background(), RunInput{
+		Task:       contracts.Task{ID: "parent-123", Title: "Implement broad tracker automation", Status: contracts.TaskStatusOpen},
+		QueueRoot:  contracts.Task{ID: "root-1", Title: "Tracker automation", Status: contracts.TaskStatusOpen},
+		OnProgress: func(event contracts.RunnerProgress) { progress = append(progress, event) },
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	var commands []contracts.RunnerProgress
+	for _, event := range progress {
+		if event.Type == string(contracts.EventTypeCommandRun) {
+			commands = append(commands, event)
+		}
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one command_run progress event, got %d: %#v", len(commands), progress)
+	}
+	if commands[0].Message != "cmd finish" || commands[0].Metadata["exit_code"] != "0" || commands[0].Metadata["duration_ms"] != "125" {
+		t.Fatalf("command_run did not preserve finished payload: %#v", commands[0])
+	}
+}
+
 type fakeSplitterAgentRunner struct {
 	output   string
 	progress []contracts.RunnerProgress
@@ -193,7 +228,7 @@ func (f *fakeSplitterAgentRunner) Run(_ context.Context, request contracts.Runne
 	f.requests = append(f.requests, request)
 	if request.OnProgress != nil {
 		request.OnProgress(contracts.RunnerProgress{
-			Type:     string(contracts.EventTypeRunnerOutput),
+			Type:     string(contracts.EventTypeAgentText),
 			Message:  "debug should be ignored",
 			Metadata: map[string]string{"source": "stderr"},
 		})
@@ -204,7 +239,7 @@ func (f *fakeSplitterAgentRunner) Run(_ context.Context, request contracts.Runne
 			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 		}
 		request.OnProgress(contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: f.output,
 		})
 	}

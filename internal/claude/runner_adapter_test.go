@@ -65,10 +65,10 @@ func TestCLIRunnerAdapterRunsClaudeAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "runner_output" || updates[0].Message != "working line" {
+	if updates[0].Type != "agent_text" || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "runner_output" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != "agent_text" || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 
@@ -114,6 +114,220 @@ func TestCLIRunnerAdapterBuildsCommandFromConfiguredArgsTemplate(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterEmitsCommandRunFromClaudeBashToolResult(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"go test ./internal/claude/"}}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":[{"type":"text","text":"exit_code: 0\nduration_ms: 1234\nok"}]}]}}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-command",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/claude/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" {
+		t.Fatalf("exit_code = %q", commandRun.Metadata["exit_code"])
+	}
+	if commandRun.Metadata["duration_ms"] != "1234" {
+		t.Fatalf("duration_ms = %q", commandRun.Metadata["duration_ms"])
+	}
+}
+
+func TestCLIRunnerAdapterEmitsToolInvokedFromClaudeEditToolResult(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Edit","input":{"file_path":"internal/claude/runner_adapter.go"}}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":false,"content":[{"type":"text","text":"updated"}]}]}}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-tool",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	toolInvoked := findProgressByType(updates, contracts.EventTypeToolInvoked)
+	if toolInvoked == nil {
+		t.Fatalf("expected tool_invoked progress, got %#v", updates)
+	}
+	if toolInvoked.Metadata["tool"] != "Edit" {
+		t.Fatalf("tool = %q", toolInvoked.Metadata["tool"])
+	}
+	if toolInvoked.Metadata["target"] != "internal/claude/runner_adapter.go" {
+		t.Fatalf("target = %q", toolInvoked.Metadata["target"])
+	}
+	if toolInvoked.Metadata["outcome"] != "ok" {
+		t.Fatalf("outcome = %q", toolInvoked.Metadata["outcome"])
+	}
+}
+
+func TestCLIRunnerAdapterEmitsProgressFromTopLevelClaudeToolResults(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"go test ./internal/claude/"}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"tool_result","tool_use_id":"toolu_bash","is_error":false,"content":[{"type":"text","text":"exit_code: 0\nduration_ms: 250\nok"}]}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"tool_use","id":"toolu_edit","name":"Edit","input":{"file_path":"internal/claude/runner_adapter.go"}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, `{"type":"tool_result","tool_use_id":"toolu_edit","is_error":false,"content":[{"type":"text","text":"updated"}]}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-top-level-tools",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/claude/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" {
+		t.Fatalf("exit_code = %q", commandRun.Metadata["exit_code"])
+	}
+
+	toolInvoked := findProgressByType(updates, contracts.EventTypeToolInvoked)
+	if toolInvoked == nil {
+		t.Fatalf("expected tool_invoked progress, got %#v", updates)
+	}
+	if toolInvoked.Metadata["tool"] != "Edit" {
+		t.Fatalf("tool = %q", toolInvoked.Metadata["tool"])
+	}
+	if toolInvoked.Metadata["target"] != "internal/claude/runner_adapter.go" {
+		t.Fatalf("target = %q", toolInvoked.Metadata["target"])
+	}
+	if toolInvoked.Metadata["outcome"] != "ok" {
+		t.Fatalf("outcome = %q", toolInvoked.Metadata["outcome"])
+	}
+}
+
+func TestCLIRunnerAdapterEmitsTokenUsageFromClaudeAssistantUsage(t *testing.T) {
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"usage":{"input_tokens":42,"output_tokens":7},"content":[{"type":"text","text":"done"}]}}`+"\n")
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-usage",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
+	if tokenUsage == nil {
+		t.Fatalf("expected token_usage progress, got %#v", updates)
+	}
+	if tokenUsage.Metadata["input_tokens"] != "42" {
+		t.Fatalf("input_tokens = %q", tokenUsage.Metadata["input_tokens"])
+	}
+	if tokenUsage.Metadata["output_tokens"] != "7" {
+		t.Fatalf("output_tokens = %q", tokenUsage.Metadata["output_tokens"])
+	}
+}
+
+func TestSessionRunnerAdapterEmitsCommandRunFromClaudeBashToolResult(t *testing.T) {
+	binary := writeClaudeFixture(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"go test ./internal/claude/"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":[{"type":"text","text":"exit_code: 0\nduration_ms: 1234\nok"}]}]}}`,
+		`{"type":"result","subtype":"success"}`,
+	)
+	updates := runSessionAdapterFixture(t, binary)
+
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/claude/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" {
+		t.Fatalf("exit_code = %q", commandRun.Metadata["exit_code"])
+	}
+	if commandRun.Metadata["duration_ms"] != "1234" {
+		t.Fatalf("duration_ms = %q", commandRun.Metadata["duration_ms"])
+	}
+}
+
+func TestSessionRunnerAdapterEmitsToolInvokedFromClaudeEditToolResult(t *testing.T) {
+	binary := writeClaudeFixture(t,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Edit","input":{"file_path":"internal/claude/runner_adapter.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","is_error":false,"content":[{"type":"text","text":"updated"}]}]}}`,
+		`{"type":"result","subtype":"success"}`,
+	)
+	updates := runSessionAdapterFixture(t, binary)
+
+	toolInvoked := findProgressByType(updates, contracts.EventTypeToolInvoked)
+	if toolInvoked == nil {
+		t.Fatalf("expected tool_invoked progress, got %#v", updates)
+	}
+	if toolInvoked.Metadata["tool"] != "Edit" {
+		t.Fatalf("tool = %q", toolInvoked.Metadata["tool"])
+	}
+	if toolInvoked.Metadata["target"] != "internal/claude/runner_adapter.go" {
+		t.Fatalf("target = %q", toolInvoked.Metadata["target"])
+	}
+	if toolInvoked.Metadata["outcome"] != "ok" {
+		t.Fatalf("outcome = %q", toolInvoked.Metadata["outcome"])
+	}
+}
+
+func TestSessionRunnerAdapterEmitsTokenUsageFromClaudeAssistantUsage(t *testing.T) {
+	binary := writeClaudeFixture(t,
+		`{"type":"assistant","message":{"usage":{"input_tokens":42,"output_tokens":7},"content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"result","subtype":"success"}`,
+	)
+	updates := runSessionAdapterFixture(t, binary)
+
+	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
+	if tokenUsage == nil {
+		t.Fatalf("expected token_usage progress, got %#v", updates)
+	}
+	if tokenUsage.Metadata["input_tokens"] != "42" {
+		t.Fatalf("input_tokens = %q", tokenUsage.Metadata["input_tokens"])
+	}
+	if tokenUsage.Metadata["output_tokens"] != "7" {
+		t.Fatalf("output_tokens = %q", tokenUsage.Metadata["output_tokens"])
+	}
+}
+
 func TestCLIRunnerAdapterSetsReviewReadyOnStructuredPassVerdict(t *testing.T) {
 	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
 		_, _ = io.WriteString(spec.Stdout, "REVIEW_VERDICT: pass\n")
@@ -135,6 +349,53 @@ func TestCLIRunnerAdapterSetsReviewReadyOnStructuredPassVerdict(t *testing.T) {
 	if !result.ReviewReady {
 		t.Fatalf("expected ReviewReady=true for pass verdict")
 	}
+}
+
+func findProgressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) *contracts.RunnerProgress {
+	for i := range updates {
+		if updates[i].Type == string(eventType) {
+			return &updates[i]
+		}
+	}
+	return nil
+}
+
+func writeClaudeFixture(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "claude-fixture.sh")
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\n")
+	for _, line := range lines {
+		script.WriteString("printf '%s\\n' '")
+		script.WriteString(strings.ReplaceAll(line, "'", "'\\''"))
+		script.WriteString("'\n")
+	}
+	script.WriteString("sleep 0.2\n")
+	if err := os.WriteFile(path, []byte(script.String()), 0o755); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+func runSessionAdapterFixture(t *testing.T, binary string) []contracts.RunnerProgress {
+	t.Helper()
+	updates := []contracts.RunnerProgress{}
+	adapter := NewSessionRunnerAdapter(binary)
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-session",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("status = %s, reason = %q, updates = %#v", result.Status, result.Reason, updates)
+	}
+	return updates
 }
 
 func TestCLIRunnerAdapterLeavesReviewReadyFalseOnStructuredFailVerdict(t *testing.T) {
@@ -254,7 +515,7 @@ func TestStdinTaskSessionExecuteDropsEmptyAssistantText(t *testing.T) {
 		t.Fatalf("Execute() = %v; want nil", err)
 	}
 	for _, p := range progress {
-		if p.Type == string(contracts.EventTypeAgentText) || (p.Type == string(contracts.EventTypeRunnerOutput) && strings.TrimSpace(p.Message) == "") {
+		if p.Type == string(contracts.EventTypeAgentText) || (p.Type == string(contracts.EventTypeAgentText) && strings.TrimSpace(p.Message) == "") {
 			t.Fatalf("empty agent text/output should be dropped, got progress=%#v", progress)
 		}
 	}
