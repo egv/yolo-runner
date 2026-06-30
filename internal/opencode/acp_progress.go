@@ -54,7 +54,7 @@ func NormalizeACPProgressNotification(notification *acp.SessionNotification) (co
 			return contracts.RunnerProgress{}, false
 		}
 		return contracts.RunnerProgress{
-			Type:      string(contracts.EventTypeRunnerOutput),
+			Type:      string(contracts.EventTypeAgentText),
 			Message:   text,
 			Metadata:  sessionMetadata(sessionID),
 			Timestamp: now,
@@ -70,7 +70,7 @@ func NormalizeACPProgressNotification(notification *acp.SessionNotification) (co
 			return contracts.RunnerProgress{}, false
 		}
 		return contracts.RunnerProgress{
-			Type:      string(contracts.EventTypeRunnerOutput),
+			Type:      string(contracts.EventTypeAgentText),
 			Message:   text,
 			Metadata:  sessionMetadata(sessionID),
 			Timestamp: now,
@@ -79,7 +79,7 @@ func NormalizeACPProgressNotification(notification *acp.SessionNotification) (co
 
 	if update.GetPlan() != nil {
 		return contracts.RunnerProgress{
-			Type:      string(contracts.EventTypeRunnerProgress),
+			Type:      string(contracts.EventTypeAgentProgress),
 			Message:   "plan",
 			Metadata:  sessionMetadata(sessionID),
 			Timestamp: now,
@@ -91,13 +91,13 @@ func NormalizeACPProgressNotification(notification *acp.SessionNotification) (co
 
 func toolCallProgressType(status *acp.ToolCallStatus) contracts.EventType {
 	if status == nil {
-		return contracts.EventTypeRunnerCommandStarted
+		return contracts.EventTypeToolInvoked
 	}
 	switch *status {
 	case acp.ToolCallStatusCompleted, acp.ToolCallStatusFailed:
-		return contracts.EventTypeRunnerCommandFinished
+		return contracts.EventTypeCommandRun
 	default:
-		return contracts.EventTypeRunnerCommandStarted
+		return contracts.EventTypeToolInvoked
 	}
 }
 
@@ -147,9 +147,9 @@ func NormalizeACPPromptResponse(resp *acp.PromptResponse) (contracts.RunnerProgr
 	var progressType contracts.EventType
 	switch resp.StopReason {
 	case acp.StopReasonEndTurn:
-		progressType = contracts.EventTypeRunnerCommandFinished
+		progressType = contracts.EventTypeCommandRun
 	case acp.StopReasonMaxTokens, acp.StopReasonMaxTurnRequests, acp.StopReasonRefusal, acp.StopReasonCancelled:
-		progressType = contracts.EventTypeRunnerWarning
+		progressType = contracts.EventTypeAgentBlocked
 	default:
 		return contracts.RunnerProgress{}, false
 	}

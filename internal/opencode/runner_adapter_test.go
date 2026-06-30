@@ -549,7 +549,7 @@ func TestCLIRunnerAdapterForwardsACPUpdatesToProgressCallback(t *testing.T) {
 	if len(seen) != 3 {
 		t.Fatalf("unexpected forwarded updates: %#v", seen)
 	}
-	if seenTypes[0] != "runner_cmd_started" || seenTypes[1] != "runner_output" || seenTypes[2] != "runner_cmd_finished" {
+	if seenTypes[0] != "tool_invoked" || seenTypes[1] != "agent_text" || seenTypes[2] != "command_run" {
 		t.Fatalf("unexpected forwarded update types: %#v", seenTypes)
 	}
 }
@@ -557,8 +557,8 @@ func TestCLIRunnerAdapterForwardsACPUpdatesToProgressCallback(t *testing.T) {
 func TestNormalizeACPUpdateLineRedactsAndTruncates(t *testing.T) {
 	line := "output token sk-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ more text"
 	normalized, updateType := normalizeACPUpdateLine(line)
-	if updateType != "runner_output" {
-		t.Fatalf("expected runner_output, got %q", updateType)
+	if updateType != "agent_text" {
+		t.Fatalf("expected agent_text, got %q", updateType)
 	}
 	if strings.Contains(normalized, "sk-abcdefghijklmnopqrstuvwxyz") {
 		t.Fatalf("expected token to be redacted, got %q", normalized)
@@ -575,8 +575,8 @@ func TestNormalizeACPUpdateLineClassifiesPermissionRequestsAsWarnings(t *testing
 	if normalized != "request permission allow" {
 		t.Fatalf("unexpected normalized line %q", normalized)
 	}
-	if updateType != "runner_warning" {
-		t.Fatalf("expected runner_warning for permission request, got %q", updateType)
+	if updateType != "agent_blocked" {
+		t.Fatalf("expected agent_blocked for permission request, got %q", updateType)
 	}
 }
 

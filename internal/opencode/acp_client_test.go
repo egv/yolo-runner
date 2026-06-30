@@ -696,8 +696,8 @@ func TestACPClientRequestPermissionEmitsApprovalEventToSink(t *testing.T) {
 	})
 
 	client := &acpClient{
-		handler:         NewACPHandler("issue-1", "log", nil),
-		taskSessionID:   "issue-1",
+		handler:       NewACPHandler("issue-1", "log", nil),
+		taskSessionID: "issue-1",
 	}
 	client.setEventSink(sink)
 

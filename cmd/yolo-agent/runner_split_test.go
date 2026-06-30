@@ -229,7 +229,7 @@ func (f *runnerSplitFakeAgentRunner) Run(_ context.Context, request contracts.Ru
 	f.requests = append(f.requests, request)
 	if request.OnProgress != nil {
 		request.OnProgress(contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: f.output,
 		})
 	}

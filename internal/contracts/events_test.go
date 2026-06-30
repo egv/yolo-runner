@@ -14,7 +14,7 @@ import (
 
 func TestMarshalEventJSONLStableOrder(t *testing.T) {
 	e := contracts.Event{
-		Type:      contracts.EventTypeRunnerFinished,
+		Type:      contracts.EventTypeAgentFinished,
 		TaskID:    "task-42",
 		Message:   "runner completed",
 		Metadata:  map[string]string{"mode": "implement", "status": "completed"},
@@ -26,7 +26,7 @@ func TestMarshalEventJSONLStableOrder(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
-	expected := `{"type":"runner_finished","task_id":"task-42","message":"runner completed","metadata":{"mode":"implement","status":"completed"},"ts":"2026-02-09T12:30:00Z"}`
+	expected := `{"type":"agent_finished","task_id":"task-42","message":"runner completed","metadata":{"mode":"implement","status":"completed"},"ts":"2026-02-09T12:30:00Z"}`
 	if strings.TrimSpace(line) != expected {
 		t.Fatalf("unexpected json line\nexpected: %s\nactual:   %s", expected, strings.TrimSpace(line))
 	}
@@ -62,7 +62,7 @@ func TestMarshalEventJSONLIncludesTaskTitleWhenPresent(t *testing.T) {
 
 func TestMarshalEventJSONLIncludesParallelContextWhenPresent(t *testing.T) {
 	e := contracts.Event{
-		Type:      contracts.EventTypeRunnerStarted,
+		Type:      contracts.EventTypeAgentStarted,
 		TaskID:    "task-9",
 		TaskTitle: "Parallel execution",
 		WorkerID:  "worker-2",
@@ -75,7 +75,7 @@ func TestMarshalEventJSONLIncludesParallelContextWhenPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	expected := `{"type":"runner_started","task_id":"task-9","task_title":"Parallel execution","worker_id":"worker-2","clone_path":"/tmp/clones/task-9","queue_pos":3,"ts":"2026-02-10T13:05:00Z"}`
+	expected := `{"type":"agent_started","task_id":"task-9","task_title":"Parallel execution","worker_id":"worker-2","clone_path":"/tmp/clones/task-9","queue_pos":3,"ts":"2026-02-10T13:05:00Z"}`
 	if strings.TrimSpace(line) != expected {
 		t.Fatalf("unexpected json line\nexpected: %s\nactual:   %s", expected, strings.TrimSpace(line))
 	}

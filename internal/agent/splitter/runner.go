@@ -95,17 +95,17 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 
 func normalizeAgentProgress(progress contracts.RunnerProgress) (contracts.RunnerProgress, bool) {
 	switch contracts.EventType(strings.TrimSpace(progress.Type)) {
-	case contracts.EventTypeRunnerOutput:
+	case contracts.EventTypeAgentText:
 		progress.Type = string(contracts.EventTypeAgentText)
-	case contracts.EventTypeRunnerWarning:
+	case contracts.EventTypeAgentBlocked:
 		progress.Type = string(contracts.EventTypeAgentBlocked)
-	case contracts.EventTypeRunnerCommandStarted:
+	case contracts.EventTypeToolInvoked:
 		return contracts.RunnerProgress{}, false
-	case contracts.EventTypeRunnerCommandFinished:
+	case contracts.EventTypeCommandRun:
 		progress.Type = string(contracts.EventTypeCommandRun)
-	case contracts.EventTypeRunnerProgress:
+	case contracts.EventTypeAgentProgress:
 		progress.Type = string(contracts.EventTypeAgentProgress)
-	case contracts.EventTypeRunnerHeartbeat:
+	case contracts.EventTypeAgentHeartbeat:
 		progress.Type = string(contracts.EventTypeAgentHeartbeat)
 	}
 	return progress, true

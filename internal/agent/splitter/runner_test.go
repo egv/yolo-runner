@@ -188,9 +188,9 @@ func TestRunnerNormalizesCommandLifecycleToSingleCommandRun(t *testing.T) {
 		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"none"}),
 	)
 	agent := &fakeSplitterAgentRunner{progress: []contracts.RunnerProgress{
-		{Type: string(contracts.EventTypeRunnerCommandStarted), Message: "cmd start"},
-		{Type: string(contracts.EventTypeRunnerCommandFinished), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
-		{Type: string(contracts.EventTypeRunnerOutput), Message: output},
+		{Type: string(contracts.EventTypeToolInvoked), Message: "cmd start"},
+		{Type: string(contracts.EventTypeCommandRun), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+		{Type: string(contracts.EventTypeAgentText), Message: output},
 	}}
 	runner := NewRunner(agent)
 	var progress []contracts.RunnerProgress

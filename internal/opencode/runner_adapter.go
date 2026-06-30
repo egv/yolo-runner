@@ -389,16 +389,16 @@ func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
 func normalizeACPUpdateLine(line string) (string, string) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
-		return "", "runner_output"
+		return "", "agent_text"
 	}
-	typeName := "runner_output"
+	typeName := "agent_text"
 	switch {
 	case strings.HasPrefix(trimmed, "⏳"), strings.HasPrefix(trimmed, "🔄"):
-		typeName = "runner_cmd_started"
+		typeName = "tool_invoked"
 	case strings.HasPrefix(trimmed, "✅"), strings.HasPrefix(trimmed, "❌"):
-		typeName = "runner_cmd_finished"
+		typeName = "command_run"
 	case strings.HasPrefix(trimmed, "⚪"), strings.HasPrefix(trimmed, "request permission"):
-		typeName = "runner_warning"
+		typeName = "agent_blocked"
 	}
 	trimmed = strings.ReplaceAll(trimmed, "\r", "")
 	trimmed = strings.ReplaceAll(trimmed, "\n", " ")

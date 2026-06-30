@@ -46,7 +46,7 @@ func TestRenderBodyShowsTaskDetailsForCurrentTask(t *testing.T) {
 		Timestamp: now,
 	})
 	model.monitor.Apply(contracts.Event{
-		Type:      contracts.EventTypeRunnerCommandStarted,
+		Type:      contracts.EventTypeToolInvoked,
 		TaskID:    "task-1",
 		TaskTitle: "Readable task",
 		Message:   "run",

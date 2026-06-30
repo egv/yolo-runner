@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 

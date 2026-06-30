@@ -106,7 +106,7 @@ func (s *LogBubbleStore) UpsertToolCallUpdate(toolUpdate *acp.ToolCallUpdate) {
 }
 
 // AppendRunnerCmdEntry appends a new runner command lifecycle entry to the store.
-// Used for runner_cmd_started events.
+// Used for tool_invoked events.
 func (s *LogBubbleStore) AppendRunnerCmdEntry(message string) {
 	if message == "" {
 		return
@@ -122,7 +122,7 @@ func (s *LogBubbleStore) AppendRunnerCmdEntry(message string) {
 }
 
 // MutateLastRunnerCmdEntry finds the last runner command entry and updates it in place.
-// Used for runner_cmd_finished events. If no entry exists, appends a new one.
+// Used for command_run events. If no entry exists, appends a new one.
 func (s *LogBubbleStore) MutateLastRunnerCmdEntry(message string) {
 	if message == "" {
 		return
