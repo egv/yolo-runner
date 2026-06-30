@@ -23,6 +23,15 @@ func (s fakeBoardStore) ListItems(workqueue.ListItemsFilter) ([]workitem.Item, e
 	return s.items, nil
 }
 
+func (s fakeBoardStore) GetItem(id string) (workqueue.ItemDetail, error) {
+	for _, item := range s.items {
+		if item.ID == id {
+			return workqueue.ItemDetail{Item: item}, nil
+		}
+	}
+	return workqueue.ItemDetail{}, nil
+}
+
 func (s fakeBoardStore) ListRunners() ([]workqueue.RunnerRow, error) {
 	return s.runners, nil
 }

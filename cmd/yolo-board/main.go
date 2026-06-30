@@ -80,6 +80,7 @@ type boardConfig struct {
 
 type boardStore interface {
 	ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error)
+	GetItem(string) (workqueue.ItemDetail, error)
 	ListRunners() ([]workqueue.RunnerRow, error)
 	CurrentItemForRunner(string) (*workitem.Item, error)
 	ListSources() ([]workqueue.SourceRow, error)
@@ -123,6 +124,7 @@ type boardModel struct {
 	events       []contracts.Event
 	activeTab    boardTab
 	runnerDetail string
+	queueDetail  *workqueue.ItemDetail
 	collectorCur int
 	waitingForDB bool
 	errLine      string
@@ -201,7 +203,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "tab":
-			if m.runnerDetail == "" {
+			if m.runnerDetail == "" && m.queueDetail == nil {
 				m.activeTab = (m.activeTab + 1) % boardTabCount
 			}
 		case "down", "j":
@@ -216,11 +218,28 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.collectorCur--
 			}
 		case "enter":
-			if m.activeTab != boardTabQueue && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+			if m.activeTab == boardTabQueue && m.queueDetail == nil {
+				items := sortedQueueItems(m.snapshot.items)
+				if len(items) == 0 {
+					return m, nil
+				}
+				if m.store == nil {
+					m.errLine = "queue detail unavailable until queue DB is open"
+					return m, nil
+				}
+				detail, err := m.store.GetItem(items[0].ID)
+				if err != nil {
+					m.errLine = err.Error()
+					return m, nil
+				}
+				m.queueDetail = &detail
+				m.errLine = ""
+			} else if m.activeTab != boardTabQueue && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
 			m.runnerDetail = ""
+			m.queueDetail = nil
 		}
 	}
 	return m, nil
@@ -236,6 +255,9 @@ func (m boardModel) View() string {
 	}
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
+	}
+	if m.queueDetail != nil {
+		return line + "\n\n" + renderQueueItemDetail(*m.queueDetail, m.events)
 	}
 	switch m.activeTab {
 	case boardTabQueue:

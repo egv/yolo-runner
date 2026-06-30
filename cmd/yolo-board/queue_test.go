@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 	_ "modernc.org/sqlite"
@@ -129,6 +131,92 @@ func TestBoardModelViewRendersQueueTabWithSeededItemsAndCounts(t *testing.T) {
 	}
 }
 
+func TestQueueEnterShowsItemDetailWithDepsResultAndLiveEvents(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	target := seedQueueTabItem(t, store, "github", "GH-100", workitem.KindImplement, "linux", 10)
+	blocks := seedQueueTabItem(t, store, "github", "GH-101", workitem.KindReview, "linux", 1)
+	blockedBy := seedQueueTabItem(t, store, "startrek", "YT-200", workitem.KindFinalize, "linux", 3)
+	seedQueueTabDep(t, dbPath, target.ID, blocks.ID)
+	seedQueueTabDep(t, dbPath, blockedBy.ID, target.ID)
+
+	if err := store.Complete(target.ID, workqueue.Result{
+		Payload:    json.RawMessage(`{"status":"ok"}`),
+		LogPath:    "runner-logs/GH-100.log",
+		StartedAt:  now.Add(-2 * time.Minute),
+		FinishedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+
+	msg := pollBoardStore(context.Background(), store)
+	poll, ok := msg.(pollMsg)
+	if !ok {
+		t.Fatalf("message type = %T, want pollMsg", msg)
+	}
+	model := newBoardModel(boardConfig{}, nil, nil)
+	model.store = store
+	updated, _ := model.Update(poll)
+	board := updated.(boardModel)
+	updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyTab})
+	board = updated.(boardModel)
+
+	output := contracts.NewEvent(contracts.EventTypeAgentText, contracts.EventIdentity{Source: "github", SourceRef: "GH-100", RunnerID: "runner-a"})
+	output.ItemID = target.ID
+	output.Message = "running implementation"
+	output.Timestamp = now.Add(time.Second)
+	progress := contracts.NewEvent(contracts.EventTypeAgentProgress, contracts.EventIdentity{Source: "github", SourceRef: "GH-100", RunnerID: "runner-a"})
+	progress.ItemID = target.ID
+	progress.Message = "tests passing"
+	progress.Timestamp = now.Add(2 * time.Second)
+	other := contracts.NewEvent(contracts.EventTypeAgentText, contracts.EventIdentity{Source: "github", SourceRef: "GH-999", RunnerID: "runner-a"})
+	other.ItemID = "other-item"
+	other.Message = "ignore me"
+	other.Timestamp = now.Add(3 * time.Second)
+	for _, event := range []contracts.Event{output, progress, other} {
+		updated, _ = board.Update(eventMsg{event: event})
+		board = updated.(boardModel)
+	}
+
+	updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	board = updated.(boardModel)
+
+	view := board.View()
+	for _, want := range []string{
+		"Item " + target.ID,
+		"Fields",
+		"ID\tKIND\tSOURCE\tSOURCE_REF\tPRESET\tPRIORITY\tSTATE\tATTEMPT\tCLAIMED_BY",
+		target.ID + "\timplement\tgithub\tGH-100\tlinux\t10\tdone\t0\t-",
+		"Blocks",
+		blocks.ID + "\treview\tGH-101\tpending",
+		"BlockedBy",
+		blockedBy.ID + "\tfinalize\tYT-200\tpending",
+		"Result",
+		"completed\trunner-logs/GH-100.log\t2026-06-30T11:58:00Z\t2026-06-30T11:59:00Z",
+		`{"status":"ok"}`,
+		"Live events",
+		"agent_text\trunner-a\trunning implementation",
+		"agent_progress\trunner-a\ttests passing",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "ignore me") {
+		t.Fatalf("View() included event for another item:\n%s", view)
+	}
+}
+
 func seedQueueTabItem(t *testing.T, store *workqueue.Store, source string, sourceRef string, kind workitem.Kind, preset string, priority int) workitem.Item {
 	t.Helper()
 
@@ -145,6 +233,20 @@ func seedQueueTabItem(t *testing.T, store *workqueue.Store, source string, sourc
 		t.Fatalf("Enqueue() error = %v", err)
 	}
 	return item
+}
+
+func seedQueueTabDep(t *testing.T, dbPath string, itemID string, dependsOn string) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("INSERT INTO item_deps (item_id, depends_on) VALUES (?, ?)", itemID, dependsOn); err != nil {
+		t.Fatalf("seed dependency %q -> %q: %v", itemID, dependsOn, err)
+	}
 }
 
 func setQueueTabItemTimes(t *testing.T, dbPath string, itemID string, createdAt time.Time, updatedAt time.Time) {
