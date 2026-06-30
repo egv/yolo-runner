@@ -88,26 +88,6 @@ type boardStore interface {
 
 type boardStoreOpener func(string) (boardStore, error)
 
-type boardSnapshot struct {
-	items           []workitem.Item
-	runners         []workqueue.RunnerRow
-	currentByRunner map[string]*workitem.Item
-	sources         []workqueue.SourceRow
-	stateCounts     map[string]int
-}
-
-func (s boardSnapshot) itemCount() int {
-	return len(s.items)
-}
-
-func (s boardSnapshot) sourceCount() int {
-	seen := map[string]struct{}{}
-	for _, source := range s.sources {
-		seen[source.Source] = struct{}{}
-	}
-	return len(seen)
-}
-
 type streamMsg interface{}
 
 type pollTickMsg struct{}
@@ -178,7 +158,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, pollCmd(m.store)
 	case pollMsg:
-		m.snapshot = typed.snapshot
+		m.snapshot.applyPoll(typed.snapshot)
 		m.waitingForDB = false
 		m.errLine = ""
 		return m, nextPollCmd(m.config.pollInterval)
@@ -190,6 +170,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.events) > 100 {
 			m.events = m.events[len(m.events)-100:]
 		}
+		m.snapshot.applyEvent(typed.event)
 		if m.stream != nil && !m.streamDone {
 			return m, waitForStreamMessage(m.stream)
 		}
