@@ -211,13 +211,15 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 	if d.events == nil {
 		d.events = defaultRunnerDaemonEventSink(d.cfg.runnerID)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	capacity := d.cfg.capacity
 	if capacity <= 0 {
 		capacity = 1
 	}
+	d.emitRunnerRegisteredEvent(ctx, capacity)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	pollInterval := d.cfg.pollInterval
 	if pollInterval <= 0 {
 		pollInterval = defaultRunnerDaemonPollInterval
@@ -225,6 +227,7 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 
 	results := make(chan runnerDaemonItemResult, capacity)
 	inFlightByPreset := map[string]int{}
+	activeItems := map[string]workitem.Item{}
 	active := 0
 	claimedOnce := false
 
@@ -237,6 +240,7 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 			case result := <-results:
 				active--
 				decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+				delete(activeItems, result.item.ID)
 				if result.err != nil {
 					return result.err
 				}
@@ -252,6 +256,7 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 		if err := d.runners.Heartbeat(d.cfg.runnerID); err != nil {
 			return err
 		}
+		d.emitRunnerAliveEvent(runCtx, currentRunnerDaemonItem(activeItems))
 		if _, err := d.store.RequeueStale(time.Now().UTC()); err != nil {
 			return err
 		}
@@ -273,6 +278,7 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 			active++
 			claimedOnce = true
 			incrementRunnerPresetInFlight(inFlightByPreset, item.Preset)
+			activeItems[item.ID] = *item
 			go func(item workitem.Item) {
 				results <- runnerDaemonItemResult{
 					item: item,
@@ -285,12 +291,13 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 			if !claimedOnce {
 				return nil
 			}
-			result, err := waitRunnerDaemonItemResult(runCtx, results)
+			result, err := d.waitRunnerDaemonOnceItemResult(runCtx, results, pollInterval, activeItems)
 			if err != nil {
 				return err
 			}
 			active--
 			decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+			delete(activeItems, result.item.ID)
 			return result.err
 		}
 
@@ -310,10 +317,75 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 		}
 		active--
 		decrementRunnerPresetInFlight(inFlightByPreset, result.item.Preset)
+		delete(activeItems, result.item.ID)
 		if result.err != nil {
 			return result.err
 		}
 	}
+}
+
+func (d runnerDaemon) waitRunnerDaemonOnceItemResult(ctx context.Context, results <-chan runnerDaemonItemResult, interval time.Duration, activeItems map[string]workitem.Item) (runnerDaemonItemResult, error) {
+	for {
+		result, err := waitRunnerDaemonItemResultOrPoll(ctx, results, interval)
+		if err != nil {
+			return runnerDaemonItemResult{}, err
+		}
+		if result != nil {
+			return *result, nil
+		}
+		if err := d.runners.Heartbeat(d.cfg.runnerID); err != nil {
+			return runnerDaemonItemResult{}, err
+		}
+		d.emitRunnerAliveEvent(ctx, currentRunnerDaemonItem(activeItems))
+	}
+}
+
+func currentRunnerDaemonItem(activeItems map[string]workitem.Item) *workitem.Item {
+	for _, item := range activeItems {
+		itemCopy := item
+		return &itemCopy
+	}
+	return nil
+}
+
+func (d runnerDaemon) emitRunnerRegisteredEvent(ctx context.Context, capacity int) {
+	if d.events == nil {
+		return
+	}
+	event := contracts.NewEvent(contracts.EventType("runner_registered"), contracts.EventIdentity{RunnerID: d.cfg.runnerID})
+	event.Proc = d.cfg.runnerID
+	event.Metadata = map[string]string{
+		"pid":      fmt.Sprintf("%d", os.Getpid()),
+		"presets":  strings.Join(d.cfg.presets, ","),
+		"capacity": fmt.Sprintf("%d", capacity),
+	}
+	_ = d.events.Emit(ctx, event)
+}
+
+func (d runnerDaemon) emitRunnerAliveEvent(ctx context.Context, current *workitem.Item) {
+	if d.events == nil {
+		return
+	}
+	event := contracts.NewEvent(contracts.EventType("runner_alive"), contracts.EventIdentity{RunnerID: d.cfg.runnerID})
+	event.Proc = d.cfg.runnerID
+	event.Metadata = map[string]string{
+		"heartbeat_age": "0s",
+	}
+	if current != nil {
+		event.ItemID = current.ID
+		event.Source = current.Source
+		event.SourceRef = current.SourceRef
+		event.Kind = string(current.Kind)
+		event.Preset = current.Preset
+		event.Attempt = current.Attempt
+		event.MaxAttempts = current.MaxAttempts
+		if current.Attempt > 0 {
+			event.RetryCount = current.Attempt - 1
+		}
+		event.Metadata["current_item_id"] = current.ID
+		event.Metadata["current_item_source_ref"] = current.SourceRef
+	}
+	_ = d.events.Emit(ctx, event)
 }
 
 func (d runnerDaemon) claimableRunnerPresets(inFlightByPreset map[string]int) []string {
