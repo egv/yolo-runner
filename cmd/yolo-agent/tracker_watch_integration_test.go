@@ -178,7 +178,7 @@ func emitTrackerWatchRunnerOutput(request contracts.RunnerRequest, message strin
 		return
 	}
 	request.OnProgress(contracts.RunnerProgress{
-		Type:      string(contracts.EventTypeRunnerOutput),
+		Type:      string(contracts.EventTypeAgentText),
 		Message:   message,
 		Metadata:  map[string]string{"source": "stdout"},
 		Timestamp: time.Now().UTC(),

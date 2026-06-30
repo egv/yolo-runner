@@ -721,7 +721,7 @@ All events are emitted as JSONL (newline-delimited JSON) with consistent schema:
 
 ```json
 {"type": "task_started", "task_id": "abc-123", "task_title": "...", "ts": "2026-02-22T10:00:00Z"}
-{"type": "runner_output", "task_id": "abc-123", "message": "...", "ts": "2026-02-22T10:00:05Z"}
+{"type": "agent_text", "task_id": "abc-123", "message": "...", "ts": "2026-02-22T10:00:05Z"}
 {"type": "task_finished", "task_id": "abc-123", "metadata": {"status": "completed"}, "ts": "2026-02-22T10:05:00Z"}
 ```
 

@@ -64,10 +64,10 @@ func TestCLIRunnerAdapterRunsKimiAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "runner_output" || updates[0].Message != "working line" {
+	if updates[0].Type != "agent_text" || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "runner_output" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != "agent_text" || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 

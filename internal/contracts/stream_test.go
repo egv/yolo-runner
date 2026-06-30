@@ -12,7 +12,7 @@ func TestEventStreamRoundTripNDJSON(t *testing.T) {
 	stream := NewEventStream(buf)
 
 	event := Event{
-		Type:      EventTypeRunnerStarted,
+		Type:      EventTypeAgentStarted,
 		TaskID:    "task-1",
 		TaskTitle: "Streaming",
 		WorkerID:  "worker-1",

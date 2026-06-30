@@ -3295,7 +3295,7 @@ func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
 
 func TestLoopEmitsRunnerProgressEventsFromRunnerCallback(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
-	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "first attempt"}, {Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}}, {Type: "runner_warning", Message: "stall warning"}}}
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "first attempt"}, {Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "tool_invoked", Message: "cmd start"}, {Type: "agent_text", Message: "line output"}, {Type: "command_run", Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}}, {Type: "agent_blocked", Message: "stall warning"}}}
 	sink := &recordingSink{}
 	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 1})
 

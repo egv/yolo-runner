@@ -65,10 +65,10 @@ func TestCLIRunnerAdapterRunsClaudeAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "runner_output" || updates[0].Message != "working line" {
+	if updates[0].Type != "agent_text" || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "runner_output" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != "agent_text" || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 
@@ -254,7 +254,7 @@ func TestStdinTaskSessionExecuteDropsEmptyAssistantText(t *testing.T) {
 		t.Fatalf("Execute() = %v; want nil", err)
 	}
 	for _, p := range progress {
-		if p.Type == string(contracts.EventTypeAgentText) || (p.Type == string(contracts.EventTypeRunnerOutput) && strings.TrimSpace(p.Message) == "") {
+		if p.Type == string(contracts.EventTypeAgentText) || (p.Type == string(contracts.EventTypeAgentText) && strings.TrimSpace(p.Message) == "") {
 			t.Fatalf("empty agent text/output should be dropped, got progress=%#v", progress)
 		}
 	}

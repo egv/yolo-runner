@@ -262,7 +262,7 @@ func TestE2E_StreamSmoke_ConcurrencyEmitsMultiWorkerParseableEvents(t *testing.T
 			t.Fatalf("failed to decode NDJSON stream: %v", err)
 		}
 		model.Apply(event)
-		if event.Type == contracts.EventTypeRunnerStarted && strings.TrimSpace(event.WorkerID) != "" {
+		if event.Type == contracts.EventTypeAgentStarted && strings.TrimSpace(event.WorkerID) != "" {
 			workers[event.WorkerID] = struct{}{}
 		}
 	}
@@ -887,10 +887,10 @@ profiles:
 			}
 			continue
 		}
-		if event.Type == contracts.EventTypeRunnerStarted && strings.TrimSpace(event.ClonePath) != "" && strings.TrimSpace(event.ClonePath) != repo {
+		if event.Type == contracts.EventTypeAgentStarted && strings.TrimSpace(event.ClonePath) != "" && strings.TrimSpace(event.ClonePath) != repo {
 			sawIsolatedClonePath = true
 		}
-		if event.Type != contracts.EventTypeRunnerFinished {
+		if event.Type != contracts.EventTypeAgentFinished {
 			continue
 		}
 		if event.Metadata["backend"] == backendCodexCLI {
@@ -913,13 +913,13 @@ profiles:
 		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
 	}
 	if !sawCodexRunnerFinished {
-		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendCodexCLI, string(raw))
+		t.Fatalf("expected agent_finished metadata backend=%q, got %q", backendCodexCLI, string(raw))
 	}
 	if !sawReviewPassVerdict {
 		t.Fatalf("expected codex review verdict metadata to include pass, got %q", string(raw))
 	}
 	if !sawIsolatedClonePath {
-		t.Fatalf("expected runner_started clone path to use isolated clone, got %q", string(raw))
+		t.Fatalf("expected agent_started clone path to use isolated clone, got %q", string(raw))
 	}
 
 	task, err := taskManager.GetTask(context.Background(), issueID)
@@ -1193,7 +1193,7 @@ profiles:
 			}
 			continue
 		}
-		if event.Type != contracts.EventTypeRunnerFinished {
+		if event.Type != contracts.EventTypeAgentFinished {
 			continue
 		}
 		if event.Metadata["backend"] == backendKimi {
@@ -1216,7 +1216,7 @@ profiles:
 		t.Fatalf("expected run_started metadata profile=%q, got %q", profileName, string(raw))
 	}
 	if !sawKimiRunnerFinished {
-		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendKimi, string(raw))
+		t.Fatalf("expected agent_finished metadata backend=%q, got %q", backendKimi, string(raw))
 	}
 	if !sawReviewPassVerdict {
 		t.Fatalf("expected kimi review verdict metadata to include pass, got %q", string(raw))
@@ -1313,7 +1313,7 @@ func TestE2E_GeminiLinearProfileProcessesAndClosesIssue(t *testing.T) {
 			}
 			continue
 		}
-		if event.Type != contracts.EventTypeRunnerFinished {
+		if event.Type != contracts.EventTypeAgentFinished {
 			continue
 		}
 		if event.Metadata["backend"] == backendGemini {
@@ -1330,7 +1330,7 @@ func TestE2E_GeminiLinearProfileProcessesAndClosesIssue(t *testing.T) {
 		t.Fatalf("expected run_started metadata backend=%q, got %q", backendGemini, string(raw))
 	}
 	if !sawGeminiRunnerFinished {
-		t.Fatalf("expected runner_finished metadata backend=%q, got %q", backendGemini, string(raw))
+		t.Fatalf("expected agent_finished metadata backend=%q, got %q", backendGemini, string(raw))
 	}
 	if !sawReviewPassVerdict {
 		t.Fatalf("expected gemini review verdict metadata to include pass, got %q", string(raw))
