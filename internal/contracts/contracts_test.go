@@ -271,8 +271,6 @@ func TestCanonicalEventConstantsRemainAdditive(t *testing.T) {
 		EventTypeSourcePoll:       "source_poll",
 		EventTypeSourceHeartbeat:  "source_heartbeat",
 		EventTypeQueueSnapshot:    "queue_snapshot",
-		EventTypeRunnerRegistered: "runner_registered",
-		EventTypeRunnerAlive:      "runner_alive",
 	}
 	for eventType, want := range expected {
 		if string(eventType) != want {
@@ -295,6 +293,8 @@ func TestLegacyRunnerEventTypesAreRemoved(t *testing.T) {
 		"EventType" + "RunnerCommandFinished",
 		"EventType" + "RunnerOutput",
 		"EventType" + "RunnerWarning",
+		"EventType" + "RunnerRegistered",
+		"EventType" + "RunnerAlive",
 		`"` + "runner" + `_started"`,
 		`"` + "runner" + `_finished"`,
 		`"` + "runner" + `_progress"`,
@@ -303,6 +303,8 @@ func TestLegacyRunnerEventTypesAreRemoved(t *testing.T) {
 		`"` + "runner" + `_cmd_finished"`,
 		`"` + "runner" + `_output"`,
 		`"` + "runner" + `_warning"`,
+		`"` + "runner" + `_registered"`,
+		`"` + "runner" + `_alive"`,
 	}
 
 	var hits []string

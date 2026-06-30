@@ -226,8 +226,6 @@ const (
 	EventTypeSourcePoll       EventType = "source_poll"
 	EventTypeSourceHeartbeat  EventType = "source_heartbeat"
 	EventTypeQueueSnapshot    EventType = "queue_snapshot"
-	EventTypeRunnerRegistered EventType = "runner_registered"
-	EventTypeRunnerAlive      EventType = "runner_alive"
 	EventTypeReviewStarted    EventType = "review_started"
 	EventTypeReviewFinished   EventType = "review_finished"
 	EventTypeBranchCreated    EventType = "branch_created"
