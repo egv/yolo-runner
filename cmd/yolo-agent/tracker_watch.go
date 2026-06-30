@@ -227,10 +227,11 @@ func emitTrackerWatchIterationWarning(ctx context.Context, sink contracts.EventS
 		return
 	}
 	emitTrackerWatchEvent(ctx, sink, contracts.Event{
-		Type:    contracts.EventTypeRunnerWarning,
+		Type:    contracts.EventTypeAgentProgress,
 		Message: agent.FormatActionableError(err),
 		Metadata: compactTrackerWatchMetadata(map[string]string{
 			"phase": "watch_iteration",
+			"level": "warning",
 		}),
 	})
 }
