@@ -116,6 +116,23 @@ var launchYoloTUI = func() (io.WriteCloser, func() error, error) {
 		return cmd.Wait()
 	}, nil
 }
+var launchYoloBoard = func(queuePath string) (io.WriteCloser, func() error, error) {
+	cmd := exec.Command("yolo-board", "--queue", queuePath, "--events-stdin")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return nil, nil, err
+	}
+	return stdin, func() error {
+		_ = stdin.Close()
+		return cmd.Wait()
+	}, nil
+}
 
 var runConfigInitCommand = defaultRunConfigInitCommand
 var runTrackerWatch = defaultRunTrackerWatch
