@@ -15,8 +15,10 @@ func TestExecutorExecuteRunsImplementPipeline(t *testing.T) {
 		runner := &executorFakeRunner{results: []contracts.RunnerResult{
 			{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"commit_sha": "impl-sha"}},
 		}}
+		sink := &executorRecordingSink{}
 		exec := &Executor{
 			Runner:   runner,
+			Events:   sink,
 			RepoRoot: t.TempDir(),
 			ParentID: "root",
 			Backend:  "codex",
@@ -41,6 +43,20 @@ func TestExecutorExecuteRunsImplementPipeline(t *testing.T) {
 		}
 		if got := result.Artifacts["commit_sha"]; got != "impl-sha" {
 			t.Fatalf("expected artifacts to include commit sha, got %q", got)
+		}
+		started := executorEventsByType(sink.events, contracts.EventTypeAgentStarted)
+		if len(started) != 1 {
+			t.Fatalf("expected one agent_started event, got %d", len(started))
+		}
+		if started[0].Attempt != 1 || started[0].RetryCount != 0 || started[0].MaxAttempts != 1 {
+			t.Fatalf("expected top-level attempt/retry on agent_started, got %#v", started[0])
+		}
+		finished := executorEventsByType(sink.events, contracts.EventTypeAgentFinished)
+		if len(finished) != 1 {
+			t.Fatalf("expected one agent_finished event, got %d", len(finished))
+		}
+		if finished[0].Attempt != 1 || finished[0].RetryCount != 0 || finished[0].MaxAttempts != 1 {
+			t.Fatalf("expected top-level attempt/retry on agent_finished, got %#v", finished[0])
 		}
 	})
 
@@ -207,6 +223,25 @@ func executorPayload(taskID string) workitem.ImplementPayload {
 type executorFakeRunner struct {
 	results  []contracts.RunnerResult
 	requests []contracts.RunnerRequest
+}
+
+type executorRecordingSink struct {
+	events []contracts.Event
+}
+
+func (s *executorRecordingSink) Emit(_ context.Context, event contracts.Event) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
+func executorEventsByType(events []contracts.Event, eventType contracts.EventType) []contracts.Event {
+	matching := []contracts.Event{}
+	for _, event := range events {
+		if event.Type == eventType {
+			matching = append(matching, event)
+		}
+	}
+	return matching
 }
 
 func (r *executorFakeRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {

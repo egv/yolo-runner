@@ -351,18 +351,18 @@ Implement task behavior.`
 		t.Fatalf("expected runtime_config metadata flag, got %q", got)
 	}
 
-	started := eventsByType(sink.events, contracts.EventTypeRunnerStarted)
+	started := eventsByType(sink.events, contracts.EventTypeAgentStarted)
 	if len(started) != 1 {
-		t.Fatalf("expected one runner_started event, got %d", len(started))
+		t.Fatalf("expected one agent_started event, got %d", len(started))
 	}
 	if started[0].Metadata["backend"] != "codex" {
-		t.Fatalf("expected runner_started backend override, got %#v", started[0].Metadata)
+		t.Fatalf("expected agent_started backend override, got %#v", started[0].Metadata)
 	}
 	if started[0].Metadata["model"] != "task-model" {
-		t.Fatalf("expected runner_started model override, got %#v", started[0].Metadata)
+		t.Fatalf("expected agent_started model override, got %#v", started[0].Metadata)
 	}
 	if started[0].Metadata["timeout"] != (45 * time.Second).String() {
-		t.Fatalf("expected runner_started timeout metadata, got %#v", started[0].Metadata)
+		t.Fatalf("expected agent_started timeout metadata, got %#v", started[0].Metadata)
 	}
 }
 
@@ -688,9 +688,9 @@ func TestLoopLogsModelFallbackDecision(t *testing.T) {
 		t.Fatalf("loop failed: %v", err)
 	}
 
-	runnerStarted := eventsByType(sink.events, contracts.EventTypeRunnerStarted)
+	runnerStarted := eventsByType(sink.events, contracts.EventTypeAgentStarted)
 	if len(runnerStarted) != 2 {
-		t.Fatalf("expected two runner_started events for fallback attempt, got %d", len(runnerStarted))
+		t.Fatalf("expected two agent_started events for fallback attempt, got %d", len(runnerStarted))
 	}
 	fallbackStart := runnerStarted[1]
 	if fallbackStart.Metadata["decision"] != "model_fallback" {
@@ -700,7 +700,7 @@ func TestLoopLogsModelFallbackDecision(t *testing.T) {
 		t.Fatalf("expected fallback to include previous model, got %#v", fallbackStart.Metadata)
 	}
 	if fallbackStart.Metadata["model"] != "fallback-model" {
-		t.Fatalf("expected fallback runner_started model to be fallback-model, got %#v", fallbackStart.Metadata)
+		t.Fatalf("expected fallback agent_started model to be fallback-model, got %#v", fallbackStart.Metadata)
 	}
 }
 
@@ -1805,7 +1805,7 @@ func TestLoopAllowsTaskBelowQualityThresholdWithOverride(t *testing.T) {
 	if mgr.statusByID["t-1"] != contracts.TaskStatusClosed {
 		t.Fatalf("expected closed status, got %s", mgr.statusByID["t-1"])
 	}
-	warnings := eventsByType(sink.events, contracts.EventTypeRunnerWarning)
+	warnings := eventsByType(sink.events, contracts.EventTypeAgentBlocked)
 	if len(warnings) != 1 {
 		t.Fatalf("expected one quality-gate warning, got %d", len(warnings))
 	}
@@ -2925,11 +2925,11 @@ func TestLoopEmitsLifecycleEvents(t *testing.T) {
 	if sink.events[0].TaskTitle != "Task 1" {
 		t.Fatalf("expected task title in event, got %q", sink.events[0].TaskTitle)
 	}
-	if !hasEventType(sink.events, contracts.EventTypeRunnerStarted) {
-		t.Fatalf("expected runner_started event")
+	if !hasEventType(sink.events, contracts.EventTypeAgentStarted) {
+		t.Fatalf("expected agent_started event")
 	}
-	if !hasEventType(sink.events, contracts.EventTypeRunnerFinished) {
-		t.Fatalf("expected runner_finished event")
+	if !hasEventType(sink.events, contracts.EventTypeAgentFinished) {
+		t.Fatalf("expected agent_finished event")
 	}
 	if !hasEventType(sink.events, contracts.EventTypeTaskFinished) {
 		t.Fatalf("expected task_finished event")
@@ -2953,8 +2953,8 @@ func TestLoopRunTaskDelegatesToExecutorWhilePreservingEventTypeSequence(t *testi
 
 	wantTypes := []contracts.EventType{
 		contracts.EventTypeTaskStarted,
-		contracts.EventTypeRunnerStarted,
-		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeAgentStarted,
+		contracts.EventTypeAgentFinished,
 		contracts.EventTypeTaskFinished,
 	}
 	if gotTypes := eventTypes(sink.events); !equalEventTypes(gotTypes, wantTypes) {
@@ -2985,11 +2985,11 @@ func TestLoopRunTaskPreservesReviewedPassEventTypeSequenceWithoutQCTools(t *test
 
 	wantTypes := []contracts.EventType{
 		contracts.EventTypeTaskStarted,
-		contracts.EventTypeRunnerStarted,
-		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeAgentStarted,
+		contracts.EventTypeAgentFinished,
 		contracts.EventTypeReviewStarted,
-		contracts.EventTypeRunnerStarted,
-		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeAgentStarted,
+		contracts.EventTypeAgentFinished,
 		contracts.EventTypeReviewFinished,
 		contracts.EventTypeTaskFinished,
 	}
@@ -3029,8 +3029,8 @@ func TestLoopRunTaskMapsUnknownRunnerStatusToFailedTerminalEvents(t *testing.T) 
 
 	wantTypes := []contracts.EventType{
 		contracts.EventTypeTaskStarted,
-		contracts.EventTypeRunnerStarted,
-		contracts.EventTypeRunnerFinished,
+		contracts.EventTypeAgentStarted,
+		contracts.EventTypeAgentFinished,
 		contracts.EventTypeTaskDataUpdated,
 		contracts.EventTypeTaskFinished,
 	}
@@ -3058,9 +3058,9 @@ func TestLoopEmitsParallelContextInRunnerStartedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	event, ok := findEventByType(sink.events, contracts.EventTypeAgentStarted)
 	if !ok {
-		t.Fatalf("expected runner_started event")
+		t.Fatalf("expected agent_started event")
 	}
 	if event.WorkerID == "" {
 		t.Fatalf("expected non-empty worker id")
@@ -3081,9 +3081,9 @@ func TestLoopEmitsRunnerStartedMetadata(t *testing.T) {
 		t.Fatalf("loop failed: %v", err)
 	}
 
-	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	event, ok := findEventByType(sink.events, contracts.EventTypeAgentStarted)
 	if !ok {
-		t.Fatalf("expected runner_started event")
+		t.Fatalf("expected agent_started event")
 	}
 	if event.Metadata["backend"] != "opencode" {
 		t.Fatalf("expected backend metadata, got %#v", event.Metadata)
@@ -3116,9 +3116,9 @@ func TestLoopEmitsRunnerStartedMetadataWithConfiguredBackend(t *testing.T) {
 		t.Fatalf("loop failed: %v", err)
 	}
 
-	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerStarted)
+	event, ok := findEventByType(sink.events, contracts.EventTypeAgentStarted)
 	if !ok {
-		t.Fatalf("expected runner_started event")
+		t.Fatalf("expected agent_started event")
 	}
 	if event.Metadata["backend"] != "codex" {
 		t.Fatalf("expected backend metadata=codex, got %#v", event.Metadata)
@@ -3239,9 +3239,9 @@ func TestLoopEmitsSeparatedLogPathsForMultipleTasks(t *testing.T) {
 		t.Fatalf("loop failed: %v", err)
 	}
 
-	runnerStarted := eventsByType(sink.events, contracts.EventTypeRunnerStarted)
+	runnerStarted := eventsByType(sink.events, contracts.EventTypeAgentStarted)
 	if len(runnerStarted) != 2 {
-		t.Fatalf("expected two runner_started events, got %d", len(runnerStarted))
+		t.Fatalf("expected two agent_started events, got %d", len(runnerStarted))
 	}
 
 	if runnerStarted[0].Metadata["log_path"] != "/repo/runner-logs/epic-1/t-1/opencode/t-1.jsonl" {
@@ -3272,9 +3272,9 @@ func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
 		t.Fatalf("loop failed: %v", err)
 	}
 
-	event, ok := findEventByType(sink.events, contracts.EventTypeRunnerFinished)
+	event, ok := findEventByType(sink.events, contracts.EventTypeAgentFinished)
 	if !ok {
-		t.Fatalf("expected runner_finished event")
+		t.Fatalf("expected agent_finished event")
 	}
 	if event.Metadata["status"] != string(contracts.RunnerResultBlocked) {
 		t.Fatalf("expected status metadata, got %#v", event.Metadata)
@@ -3295,24 +3295,29 @@ func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
 
 func TestLoopEmitsRunnerProgressEventsFromRunnerCallback(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
-	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish"}, {Type: "runner_warning", Message: "stall warning"}}}
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "first attempt"}, {Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}}, {Type: "runner_warning", Message: "stall warning"}}}
 	sink := &recordingSink{}
-	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root"})
+	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 1})
 
 	_, err := loop.Run(context.Background())
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	startedEvents := eventsByType(sink.events, contracts.EventTypeRunnerCommandStarted)
-	outputEvents := eventsByType(sink.events, contracts.EventTypeRunnerOutput)
-	finishedEvents := eventsByType(sink.events, contracts.EventTypeRunnerCommandFinished)
-	warningEvents := eventsByType(sink.events, contracts.EventTypeRunnerWarning)
-	if len(startedEvents) != 1 || len(outputEvents) != 1 || len(finishedEvents) != 1 || len(warningEvents) != 1 {
-		t.Fatalf("expected one event for each progress category, got started=%d output=%d finished=%d warning=%d", len(startedEvents), len(outputEvents), len(finishedEvents), len(warningEvents))
+	commandEvents := eventsByType(sink.events, contracts.EventTypeCommandRun)
+	outputEvents := eventsByType(sink.events, contracts.EventTypeAgentText)
+	warningEvents := eventsByType(sink.events, contracts.EventTypeAgentBlocked)
+	if len(commandEvents) != 2 || len(outputEvents) != 2 || len(warningEvents) != 2 {
+		t.Fatalf("expected one command_run event per attempt plus text and blocked events, got commands=%d output=%d blocked=%d", len(commandEvents), len(outputEvents), len(warningEvents))
 	}
-	if startedEvents[0].Message != "cmd start" || outputEvents[0].Message != "line output" || finishedEvents[0].Message != "cmd finish" || warningEvents[0].Message != "stall warning" {
+	if commandEvents[0].Message != "cmd finish" || commandEvents[0].Metadata["exit_code"] != "0" || commandEvents[0].Metadata["duration_ms"] != "125" || outputEvents[0].Message != "line output" || warningEvents[0].Message != "stall warning" {
 		t.Fatalf("unexpected progress message mapping")
 	}
+	assertTopLevelAttemptFields(t, commandEvents[0], 1, 0, 2)
+	assertTopLevelAttemptFields(t, outputEvents[0], 1, 0, 2)
+	assertTopLevelAttemptFields(t, warningEvents[0], 1, 0, 2)
+	assertTopLevelAttemptFields(t, commandEvents[1], 2, 1, 2)
+	assertTopLevelAttemptFields(t, outputEvents[1], 2, 1, 2)
+	assertTopLevelAttemptFields(t, warningEvents[1], 2, 1, 2)
 }
 
 func TestLoopEmitsRunnerHeartbeatDuringLongRun(t *testing.T) {
@@ -3325,7 +3330,7 @@ func TestLoopEmitsRunnerHeartbeatDuringLongRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	heartbeats := eventsByType(sink.events, contracts.EventTypeRunnerHeartbeat)
+	heartbeats := eventsByType(sink.events, contracts.EventTypeAgentHeartbeat)
 	if len(heartbeats) == 0 {
 		t.Fatalf("expected heartbeat events during long run")
 	}
@@ -3341,7 +3346,7 @@ func TestLoopEmitsRunnerWarningWhenNoOutputThresholdExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loop failed: %v", err)
 	}
-	warnings := eventsByType(sink.events, contracts.EventTypeRunnerWarning)
+	warnings := eventsByType(sink.events, contracts.EventTypeAgentBlocked)
 	if len(warnings) == 0 {
 		t.Fatalf("expected warning events when no output threshold exceeded")
 	}
@@ -4338,6 +4343,13 @@ func eventsByType(events []contracts.Event, eventType contracts.EventType) []con
 		}
 	}
 	return result
+}
+
+func assertTopLevelAttemptFields(t *testing.T, event contracts.Event, attempt int, retryCount int, maxAttempts int) {
+	t.Helper()
+	if event.Attempt != attempt || event.RetryCount != retryCount || event.MaxAttempts != maxAttempts {
+		t.Fatalf("expected top-level attempt fields %d/%d/%d, got %#v", attempt, retryCount, maxAttempts, event)
+	}
 }
 
 func eventTypes(events []contracts.Event) []contracts.EventType {

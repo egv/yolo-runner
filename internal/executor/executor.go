@@ -216,7 +216,7 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 				implementStartMeta["model_fallback"] = fallbackModel
 			}
 		}
-		_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.RunnerModeImplement), Metadata: implementStartMeta, Timestamp: time.Now().UTC()})
+		_ = emitExecutorEvent(ctx, events, buildAgentStartedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, contracts.RunnerModeImplement, implementStartMeta, completionRetries+1, completionRetries, e.MaxRetries+1))
 
 		requestMetadata := map[string]string{"log_path": implementLogPath, "clone_path": repoRoot}
 		requestMetadata = appendTaskRuntimeMetadata(requestMetadata, runtime)
@@ -245,11 +245,14 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			),
 			Metadata: requestMetadata,
 		}, MonitorEventContext{
-			TaskID:    task.ID,
-			TaskTitle: task.Title,
-			WorkerID:  workerID,
-			ClonePath: repoRoot,
-			QueuePos:  e.QueuePos,
+			TaskID:      task.ID,
+			TaskTitle:   task.Title,
+			WorkerID:    workerID,
+			ClonePath:   repoRoot,
+			QueuePos:    e.QueuePos,
+			Attempt:     completionRetries + 1,
+			RetryCount:  completionRetries,
+			MaxAttempts: e.MaxRetries + 1,
 		}, MonitorOptions{
 			HeartbeatInterval:    e.HeartbeatInterval,
 			NoOutputWarningAfter: e.NoOutputWarningAfter,
@@ -258,7 +261,7 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 			return workitem.ImplementResult{}, err
 		}
 		runnerResult = ensureResultArtifact(runnerResult, "log_path", implementLogPath)
-		_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(runnerResult.Status), Metadata: buildRunnerFinishedMetadata(runnerResult), Timestamp: time.Now().UTC()})
+		_ = emitExecutorEvent(ctx, events, buildAgentFinishedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, runnerResult, buildRunnerFinishedMetadata(runnerResult), completionRetries+1, completionRetries, e.MaxRetries+1))
 
 		if runnerResult.Status == contracts.RunnerResultCompleted && e.RequireReview {
 			reviewAttempt := reviewRetries + 1
@@ -450,7 +453,7 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 	}
 	reviewStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, taskBackend, implementModel, repoRoot, reviewLogPath, time.Now().UTC())
 	reviewStartMeta = appendTaskRuntimeMetadata(reviewStartMeta, runtime)
-	_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.RunnerModeReview), Metadata: reviewStartMeta, Timestamp: time.Now().UTC()})
+	_ = emitExecutorEvent(ctx, events, buildAgentStartedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, contracts.RunnerModeReview, reviewStartMeta, reviewAttempt, reviewRetries, e.MaxRetries+1))
 	reviewMetadata := map[string]string{"log_path": reviewLogPath, "clone_path": repoRoot}
 	reviewMetadata = appendTaskRuntimeMetadata(reviewMetadata, runtime)
 	if e.WatchdogTimeout > 0 {
@@ -470,11 +473,14 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 		Prompt:   BuildPrompt(task, contracts.RunnerModeReview, false),
 		Metadata: reviewMetadata,
 	}, MonitorEventContext{
-		TaskID:    task.ID,
-		TaskTitle: task.Title,
-		WorkerID:  workerID,
-		ClonePath: repoRoot,
-		QueuePos:  e.QueuePos,
+		TaskID:      task.ID,
+		TaskTitle:   task.Title,
+		WorkerID:    workerID,
+		ClonePath:   repoRoot,
+		QueuePos:    e.QueuePos,
+		Attempt:     reviewAttempt,
+		RetryCount:  reviewRetries,
+		MaxAttempts: e.MaxRetries + 1,
 	}, MonitorOptions{
 		HeartbeatInterval:    e.HeartbeatInterval,
 		NoOutputWarningAfter: e.NoOutputWarningAfter,
@@ -483,7 +489,7 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 		return contracts.RunnerResult{}, err
 	}
 	reviewResult = ensureResultArtifact(reviewResult, "log_path", reviewLogPath)
-	_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(reviewResult.Status), Metadata: buildRunnerFinishedMetadata(reviewResult), Timestamp: time.Now().UTC()})
+	_ = emitExecutorEvent(ctx, events, buildAgentFinishedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, reviewResult, buildRunnerFinishedMetadata(reviewResult), reviewAttempt, reviewRetries, e.MaxRetries+1))
 
 	finalReviewResult := normalizeReviewReady(reviewResult)
 	if finalReviewResult.Status == contracts.RunnerResultCompleted && !finalReviewResult.ReviewReady && ReviewVerdictFromArtifacts(finalReviewResult) == "" {
@@ -501,7 +507,7 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 		verdictStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeReview, taskBackend, implementModel, repoRoot, reviewLogPath, time.Now().UTC())
 		verdictStartMeta = appendTaskRuntimeMetadata(verdictStartMeta, runtime)
 		verdictStartMeta["review_phase"] = "verdict_retry"
-		_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(contracts.RunnerModeReview), Metadata: verdictStartMeta, Timestamp: time.Now().UTC()})
+		_ = emitExecutorEvent(ctx, events, buildAgentStartedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, contracts.RunnerModeReview, verdictStartMeta, reviewAttempt, reviewRetries, e.MaxRetries+1))
 
 		verdictResult, verdictErr := RunWithMonitoring(ctx, e.Runner, events, contracts.RunnerRequest{
 			TaskID:   task.ID,
@@ -513,11 +519,14 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 			Prompt:   BuildReviewVerdictPrompt(task),
 			Metadata: verdictMetadata,
 		}, MonitorEventContext{
-			TaskID:    task.ID,
-			TaskTitle: task.Title,
-			WorkerID:  workerID,
-			ClonePath: repoRoot,
-			QueuePos:  e.QueuePos,
+			TaskID:      task.ID,
+			TaskTitle:   task.Title,
+			WorkerID:    workerID,
+			ClonePath:   repoRoot,
+			QueuePos:    e.QueuePos,
+			Attempt:     reviewAttempt,
+			RetryCount:  reviewRetries,
+			MaxAttempts: e.MaxRetries + 1,
 		}, MonitorOptions{
 			HeartbeatInterval:    e.HeartbeatInterval,
 			NoOutputWarningAfter: e.NoOutputWarningAfter,
@@ -527,7 +536,7 @@ func (e *Executor) runReview(ctx context.Context, task contracts.Task, runtime T
 		}
 		verdictResult = ensureResultArtifact(verdictResult, "log_path", reviewLogPath)
 		verdictResult = normalizeReviewReady(verdictResult)
-		_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Message: string(verdictResult.Status), Metadata: buildRunnerFinishedMetadata(verdictResult), Timestamp: time.Now().UTC()})
+		_ = emitExecutorEvent(ctx, events, buildAgentFinishedEvent(task.ID, task.Title, workerID, repoRoot, e.QueuePos, verdictResult, buildRunnerFinishedMetadata(verdictResult), reviewAttempt, reviewRetries, e.MaxRetries+1))
 		finalReviewResult = verdictResult
 	}
 
