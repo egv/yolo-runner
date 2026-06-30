@@ -112,6 +112,7 @@ type boardModel struct {
 	stream       <-chan streamMsg
 	snapshot     boardSnapshot
 	events       []contracts.Event
+	runnerDetail string
 	waitingForDB bool
 	errLine      string
 	streamDone   bool
@@ -188,6 +189,12 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "enter":
+			if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+				m.runnerDetail = m.snapshot.runners[0].ID
+			}
+		case "esc":
+			m.runnerDetail = ""
 		}
 	}
 	return m, nil
@@ -200,6 +207,9 @@ func (m boardModel) View() string {
 	line := fmt.Sprintf("polling %d items across %d sources", m.snapshot.itemCount(), m.snapshot.sourceCount())
 	if m.errLine != "" {
 		line += "\n" + m.errLine
+	}
+	if m.runnerDetail != "" {
+		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
 	}
 	return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
 }
