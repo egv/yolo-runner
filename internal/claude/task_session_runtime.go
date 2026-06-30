@@ -448,10 +448,25 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 			Error   string `json:"error"`
 			ID      string `json:"id"`
 			Name    string `json:"name"`
-			Message struct {
+			IsError bool   `json:"is_error"`
+			Content []struct {
+				Type    string `json:"type"`
+				Text    string `json:"text"`
+				IsError bool   `json:"is_error"`
 				Content []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"content"`
+			Message struct {
+				Content []struct {
+					Type    string `json:"type"`
+					Text    string `json:"text"`
+					IsError bool   `json:"is_error"`
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
 				} `json:"content"`
 			} `json:"message"`
 		}
@@ -475,13 +490,43 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 			}
 		case "assistant":
 			if req.EventSink != nil {
+				if detail := stdinExtractPermissionDeniedToolResultText(msg.Message.Content); detail != "" {
+					_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
+						Type:      contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked),
+						SessionID: s.id,
+						Message:   detail,
+						Timestamp: time.Now().UTC(),
+						Metadata: map[string]string{
+							"reason": string(contracts.BlockReasonPermissionDenied),
+							"detail": detail,
+						},
+					})
+				}
 				text := stdinExtractAssistantText(msg.Message.Content)
+				if strings.TrimSpace(text) == "" {
+					continue
+				}
 				_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
 					Type:      contracts.TaskSessionEventTypeOutput,
 					SessionID: s.id,
 					Message:   text,
 					Timestamp: time.Now().UTC(),
 				})
+			}
+		case "tool_result":
+			if req.EventSink != nil && msg.IsError {
+				if detail := stdinExtractToolResultText(msg.Content); stdinLooksLikePermissionDenied(detail) {
+					_ = req.EventSink.HandleEvent(ctx, contracts.TaskSessionEvent{
+						Type:      contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked),
+						SessionID: s.id,
+						Message:   detail,
+						Timestamp: time.Now().UTC(),
+						Metadata: map[string]string{
+							"reason": string(contracts.BlockReasonPermissionDenied),
+							"detail": detail,
+						},
+					})
+				}
 			}
 		case "tool_use":
 			if err := s.handleToolUse(ctx, msg.ID, msg.Name, req); err != nil {
@@ -496,8 +541,13 @@ func (s *StdinTaskSession) scanForResult(ctx context.Context, req contracts.Task
 }
 
 func stdinExtractAssistantText(content []struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	IsError bool   `json:"is_error"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
 }) string {
 	var parts []string
 	for _, c := range content {
@@ -506,6 +556,64 @@ func stdinExtractAssistantText(content []struct {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func stdinExtractToolResultText(content []struct {
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	IsError bool   `json:"is_error"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) string {
+	var parts []string
+	for _, c := range content {
+		if c.Type == "text" && c.Text != "" {
+			parts = append(parts, c.Text)
+		}
+		for _, nested := range c.Content {
+			if nested.Type == "text" && nested.Text != "" {
+				parts = append(parts, nested.Text)
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, ""))
+}
+
+func stdinExtractPermissionDeniedToolResultText(content []struct {
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	IsError bool   `json:"is_error"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) string {
+	for _, c := range content {
+		if c.Type != "tool_result" || !c.IsError {
+			continue
+		}
+		detail := stdinExtractToolResultText([]struct {
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			IsError bool   `json:"is_error"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}{c})
+		if stdinLooksLikePermissionDenied(detail) {
+			return detail
+		}
+	}
+	return ""
+}
+
+func stdinLooksLikePermissionDenied(text string) bool {
+	normalized := strings.ToLower(text)
+	return strings.Contains(normalized, "requested permissions") ||
+		strings.Contains(normalized, "haven't granted")
 }
 
 // handleToolUse always approves tool_use requests by writing "y\n" to stdin.

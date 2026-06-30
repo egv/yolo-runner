@@ -45,7 +45,7 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 		lastOutputAt = eventTime
 		warned = false
 		progressMu.Unlock()
-		_ = emitMonitorEvent(ctx, events, contracts.Event{
+		event := contracts.Event{
 			Type:      eventTypeForRunnerProgress(progress.Type),
 			TaskID:    eventContext.TaskID,
 			TaskTitle: eventContext.TaskTitle,
@@ -55,7 +55,12 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 			Message:   progress.Message,
 			Metadata:  progress.Metadata,
 			Timestamp: eventTime,
-		})
+		}
+		if event.Type == contracts.EventTypeAgentBlocked {
+			event.Reason = contracts.BlockReason(strings.TrimSpace(progress.Metadata["reason"]))
+			event.Detail = strings.TrimSpace(progress.Metadata["detail"])
+		}
+		_ = emitMonitorEvent(ctx, events, event)
 	}
 
 	monitorCtx, cancel := context.WithCancel(ctx)
@@ -127,6 +132,8 @@ func eventTypeForRunnerProgress(progressType string) contracts.EventType {
 		return contracts.EventTypeRunnerOutput
 	case "runner_warning":
 		return contracts.EventTypeRunnerWarning
+	case "agent_blocked":
+		return contracts.EventTypeAgentBlocked
 	default:
 		return contracts.EventTypeRunnerProgress
 	}
