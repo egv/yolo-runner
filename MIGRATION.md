@@ -73,12 +73,12 @@ The E10 Linear integration is intentionally scoped to a single-workspace MVP. Th
 
 ## Stream Rate Controls
 
-`yolo-agent --stream` now applies output backpressure controls for `runner_output` events by default:
+`yolo-agent --stream` now applies output backpressure controls for `agent_text` events by default:
 
 - A bounded coalescing buffer retains up to `--stream-output-buffer` pending output events (default `64`).
 - If output arrives faster than `--stream-output-interval` (default `150ms`), intermediate lines are coalesced into the newest emitted line.
 - When the buffer overflows, older pending output lines are dropped; emitted events include `metadata.coalesced_outputs` and `metadata.dropped_outputs` counters.
 
-Use `--verbose-stream` to disable coalescing and emit every `runner_output` line.
+Use `--verbose-stream` to disable coalescing and emit every `agent_text` line.
 
 When `--stream` and `--events <path>` are combined, the file sink runs as a best-effort mirror: stdout NDJSON remains primary, and mirror backpressure/errors do not block live stream delivery.

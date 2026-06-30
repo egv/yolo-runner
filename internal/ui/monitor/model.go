@@ -436,10 +436,10 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		})
 	}
 	switch event.Type {
-	case contracts.EventTypeRunnerCommandStarted:
+	case contracts.EventTypeToolInvoked:
 		task.CommandStartedCount++
 		task.LastCommandStarted = strings.TrimSpace(event.Message)
-	case contracts.EventTypeRunnerCommandFinished:
+	case contracts.EventTypeCommandRun:
 		task.CommandFinishedCount++
 		started := strings.TrimSpace(task.LastCommandStarted)
 		finished := strings.TrimSpace(event.Message)

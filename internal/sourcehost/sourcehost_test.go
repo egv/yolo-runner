@@ -218,12 +218,179 @@ func TestRunEmitsAgentProgressWarningAfterFailedIteration(t *testing.T) {
 	}
 }
 
+func TestRunEmitsSourcePollAndHeartbeatWithIdentityAndLastError(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if _, err := store.Submit(workitem.Submission{
+		Kind:           workitem.KindPreflight,
+		Source:         "fake-source",
+		SourceRef:      "TASK-1",
+		IdempotencyKey: "fake-source/TASK-1/preflight",
+		Preset:         "linux",
+		Payload:        json.RawMessage(`{"task_id":"TASK-1"}`),
+	}); err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{name: "fake-source", pollErr: errors.New("startrek token missing")}
+	err = sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true, ProcID: "sourcehost-1", EventSink: sink})
+	if err == nil {
+		t.Fatalf("Run() error = nil, want poll failure")
+	}
+
+	poll, ok := sourcehostEventByType(sink.events, contracts.EventTypeSourcePoll)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeSourcePoll, sink.events)
+	}
+	if poll.Source != "fake-source" || poll.Proc != "sourcehost-1" || poll.Metadata["component"] != "sourcehost" {
+		t.Fatalf("source_poll identity = source %q proc %q metadata %#v", poll.Source, poll.Proc, poll.Metadata)
+	}
+	if poll.Metadata["source"] != "fake-source" || poll.Metadata["proc"] != "sourcehost-1" {
+		t.Fatalf("source_poll metadata = %#v", poll.Metadata)
+	}
+	if poll.Metadata["last_error"] != `poll source "fake-source": startrek token missing` {
+		t.Fatalf("source_poll last_error = %q", poll.Metadata["last_error"])
+	}
+	if poll.Metadata["state_pending"] != "1" {
+		t.Fatalf("source_poll state counts = %#v, want state_pending=1", poll.Metadata)
+	}
+
+	heartbeat, ok := sourcehostEventByType(sink.events, contracts.EventTypeSourceHeartbeat)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeSourceHeartbeat, sink.events)
+	}
+	if heartbeat.Source != "fake-source" || heartbeat.Proc != "sourcehost-1" || heartbeat.Metadata["component"] != "sourcehost" {
+		t.Fatalf("source_heartbeat identity = source %q proc %q metadata %#v", heartbeat.Source, heartbeat.Proc, heartbeat.Metadata)
+	}
+}
+
+func TestRunEmitsSourcePollStateCountsScopedToSource(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	for _, submission := range []workitem.Submission{
+		{
+			Kind:           workitem.KindPreflight,
+			Source:         "fake-source",
+			SourceRef:      "TASK-1",
+			IdempotencyKey: "fake-source/TASK-1/preflight",
+			Preset:         "linux",
+			Payload:        json.RawMessage(`{"task_id":"TASK-1"}`),
+		},
+		{
+			Kind:           workitem.KindPreflight,
+			Source:         "other-source",
+			SourceRef:      "TASK-2",
+			IdempotencyKey: "other-source/TASK-2/preflight",
+			Preset:         "linux",
+			Payload:        json.RawMessage(`{"task_id":"TASK-2"}`),
+		},
+	} {
+		if _, err := store.Submit(submission); err != nil {
+			t.Fatalf("Submit(%s) error = %v", submission.Source, err)
+		}
+	}
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{name: "fake-source"}
+	if err := sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true, ProcID: "sourcehost-1", EventSink: sink}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	poll, ok := sourcehostEventByType(sink.events, contracts.EventTypeSourcePoll)
+	if !ok {
+		t.Fatalf("missing %q event in %#v", contracts.EventTypeSourcePoll, sink.events)
+	}
+	if poll.Metadata["state_pending"] != "1" {
+		t.Fatalf("source_poll state counts = %#v, want state_pending=1 scoped to fake-source", poll.Metadata)
+	}
+}
+
+func TestRunSuppressesConsecutiveIdenticalSourcePollErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	t.Setenv("HOME", t.TempDir())
+
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	sink := &sourcehostRecordingSink{}
+	src := &fakeSourcehostSource{
+		name:    "fake-source",
+		pollErr: errors.New("startrek token missing"),
+		onPoll: func(count int) {
+			if count == 3 {
+				cancel()
+			}
+		},
+	}
+	err = sourcehost.Run(ctx, src, store, sourcehost.Options{
+		PollInterval:           time.Nanosecond,
+		MaxConsecutiveFailures: -1,
+		ProcID:                 "sourcehost-1",
+		EventSink:              sink,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context canceled", err)
+	}
+
+	polls := sourcehostEventsByType(sink.events, contracts.EventTypeSourcePoll)
+	if len(polls) != 1 {
+		t.Fatalf("source_poll events = %d, want 1: %#v", len(polls), polls)
+	}
+	if polls[0].Metadata["last_error"] != `poll source "fake-source": startrek token missing` {
+		t.Fatalf("source_poll last_error = %q", polls[0].Metadata["last_error"])
+	}
+	warnings := sourcehostWarningEvents(sink.events)
+	if len(warnings) != 1 {
+		t.Fatalf("warning events = %d, want 1: %#v", len(warnings), warnings)
+	}
+	if warnings[0].Message != `poll source "fake-source": startrek token missing` {
+		t.Fatalf("warning message = %q", warnings[0].Message)
+	}
+	heartbeats := sourcehostEventsByType(sink.events, contracts.EventTypeSourceHeartbeat)
+	if len(heartbeats) != 3 {
+		t.Fatalf("source_heartbeat events = %d, want 3: %#v", len(heartbeats), heartbeats)
+	}
+}
+
 type fakeSourcehostSource struct {
 	name            string
 	pollSubmissions []workqueue.Submission
 	pollErr         error
 	followUps       []workqueue.Submission
 	handled         []handledSourcehostResult
+	polls           int
+	onPoll          func(int)
 }
 
 type handledSourcehostResult struct {
@@ -236,6 +403,10 @@ func (s *fakeSourcehostSource) Name() string {
 }
 
 func (s *fakeSourcehostSource) Poll(context.Context) ([]workqueue.Submission, error) {
+	s.polls++
+	if s.onPoll != nil {
+		s.onPoll(s.polls)
+	}
 	if s.pollErr != nil {
 		return nil, s.pollErr
 	}
@@ -263,4 +434,24 @@ func sourcehostEventByType(events []contracts.Event, eventType contracts.EventTy
 		}
 	}
 	return contracts.Event{}, false
+}
+
+func sourcehostEventsByType(events []contracts.Event, eventType contracts.EventType) []contracts.Event {
+	var matches []contracts.Event
+	for _, event := range events {
+		if event.Type == eventType {
+			matches = append(matches, event)
+		}
+	}
+	return matches
+}
+
+func sourcehostWarningEvents(events []contracts.Event) []contracts.Event {
+	var matches []contracts.Event
+	for _, event := range events {
+		if event.Type == contracts.EventTypeAgentProgress && event.Metadata["level"] == "warning" {
+			matches = append(matches, event)
+		}
+	}
+	return matches
 }

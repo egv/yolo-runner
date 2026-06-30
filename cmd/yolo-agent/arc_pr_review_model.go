@@ -37,7 +37,7 @@ func runArcPRReviewModel(ctx context.Context, runner contracts.AgentRunner, inpu
 			if input.OnProgress != nil {
 				input.OnProgress(progress)
 			}
-			if progress.Type != string(contracts.EventTypeAgentText) && progress.Type != string(contracts.EventTypeRunnerOutput) {
+			if progress.Type != string(contracts.EventTypeAgentText) {
 				return
 			}
 			if progress.Metadata != nil && strings.EqualFold(strings.TrimSpace(progress.Metadata["source"]), "stderr") {

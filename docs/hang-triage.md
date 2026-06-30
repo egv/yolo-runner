@@ -1,6 +1,6 @@
 # Yolo-Agent Hang Triage Runbook
 
-Use this runbook when `yolo-agent` appears stuck (for example: a task emits `runner_started` but no `runner_finished`).
+Use this runbook when `yolo-agent` appears stuck (for example: a task emits `agent_started` but no `agent_finished`).
 
 ## 1) Reproduce with bounded risk
 
@@ -22,8 +22,8 @@ If needed for full output detail, add `--verbose-stream`.
 
 Start with `runner-logs/agent.events.jsonl`.
 
-- If no `runner_started` is emitted for a task, the issue is likely in task selection/scheduler/tracker/VCS/clone setup.
-- If `runner_started` appears but no `runner_finished`, the issue is in runner/opencode/ACP lifecycle.
+- If no `agent_started` is emitted for a task, the issue is likely in task selection/scheduler/tracker/VCS/clone setup.
+- If `agent_started` appears but no `agent_finished`, the issue is in runner/opencode/ACP lifecycle.
 
 ## 3) Inspect runner + opencode logs
 
@@ -65,7 +65,7 @@ Use one of these categories:
 ## 6) Immediate next actions checklist
 
 1. Ensure a non-zero timeout for triage (`--runner-timeout 20m` in local runs).
-2. Inspect the latest `runner_finished`/`runner_warning` metadata in event stream.
+2. Inspect the latest `agent_finished`/`agent_blocked` metadata in event stream.
 3. Capture the last 100-200 lines from task stderr and ACP JSONL log.
 4. Record the stall category and whether watchdog classification appeared (`opencode stall category=...`).
 5. Open a follow-up ticket with log paths and category if unresolved.

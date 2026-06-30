@@ -16,10 +16,10 @@ func TestRunWithMonitoringEmitsHeartbeatAndProgressEvents(t *testing.T) {
 			Status: contracts.RunnerResultCompleted,
 		},
 		progress: []contracts.RunnerProgress{
-			{Type: "runner_output", Message: "line output", Metadata: map[string]string{"stream": "stdout"}},
-			{Type: "runner_cmd_started", Message: "go test ./..."},
-			{Type: "runner_cmd_finished", Message: "go test ./...", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
-			{Type: "runner_warning", Message: "stall warning"},
+			{Type: "agent_text", Message: "line output", Metadata: map[string]string{"stream": "stdout"}},
+			{Type: "tool_invoked", Message: "go test ./..."},
+			{Type: "command_run", Message: "go test ./...", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+			{Type: "agent_blocked", Message: "stall warning"},
 		},
 	}
 	sink := &monitorRecordingSink{}
@@ -125,6 +125,41 @@ func TestRunWithMonitoringPreservesAgentBlockedReasonAndDetail(t *testing.T) {
 	}
 	if blocked[0].Detail == "" {
 		t.Fatalf("expected detail to be set: %#v", blocked[0])
+	}
+}
+
+func TestRunWithMonitoringPreservesCanonicalRunnerProgressTypes(t *testing.T) {
+	runner := &monitorTestRunner{
+		result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted},
+		progress: []contracts.RunnerProgress{
+			{Type: string(contracts.EventTypeAgentText), Message: "Exploring"},
+			{Type: string(contracts.EventTypeCommandRun), Message: "go test ./internal/opencode/"},
+			{Type: string(contracts.EventTypeToolInvoked), Message: "Read README.md"},
+			{Type: string(contracts.EventTypeTokenUsage), Message: "usage"},
+		},
+	}
+	sink := &monitorRecordingSink{}
+
+	_, err := RunWithMonitoring(context.Background(), runner, sink, contracts.RunnerRequest{
+		TaskID: "t-1",
+		Mode:   contracts.RunnerModeImplement,
+	}, MonitorEventContext{TaskID: "t-1"}, MonitorOptions{
+		HeartbeatInterval:    time.Hour,
+		NoOutputWarningAfter: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("run with monitoring failed: %v", err)
+	}
+
+	for _, eventType := range []contracts.EventType{
+		contracts.EventTypeAgentText,
+		contracts.EventTypeCommandRun,
+		contracts.EventTypeToolInvoked,
+		contracts.EventTypeTokenUsage,
+	} {
+		if got := eventsByType(sink.Events(), eventType); len(got) != 1 {
+			t.Fatalf("expected one %s event, got %d; events=%#v", eventType, len(got), sink.Events())
+		}
 	}
 }
 

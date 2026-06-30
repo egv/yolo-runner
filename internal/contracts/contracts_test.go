@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -256,33 +259,87 @@ func TestNewEventStampsTimestampAndCopiesIdentity(t *testing.T) {
 
 func TestCanonicalEventConstantsRemainAdditive(t *testing.T) {
 	expected := map[EventType]string{
-		EventTypeRunnerStarted:         "runner_started",
-		EventTypeRunnerFinished:        "runner_finished",
-		EventTypeRunnerProgress:        "runner_progress",
-		EventTypeRunnerHeartbeat:       "runner_heartbeat",
-		EventTypeRunnerCommandStarted:  "runner_cmd_started",
-		EventTypeRunnerCommandFinished: "runner_cmd_finished",
-		EventTypeRunnerOutput:          "runner_output",
-		EventTypeRunnerWarning:         "runner_warning",
-		EventTypeAgentStarted:          "agent_started",
-		EventTypeAgentFinished:         "agent_finished",
-		EventTypeAgentText:             "agent_text",
-		EventTypeAgentHeartbeat:        "agent_heartbeat",
-		EventTypeAgentProgress:         "agent_progress",
-		EventTypeAgentBlocked:          "agent_blocked",
-		EventTypeCommandRun:            "command_run",
-		EventTypeToolInvoked:           "tool_invoked",
-		EventTypeTokenUsage:            "token_usage",
-		EventTypeSourcePoll:            "source_poll",
-		EventTypeSourceHeartbeat:       "source_heartbeat",
-		EventTypeQueueSnapshot:         "queue_snapshot",
-		EventTypeRunnerRegistered:      "runner_registered",
-		EventTypeRunnerAlive:           "runner_alive",
+		EventTypeAgentStarted:     "agent_started",
+		EventTypeAgentFinished:    "agent_finished",
+		EventTypeAgentText:        "agent_text",
+		EventTypeAgentHeartbeat:   "agent_heartbeat",
+		EventTypeAgentProgress:    "agent_progress",
+		EventTypeAgentBlocked:     "agent_blocked",
+		EventTypeCommandRun:       "command_run",
+		EventTypeToolInvoked:      "tool_invoked",
+		EventTypeTokenUsage:       "token_usage",
+		EventTypeSourcePoll:       "source_poll",
+		EventTypeSourceHeartbeat:  "source_heartbeat",
+		EventTypeQueueSnapshot:    "queue_snapshot",
 	}
 	for eventType, want := range expected {
 		if string(eventType) != want {
 			t.Fatalf("event type %q = %q, want %q", eventType, string(eventType), want)
 		}
+	}
+}
+
+func TestLegacyRunnerEventTypesAreRemoved(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	forbidden := []string{
+		"EventType" + "RunnerStarted",
+		"EventType" + "RunnerFinished",
+		"EventType" + "RunnerProgress",
+		"EventType" + "RunnerHeartbeat",
+		"EventType" + "RunnerCommandStarted",
+		"EventType" + "RunnerCommandFinished",
+		"EventType" + "RunnerOutput",
+		"EventType" + "RunnerWarning",
+		"EventType" + "RunnerRegistered",
+		"EventType" + "RunnerAlive",
+		`"` + "runner" + `_started"`,
+		`"` + "runner" + `_finished"`,
+		`"` + "runner" + `_progress"`,
+		`"` + "runner" + `_heartbeat"`,
+		`"` + "runner" + `_cmd_started"`,
+		`"` + "runner" + `_cmd_finished"`,
+		`"` + "runner" + `_output"`,
+		`"` + "runner" + `_warning"`,
+		`"` + "runner" + `_registered"`,
+		`"` + "runner" + `_alive"`,
+	}
+
+	var hits []string
+	err = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".yolo-runner", "third_party":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || path == filepath.Join(repoRoot, "internal", "contracts", "contracts_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		content := string(data)
+		for _, token := range forbidden {
+			if strings.Contains(content, token) {
+				rel, _ := filepath.Rel(repoRoot, path)
+				hits = append(hits, rel+": "+token)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan Go files: %v", err)
+	}
+	if len(hits) > 0 {
+		t.Fatalf("legacy runner event types remain:\n%s", strings.Join(hits, "\n"))
 	}
 }
 

@@ -178,9 +178,9 @@ func TestRunnerPreservesStreamedWhitespaceTokens(t *testing.T) {
 func TestRunnerNormalizesCommandLifecycleToSingleCommandRun(t *testing.T) {
 	agent := &fakeAgentRunner{
 		progress: []contracts.RunnerProgress{
-			{Type: string(contracts.EventTypeRunnerCommandStarted), Message: "cmd start"},
-			{Type: string(contracts.EventTypeRunnerCommandFinished), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
-			{Type: string(contracts.EventTypeRunnerOutput), Message: `{"decision":"ready","confidence":1,"summary":"ok","questions":[]}`},
+			{Type: string(contracts.EventTypeToolInvoked), Message: "cmd start"},
+			{Type: string(contracts.EventTypeCommandRun), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+			{Type: string(contracts.EventTypeAgentText), Message: `{"decision":"ready","confidence":1,"summary":"ok","questions":[]}`},
 		},
 	}
 	runner := NewRunner(agent)

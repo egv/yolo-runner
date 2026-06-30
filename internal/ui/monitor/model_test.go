@@ -302,9 +302,9 @@ func TestModelDerivesRunnerCommandAndOutputSummaries(t *testing.T) {
 	model := NewModel(func() time.Time { return now })
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-2", TaskTitle: "Second", WorkerID: "worker-1", Timestamp: now.Add(-5 * time.Second)})
-	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-2", WorkerID: "worker-1", Message: "go test ./...", Timestamp: now.Add(-4 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeToolInvoked, TaskID: "task-2", WorkerID: "worker-1", Message: "go test ./...", Timestamp: now.Add(-4 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "task-2", WorkerID: "worker-1", Message: "ok", Timestamp: now.Add(-3 * time.Second)})
-	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandFinished, TaskID: "task-2", WorkerID: "worker-1", Message: "exit=0", Timestamp: now.Add(-2 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeCommandRun, TaskID: "task-2", WorkerID: "worker-1", Message: "exit=0", Timestamp: now.Add(-2 * time.Second)})
 
 	task := model.Snapshot().Root.Tasks["task-2"]
 	if task.CommandStartedCount != 1 || task.CommandFinishedCount != 1 {
@@ -323,7 +323,7 @@ func TestModelSurfacesActiveOpencodeProgressDuringHeartbeat(t *testing.T) {
 	model := NewModel(func() time.Time { return now })
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-4", TaskTitle: "Long step", WorkerID: "worker-3", Timestamp: now.Add(-70 * time.Second)})
-	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-4", WorkerID: "worker-3", Message: "go test ./...", Timestamp: now.Add(-65 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeToolInvoked, TaskID: "task-4", WorkerID: "worker-3", Message: "go test ./...", Timestamp: now.Add(-65 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentHeartbeat, TaskID: "task-4", WorkerID: "worker-3", Message: "alive", Metadata: map[string]string{"last_output_age": "45s"}, Timestamp: now.Add(-20 * time.Second)})
 
 	state := model.UIState()
@@ -714,7 +714,7 @@ func TestModelBuildsStructuredUIStateWithWorkerActivity(t *testing.T) {
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeRunStarted, Metadata: map[string]string{"root_id": "yr-s0go", "concurrency": "2"}, Timestamp: now.Add(-10 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-9 * time.Second)})
-	model.Apply(contracts.Event{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "task-1", WorkerID: "worker-0", Message: "go test ./...", Timestamp: now.Add(-8 * time.Second)})
+	model.Apply(contracts.Event{Type: contracts.EventTypeToolInvoked, TaskID: "task-1", WorkerID: "worker-0", Message: "go test ./...", Timestamp: now.Add(-8 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentBlocked, TaskID: "task-1", WorkerID: "worker-0", Message: "stalled", Timestamp: now.Add(-7 * time.Second)})
 
 	state := model.UIState()
@@ -1107,7 +1107,7 @@ func TestApplyDerivedTaskEventSetsStage(t *testing.T) {
 	noStageEvents := []contracts.EventType{
 		contracts.EventTypeAgentText,
 		contracts.EventTypeAgentHeartbeat,
-		contracts.EventTypeRunnerCommandStarted,
+		contracts.EventTypeToolInvoked,
 	}
 	for _, et := range noStageEvents {
 		task := &TaskState{Stage: contracts.TaskStageRunning}

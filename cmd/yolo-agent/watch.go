@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -161,6 +162,7 @@ func defaultRunWatch(ctx context.Context, cfg watchCommandConfig) error {
 		QueueDepth:    watchQueueDepthStore{store: store},
 		SourceStarter: defaultWatchSourceStarter{repoRoot: cfg.repoRoot, eventSink: eventSink},
 		RunnerStarter: defaultWatchRunnerStarter{queuePath: watchCfg.QueuePath, environmentsPath: environmentsPath, eventSink: eventSink},
+		EventSink:     eventSink,
 		TickInterval:  cfg.tickInterval,
 		IdleCooldown:  cfg.idleCooldown,
 	})
@@ -175,6 +177,7 @@ type watchSupervisorConfig struct {
 	TickInterval  time.Duration
 	IdleCooldown  time.Duration
 	Now           func() time.Time
+	EventSink     contracts.EventSink
 }
 
 type watchQueueDepthProvider interface {
@@ -183,6 +186,11 @@ type watchQueueDepthProvider interface {
 
 type watchActiveDepthProvider interface {
 	ActiveDepth(ctx context.Context, source string, presets []string) (int, error)
+}
+
+type watchQueueStateProvider interface {
+	ListSources(ctx context.Context) ([]workqueue.SourceRow, error)
+	ItemStateCounts(ctx context.Context) (map[string]int, error)
 }
 
 type watchSourceStarter interface {
@@ -298,6 +306,10 @@ func (s *watchSupervisor) newPoolStates() map[string]*watchRunnerPoolState {
 }
 
 func (s *watchSupervisor) reconcilePools(ctx context.Context, states map[string]*watchRunnerPoolState) error {
+	if err := s.emitQueueSnapshot(ctx); err != nil {
+		return err
+	}
+
 	names := make([]string, 0, len(states))
 	for name := range states {
 		names = append(names, name)
@@ -311,6 +323,123 @@ func (s *watchSupervisor) reconcilePools(ctx context.Context, states map[string]
 		}
 	}
 	return nil
+}
+
+func (s *watchSupervisor) emitQueueSnapshot(ctx context.Context) error {
+	if s.cfg.EventSink == nil {
+		return nil
+	}
+	metadata, err := s.queueSnapshotMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	return s.cfg.EventSink.Emit(ctx, contracts.Event{
+		Type:      contracts.EventTypeQueueSnapshot,
+		Metadata:  metadata,
+		Timestamp: s.cfg.Now(),
+	})
+}
+
+func (s *watchSupervisor) queueSnapshotMetadata(ctx context.Context) (map[string]string, error) {
+	metadata := map[string]string{}
+	sourcePresets := s.queueSnapshotSourcePresets()
+	sourceNames := make([]string, 0, len(sourcePresets))
+	for sourceName := range sourcePresets {
+		sourceNames = append(sourceNames, sourceName)
+	}
+	sort.Strings(sourceNames)
+
+	for _, sourceName := range sourceNames {
+		presets := sourcePresets[sourceName]
+		pendingDepth := 0
+		activeDepth := 0
+		if len(presets) > 0 {
+			var err error
+			pendingDepth, err = s.cfg.QueueDepth.PendingDepth(ctx, sourceName, presets)
+			if err != nil {
+				return nil, fmt.Errorf("read queue snapshot pending depth for source %q: %w", sourceName, err)
+			}
+			activeDepth, err = s.activeDepth(ctx, sourceName, presets)
+			if err != nil {
+				return nil, fmt.Errorf("read queue snapshot active depth for source %q: %w", sourceName, err)
+			}
+		}
+		metadata["depth."+sourceName+".pending"] = strconv.Itoa(pendingDepth)
+		metadata["depth."+sourceName+".active"] = strconv.Itoa(activeDepth)
+	}
+
+	if provider, ok := s.cfg.QueueDepth.(watchQueueStateProvider); ok {
+		sourceCounts, err := provider.ListSources(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read queue snapshot source state counts: %w", err)
+		}
+		sort.Slice(sourceCounts, func(i, j int) bool {
+			if sourceCounts[i].Source == sourceCounts[j].Source {
+				return sourceCounts[i].State < sourceCounts[j].State
+			}
+			return sourceCounts[i].Source < sourceCounts[j].Source
+		})
+		for _, count := range sourceCounts {
+			metadata["state."+count.Source+"."+count.State] = strconv.Itoa(count.Count)
+		}
+
+		stateCounts, err := provider.ItemStateCounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read queue snapshot total state counts: %w", err)
+		}
+		states := make([]string, 0, len(stateCounts))
+		for state := range stateCounts {
+			states = append(states, state)
+		}
+		sort.Strings(states)
+		for _, state := range states {
+			metadata["state.total."+state] = strconv.Itoa(stateCounts[state])
+		}
+	}
+
+	return metadata, nil
+}
+
+func (s *watchSupervisor) queueSnapshotSourcePresets() map[string][]string {
+	presetsBySource := map[string][]string{}
+	for _, source := range s.cfg.Watch.Sources {
+		sourceName := watchRuntimeSourceName(source)
+		if sourceName == "" {
+			sourceName = strings.TrimSpace(source.Name)
+		}
+		if sourceName == "" {
+			continue
+		}
+		presets := presetsBySource[sourceName]
+		if strings.TrimSpace(source.Preset) != "" {
+			presets = append(presets, source.Preset)
+		}
+		presetsBySource[sourceName] = presets
+	}
+	for _, pool := range s.cfg.Watch.RunnerPools {
+		sourceName := watchRuntimeSourceNameForConfigSource(s.cfg.Watch.Sources, pool.Source)
+		if sourceName == "" {
+			sourceName = strings.TrimSpace(pool.Source)
+		}
+		if sourceName == "" {
+			continue
+		}
+		presetsBySource[sourceName] = append(presetsBySource[sourceName], pool.Presets...)
+	}
+	for sourceName, presets := range presetsBySource {
+		presetsBySource[sourceName] = normalizeRunnerPresets(presets)
+	}
+	return presetsBySource
+}
+
+func watchRuntimeSourceNameForConfigSource(sources []watchSourceConfig, configSource string) string {
+	configSource = strings.TrimSpace(configSource)
+	for _, source := range sources {
+		if strings.TrimSpace(source.Name) == configSource {
+			return watchRuntimeSourceName(source)
+		}
+	}
+	return ""
 }
 
 func (s *watchSupervisor) reconcilePool(ctx context.Context, state *watchRunnerPoolState) error {
@@ -507,6 +636,26 @@ func (q watchQueueDepthStore) ActiveDepth(ctx context.Context, source string, pr
 		return 0, errors.New("watch queue store is required")
 	}
 	return q.store.ActiveDepth(source, presets)
+}
+
+func (q watchQueueDepthStore) ListSources(ctx context.Context) ([]workqueue.SourceRow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if q.store == nil {
+		return nil, errors.New("watch queue store is required")
+	}
+	return q.store.ListSources()
+}
+
+func (q watchQueueDepthStore) ItemStateCounts(ctx context.Context) (map[string]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if q.store == nil {
+		return nil, errors.New("watch queue store is required")
+	}
+	return q.store.ItemStateCounts()
 }
 
 type defaultWatchSourceStarter struct {

@@ -22,12 +22,12 @@ func TestEventsFollowMergesExistingFilesByTimestampAndSince(t *testing.T) {
 	}
 
 	writeEventsFollowFixture(t, filepath.Join(eventsDir, "runner-b.jsonl"), []string{
-		`{"type":"runner_finished","task_id":"task-newer","ts":"2026-06-13T10:00:03Z"}`,
+		`{"type":"agent_finished","task_id":"task-newer","ts":"2026-06-13T10:00:03Z"}`,
 		`not-json`,
 	})
 	writeEventsFollowFixture(t, filepath.Join(eventsDir, "runner-a.jsonl"), []string{
-		`{"type":"runner_started","task_id":"task-old","ts":"2026-06-13T09:59:59Z"}`,
-		`{"type":"runner_started","task_id":"task-mid","ts":"2026-06-13T10:00:01Z"}`,
+		`{"type":"agent_started","task_id":"task-old","ts":"2026-06-13T09:59:59Z"}`,
+		`{"type":"agent_started","task_id":"task-mid","ts":"2026-06-13T10:00:01Z"}`,
 	})
 
 	var out bytes.Buffer
@@ -78,7 +78,7 @@ func TestEventsFollowReadsDefaultSourcehostAndRunnerEventFiles(t *testing.T) {
 		t.Fatalf("default runner event sink is nil")
 	}
 	if err := runnerSink.Emit(context.Background(), contracts.Event{
-		Type:      contracts.EventTypeRunnerStarted,
+		Type:      contracts.EventTypeAgentStarted,
 		Proc:      "runner-a",
 		ItemID:    "item-1",
 		Timestamp: time.Now().UTC(),

@@ -129,6 +129,21 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	if startedAt == "" || heartbeatAt == "" {
 		t.Fatalf("runner timestamps not populated: started_at=%q heartbeat_at=%q", startedAt, heartbeatAt)
 	}
+
+	raw, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".yolo-runner", "events", "runner-test.jsonl"))
+	if err != nil {
+		t.Fatalf("read runner events file: %v", err)
+	}
+	registered, ok := runnerDaemonEventByTypeAndMetadata(t, raw, string(contracts.EventTypeAgentStarted), "capacity", "1")
+	if !ok {
+		t.Fatalf("runner events missing registration start event; got %q", string(raw))
+	}
+	if registered.RunnerID != "runner-test" || registered.Proc != "runner-test" {
+		t.Fatalf("registration identity = runner_id %q proc %q, want runner-test", registered.RunnerID, registered.Proc)
+	}
+	if registered.Metadata["pid"] != strconv.Itoa(os.Getpid()) || registered.Metadata["presets"] != "linux" || registered.Metadata["capacity"] != "1" {
+		t.Fatalf("registration metadata = %#v, want pid/presets/capacity", registered.Metadata)
+	}
 }
 
 func writeRunnerEnvironmentFile(t *testing.T, presetName string) string {
@@ -412,6 +427,7 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 				if reaped != 0 {
 					return workqueue.Result{}, fmt.Errorf("RequeueStale() reaped %d item(s), want 0 while heartbeat is active", reaped)
 				}
+				time.Sleep(25 * time.Millisecond)
 				return workqueue.Result{Payload: json.RawMessage(`{"status":"ok"}`)}, nil
 			},
 		},
@@ -462,6 +478,10 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 		if event.Proc != "runner-heartbeat" {
 			t.Fatalf("event proc = %q, want runner-heartbeat in line %q", event.Proc, line)
 		}
+		if event.ItemID == "" {
+			seen[event.Type] = true
+			continue
+		}
 		if event.ItemID != item.ID {
 			t.Fatalf("event item_id = %q, want %q in line %q", event.ItemID, item.ID, line)
 		}
@@ -478,6 +498,55 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 			t.Fatalf("runner events missing %q; got %q", eventType, string(raw))
 		}
 	}
+	alive, ok := runnerDaemonEventByTypeAndMetadata(t, raw, string(contracts.EventTypeAgentHeartbeat), "current_item_id", item.ID)
+	if !ok {
+		t.Fatalf("runner events missing heartbeat for current item; got %q", string(raw))
+	}
+	if alive.RunnerID != "runner-heartbeat" || alive.Proc != "runner-heartbeat" {
+		t.Fatalf("heartbeat identity = runner_id %q proc %q, want runner-heartbeat", alive.RunnerID, alive.Proc)
+	}
+	if alive.Metadata["current_item_id"] != item.ID {
+		t.Fatalf("heartbeat current_item_id = %q, want %q; metadata=%#v", alive.Metadata["current_item_id"], item.ID, alive.Metadata)
+	}
+	if strings.TrimSpace(alive.Metadata["heartbeat_age"]) == "" {
+		t.Fatalf("heartbeat metadata missing heartbeat_age: %#v", alive.Metadata)
+	}
+}
+
+func runnerDaemonEventByType(t *testing.T, raw []byte, eventType string) (contracts.Event, bool) {
+	t.Helper()
+
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		event, err := contracts.ParseEventJSONLLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parse event line %q: %v", line, err)
+		}
+		if string(event.Type) == eventType {
+			return event, true
+		}
+	}
+	return contracts.Event{}, false
+}
+
+func runnerDaemonEventByTypeAndMetadata(t *testing.T, raw []byte, eventType string, key string, value string) (contracts.Event, bool) {
+	t.Helper()
+
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		event, err := contracts.ParseEventJSONLLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parse event line %q: %v", line, err)
+		}
+		if string(event.Type) == eventType && event.Metadata[key] == value {
+			return event, true
+		}
+	}
+	return contracts.Event{}, false
 }
 
 func waitForRunnerDaemonLeaseExtension(db *sql.DB, itemID string, previous time.Time, timeout time.Duration) (time.Time, error) {
