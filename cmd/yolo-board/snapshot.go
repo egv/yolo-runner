@@ -9,12 +9,13 @@ import (
 )
 
 type boardSnapshot struct {
-	items           []workitem.Item
-	runners         []workqueue.RunnerRow
-	currentByRunner map[string]*workitem.Item
-	sources         []workqueue.SourceRow
-	stateCounts     map[string]int
-	runtimeByItem   map[string]itemRuntimeSnapshot
+	items             []workitem.Item
+	runners           []workqueue.RunnerRow
+	currentByRunner   map[string]*workitem.Item
+	sources           []workqueue.SourceRow
+	stateCounts       map[string]int
+	runtimeByItem     map[string]itemRuntimeSnapshot
+	unconsumedResults []workqueue.UnconsumedResult
 }
 
 type itemRuntimeSnapshot struct {

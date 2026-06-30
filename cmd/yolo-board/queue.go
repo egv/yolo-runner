@@ -11,18 +11,24 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
-func renderQueueTab(snapshot boardSnapshot, now time.Time) string {
+func renderQueueTab(snapshot boardSnapshot, now time.Time, cursorArg ...int) string {
 	var b strings.Builder
 	b.WriteString("Queue\n")
 	fmt.Fprintf(&b, "Counts: %s\n", formatQueueStateCounts(snapshot.stateCounts))
 	b.WriteString("KIND\tSOURCE_REF\tPRESET\tPRIORITY\tSTATE\tATTEMPT\tCLAIMED_BY\tAGE\n")
 
 	items := sortedQueueItems(snapshot.items)
+	cursor := selectedCursor(cursorArg, len(items))
 
-	for _, item := range items {
+	for i, item := range items {
+		prefix := "  "
+		if i == cursor {
+			prefix = "> "
+		}
 		fmt.Fprintf(
 			&b,
-			"%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			"%s%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			prefix,
 			item.Kind,
 			item.SourceRef,
 			item.Preset,
