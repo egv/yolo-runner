@@ -759,14 +759,15 @@ func (s defaultWatchRunnerStarter) StartRunner(ctx context.Context, pool watchRu
 		_ = store.Close()
 		return nil, err
 	}
+	runnerSink := watchRunnerEventSink(daemonCfg.runnerID, s.eventSink)
 	handlers := defaultRunnerKindRegistry()
-	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets))
+	handlers[workitem.KindImplement] = newRunnerImplementKindHandler(newRunnerImplementExecutorResolverForPresets(environmentPresets, runnerSink))
 	handlers[workitem.KindSplit] = newRunnerSplitKindHandler(newRunnerSplitAgentResolverForPresets(environmentPresets))
 	daemon, err := newRunnerDaemon(daemonCfg, store, runners, runnerDaemonBuildOptions{
 		handlers:           handlers,
 		environmentPresets: environmentPresets,
 		materializer:       envpreset.MaterializeWorkspace,
-		eventSink:          watchRunnerEventSink(daemonCfg.runnerID, s.eventSink),
+		eventSink:          runnerSink,
 	})
 	if err != nil {
 		_ = unregisterQueueRunner(runners, daemonCfg.runnerID)

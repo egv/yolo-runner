@@ -163,9 +163,14 @@ func defaultRunnerImplementExecutorResolver(_ context.Context, item workitem.Ite
 	return resolveRunnerImplementExecutorFromPresets(item, presets, defaultRunnerDaemonEnvironmentsPath)
 }
 
-func newRunnerImplementExecutorResolverForPresets(presets map[string]envpreset.Preset) runnerImplementExecutorResolver {
+func newRunnerImplementExecutorResolverForPresets(presets map[string]envpreset.Preset, events contracts.EventSink) runnerImplementExecutorResolver {
 	return func(_ context.Context, item workitem.Item, _ envpreset.Workspace) (runnerImplementExecutor, error) {
-		return resolveRunnerImplementExecutorFromPresets(item, presets, "runner environments")
+		resolved, err := resolveRunnerImplementExecutorFromPresets(item, presets, "runner environments")
+		if err != nil {
+			return runnerImplementExecutor{}, err
+		}
+		resolved.Events = events
+		return resolved, nil
 	}
 }
 
