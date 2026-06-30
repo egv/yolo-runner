@@ -18,3 +18,6 @@ internal/beads/.beads/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Claude settings (may contain auth tokens; per-clone copies are guarded by .git/info/exclude)
+.claude/

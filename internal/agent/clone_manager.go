@@ -87,6 +87,14 @@ func sourceOriginURL(ctx context.Context, repoRoot string) (string, error) {
 // replacement for the dead --dangerously-skip-permissions flag) and inherits the
 // source repo's z.ai auth env block, while preserving any committed clone settings.
 func writeCloneClaudeSettings(clonePath string, repoRoot string) error {
+	// Guard first: the settings file we are about to write holds the agent auth
+	// token, so the clone must never stage it (an agent `git add -A` would
+	// otherwise sweep it into a commit). This does not rely on the repo's
+	// tracked .gitignore.
+	if err := excludeClaudeFromCloneGit(clonePath); err != nil {
+		return err
+	}
+
 	target := filepath.Join(clonePath, ".claude", "settings.json")
 
 	settings := map[string]any{}
@@ -144,6 +152,35 @@ func sourceClaudeEnv(repoRoot string) map[string]any {
 		if env, ok := parsed["env"].(map[string]any); ok && len(env) > 0 {
 			return env
 		}
+	}
+	return nil
+}
+
+// excludeClaudeFromCloneGit writes .git/info/exclude in the clone to prevent
+// .claude/ from ever being staged. This is more robust than relying on the
+// repo's tracked .gitignore: .git/info/exclude is local-only and never
+// committed, so even if the tracked .gitignore is missing or wrong, the auth
+// token in .claude/settings.json will never be swept into a commit by an
+// agent's git add -A.
+func excludeClaudeFromCloneGit(clonePath string) error {
+	excludePath := filepath.Join(clonePath, ".git", "info", "exclude")
+	// Append if file exists, create if not. Use a trailing newline guard
+	// to avoid matching a partial line if the file lacks a final newline.
+	entry := "\n.claude/\n"
+	data, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read .git/info/exclude: %w", err)
+	}
+	if strings.Contains(string(data), ".claude/") {
+		return nil
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open .git/info/exclude: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(entry); err != nil {
+		return fmt.Errorf("write .git/info/exclude: %w", err)
 	}
 	return nil
 }

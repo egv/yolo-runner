@@ -245,6 +245,51 @@ func TestGitCloneManagerPreservesCommittedCloneSettings(t *testing.T) {
 	}
 }
 
+func TestGitCloneManagerExcludesClaudeDirFromGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, repoRoot, "add", "README.md")
+	runGit(t, repoRoot, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init")
+
+	manager := NewGitCloneManager(t.TempDir())
+	clonePath, err := manager.CloneForTask(context.Background(), "t-exclude", repoRoot)
+	if err != nil {
+		t.Fatalf("clone failed: %v", err)
+	}
+	defer func() { _ = manager.Cleanup("t-exclude") }()
+
+	// Verify .git/info/exclude contains .claude/
+	excludePath := filepath.Join(clonePath, ".git", "info", "exclude")
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read .git/info/exclude: %v", err)
+	}
+	if !strings.Contains(string(data), ".claude/") {
+		t.Fatalf("expected .git/info/exclude to contain .claude/, got: %s", string(data))
+	}
+
+	// Verify that a .claude/settings.json file is not considered untracked
+	// (i.e., it's actually excluded)
+	if err := os.MkdirAll(filepath.Join(clonePath, ".claude"), 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(clonePath, ".claude", "settings.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write .claude/settings.json: %v", err)
+	}
+	// git status --porcelain should not list .claude/settings.json
+	out := runGitOutput(t, clonePath, "status", "--porcelain")
+	if strings.Contains(out, ".claude") {
+		t.Fatalf("expected .claude/ to be excluded from git, but git status reported: %s", out)
+	}
+}
+
 func readCloneSettings(t *testing.T, clonePath string) map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(clonePath, ".claude", "settings.json"))
