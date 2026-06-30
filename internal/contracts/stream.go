@@ -64,16 +64,28 @@ func (d *EventDecoder) Next() (Event, error) {
 
 func ParseEventJSONLLine(line []byte) (Event, error) {
 	var payload struct {
-		Type      string            `json:"type"`
-		TaskID    string            `json:"task_id"`
-		TaskTitle string            `json:"task_title"`
-		WorkerID  string            `json:"worker_id"`
-		ClonePath string            `json:"clone_path"`
-		QueuePos  int               `json:"queue_pos"`
-		Priority  int               `json:"priority"`
-		Message   string            `json:"message"`
-		Metadata  map[string]string `json:"metadata"`
-		TS        string            `json:"ts"`
+		Type        string            `json:"type"`
+		Proc        string            `json:"proc"`
+		TaskID      string            `json:"task_id"`
+		ItemID      string            `json:"item_id"`
+		TaskTitle   string            `json:"task_title"`
+		WorkerID    string            `json:"worker_id"`
+		ClonePath   string            `json:"clone_path"`
+		QueuePos    int               `json:"queue_pos"`
+		Priority    int               `json:"priority"`
+		Message     string            `json:"message"`
+		Metadata    map[string]string `json:"metadata"`
+		Attempt     int               `json:"attempt"`
+		RetryCount  int               `json:"retry_count"`
+		MaxAttempts int               `json:"max_attempts"`
+		Source      string            `json:"source"`
+		SourceRef   string            `json:"source_ref"`
+		Kind        string            `json:"kind"`
+		Preset      string            `json:"preset"`
+		RunnerID    string            `json:"runner_id"`
+		Reason      BlockReason       `json:"reason"`
+		Detail      string            `json:"detail"`
+		TS          string            `json:"ts"`
 	}
 	if err := json.Unmarshal(line, &payload); err != nil {
 		return Event{}, err
@@ -87,15 +99,27 @@ func ParseEventJSONLLine(line []byte) (Event, error) {
 		timestamp = parsed
 	}
 	return Event{
-		Type:      EventType(payload.Type),
-		TaskID:    payload.TaskID,
-		TaskTitle: payload.TaskTitle,
-		WorkerID:  payload.WorkerID,
-		ClonePath: payload.ClonePath,
-		QueuePos:  payload.QueuePos,
-		Priority:  payload.Priority,
-		Message:   payload.Message,
-		Metadata:  payload.Metadata,
-		Timestamp: timestamp,
+		Type:        EventType(payload.Type),
+		Proc:        payload.Proc,
+		TaskID:      payload.TaskID,
+		ItemID:      payload.ItemID,
+		TaskTitle:   payload.TaskTitle,
+		WorkerID:    payload.WorkerID,
+		ClonePath:   payload.ClonePath,
+		QueuePos:    payload.QueuePos,
+		Priority:    payload.Priority,
+		Message:     payload.Message,
+		Metadata:    payload.Metadata,
+		Timestamp:   timestamp,
+		Attempt:     payload.Attempt,
+		RetryCount:  payload.RetryCount,
+		MaxAttempts: payload.MaxAttempts,
+		Source:      payload.Source,
+		SourceRef:   payload.SourceRef,
+		Kind:        payload.Kind,
+		Preset:      payload.Preset,
+		RunnerID:    payload.RunnerID,
+		Reason:      payload.Reason,
+		Detail:      payload.Detail,
 	}, nil
 }

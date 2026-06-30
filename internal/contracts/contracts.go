@@ -222,6 +222,20 @@ const (
 	EventTypeRunnerCommandFinished EventType = "runner_cmd_finished"
 	EventTypeRunnerOutput          EventType = "runner_output"
 	EventTypeRunnerWarning         EventType = "runner_warning"
+	EventTypeAgentStarted          EventType = "agent_started"
+	EventTypeAgentFinished         EventType = "agent_finished"
+	EventTypeAgentText             EventType = "agent_text"
+	EventTypeAgentHeartbeat        EventType = "agent_heartbeat"
+	EventTypeAgentProgress         EventType = "agent_progress"
+	EventTypeAgentBlocked          EventType = "agent_blocked"
+	EventTypeCommandRun            EventType = "command_run"
+	EventTypeToolInvoked           EventType = "tool_invoked"
+	EventTypeTokenUsage            EventType = "token_usage"
+	EventTypeSourcePoll            EventType = "source_poll"
+	EventTypeSourceHeartbeat       EventType = "source_heartbeat"
+	EventTypeQueueSnapshot         EventType = "queue_snapshot"
+	EventTypeRunnerRegistered      EventType = "runner_registered"
+	EventTypeRunnerAlive           EventType = "runner_alive"
 	EventTypeReviewStarted         EventType = "review_started"
 	EventTypeReviewFinished        EventType = "review_finished"
 	EventTypeBranchCreated         EventType = "branch_created"
@@ -235,19 +249,60 @@ const (
 	EventTypeTaskDataUpdated       EventType = "task_data_updated"
 )
 
+type BlockReason string
+
+const (
+	BlockReasonPermissionDenied BlockReason = "permission_denied"
+	BlockReasonNoOutput         BlockReason = "no_output"
+	BlockReasonRateLimited      BlockReason = "rate_limited"
+	BlockReasonAuth             BlockReason = "auth"
+	BlockReasonStuck            BlockReason = "stuck"
+	BlockReasonOther            BlockReason = "other"
+)
+
 type Event struct {
-	Type      EventType
-	Proc      string
-	TaskID    string
-	ItemID    string
-	TaskTitle string
-	WorkerID  string
-	ClonePath string
-	QueuePos  int
-	Priority  int
-	Message   string
-	Metadata  map[string]string
-	Timestamp time.Time
+	Type        EventType
+	Proc        string
+	TaskID      string
+	ItemID      string
+	TaskTitle   string
+	WorkerID    string
+	ClonePath   string
+	QueuePos    int
+	Priority    int
+	Message     string
+	Metadata    map[string]string
+	Timestamp   time.Time
+	Attempt     int
+	RetryCount  int
+	MaxAttempts int
+	Source      string
+	SourceRef   string
+	Kind        string
+	Preset      string
+	RunnerID    string
+	Reason      BlockReason
+	Detail      string
+}
+
+type EventIdentity struct {
+	Source    string
+	SourceRef string
+	Kind      string
+	Preset    string
+	RunnerID  string
+}
+
+func NewEvent(eventType EventType, identity EventIdentity) Event {
+	return Event{
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
+		Source:    identity.Source,
+		SourceRef: identity.SourceRef,
+		Kind:      identity.Kind,
+		Preset:    identity.Preset,
+		RunnerID:  identity.RunnerID,
+	}
 }
 
 // WithClonedMetadata returns a copy of the event whose Metadata map is
@@ -269,31 +324,51 @@ func (e Event) WithClonedMetadata() Event {
 
 func MarshalEventJSONL(event Event) (string, error) {
 	payload := struct {
-		Type      EventType         `json:"type"`
-		Proc      string            `json:"proc,omitempty"`
-		TaskID    string            `json:"task_id"`
-		ItemID    string            `json:"item_id,omitempty"`
-		TaskTitle string            `json:"task_title,omitempty"`
-		WorkerID  string            `json:"worker_id,omitempty"`
-		ClonePath string            `json:"clone_path,omitempty"`
-		QueuePos  int               `json:"queue_pos,omitempty"`
-		Priority  int               `json:"priority,omitempty"`
-		Message   string            `json:"message,omitempty"`
-		Metadata  map[string]string `json:"metadata,omitempty"`
-		TS        string            `json:"ts"`
+		Type        EventType         `json:"type"`
+		Proc        string            `json:"proc,omitempty"`
+		TaskID      string            `json:"task_id"`
+		ItemID      string            `json:"item_id,omitempty"`
+		TaskTitle   string            `json:"task_title,omitempty"`
+		WorkerID    string            `json:"worker_id,omitempty"`
+		ClonePath   string            `json:"clone_path,omitempty"`
+		QueuePos    int               `json:"queue_pos,omitempty"`
+		Priority    int               `json:"priority,omitempty"`
+		Message     string            `json:"message,omitempty"`
+		Metadata    map[string]string `json:"metadata,omitempty"`
+		Attempt     int               `json:"attempt,omitempty"`
+		RetryCount  int               `json:"retry_count,omitempty"`
+		MaxAttempts int               `json:"max_attempts,omitempty"`
+		Source      string            `json:"source,omitempty"`
+		SourceRef   string            `json:"source_ref,omitempty"`
+		Kind        string            `json:"kind,omitempty"`
+		Preset      string            `json:"preset,omitempty"`
+		RunnerID    string            `json:"runner_id,omitempty"`
+		Reason      BlockReason       `json:"reason,omitempty"`
+		Detail      string            `json:"detail,omitempty"`
+		TS          string            `json:"ts"`
 	}{
-		Type:      event.Type,
-		Proc:      event.Proc,
-		TaskID:    event.TaskID,
-		ItemID:    event.ItemID,
-		TaskTitle: event.TaskTitle,
-		WorkerID:  event.WorkerID,
-		ClonePath: event.ClonePath,
-		QueuePos:  event.QueuePos,
-		Priority:  event.Priority,
-		Message:   event.Message,
-		Metadata:  event.Metadata,
-		TS:        event.Timestamp.UTC().Format(time.RFC3339),
+		Type:        event.Type,
+		Proc:        event.Proc,
+		TaskID:      event.TaskID,
+		ItemID:      event.ItemID,
+		TaskTitle:   event.TaskTitle,
+		WorkerID:    event.WorkerID,
+		ClonePath:   event.ClonePath,
+		QueuePos:    event.QueuePos,
+		Priority:    event.Priority,
+		Message:     event.Message,
+		Metadata:    event.Metadata,
+		Attempt:     event.Attempt,
+		RetryCount:  event.RetryCount,
+		MaxAttempts: event.MaxAttempts,
+		Source:      event.Source,
+		SourceRef:   event.SourceRef,
+		Kind:        event.Kind,
+		Preset:      event.Preset,
+		RunnerID:    event.RunnerID,
+		Reason:      event.Reason,
+		Detail:      event.Detail,
+		TS:          event.Timestamp.UTC().Format(time.RFC3339),
 	}
 
 	data, err := json.Marshal(payload)
