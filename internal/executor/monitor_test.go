@@ -96,6 +96,44 @@ func TestRunWithMonitoringPreservesAgentBlockedReasonAndDetail(t *testing.T) {
 	}
 }
 
+func TestRunWithMonitoringPreservesCanonicalRunnerProgressTypes(t *testing.T) {
+	runner := &monitorTestRunner{
+		result: contracts.RunnerResult{Status: contracts.RunnerResultCompleted},
+		progress: []contracts.RunnerProgress{
+			{Type: string(contracts.EventTypeAgentText), Message: "Exploring"},
+			{Type: string(contracts.EventTypeCommandRun), Message: "go test ./internal/opencode/"},
+			{Type: string(contracts.EventTypeToolInvoked), Message: "Read README.md"},
+			{Type: string(contracts.EventTypeTokenUsage), Message: "usage"},
+		},
+	}
+	sink := &monitorRecordingSink{}
+
+	_, err := RunWithMonitoring(context.Background(), runner, sink, contracts.RunnerRequest{
+		TaskID: "t-1",
+		Mode:   contracts.RunnerModeImplement,
+	}, MonitorEventContext{TaskID: "t-1"}, MonitorOptions{
+		HeartbeatInterval:    time.Hour,
+		NoOutputWarningAfter: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("run with monitoring failed: %v", err)
+	}
+
+	for _, eventType := range []contracts.EventType{
+		contracts.EventTypeAgentText,
+		contracts.EventTypeCommandRun,
+		contracts.EventTypeToolInvoked,
+		contracts.EventTypeTokenUsage,
+	} {
+		if got := eventsByType(sink.Events(), eventType); len(got) != 1 {
+			t.Fatalf("expected one %s event, got %d; events=%#v", eventType, len(got), sink.Events())
+		}
+	}
+	if got := eventsByType(sink.Events(), contracts.EventTypeRunnerProgress); len(got) != 0 {
+		t.Fatalf("canonical events must not be collapsed to runner_progress: %#v", got)
+	}
+}
+
 type monitorTestRunner struct {
 	delay    time.Duration
 	result   contracts.RunnerResult

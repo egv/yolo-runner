@@ -132,8 +132,18 @@ func eventTypeForRunnerProgress(progressType string) contracts.EventType {
 		return contracts.EventTypeRunnerOutput
 	case "runner_warning":
 		return contracts.EventTypeRunnerWarning
+	case "agent_text":
+		return contracts.EventTypeAgentText
+	case "agent_progress":
+		return contracts.EventTypeAgentProgress
 	case "agent_blocked":
 		return contracts.EventTypeAgentBlocked
+	case "command_run":
+		return contracts.EventTypeCommandRun
+	case "tool_invoked":
+		return contracts.EventTypeToolInvoked
+	case "token_usage":
+		return contracts.EventTypeTokenUsage
 	default:
 		return contracts.EventTypeRunnerProgress
 	}

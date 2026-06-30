@@ -31,8 +31,8 @@ func TestNormalizeACPProgressNotificationToolCallPendingIsCommandStarted(t *test
 	if !ok {
 		t.Fatalf("expected ok=true for tool call")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandStarted) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandStarted, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 	if progress.Message == "" {
 		t.Fatalf("expected non-empty message")
@@ -55,8 +55,8 @@ func TestNormalizeACPProgressNotificationToolCallInProgressIsCommandStarted(t *t
 	if !ok {
 		t.Fatalf("expected ok=true for in-progress tool call")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandStarted) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandStarted, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 }
 
@@ -76,8 +76,8 @@ func TestNormalizeACPProgressNotificationToolCallCompletedIsCommandFinished(t *t
 	if !ok {
 		t.Fatalf("expected ok=true for completed tool call")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandFinished) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandFinished, progress.Type)
+	if progress.Type != string(contracts.EventTypeCommandRun) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeCommandRun, progress.Type)
 	}
 }
 
@@ -97,8 +97,8 @@ func TestNormalizeACPProgressNotificationToolCallFailedIsCommandFinished(t *test
 	if !ok {
 		t.Fatalf("expected ok=true for failed tool call")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandFinished) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandFinished, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestNormalizeACPProgressNotificationToolCallNilStatusIsCommandStarted(t *te
 	if !ok {
 		t.Fatalf("expected ok=true for nil-status tool call")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandStarted) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandStarted, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 }
 
@@ -163,8 +163,8 @@ func TestNormalizeACPProgressNotificationAgentMessageIsRunnerOutput(t *testing.T
 	if !ok {
 		t.Fatalf("expected ok=true for agent message chunk")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerOutput) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerOutput, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentText) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentText, progress.Type)
 	}
 	if progress.Message != "Hello world" {
 		t.Fatalf("expected message 'Hello world', got %q", progress.Message)
@@ -181,8 +181,8 @@ func TestNormalizeACPProgressNotificationAgentThoughtIsRunnerOutput(t *testing.T
 	if !ok {
 		t.Fatalf("expected ok=true for agent thought chunk")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerOutput) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerOutput, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentText) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentText, progress.Type)
 	}
 	if progress.Message != "Thinking..." {
 		t.Fatalf("expected 'Thinking...', got %q", progress.Message)
@@ -216,8 +216,8 @@ func TestNormalizeACPProgressNotificationToolCallUpdateCompletedIsCommandFinishe
 	if !ok {
 		t.Fatalf("expected ok=true for tool call update")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandFinished) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandFinished, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 }
 
@@ -235,8 +235,8 @@ func TestNormalizeACPProgressNotificationToolCallUpdateInProgressIsCommandStarte
 	if !ok {
 		t.Fatalf("expected ok=true for in-progress tool call update")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandStarted) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandStarted, progress.Type)
+	if progress.Type != string(contracts.EventTypeToolInvoked) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeToolInvoked, progress.Type)
 	}
 }
 
@@ -250,8 +250,8 @@ func TestNormalizeACPProgressNotificationPlanIsRunnerProgress(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true for plan update")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerProgress) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerProgress, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentProgress) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentProgress, progress.Type)
 	}
 }
 
@@ -306,14 +306,14 @@ func TestNormalizeACPPromptResponseEmptyStopReasonIsNotOk(t *testing.T) {
 	}
 }
 
-func TestNormalizeACPPromptResponseEndTurnIsCommandFinished(t *testing.T) {
+func TestNormalizeACPPromptResponseEndTurnIsAgentFinished(t *testing.T) {
 	resp := &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}
 	progress, ok := NormalizeACPPromptResponse(resp)
 	if !ok {
 		t.Fatalf("expected ok=true for end_turn")
 	}
-	if progress.Type != string(contracts.EventTypeRunnerCommandFinished) {
-		t.Fatalf("expected %q, got %q", contracts.EventTypeRunnerCommandFinished, progress.Type)
+	if progress.Type != string(contracts.EventTypeAgentFinished) {
+		t.Fatalf("expected %q, got %q", contracts.EventTypeAgentFinished, progress.Type)
 	}
 	if progress.Message != "end_turn" {
 		t.Fatalf("expected message 'end_turn', got %q", progress.Message)
