@@ -80,6 +80,7 @@ type boardConfig struct {
 
 type boardStore interface {
 	ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error)
+	ListUnconsumedResults(string) ([]workqueue.UnconsumedResult, error)
 	ListRunners() ([]workqueue.RunnerRow, error)
 	CurrentItemForRunner(string) (*workitem.Item, error)
 	ListSources() ([]workqueue.SourceRow, error)
@@ -104,19 +105,28 @@ type decodeErrorMsg struct {
 	err error
 }
 type streamDoneMsg struct{}
+type collectorDetailMsg struct {
+	source  string
+	items   []workitem.Item
+	results []workqueue.UnconsumedResult
+	err     error
+}
 
 type boardModel struct {
-	config       boardConfig
-	openStore    boardStoreOpener
-	store        boardStore
-	stream       <-chan streamMsg
-	snapshot     boardSnapshot
-	events       []contracts.Event
-	runnerDetail string
-	collectorCur int
-	waitingForDB bool
-	errLine      string
-	streamDone   bool
+	config           boardConfig
+	openStore        boardStoreOpener
+	store            boardStore
+	stream           <-chan streamMsg
+	snapshot         boardSnapshot
+	events           []contracts.Event
+	runnerDetail     string
+	collectorDetail  string
+	collectorItems   []workitem.Item
+	collectorResults []workqueue.UnconsumedResult
+	collectorCur     int
+	waitingForDB     bool
+	errLine          string
+	streamDone       bool
 }
 
 func newBoardModel(config boardConfig, opener boardStoreOpener, stream <-chan streamMsg) boardModel {
@@ -186,6 +196,17 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamDoneMsg:
 		m.streamDone = true
 		return m, nil
+	case collectorDetailMsg:
+		if typed.err != nil {
+			m.errLine = typed.err.Error()
+			return m, nil
+		}
+		if typed.source == m.collectorDetail {
+			m.collectorItems = typed.items
+			m.collectorResults = typed.results
+			m.errLine = ""
+		}
+		return m, nil
 	case tea.KeyMsg:
 		switch typed.String() {
 		case "q", "ctrl+c":
@@ -200,11 +221,28 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.collectorCur--
 			}
 		case "enter":
-			if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+			rows := collectorRows(m.snapshot, m.events)
+			if len(rows) > 0 {
+				if m.collectorCur >= len(rows) {
+					m.collectorCur = len(rows) - 1
+				}
+				if m.collectorCur < 0 {
+					m.collectorCur = 0
+				}
+				m.collectorDetail = rows[m.collectorCur].name
+				m.collectorItems = collectorItemsForSource(m.snapshot.items, m.collectorDetail)
+				m.collectorResults = collectorResultsForSource(m.snapshot.unconsumedResults, m.collectorDetail)
+				if m.store != nil {
+					return m, collectorDetailCmd(m.store, m.collectorDetail)
+				}
+			} else if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
 			m.runnerDetail = ""
+			m.collectorDetail = ""
+			m.collectorItems = nil
+			m.collectorResults = nil
 		}
 	}
 	return m, nil
@@ -221,6 +259,9 @@ func (m boardModel) View() string {
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
 	}
+	if m.collectorDetail != "" {
+		return line + "\n\n" + renderCollectorDetail(m.collectorDetail, m.collectorItems, m.collectorResults, m.events, time.Now().UTC())
+	}
 	return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
 }
 
@@ -233,6 +274,20 @@ func nextPollCmd(interval time.Duration) tea.Cmd {
 func pollCmd(store boardStore) tea.Cmd {
 	return func() tea.Msg {
 		return pollBoardStore(context.Background(), store)
+	}
+}
+
+func collectorDetailCmd(store boardStore, source string) tea.Cmd {
+	return func() tea.Msg {
+		items, err := store.ListItems(workqueue.ListItemsFilter{Source: source})
+		if err != nil {
+			return collectorDetailMsg{source: source, err: err}
+		}
+		results, err := store.ListUnconsumedResults(source)
+		if err != nil {
+			return collectorDetailMsg{source: source, err: err}
+		}
+		return collectorDetailMsg{source: source, items: items, results: results}
 	}
 }
 
@@ -266,15 +321,46 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	if err != nil {
 		return pollErrorMsg{err: err}
 	}
+	results, err := listBoardUnconsumedResults(store, items, sources)
+	if err != nil {
+		return pollErrorMsg{err: err}
+	}
 	return pollMsg{
 		snapshot: boardSnapshot{
-			items:           items,
-			runners:         runners,
-			currentByRunner: currentByRunner,
-			sources:         sources,
-			stateCounts:     stateCounts,
+			items:             items,
+			runners:           runners,
+			currentByRunner:   currentByRunner,
+			sources:           sources,
+			stateCounts:       stateCounts,
+			unconsumedResults: results,
 		},
 	}
+}
+
+func listBoardUnconsumedResults(store boardStore, items []workitem.Item, sources []workqueue.SourceRow) ([]workqueue.UnconsumedResult, error) {
+	sourceSet := map[string]struct{}{}
+	for _, source := range sources {
+		name := strings.TrimSpace(source.Source)
+		if name != "" {
+			sourceSet[name] = struct{}{}
+		}
+	}
+	for _, item := range items {
+		name := strings.TrimSpace(item.Source)
+		if name != "" {
+			sourceSet[name] = struct{}{}
+		}
+	}
+
+	var results []workqueue.UnconsumedResult
+	for source := range sourceSet {
+		sourceResults, err := store.ListUnconsumedResults(source)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, sourceResults...)
+	}
+	return results, nil
 }
 
 func waitForStreamMessage(stream <-chan streamMsg) tea.Cmd {

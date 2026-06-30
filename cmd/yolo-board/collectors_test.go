@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -105,5 +106,85 @@ func TestCollectorsTabLastPollIgnoresItemHeartbeat(t *testing.T) {
 	want := "> github-prs\tgithub\t1\t0\t0\t5m0s\t-\t-"
 	if !strings.Contains(view, want) {
 		t.Fatalf("renderCollectorsTab() should use updated_at, not item heartbeat, for last poll; missing %q:\n%s", want, view)
+	}
+}
+
+func TestCollectorsEnterShowsSelectedCollectorItemsResultsAndTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	item := workitem.Item{
+		ID:        "item-1",
+		Kind:      workitem.KindImplement,
+		Source:    "github-prs",
+		SourceRef: "GH-123",
+		State:     "done",
+		Preset:    "linux",
+		UpdatedAt: now.Add(-5 * time.Minute),
+	}
+	snapshot := boardSnapshot{
+		items: []workitem.Item{
+			item,
+			{ID: "item-2", Kind: workitem.KindReview, Source: "startrek-security", SourceRef: "SEC-1", State: "pending", Preset: "mac"},
+		},
+		sources: []workqueue.SourceRow{
+			{Source: "github-prs", State: "done", Count: 1},
+			{Source: "startrek-security", State: "pending", Count: 1},
+		},
+		unconsumedResults: []workqueue.UnconsumedResult{
+			{
+				Item: item,
+				Result: workqueue.Result{
+					ItemID:     item.ID,
+					Status:     workqueue.ResultStatusCompleted,
+					LogPath:    "runner-logs/item-1.log",
+					FinishedAt: now.Add(-30 * time.Second),
+				},
+			},
+		},
+	}
+	events := []contracts.Event{
+		{
+			Type:      contracts.EventTypeSourcePoll,
+			Source:    "github-prs",
+			Proc:      "sourcehost-github",
+			Message:   "polled 1 item",
+			Metadata:  map[string]string{"component": "sourcehost", "source": "github-prs"},
+			Timestamp: now.Add(-2 * time.Minute),
+		},
+		{
+			Type:      contracts.EventTypeSourceHeartbeat,
+			Source:    "startrek-security",
+			Proc:      "sourcehost-startrek",
+			Message:   "other source heartbeat",
+			Metadata:  map[string]string{"component": "sourcehost", "source": "startrek-security"},
+			Timestamp: now.Add(-1 * time.Minute),
+		},
+	}
+
+	model := newBoardModel(boardConfig{}, nil, nil)
+	updated, _ := model.Update(pollMsg{snapshot: snapshot})
+	board := updated.(boardModel)
+	for _, event := range events {
+		updated, _ = board.Update(eventMsg{event: event})
+		board = updated.(boardModel)
+	}
+	updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	board = updated.(boardModel)
+
+	view := board.View()
+	for _, want := range []string{
+		"Collector github-prs",
+		"Items",
+		"item-1\timplement\tGH-123\tdone\tlinux",
+		"Results",
+		"item-1\tcompleted\trunner-logs/item-1.log\t",
+		"Live timeline",
+		"sourcehost-github\tsource_poll\tpolled 1 item",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "item-2") || strings.Contains(view, "other source heartbeat") {
+		t.Fatalf("View() included another source:\n%s", view)
 	}
 }

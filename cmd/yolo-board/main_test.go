@@ -14,6 +14,7 @@ import (
 
 type fakeBoardStore struct {
 	items       []workitem.Item
+	results     []workqueue.UnconsumedResult
 	runners     []workqueue.RunnerRow
 	sources     []workqueue.SourceRow
 	stateCounts map[string]int
@@ -21,6 +22,16 @@ type fakeBoardStore struct {
 
 func (s fakeBoardStore) ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error) {
 	return s.items, nil
+}
+
+func (s fakeBoardStore) ListUnconsumedResults(source string) ([]workqueue.UnconsumedResult, error) {
+	var results []workqueue.UnconsumedResult
+	for _, result := range s.results {
+		if result.Item.Source == source {
+			results = append(results, result)
+		}
+	}
+	return results, nil
 }
 
 func (s fakeBoardStore) ListRunners() ([]workqueue.RunnerRow, error) {

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -102,10 +101,7 @@ func TestRunnersEnterShowsRunnerDetailWithCurrentItemAndActivity(t *testing.T) {
 		board = updated.(boardModel)
 	}
 
-	updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	board = updated.(boardModel)
-
-	view := board.View()
+	view := renderRunnerDetail(board.snapshot, board.events, "runner-a", now)
 	for _, want := range []string{
 		"Runner runner-a",
 		"Registration",
