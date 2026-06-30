@@ -309,7 +309,7 @@ func (s *killRestartBlockingEventSink) Emit(ctx context.Context, event contracts
 		}
 	}
 	if !s.blockAfterLand || event.Type != contracts.EventTypeMergeLanded {
-		if s.cancelAfterItemDone != nil && event.Type == contracts.EventTypeRunnerFinished && strings.TrimSpace(event.ItemID) != "" {
+		if s.cancelAfterItemDone != nil && event.Type == contracts.EventTypeAgentFinished && strings.TrimSpace(event.ItemID) != "" {
 			s.cancelAfterItemDone()
 		}
 		return nil

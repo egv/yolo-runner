@@ -185,6 +185,49 @@ func TestRunTrackerWatchPollLoopContinuesAfterIterationErrors(t *testing.T) {
 	})
 }
 
+func TestRunResilientWatchPollLoopEmitsAgentProgressForIterationWarning(t *testing.T) {
+	errIteration := errors.New("tracker is temporarily unavailable")
+	sink := &trackerWatchRecordingSink{}
+
+	err := runResilientWatchPollLoop(
+		context.Background(),
+		true,
+		fixedTrackerWatchPollInterval(time.Hour),
+		func(context.Context) error {
+			return errIteration
+		},
+		sink,
+		func(context.Context, time.Duration) error {
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatalf("expected iteration error")
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(sink.events))
+	}
+	event := sink.events[0]
+	if event.Type != contracts.EventTypeAgentProgress {
+		t.Fatalf("event type = %q, want %q", event.Type, contracts.EventTypeAgentProgress)
+	}
+	if event.Metadata["phase"] != "watch_iteration" || event.Metadata["level"] != "warning" {
+		t.Fatalf("event metadata = %#v, want phase watch_iteration and warning level", event.Metadata)
+	}
+	if !strings.Contains(event.Message, "tracker is temporarily unavailable") {
+		t.Fatalf("event message = %q, want iteration error", event.Message)
+	}
+}
+
+type trackerWatchRecordingSink struct {
+	events []contracts.Event
+}
+
+func (s *trackerWatchRecordingSink) Emit(_ context.Context, event contracts.Event) error {
+	s.events = append(s.events, event)
+	return nil
+}
+
 func TestRunTrackerWatchPollLoopUsesFreshIntervalProviderForEachWait(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

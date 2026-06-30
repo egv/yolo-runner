@@ -376,12 +376,12 @@ func waitRunnerDaemonItemResultOrPoll(ctx context.Context, results <-chan runner
 
 func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) error {
 	startedAt := time.Now().UTC()
-	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerStarted, item, "started", nil, startedAt)
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeAgentStarted, item, "started", nil, startedAt)
 
 	handler, ok := d.handlers[item.Kind]
 	if !ok || handler == nil {
 		cause := fmt.Errorf("no runner handler registered for kind %q", item.Kind)
-		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": cause.Error()}, time.Now().UTC())
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeAgentFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": cause.Error()}, time.Now().UTC())
 		return d.failClaimedItem(item, startedAt, cause)
 	}
 
@@ -407,7 +407,7 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 		handlerErr = heartbeatErr
 	}
 	if handlerErr != nil {
-		d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": handlerErr.Error()}, time.Now().UTC())
+		d.emitClaimedItemEvent(ctx, contracts.EventTypeAgentFinished, item, string(workqueue.ResultStatusFailed), map[string]string{"reason": handlerErr.Error()}, time.Now().UTC())
 		return d.failClaimedItem(item, startedAt, handlerErr)
 	}
 
@@ -433,7 +433,7 @@ func (d runnerDaemon) runClaimedItem(ctx context.Context, item workitem.Item) er
 	if finishErr != nil {
 		return finishErr
 	}
-	d.emitClaimedItemEvent(ctx, contracts.EventTypeRunnerFinished, item, string(status), nil, result.FinishedAt)
+	d.emitClaimedItemEvent(ctx, contracts.EventTypeAgentFinished, item, string(status), nil, result.FinishedAt)
 	return nil
 }
 
@@ -444,18 +444,24 @@ func (d runnerDaemon) emitClaimedItemEvent(ctx context.Context, eventType contra
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
-	metadata["kind"] = string(item.Kind)
-	metadata["preset"] = item.Preset
-	metadata["source"] = item.Source
-	metadata["source_ref"] = item.SourceRef
-	_ = d.events.Emit(ctx, contracts.Event{
-		Type:      eventType,
-		Proc:      d.cfg.runnerID,
-		ItemID:    item.ID,
-		Message:   message,
-		Metadata:  metadata,
-		Timestamp: timestamp,
+	event := contracts.NewEvent(eventType, contracts.EventIdentity{
+		Source:    item.Source,
+		SourceRef: item.SourceRef,
+		Kind:      string(item.Kind),
+		Preset:    item.Preset,
+		RunnerID:  d.cfg.runnerID,
 	})
+	event.Proc = d.cfg.runnerID
+	event.ItemID = item.ID
+	event.Message = message
+	event.Metadata = metadata
+	event.Timestamp = timestamp
+	event.Attempt = item.Attempt
+	if item.Attempt > 0 {
+		event.RetryCount = item.Attempt - 1
+	}
+	event.MaxAttempts = item.MaxAttempts
+	_ = d.events.Emit(ctx, event)
 }
 
 func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item workitem.Item) (envpreset.Workspace, error) {

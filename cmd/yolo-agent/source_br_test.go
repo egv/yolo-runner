@@ -212,7 +212,7 @@ func assertSourceBRStreamEvents(t *testing.T, raw string, sourceName string) {
 	}
 	for _, eventType := range []contracts.EventType{
 		contracts.EventTypeRunStarted,
-		contracts.EventTypeRunnerHeartbeat,
+		contracts.EventTypeAgentHeartbeat,
 		contracts.EventTypeRunFinished,
 	} {
 		if !seen[eventType] {
