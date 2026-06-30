@@ -1009,8 +1009,14 @@ func (m *Model) deriveStatusMetrics() statusMetrics {
 }
 
 func renderAgentBlockedMessage(event contracts.Event) string {
-	reason := strings.TrimSpace(event.Metadata["reason"])
-	detail := strings.TrimSpace(event.Metadata["detail"])
+	reason := strings.TrimSpace(string(event.Reason))
+	detail := strings.TrimSpace(event.Detail)
+	if reason == "" {
+		reason = strings.TrimSpace(event.Metadata["reason"])
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(event.Metadata["detail"])
+	}
 	if reason == "" {
 		reason = strings.TrimSpace(event.Message)
 	}

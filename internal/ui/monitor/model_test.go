@@ -141,14 +141,12 @@ func TestModelRendersAgentBlockedReasonAndDetail(t *testing.T) {
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", Timestamp: now.Add(-4 * time.Second)})
 	model.Apply(contracts.Event{
-		Type:     contracts.EventTypeAgentBlocked,
-		TaskID:   "task-1",
-		WorkerID: "worker-0",
-		Message:  "waiting for operator",
-		Metadata: map[string]string{
-			"reason": "approval_required",
-			"detail": "allow git status",
-		},
+		Type:      contracts.EventTypeAgentBlocked,
+		TaskID:    "task-1",
+		WorkerID:  "worker-0",
+		Message:   "waiting for operator",
+		Reason:    contracts.BlockReason("approval_required"),
+		Detail:    "allow git status",
 		Timestamp: now.Add(-2 * time.Second),
 	})
 

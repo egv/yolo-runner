@@ -240,7 +240,7 @@ func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
 
 func TestRunMainRendersAgentBlockedReasonAndDetail(t *testing.T) {
 	content := "{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"message\":\"started\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"agent_blocked\",\"task_id\":\"task-1\",\"worker_id\":\"worker-1\",\"message\":\"needs input\",\"metadata\":{\"reason\":\"approval_required\",\"detail\":\"allow git status\"},\"ts\":\"2026-02-10T12:00:05Z\"}\n"
+		"{\"type\":\"agent_blocked\",\"task_id\":\"task-1\",\"worker_id\":\"worker-1\",\"message\":\"needs input\",\"reason\":\"approval_required\",\"detail\":\"allow git status\",\"ts\":\"2026-02-10T12:00:05Z\"}\n"
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	code := RunMain([]string{"--events-stdin"}, strings.NewReader(content), out, errOut)
