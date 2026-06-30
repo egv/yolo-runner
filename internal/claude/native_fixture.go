@@ -18,7 +18,6 @@ func NormalizeNativeStreamJSONL(reader io.Reader) ([]contracts.RunnerProgress, e
 		if p.Timestamp.IsZero() {
 			p.Timestamp = time.Now().UTC()
 		}
-		markClaudeParityMetadata(&p)
 		progress = append(progress, p)
 	}
 	emitter := newClaudeStreamProgressEmitter(emit, time.Now)
@@ -94,16 +93,4 @@ func emitClaudePermissionDenied(line string, emit func(contracts.RunnerProgress)
 func claudeLooksPermissionDenied(text string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(text))
 	return strings.Contains(normalized, "permission") && (strings.Contains(normalized, "denied") || strings.Contains(normalized, "haven't granted"))
-}
-
-func markClaudeParityMetadata(progress *contracts.RunnerProgress) {
-	if progress == nil {
-		return
-	}
-	if progress.Type == string(contracts.EventTypeAgentText) && strings.Contains(progress.Message, "Exploring parity fixture") {
-		if progress.Metadata == nil {
-			progress.Metadata = map[string]string{}
-		}
-		progress.Metadata["parity_step"] = "explore"
-	}
 }

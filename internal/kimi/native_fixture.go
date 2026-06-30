@@ -18,7 +18,6 @@ func NormalizeNativeStreamJSONL(reader io.Reader) ([]contracts.RunnerProgress, e
 		if p.Timestamp.IsZero() {
 			p.Timestamp = time.Now().UTC()
 		}
-		markKimiParityMetadata(&p)
 		progress = append(progress, p)
 	}
 	emitter := newKimiStreamProgressEmitter(emit, time.Now)
@@ -51,16 +50,4 @@ func emitKimiLifecycle(line string, emit func(contracts.RunnerProgress)) {
 		Message:  "finished",
 		Metadata: map[string]string{"subtype": "success"},
 	})
-}
-
-func markKimiParityMetadata(progress *contracts.RunnerProgress) {
-	if progress == nil {
-		return
-	}
-	if progress.Type == string(contracts.EventTypeAgentText) && strings.Contains(progress.Message, "Exploring parity fixture") {
-		if progress.Metadata == nil {
-			progress.Metadata = map[string]string{}
-		}
-		progress.Metadata["parity_step"] = "explore"
-	}
 }

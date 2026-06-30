@@ -28,7 +28,6 @@ func NormalizeNativeAppServerJSONL(reader io.Reader, mode contracts.RunnerMode) 
 		if !ok {
 			continue
 		}
-		markCodexParityMetadata(&p)
 		if message.Method == "turn/completed" {
 			p.Type = string(contracts.EventTypeAgentFinished)
 			p.Message = "finished"
@@ -44,16 +43,4 @@ func NormalizeNativeAppServerJSONL(reader io.Reader, mode contracts.RunnerMode) 
 		return nil, err
 	}
 	return progress, nil
-}
-
-func markCodexParityMetadata(progress *contracts.RunnerProgress) {
-	if progress == nil {
-		return
-	}
-	if progress.Type == string(contracts.EventTypeAgentText) && strings.Contains(progress.Message, "Exploring parity fixture") {
-		if progress.Metadata == nil {
-			progress.Metadata = map[string]string{}
-		}
-		progress.Metadata["parity_step"] = "explore"
-	}
 }

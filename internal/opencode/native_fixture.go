@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -20,13 +21,15 @@ func NormalizeNativeACPJSONL(reader io.Reader) ([]contracts.RunnerProgress, erro
 		if line == "" {
 			continue
 		}
-		var event opencodeNativeFixtureEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		var record opencodeNativeACPRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			return nil, err
 		}
-		events := normalizeOpenCodeNativeFixtureEvent(event)
+		events, err := normalizeOpenCodeNativeFixtureEvent(record)
+		if err != nil {
+			return nil, err
+		}
 		for _, p := range events {
-			markOpenCodeParityMetadata(&p)
 			progress = append(progress, p)
 		}
 	}
@@ -36,92 +39,53 @@ func NormalizeNativeACPJSONL(reader io.Reader) ([]contracts.RunnerProgress, erro
 	return progress, nil
 }
 
-type opencodeNativeFixtureEvent struct {
-	Type       string `json:"type"`
-	SessionID  string `json:"session_id"`
-	Update     string `json:"update"`
-	Text       string `json:"text"`
-	ToolCallID string `json:"tool_call_id"`
-	Title      string `json:"title"`
-	Kind       string `json:"kind"`
-	Status     string `json:"status"`
-	Target     string `json:"target"`
-	ApprovalID string `json:"approval_id"`
-	Decision   string `json:"decision"`
-	StopReason string `json:"stop_reason"`
+type opencodeNativeACPRecord struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 }
 
-func normalizeOpenCodeNativeFixtureEvent(event opencodeNativeFixtureEvent) []contracts.RunnerProgress {
-	switch event.Type {
-	case "session_notification":
-		if event.Update == "agent_message" {
-			p, ok := NormalizeACPProgressNotification(&acp.SessionNotification{
-				SessionId: acp.SessionId(event.SessionID),
-				Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText(event.Text)),
-			})
-			if ok {
-				return []contracts.RunnerProgress{p}
+func normalizeOpenCodeNativeFixtureEvent(record opencodeNativeACPRecord) ([]contracts.RunnerProgress, error) {
+	switch strings.TrimSpace(record.Method) {
+	case "session/update":
+		var notification acp.SessionNotification
+		if err := json.Unmarshal(record.Params, &notification); err != nil {
+			return nil, err
+		}
+		p, ok := NormalizeACPProgressNotification(&notification)
+		if !ok {
+			return nil, nil
+		}
+		return []contracts.RunnerProgress{p}, nil
+	case "client/requestPermission":
+		var request acp.RequestPermissionRequest
+		if err := json.Unmarshal(record.Params, &request); err != nil {
+			return nil, err
+		}
+		progress := []contracts.RunnerProgress{}
+		client := &acpClient{
+			handler:       NewACPHandler("parity", "runner-logs/opencode/parity.jsonl", nil),
+			taskSessionID: string(request.SessionId),
+		}
+		client.setEventSink(contracts.TaskSessionEventSinkFunc(func(_ context.Context, event contracts.TaskSessionEvent) error {
+			if p, ok := NormalizeOpencodeTaskSessionEvent(event); ok {
+				progress = append(progress, p)
 			}
+			return nil
+		}))
+		if _, err := client.RequestPermission(context.Background(), &request); err != nil {
+			return nil, err
 		}
-		if event.Update == "tool_call" {
-			kind := acp.ToolKind(event.Kind)
-			status := acp.ToolCallStatus(event.Status)
-			p, ok := NormalizeACPProgressNotification(&acp.SessionNotification{
-				SessionId: acp.SessionId(event.SessionID),
-				Update: acp.NewSessionUpdateToolCall(
-					acp.ToolCallId(event.ToolCallID),
-					event.Title,
-					&kind,
-					&status,
-					nil,
-					nil,
-				),
-			})
-			if ok {
-				if p.Metadata == nil {
-					p.Metadata = map[string]string{}
-				}
-				if strings.TrimSpace(event.Target) != "" {
-					p.Metadata["target"] = event.Target
-					p.Metadata["path"] = event.Target
-				}
-				return []contracts.RunnerProgress{p}
-			}
+		return progress, nil
+	case "session/promptResponse":
+		var response acp.PromptResponse
+		if err := json.Unmarshal(record.Params, &response); err != nil {
+			return nil, err
 		}
-	case "approval_required":
-		decision := contracts.TaskSessionApprovalOutcome(event.Decision)
-		p, ok := NormalizeOpencodeTaskSessionEvent(contracts.TaskSessionEvent{
-			Type:      contracts.TaskSessionEventTypeApprovalRequired,
-			SessionID: event.SessionID,
-			Approval: &contracts.TaskSessionApprovalEvent{
-				Request: contracts.TaskSessionApprovalRequest{
-					ID:    event.ApprovalID,
-					Kind:  contracts.TaskSessionApprovalKindToolCall,
-					Title: event.Title,
-				},
-				Decision: &contracts.TaskSessionApprovalDecision{Outcome: decision},
-			},
-		})
-		if ok {
-			return []contracts.RunnerProgress{p}
+		p, ok := NormalizeACPPromptResponse(&response)
+		if !ok {
+			return nil, nil
 		}
-	case "prompt_response":
-		p, ok := NormalizeACPPromptResponse(&acp.PromptResponse{StopReason: acp.StopReason(event.StopReason)})
-		if ok {
-			return []contracts.RunnerProgress{p}
-		}
+		return []contracts.RunnerProgress{p}, nil
 	}
-	return nil
-}
-
-func markOpenCodeParityMetadata(progress *contracts.RunnerProgress) {
-	if progress == nil {
-		return
-	}
-	if progress.Type == string(contracts.EventTypeAgentText) && strings.Contains(progress.Message, "Exploring parity fixture") {
-		if progress.Metadata == nil {
-			progress.Metadata = map[string]string{}
-		}
-		progress.Metadata["parity_step"] = "explore"
-	}
+	return nil, nil
 }

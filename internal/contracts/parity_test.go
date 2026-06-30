@@ -3,6 +3,7 @@ package contracts_test
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/egv/yolo-runner/v2/internal/claude"
@@ -67,6 +68,18 @@ func TestBackendParityFixturesEmitSameCanonicalEvents(t *testing.T) {
 	}
 }
 
+func TestBackendParityFixturesDoNotDependOnFixtureOnlyMetadata(t *testing.T) {
+	progress, err := replayClaudeNativeJSONL("testdata/claude-parity.jsonl")
+	if err != nil {
+		t.Fatalf("replay fixture: %v", err)
+	}
+	for _, event := range progress {
+		if _, ok := event.Metadata["parity_step"]; ok {
+			t.Fatalf("parity replay must not annotate fixture-only metadata: %#v", event)
+		}
+	}
+}
+
 type canonicalProgress struct {
 	Type     string
 	Identity string
@@ -113,11 +126,11 @@ func canonicalizeParityProgress(progress []contracts.RunnerProgress) []canonical
 	for _, p := range progress {
 		switch p.Type {
 		case string(contracts.EventTypeAgentText):
-			if p.Metadata["parity_step"] == "explore" {
+			if strings.Contains(p.Message, "Exploring parity fixture") {
 				out = append(out, canonicalProgress{Type: p.Type, Identity: "explore"})
 			}
 		case string(contracts.EventTypeToolInvoked):
-			if p.Metadata["target"] == "internal/parity/example.go" || p.Metadata["path"] == "internal/parity/example.go" {
+			if p.Metadata["target"] == "internal/parity/example.go" || p.Metadata["path"] == "internal/parity/example.go" || strings.Contains(p.Message, "internal/parity/example.go") {
 				out = append(out, canonicalProgress{Type: p.Type, Identity: "edit:internal/parity/example.go"})
 			}
 		case string(contracts.EventTypeAgentBlocked):
