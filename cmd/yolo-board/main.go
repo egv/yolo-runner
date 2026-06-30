@@ -90,6 +90,14 @@ type boardStoreOpener func(string) (boardStore, error)
 
 type streamMsg interface{}
 
+type boardTab int
+
+const (
+	boardTabRunners boardTab = iota
+	boardTabQueue
+	boardTabCount
+)
+
 type pollTickMsg struct{}
 type pollMsg struct {
 	snapshot boardSnapshot
@@ -112,6 +120,7 @@ type boardModel struct {
 	stream       <-chan streamMsg
 	snapshot     boardSnapshot
 	events       []contracts.Event
+	activeTab    boardTab
 	runnerDetail string
 	waitingForDB bool
 	errLine      string
@@ -189,8 +198,12 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab":
+			if m.runnerDetail == "" {
+				m.activeTab = (m.activeTab + 1) % boardTabCount
+			}
 		case "enter":
-			if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+			if m.activeTab == boardTabRunners && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
@@ -210,6 +223,9 @@ func (m boardModel) View() string {
 	}
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
+	}
+	if m.activeTab == boardTabQueue {
+		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC())
 	}
 	return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
 }
