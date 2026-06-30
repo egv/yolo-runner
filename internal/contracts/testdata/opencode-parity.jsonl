@@ -1,0 +1,4 @@
+{"method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Exploring parity fixture"}}}}
+{"method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"edit-1","title":"Edit internal/parity/example.go","kind":"edit","status":"completed","rawInput":{"path":"internal/parity/example.go"}}}}
+{"method":"client/requestPermission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"approval-denied-1","title":"git push","kind":"execute","status":"pending"},"options":[]}}
+{"method":"session/promptResponse","params":{"stopReason":"end_turn"}}
