@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	"github.com/egv/yolo-runner/v2/internal/workitem"
+	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
 type collectorRow struct {
@@ -52,6 +54,75 @@ func renderCollectorsTab(snapshot boardSnapshot, events []contracts.Event, now t
 		)
 	}
 	return b.String()
+}
+
+func renderCollectorDetail(source string, items []workitem.Item, results []workqueue.UnconsumedResult, events []contracts.Event, now time.Time) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return renderCollectorsTab(boardSnapshot{}, events, now, 0)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Collector %s\n", source)
+
+	b.WriteString("Items\n")
+	b.WriteString("ID\tKIND\tSOURCE REF\tSTATE\tPRESET\n")
+	for _, item := range items {
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\n", item.ID, item.Kind, item.SourceRef, item.State, formatEmpty(item.Preset))
+	}
+	if len(items) == 0 {
+		b.WriteString("-\n")
+	}
+
+	b.WriteString("\nResults\n")
+	b.WriteString("ITEM\tSTATUS\tLOG\tFINISHED\n")
+	for _, result := range results {
+		fmt.Fprintf(
+			&b,
+			"%s\t%s\t%s\t%s\n",
+			result.Item.ID,
+			result.Result.Status,
+			formatEmpty(result.Result.LogPath),
+			formatAge(result.Result.FinishedAt, now),
+		)
+	}
+	if len(results) == 0 {
+		b.WriteString("-\n")
+	}
+
+	b.WriteString("\nLive timeline\n")
+	eventCount := 0
+	for _, event := range events {
+		if !isSourcehostEvent(event) || eventSourceName(event) != source {
+			continue
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%s\n", formatEmpty(event.Proc), event.Type, formatEventMessage(event))
+		eventCount++
+	}
+	if eventCount == 0 {
+		b.WriteString("-\n")
+	}
+	return b.String()
+}
+
+func collectorItemsForSource(items []workitem.Item, source string) []workitem.Item {
+	var selected []workitem.Item
+	for _, item := range items {
+		if item.Source == source {
+			selected = append(selected, item)
+		}
+	}
+	return selected
+}
+
+func collectorResultsForSource(results []workqueue.UnconsumedResult, source string) []workqueue.UnconsumedResult {
+	var selected []workqueue.UnconsumedResult
+	for _, result := range results {
+		if result.Item.Source == source {
+			selected = append(selected, result)
+		}
+	}
+	return selected
 }
 
 func collectorRows(snapshot boardSnapshot, events []contracts.Event) []collectorRow {
