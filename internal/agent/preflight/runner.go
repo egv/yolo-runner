@@ -53,10 +53,11 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (Result, error) {
 		MaxRetries: input.MaxRetries,
 		Metadata:   cloneMetadata(input.Metadata),
 		OnProgress: func(progress contracts.RunnerProgress) {
+			progress = normalizeAgentProgress(progress)
 			if input.OnProgress != nil {
 				input.OnProgress(progress)
 			}
-			if progress.Type != string(contracts.EventTypeRunnerOutput) {
+			if progress.Type != string(contracts.EventTypeAgentText) {
 				return
 			}
 			if progress.Metadata != nil && strings.EqualFold(strings.TrimSpace(progress.Metadata["source"]), "stderr") {
@@ -83,6 +84,22 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (Result, error) {
 	capturedOutput := output.String()
 	outputMu.Unlock()
 	return parseRunnerOutput(capturedOutput), nil
+}
+
+func normalizeAgentProgress(progress contracts.RunnerProgress) contracts.RunnerProgress {
+	switch contracts.EventType(strings.TrimSpace(progress.Type)) {
+	case contracts.EventTypeRunnerOutput:
+		progress.Type = string(contracts.EventTypeAgentText)
+	case contracts.EventTypeRunnerWarning:
+		progress.Type = string(contracts.EventTypeAgentBlocked)
+	case contracts.EventTypeRunnerCommandStarted, contracts.EventTypeRunnerCommandFinished:
+		progress.Type = string(contracts.EventTypeCommandRun)
+	case contracts.EventTypeRunnerProgress:
+		progress.Type = string(contracts.EventTypeAgentProgress)
+	case contracts.EventTypeRunnerHeartbeat:
+		progress.Type = string(contracts.EventTypeAgentHeartbeat)
+	}
+	return progress
 }
 
 func preflightParentID(input RunInput) string {

@@ -161,7 +161,7 @@ func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
 	progress := make([]contracts.RunnerProgress, 0, len(chunks))
 	for _, chunk := range chunks {
 		progress = append(progress, contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: chunk,
 		})
 	}
@@ -193,7 +193,7 @@ func (f *fakeSplitterAgentRunner) Run(_ context.Context, request contracts.Runne
 	f.requests = append(f.requests, request)
 	if request.OnProgress != nil {
 		request.OnProgress(contracts.RunnerProgress{
-			Type:     string(contracts.EventTypeRunnerOutput),
+			Type:     string(contracts.EventTypeAgentText),
 			Message:  "debug should be ignored",
 			Metadata: map[string]string{"source": "stderr"},
 		})
@@ -204,7 +204,7 @@ func (f *fakeSplitterAgentRunner) Run(_ context.Context, request contracts.Runne
 			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 		}
 		request.OnProgress(contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: f.output,
 		})
 	}

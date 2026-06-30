@@ -10,11 +10,14 @@ import (
 )
 
 type MonitorEventContext struct {
-	TaskID    string
-	TaskTitle string
-	WorkerID  string
-	ClonePath string
-	QueuePos  int
+	TaskID      string
+	TaskTitle   string
+	WorkerID    string
+	ClonePath   string
+	QueuePos    int
+	Attempt     int
+	RetryCount  int
+	MaxAttempts int
 }
 
 type MonitorOptions struct {
@@ -35,6 +38,7 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 	lastOutputAt := time.Now().UTC()
 	warned := false
 	var progressMu sync.Mutex
+	eventContext = eventContext.withRequestMetadata(request.Metadata)
 
 	request.OnProgress = func(progress contracts.RunnerProgress) {
 		eventTime := progress.Timestamp
@@ -45,17 +49,19 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 		lastOutputAt = eventTime
 		warned = false
 		progressMu.Unlock()
-		_ = emitMonitorEvent(ctx, events, contracts.Event{
-			Type:      eventTypeForRunnerProgress(progress.Type),
-			TaskID:    eventContext.TaskID,
-			TaskTitle: eventContext.TaskTitle,
-			WorkerID:  eventContext.WorkerID,
-			ClonePath: eventContext.ClonePath,
-			QueuePos:  eventContext.QueuePos,
-			Message:   progress.Message,
-			Metadata:  progress.Metadata,
-			Timestamp: eventTime,
-		})
+		event := buildAgentEvent(
+			eventTypeForRunnerProgress(progress.Type),
+			eventContext.TaskID,
+			eventContext.TaskTitle,
+			eventContext.WorkerID,
+			eventContext.ClonePath,
+			eventContext.QueuePos,
+			progress.Message,
+			progress.Metadata,
+			eventTime,
+		)
+		applyMonitorAttemptFields(&event, eventContext)
+		_ = emitMonitorEvent(ctx, events, event)
 	}
 
 	monitorCtx, cancel := context.WithCancel(ctx)
@@ -76,30 +82,34 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 				}
 				progressMu.Unlock()
 
-				_ = emitMonitorEvent(ctx, events, contracts.Event{
-					Type:      contracts.EventTypeRunnerHeartbeat,
-					TaskID:    eventContext.TaskID,
-					TaskTitle: eventContext.TaskTitle,
-					WorkerID:  eventContext.WorkerID,
-					ClonePath: eventContext.ClonePath,
-					QueuePos:  eventContext.QueuePos,
-					Message:   "alive",
-					Metadata:  map[string]string{"last_output_age": elapsed.Round(time.Second).String()},
-					Timestamp: now.UTC(),
-				})
+				event := buildAgentEvent(
+					contracts.EventTypeAgentHeartbeat,
+					eventContext.TaskID,
+					eventContext.TaskTitle,
+					eventContext.WorkerID,
+					eventContext.ClonePath,
+					eventContext.QueuePos,
+					"alive",
+					map[string]string{"last_output_age": elapsed.Round(time.Second).String()},
+					now.UTC(),
+				)
+				applyMonitorAttemptFields(&event, eventContext)
+				_ = emitMonitorEvent(ctx, events, event)
 
 				if elapsed >= warningAfter && !alreadyWarned {
-					_ = emitMonitorEvent(ctx, events, contracts.Event{
-						Type:      contracts.EventTypeRunnerWarning,
-						TaskID:    eventContext.TaskID,
-						TaskTitle: eventContext.TaskTitle,
-						WorkerID:  eventContext.WorkerID,
-						ClonePath: eventContext.ClonePath,
-						QueuePos:  eventContext.QueuePos,
-						Message:   "no output threshold exceeded",
-						Metadata:  map[string]string{"last_output_age": elapsed.Round(time.Second).String()},
-						Timestamp: now.UTC(),
-					})
+					event := buildAgentEvent(
+						contracts.EventTypeAgentBlocked,
+						eventContext.TaskID,
+						eventContext.TaskTitle,
+						eventContext.WorkerID,
+						eventContext.ClonePath,
+						eventContext.QueuePos,
+						"no output threshold exceeded",
+						map[string]string{"last_output_age": elapsed.Round(time.Second).String(), "reason": "no output threshold exceeded"},
+						now.UTC(),
+					)
+					applyMonitorAttemptFields(&event, eventContext)
+					_ = emitMonitorEvent(ctx, events, event)
 				}
 			}
 		}
@@ -110,6 +120,34 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 	return result, err
 }
 
+func (c MonitorEventContext) withRequestMetadata(metadata map[string]string) MonitorEventContext {
+	if c.Attempt == 0 {
+		c.Attempt = metadataInt(metadata, "attempt", "review_attempt", "landing_attempt")
+	}
+	if c.RetryCount == 0 {
+		c.RetryCount = metadataInt(metadata, "retry_count", "review_retry_count", "completion_retry_count")
+	}
+	if c.MaxAttempts == 0 {
+		c.MaxAttempts = metadataInt(metadata, "max_attempts")
+	}
+	return c
+}
+
+func applyMonitorAttemptFields(event *contracts.Event, eventContext MonitorEventContext) {
+	if event == nil {
+		return
+	}
+	if event.Attempt == 0 {
+		event.Attempt = positiveOrZero(eventContext.Attempt)
+	}
+	if event.RetryCount == 0 {
+		event.RetryCount = positiveOrZero(eventContext.RetryCount)
+	}
+	if event.MaxAttempts == 0 {
+		event.MaxAttempts = positiveOrZero(eventContext.MaxAttempts)
+	}
+}
+
 func emitMonitorEvent(ctx context.Context, events contracts.EventSink, event contracts.Event) error {
 	if events == nil {
 		return nil
@@ -118,16 +156,18 @@ func emitMonitorEvent(ctx context.Context, events contracts.EventSink, event con
 }
 
 func eventTypeForRunnerProgress(progressType string) contracts.EventType {
-	switch strings.TrimSpace(progressType) {
-	case "runner_cmd_started":
-		return contracts.EventTypeRunnerCommandStarted
-	case "runner_cmd_finished":
-		return contracts.EventTypeRunnerCommandFinished
-	case "runner_output":
-		return contracts.EventTypeRunnerOutput
-	case "runner_warning":
-		return contracts.EventTypeRunnerWarning
+	switch contracts.EventType(strings.TrimSpace(progressType)) {
+	case contracts.EventTypeRunnerCommandStarted, contracts.EventTypeRunnerCommandFinished, contracts.EventTypeCommandRun:
+		return contracts.EventTypeCommandRun
+	case contracts.EventTypeRunnerOutput, contracts.EventTypeAgentText:
+		return contracts.EventTypeAgentText
+	case contracts.EventTypeRunnerWarning, contracts.EventTypeAgentBlocked:
+		return contracts.EventTypeAgentBlocked
+	case contracts.EventTypeAgentHeartbeat:
+		return contracts.EventTypeAgentHeartbeat
+	case contracts.EventTypeAgentProgress:
+		return contracts.EventTypeAgentProgress
 	default:
-		return contracts.EventTypeRunnerProgress
+		return contracts.EventTypeAgentProgress
 	}
 }

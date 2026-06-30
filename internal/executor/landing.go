@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -330,7 +331,7 @@ func runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task
 	remediationStartMeta := buildRunnerStartedMetadata(contracts.RunnerModeImplement, runtimeBackend, runtimeModel, taskRepoRoot, remediationLogPath, time.Now().UTC())
 	remediationStartMeta = appendTaskRuntimeMetadata(remediationStartMeta, runtime)
 	remediationStartMeta["landing_phase"] = "merge_conflict_remediation"
-	_ = emitLandingEvent(ctx, deps.Events, contracts.Event{Type: contracts.EventTypeRunnerStarted, TaskID: task.ID, TaskTitle: task.Title, WorkerID: eventContext.WorkerID, ClonePath: taskRepoRoot, QueuePos: eventContext.QueuePos, Message: string(contracts.RunnerModeImplement), Metadata: remediationStartMeta, Timestamp: time.Now().UTC()})
+	_ = emitLandingEvent(ctx, deps.Events, buildAgentStartedEvent(task.ID, task.Title, eventContext.WorkerID, taskRepoRoot, eventContext.QueuePos, contracts.RunnerModeImplement, remediationStartMeta, 1, 0, 1))
 
 	remediationMetadata := map[string]string{"log_path": remediationLogPath, "clone_path": taskRepoRoot, "landing_phase": "merge_conflict_remediation"}
 	remediationMetadata = appendTaskRuntimeMetadata(remediationMetadata, runtime)
@@ -354,11 +355,14 @@ func runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task
 			Prompt:   BuildMergeConflictRemediationPrompt(task, taskBranch, mergeFailureReason),
 			Metadata: remediationMetadata,
 		}, MonitorEventContext{
-			TaskID:    task.ID,
-			TaskTitle: task.Title,
-			WorkerID:  eventContext.WorkerID,
-			ClonePath: taskRepoRoot,
-			QueuePos:  eventContext.QueuePos,
+			TaskID:      task.ID,
+			TaskTitle:   task.Title,
+			WorkerID:    eventContext.WorkerID,
+			ClonePath:   taskRepoRoot,
+			QueuePos:    eventContext.QueuePos,
+			Attempt:     metadataInt(remediationMetadata, "attempt", "landing_attempt"),
+			RetryCount:  metadataInt(remediationMetadata, "retry_count"),
+			MaxAttempts: metadataInt(remediationMetadata, "max_attempts"),
 		}, MonitorOptions{
 			HeartbeatInterval:    options.HeartbeatInterval,
 			NoOutputWarningAfter: options.NoOutputWarningAfter,
@@ -368,7 +372,7 @@ func runLandingMergeConflictRemediation(ctx context.Context, task contracts.Task
 		}
 	}
 
-	_ = emitLandingEvent(ctx, deps.Events, contracts.Event{Type: contracts.EventTypeRunnerFinished, TaskID: task.ID, TaskTitle: task.Title, WorkerID: eventContext.WorkerID, ClonePath: taskRepoRoot, QueuePos: eventContext.QueuePos, Message: string(result.Status), Metadata: buildRunnerFinishedMetadata(result), Timestamp: time.Now().UTC()})
+	_ = emitLandingEvent(ctx, deps.Events, buildAgentFinishedEvent(task.ID, task.Title, eventContext.WorkerID, taskRepoRoot, eventContext.QueuePos, result, buildRunnerFinishedMetadata(result), 1, 0, 1))
 	return result
 }
 
@@ -584,6 +588,108 @@ func buildRunnerFinishedMetadata(result contracts.RunnerResult) map[string]strin
 		metadata[key] = value
 	}
 	return compactLandingMetadata(metadata)
+}
+
+func buildAgentEvent(eventType contracts.EventType, taskID string, taskTitle string, workerID string, clonePath string, queuePos int, message string, metadata map[string]string, timestamp time.Time) contracts.Event {
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+	event := contracts.NewEvent(eventType, contracts.EventIdentity{})
+	event.TaskID = taskID
+	event.TaskTitle = taskTitle
+	event.WorkerID = workerID
+	event.ClonePath = clonePath
+	event.QueuePos = queuePos
+	event.Message = message
+	event.Metadata = compactLandingMetadata(metadata)
+	event.Timestamp = timestamp.UTC()
+	promoteAttemptFields(&event)
+	if eventType == contracts.EventTypeAgentBlocked && event.Reason == "" {
+		event.Reason = blockReasonFromMetadata(event.Metadata)
+	}
+	return event
+}
+
+func buildAgentStartedEvent(taskID string, taskTitle string, workerID string, clonePath string, queuePos int, mode contracts.RunnerMode, metadata map[string]string, attempt int, retryCount int, maxAttempts int) contracts.Event {
+	event := buildAgentEvent(contracts.EventTypeAgentStarted, taskID, taskTitle, workerID, clonePath, queuePos, string(mode), metadata, time.Now().UTC())
+	event.Attempt = positiveOrZero(attempt)
+	event.RetryCount = positiveOrZero(retryCount)
+	event.MaxAttempts = positiveOrZero(maxAttempts)
+	return event
+}
+
+func buildAgentFinishedEvent(taskID string, taskTitle string, workerID string, clonePath string, queuePos int, result contracts.RunnerResult, metadata map[string]string, attempt int, retryCount int, maxAttempts int) contracts.Event {
+	event := buildAgentEvent(contracts.EventTypeAgentFinished, taskID, taskTitle, workerID, clonePath, queuePos, string(result.Status), metadata, time.Now().UTC())
+	event.Attempt = positiveOrZero(attempt)
+	event.RetryCount = positiveOrZero(retryCount)
+	event.MaxAttempts = positiveOrZero(maxAttempts)
+	if strings.TrimSpace(result.Reason) != "" {
+		event.Detail = strings.TrimSpace(result.Reason)
+	}
+	return event
+}
+
+func promoteAttemptFields(event *contracts.Event) {
+	if event == nil {
+		return
+	}
+	if event.Attempt == 0 {
+		event.Attempt = metadataInt(event.Metadata, "attempt", "review_attempt", "landing_attempt")
+	}
+	if event.RetryCount == 0 {
+		event.RetryCount = metadataInt(event.Metadata, "retry_count", "review_retry_count", "completion_retry_count")
+	}
+	if event.MaxAttempts == 0 {
+		event.MaxAttempts = metadataInt(event.Metadata, "max_attempts")
+	}
+}
+
+func metadataInt(metadata map[string]string, keys ...string) int {
+	for _, key := range keys {
+		raw := strings.TrimSpace(metadata[key])
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err == nil && value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func positiveOrZero(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func blockReasonFromMetadata(metadata map[string]string) contracts.BlockReason {
+	raw := strings.TrimSpace(strings.ToLower(firstNonEmptyMetadata(metadata, "block_reason", "reason", "triage_reason")))
+	switch {
+	case strings.Contains(raw, "permission"):
+		return contracts.BlockReasonPermissionDenied
+	case strings.Contains(raw, "no output") || strings.Contains(raw, "timeout") || strings.Contains(raw, "stall"):
+		return contracts.BlockReasonNoOutput
+	case strings.Contains(raw, "rate limit"):
+		return contracts.BlockReasonRateLimited
+	case strings.Contains(raw, "auth") || strings.Contains(raw, "token") || strings.Contains(raw, "credential"):
+		return contracts.BlockReasonAuth
+	case strings.Contains(raw, "stuck"):
+		return contracts.BlockReasonStuck
+	default:
+		return contracts.BlockReasonOther
+	}
+}
+
+func firstNonEmptyMetadata(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func compactLandingMetadata(metadata map[string]string) map[string]string {

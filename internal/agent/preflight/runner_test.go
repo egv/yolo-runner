@@ -187,14 +187,14 @@ func (f *fakeAgentRunner) Run(_ context.Context, request contracts.RunnerRequest
 		if len(f.outputChunks) > 0 {
 			for _, chunk := range f.outputChunks {
 				request.OnProgress(contracts.RunnerProgress{
-					Type:    string(contracts.EventTypeRunnerOutput),
+					Type:    string(contracts.EventTypeAgentText),
 					Message: chunk,
 				})
 			}
 			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 		}
 		request.OnProgress(contracts.RunnerProgress{
-			Type:    string(contracts.EventTypeRunnerOutput),
+			Type:    string(contracts.EventTypeAgentText),
 			Message: f.output,
 		})
 	}

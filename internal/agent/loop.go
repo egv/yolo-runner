@@ -618,15 +618,32 @@ func (l *Loop) emitParentPRCreatedEvents(ctx context.Context, before map[string]
 
 func (l *Loop) runRunnerWithMonitoring(ctx context.Context, request contracts.RunnerRequest, taskID string, taskTitle string, worker string, clonePath string, queuePos int) (contracts.RunnerResult, error) {
 	return executor.RunWithMonitoring(ctx, l.runner, loopMonitorEventSink{loop: l}, request, executor.MonitorEventContext{
-		TaskID:    taskID,
-		TaskTitle: taskTitle,
-		WorkerID:  worker,
-		ClonePath: clonePath,
-		QueuePos:  queuePos,
+		TaskID:      taskID,
+		TaskTitle:   taskTitle,
+		WorkerID:    worker,
+		ClonePath:   clonePath,
+		QueuePos:    queuePos,
+		Attempt:     metadataInt(request.Metadata, "attempt", "review_attempt", "landing_attempt"),
+		RetryCount:  metadataInt(request.Metadata, "retry_count", "review_retry_count", "completion_retry_count"),
+		MaxAttempts: metadataInt(request.Metadata, "max_attempts"),
 	}, executor.MonitorOptions{
 		HeartbeatInterval:    l.options.HeartbeatInterval,
 		NoOutputWarningAfter: l.options.NoOutputWarningAfter,
 	})
+}
+
+func metadataInt(metadata map[string]string, keys ...string) int {
+	for _, key := range keys {
+		raw := strings.TrimSpace(metadata[key])
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err == nil && value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 type loopMonitorEventSink struct {
