@@ -58,11 +58,11 @@ func (s *StreamEventSink) Emit(_ context.Context, event Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.verboseOutput || event.Type != EventTypeRunnerOutput {
+	if s.verboseOutput || event.Type != EventTypeAgentText {
 		if err := s.flushPendingRunnerOutputLocked(); err != nil {
 			return err
 		}
-		if event.Type == EventTypeRunnerOutput {
+		if event.Type == EventTypeAgentText {
 			s.lastOutputAt = event.Timestamp
 		}
 		return s.stream.Write(event)

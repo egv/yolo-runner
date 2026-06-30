@@ -121,7 +121,7 @@ func NewRunnerOutputProgress(source string, line string, timestamp time.Time) (R
 		normalized = "stderr: " + normalized
 	}
 	return RunnerProgress{
-		Type:      string(EventTypeRunnerOutput),
+		Type:      string(EventTypeAgentText),
 		Message:   normalized,
 		Metadata:  map[string]string{"source": source},
 		Timestamp: timestamp.UTC(),

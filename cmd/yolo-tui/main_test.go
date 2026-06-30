@@ -14,7 +14,7 @@ import (
 
 func TestRunMainRendersMonitorViewFromStdin(t *testing.T) {
 	content := "{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"message\":\"started\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"done\",\"ts\":\"2026-02-10T12:00:05Z\"}\n"
+		"{\"type\":\"agent_finished\",\"task_id\":\"task-1\",\"message\":\"done\",\"ts\":\"2026-02-10T12:00:05Z\"}\n"
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	code := RunMain([]string{"--events-stdin"}, strings.NewReader(content), out, errOut)
@@ -88,7 +88,7 @@ func TestRunMainRejectsFileFlag(t *testing.T) {
 }
 
 func TestParseEventIncludesParallelContext(t *testing.T) {
-	line := []byte(`{"type":"runner_started","task_id":"task-1","task_title":"Readable task","worker_id":"worker-1","clone_path":"/tmp/clones/task-1","queue_pos":2,"message":"implement","ts":"2026-02-10T12:00:05Z"}`)
+	line := []byte(`{"type":"agent_started","task_id":"task-1","task_title":"Readable task","worker_id":"worker-1","clone_path":"/tmp/clones/task-1","queue_pos":2,"message":"implement","ts":"2026-02-10T12:00:05Z"}`)
 
 	event, err := contracts.ParseEventJSONLLine(line)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestRenderFromReaderParsesIncrementalEvents(t *testing.T) {
 	}()
 
 	_, _ = writer.Write([]byte("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"ts\":\"2026-02-10T12:00:00Z\"}\n"))
-	_, _ = writer.Write([]byte("{\"type\":\"runner_started\",\"task_id\":\"task-1\",\"worker_id\":\"worker-1\",\"queue_pos\":1,\"ts\":\"2026-02-10T12:00:01Z\"}\n"))
+	_, _ = writer.Write([]byte("{\"type\":\"agent_started\",\"task_id\":\"task-1\",\"worker_id\":\"worker-1\",\"queue_pos\":1,\"ts\":\"2026-02-10T12:00:01Z\"}\n"))
 	_ = writer.Close()
 
 	if err := <-done; err != nil {
@@ -129,7 +129,7 @@ func TestRenderFromReaderParsesIncrementalEvents(t *testing.T) {
 
 func TestRenderFromReaderWritesOnEachEventForLiveUpdates(t *testing.T) {
 	input := strings.NewReader("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"runner_output\",\"task_id\":\"task-1\",\"message\":\"line\",\"ts\":\"2026-02-10T12:00:01Z\"}\n")
+		"{\"type\":\"agent_text\",\"task_id\":\"task-1\",\"message\":\"line\",\"ts\":\"2026-02-10T12:00:01Z\"}\n")
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 
@@ -143,8 +143,8 @@ func TestRenderFromReaderWritesOnEachEventForLiveUpdates(t *testing.T) {
 
 func TestRenderFromReaderContinuesAfterMalformedEventWithFallbackWarning(t *testing.T) {
 	input := strings.NewReader("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"runner_output\",\"task_id\":\"task-1\",\"message\":\"unterminated\"\n" +
-		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
+		"{\"type\":\"agent_text\",\"task_id\":\"task-1\",\"message\":\"unterminated\"\n" +
+		"{\"type\":\"agent_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 
@@ -154,7 +154,7 @@ func TestRenderFromReaderContinuesAfterMalformedEventWithFallbackWarning(t *test
 	if !contains(out.String(), "decode_error") {
 		t.Fatalf("expected decode fallback warning in output, got %q", out.String())
 	}
-	if !contains(out.String(), "runner_finished") {
+	if !contains(out.String(), "agent_finished") {
 		t.Fatalf("expected stream to continue after malformed event, got %q", out.String())
 	}
 }
@@ -165,14 +165,14 @@ func TestRenderFromReaderIgnoresRawACPStderrLines(t *testing.T) {
 		"raw stderr line 3\n" +
 		"raw stderr line 4\n" +
 		"raw stderr line 5\n" +
-		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
+		"{\"type\":\"agent_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 
 	if err := renderFromReader(input, out, errOut); err != nil {
 		t.Fatalf("expected raw stderr lines to be ignored, got error: %v", err)
 	}
-	if !contains(out.String(), "runner_finished") {
+	if !contains(out.String(), "agent_finished") {
 		t.Fatalf("expected valid event after raw stderr lines, got %q", out.String())
 	}
 	if contains(out.String(), "decode_error") {
@@ -182,7 +182,7 @@ func TestRenderFromReaderIgnoresRawACPStderrLines(t *testing.T) {
 
 func TestRenderFromReaderIsDeterministicForSameInput(t *testing.T) {
 	content := "{\"type\":\"run_started\",\"metadata\":{\"root_id\":\"yr-2y0b\"},\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"failed\",\"ts\":\"2026-02-10T12:00:01Z\"}\n"
+		"{\"type\":\"agent_finished\",\"task_id\":\"task-1\",\"message\":\"failed\",\"ts\":\"2026-02-10T12:00:01Z\"}\n"
 
 	outA := &bytes.Buffer{}
 	outB := &bytes.Buffer{}
@@ -208,8 +208,8 @@ func TestShouldUseFullscreenIsFalseForBufferOutput(t *testing.T) {
 
 func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
 	input := strings.NewReader("{\"type\":\"task_started\",\"task_id\":\"task-1\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
-		"{\"type\":\"runner_output\",\"task_id\":\"task-1\",\"message\":\"unterminated\"\n" +
-		"{\"type\":\"runner_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
+		"{\"type\":\"agent_text\",\"task_id\":\"task-1\",\"message\":\"unterminated\"\n" +
+		"{\"type\":\"agent_finished\",\"task_id\":\"task-1\",\"message\":\"completed\",\"ts\":\"2026-02-10T12:00:02Z\"}\n")
 
 	ch := make(chan streamMsg, 8)
 	go decodeEvents(input, ch)
@@ -224,7 +224,7 @@ func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
 			}
 			hadDecodeError = true
 		case eventMsg:
-			if typed.event.Type == contracts.EventTypeRunnerFinished {
+			if typed.event.Type == contracts.EventTypeAgentFinished {
 				hadRunnerFinished = true
 			}
 		}
@@ -234,7 +234,24 @@ func TestDecodeEventsContinuesAfterMalformedLine(t *testing.T) {
 		t.Fatalf("expected decode error message in stream")
 	}
 	if !hadRunnerFinished {
-		t.Fatalf("expected stream to continue and emit runner_finished")
+		t.Fatalf("expected stream to continue and emit agent_finished")
+	}
+}
+
+func TestRunMainRendersAgentBlockedReasonAndDetail(t *testing.T) {
+	content := "{\"type\":\"task_started\",\"task_id\":\"task-1\",\"task_title\":\"Readable task\",\"message\":\"started\",\"ts\":\"2026-02-10T12:00:00Z\"}\n" +
+		"{\"type\":\"agent_blocked\",\"task_id\":\"task-1\",\"worker_id\":\"worker-1\",\"message\":\"needs input\",\"metadata\":{\"reason\":\"approval_required\",\"detail\":\"allow git status\"},\"ts\":\"2026-02-10T12:00:05Z\"}\n"
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	code := RunMain([]string{"--events-stdin"}, strings.NewReader(content), out, errOut)
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d stderr=%q", code, errOut.String())
+	}
+	if !contains(out.String(), "agent_blocked") {
+		t.Fatalf("expected agent_blocked in output, got %q", out.String())
+	}
+	if !contains(out.String(), "approval_required") || !contains(out.String(), "allow git status") {
+		t.Fatalf("expected blocked reason and detail in output, got %q", out.String())
 	}
 }
 
