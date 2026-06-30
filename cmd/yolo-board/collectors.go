@@ -12,14 +12,16 @@ import (
 )
 
 type collectorRow struct {
-	name        string
-	sourceType  string
-	pending     int
-	active      int
-	done        int
-	lastPollAt  time.Time
-	lastError   string
-	heartbeatAt time.Time
+	name           string
+	sourceType     string
+	pending        int
+	active         int
+	done           int
+	lastPollAt     time.Time
+	lastError      string
+	lastErrorCount int
+	lastErrorAt    time.Time
+	heartbeatAt    time.Time
 }
 
 func renderCollectorsTab(snapshot boardSnapshot, events []contracts.Event, now time.Time, cursor int) string {
@@ -49,7 +51,7 @@ func renderCollectorsTab(snapshot boardSnapshot, events []contracts.Event, now t
 			row.active,
 			row.done,
 			formatAge(row.lastPollAt, now),
-			formatEmpty(row.lastError),
+			formatCollectorError(row.lastError, row.lastErrorCount),
 			formatAge(row.heartbeatAt, now),
 		)
 	}
@@ -163,6 +165,20 @@ func collectorRows(snapshot boardSnapshot, events []contracts.Event) []collector
 			row.lastPollAt = item.UpdatedAt
 		}
 	}
+	for _, bucket := range snapshot.collectorErrors {
+		row := get(bucket.source)
+		if row == nil {
+			continue
+		}
+		if bucket.lastAt.After(row.lastPollAt) {
+			row.lastPollAt = bucket.lastAt
+		}
+		if bucket.lastAt.After(row.lastErrorAt) {
+			row.lastError = bucket.message
+			row.lastErrorCount = bucket.count
+			row.lastErrorAt = bucket.lastAt
+		}
+	}
 	for _, event := range events {
 		if !isSourcehostEvent(event) {
 			continue
@@ -177,7 +193,11 @@ func collectorRows(snapshot boardSnapshot, events []contracts.Event) []collector
 			if event.Timestamp.After(row.lastPollAt) {
 				row.lastPollAt = event.Timestamp
 			}
-			row.lastError = event.Metadata["last_error"]
+			if lastError := event.Metadata["last_error"]; lastError != "" && event.Timestamp.After(row.lastErrorAt) {
+				row.lastError = lastError
+				row.lastErrorCount = 1
+				row.lastErrorAt = event.Timestamp
+			}
 		case contracts.EventTypeSourceHeartbeat:
 			if event.Timestamp.After(row.heartbeatAt) {
 				row.heartbeatAt = event.Timestamp
@@ -193,6 +213,17 @@ func collectorRows(snapshot boardSnapshot, events []contracts.Event) []collector
 		return rows[i].name < rows[j].name
 	})
 	return rows
+}
+
+func formatCollectorError(message string, count int) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "-"
+	}
+	if count > 1 {
+		return fmt.Sprintf("%s (x%d)", message, count)
+	}
+	return message
 }
 
 func normalizeCollectorState(state string) string {

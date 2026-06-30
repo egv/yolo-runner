@@ -11,6 +11,8 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
+const boardQueueItemLimit = 500
+
 func renderQueueTab(snapshot boardSnapshot, now time.Time, cursorArg ...int) string {
 	var b strings.Builder
 	b.WriteString("Queue\n")
@@ -38,6 +40,9 @@ func renderQueueTab(snapshot boardSnapshot, now time.Time, cursorArg ...int) str
 			formatQueueClaimedBy(item.ClaimedBy),
 			formatQueueItemAge(item, now),
 		)
+	}
+	if snapshot.queueItemsMore > 0 {
+		fmt.Fprintf(&b, "... %d more\n", snapshot.queueItemsMore)
 	}
 	return b.String()
 }

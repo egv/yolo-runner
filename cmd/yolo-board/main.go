@@ -393,7 +393,7 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	if err := ctx.Err(); err != nil {
 		return pollErrorMsg{err: err}
 	}
-	items, err := store.ListItems(workqueue.ListItemsFilter{})
+	items, err := store.ListItems(workqueue.ListItemsFilter{Limit: boardQueueItemLimit})
 	if err != nil {
 		return pollErrorMsg{err: err}
 	}
@@ -419,6 +419,10 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	if err != nil {
 		return pollErrorMsg{err: err}
 	}
+	queueItemsMore := totalBoardQueueItems(stateCounts) - len(items)
+	if queueItemsMore < 0 {
+		queueItemsMore = 0
+	}
 	results, err := listBoardUnconsumedResults(store, items, sources)
 	if err != nil {
 		return pollErrorMsg{err: err}
@@ -426,6 +430,7 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	return pollMsg{
 		snapshot: boardSnapshot{
 			items:             items,
+			queueItemsMore:    queueItemsMore,
 			runners:           runners,
 			currentByRunner:   currentByRunner,
 			sources:           sources,
@@ -433,6 +438,14 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 			unconsumedResults: results,
 		},
 	}
+}
+
+func totalBoardQueueItems(stateCounts map[string]int) int {
+	total := 0
+	for _, count := range stateCounts {
+		total += count
+	}
+	return total
 }
 
 func listBoardUnconsumedResults(store boardStore, items []workitem.Item, sources []workqueue.SourceRow) ([]workqueue.UnconsumedResult, error) {
