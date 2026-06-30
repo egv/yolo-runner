@@ -69,7 +69,7 @@ func (a *ServeRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRe
 	if request.OnProgress != nil {
 		onProgress := request.OnProgress
 		sink = contracts.TaskSessionEventSinkFunc(func(_ context.Context, e contracts.TaskSessionEvent) error {
-			if progress, ok := contracts.NormalizeTaskSessionEvent(e); ok {
+			if progress, ok := NormalizeOpencodeTaskSessionEvent(e); ok {
 				onProgress(progress)
 			}
 			return nil

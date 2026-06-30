@@ -52,7 +52,6 @@ func NewCLIRunnerAdapter(runner Runner, acpClient ACPClient, configRoot string, 
 		configRoot: configRoot,
 		configDir:  configDir,
 		command:    normalizedCommand,
-		runWithACP: RunWithACPAndUpdates,
 	}
 }
 
@@ -82,11 +81,17 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 		command = append([]string{}, command...)
 	}
 	progress := request.OnProgress
+	restoreACPProgress := func() {}
+	if a.runWithACP != nil {
+		restoreACPProgress = installACPProgressCallbacks(a.acpClient, progress)
+	}
+	defer restoreACPProgress()
 	runCtx, cancel := contracts.WithOptionalTimeout(ctx, request.Timeout)
 	defer cancel()
 	runCtx = withWatchdogRuntimeConfig(runCtx, watchdogRuntimeConfigFromMetadata(request.Metadata))
 	builtCommand := a.buildCommand(request, command)
-	err := run(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, func(line string) {
+	var err error
+	onLineUpdate := func(line string) {
 		if progress == nil {
 			return
 		}
@@ -95,7 +100,16 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 			return
 		}
 		progress(contracts.RunnerProgress{Type: progressType, Message: normalized, Timestamp: time.Now().UTC()})
-	}, builtCommand...)
+	}
+	if a.runWithACP == nil {
+		defaultLineUpdate := onLineUpdate
+		if progress != nil {
+			defaultLineUpdate = nil
+		}
+		err = RunWithACPAndProgress(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, defaultLineUpdate, progress, builtCommand...)
+	} else {
+		err = run(runCtx, request.TaskID, request.RepoRoot, request.Prompt, request.Model, a.configRoot, a.configDir, logPath, a.runner, a.acpClient, onLineUpdate, builtCommand...)
+	}
 	err = contracts.FinalizeRunError(runCtx, err)
 
 	result := contracts.NormalizeBackendRunnerResult(start, time.Now().UTC(), request, err, func(classifyErr error) bool {
@@ -389,16 +403,16 @@ func lastStructuredReviewFailFeedbackLine(text string) (string, bool) {
 func normalizeACPUpdateLine(line string) (string, string) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
-		return "", "agent_text"
+		return "", string(contracts.EventTypeAgentText)
 	}
-	typeName := "agent_text"
+	typeName := string(contracts.EventTypeAgentText)
 	switch {
 	case strings.HasPrefix(trimmed, "⏳"), strings.HasPrefix(trimmed, "🔄"):
-		typeName = "tool_invoked"
+		typeName = string(contracts.EventTypeCommandRun)
 	case strings.HasPrefix(trimmed, "✅"), strings.HasPrefix(trimmed, "❌"):
-		typeName = "command_run"
+		typeName = string(contracts.EventTypeCommandRun)
 	case strings.HasPrefix(trimmed, "⚪"), strings.HasPrefix(trimmed, "request permission"):
-		typeName = "agent_blocked"
+		typeName = string(contracts.EventTypeAgentBlocked)
 	}
 	trimmed = strings.ReplaceAll(trimmed, "\r", "")
 	trimmed = strings.ReplaceAll(trimmed, "\n", " ")

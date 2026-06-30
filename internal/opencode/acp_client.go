@@ -57,6 +57,20 @@ func RunACPClient(
 	handler *ACPHandler,
 	onUpdate func(*acp.SessionNotification),
 ) error {
+	return RunACPClientWithCallbacks(ctx, stdin, stdout, repoRoot, prompt, handler, onUpdate, nil, nil)
+}
+
+func RunACPClientWithCallbacks(
+	ctx context.Context,
+	stdin io.WriteCloser,
+	stdout io.ReadCloser,
+	repoRoot string,
+	prompt string,
+	handler *ACPHandler,
+	onUpdate func(*acp.SessionNotification),
+	onPromptResponse func(*acp.PromptResponse),
+	eventSink contracts.TaskSessionEventSink,
+) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -65,6 +79,9 @@ func RunACPClient(
 		return errors.New("acp client requires stdin and stdout")
 	}
 	client := &acpClient{handler: handler, onUpdate: onUpdate}
+	if eventSink != nil {
+		client.setEventSink(eventSink)
+	}
 	connection := acp.NewClientSideConnection(client, stdin, stdout)
 
 	startErrCh := make(chan error, 1)
@@ -118,7 +135,7 @@ func RunACPClient(
 
 	runPrompt := func(sessionId acp.SessionId, text string) (string, error) {
 		client.startCapture()
-		_, err := connection.Prompt(ctx, &acp.PromptRequest{
+		resp, err := connection.Prompt(ctx, &acp.PromptRequest{
 			SessionId: sessionId,
 			Prompt: []acp.ContentBlock{
 				acp.NewContentBlockText(text),
@@ -126,6 +143,9 @@ func RunACPClient(
 		})
 		if err != nil {
 			return "", err
+		}
+		if onPromptResponse != nil {
+			onPromptResponse(resp)
 		}
 		// Prompt completed - signal completion to stop waiting immediately
 		// This handles cases where OpenCode exits the prompt loop and marks
@@ -350,24 +370,8 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 		decision = c.handler.HandlePermission(ctx, string(params.ToolCall.ToolCallId), params.ToolCall.Title)
 	}
 
-	if c != nil {
-		if sink := c.getEventSink(); sink != nil {
-			_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
-				Type:      contracts.TaskSessionEventTypeApprovalRequired,
-				SessionID: c.taskSessionID,
-				Timestamp: time.Now().UTC(),
-				Approval: &contracts.TaskSessionApprovalEvent{
-					Request: contracts.TaskSessionApprovalRequest{
-						ID:    string(params.ToolCall.ToolCallId),
-						Kind:  contracts.TaskSessionApprovalKindToolCall,
-						Title: params.ToolCall.Title,
-					},
-				},
-			})
-		}
-	}
-
 	if decision != ACPDecisionAllow || len(params.Options) == 0 {
+		c.emitPermissionDecision(ctx, params, contracts.TaskSessionApprovalRejected, "cancelled")
 		return &acp.RequestPermissionResponse{
 			Outcome: acp.NewRequestPermissionOutcomeCancelled(),
 		}, nil
@@ -384,13 +388,41 @@ func (c *acpClient) RequestPermission(ctx context.Context, params *acp.RequestPe
 		}
 	}
 	if !found {
+		c.emitPermissionDecision(ctx, params, contracts.TaskSessionApprovalRejected, "cancelled")
 		return &acp.RequestPermissionResponse{
 			Outcome: acp.NewRequestPermissionOutcomeCancelled(),
 		}, nil
 	}
+	c.emitPermissionDecision(ctx, params, contracts.TaskSessionApprovalApproved, string(option.OptionId))
 	return &acp.RequestPermissionResponse{
 		Outcome: acp.NewRequestPermissionOutcomeSelected(option.OptionId),
 	}, nil
+}
+
+func (c *acpClient) emitPermissionDecision(ctx context.Context, params *acp.RequestPermissionRequest, outcome contracts.TaskSessionApprovalOutcome, reason string) {
+	if c == nil || params == nil {
+		return
+	}
+	sink := c.getEventSink()
+	if sink == nil {
+		return
+	}
+	_ = sink.HandleEvent(ctx, contracts.TaskSessionEvent{
+		Type:      contracts.TaskSessionEventTypeApprovalRequired,
+		SessionID: c.taskSessionID,
+		Timestamp: time.Now().UTC(),
+		Approval: &contracts.TaskSessionApprovalEvent{
+			Request: contracts.TaskSessionApprovalRequest{
+				ID:    string(params.ToolCall.ToolCallId),
+				Kind:  contracts.TaskSessionApprovalKindToolCall,
+				Title: params.ToolCall.Title,
+			},
+			Decision: &contracts.TaskSessionApprovalDecision{
+				Outcome: outcome,
+				Reason:  reason,
+			},
+		},
+	})
 }
 
 func (c *acpClient) startCapture() {

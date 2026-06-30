@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
+	acp "github.com/ironpark/acp-go"
 )
 
 func writeACPLogFile(t *testing.T, lines ...string) string {
@@ -549,8 +551,485 @@ func TestCLIRunnerAdapterForwardsACPUpdatesToProgressCallback(t *testing.T) {
 	if len(seen) != 3 {
 		t.Fatalf("unexpected forwarded updates: %#v", seen)
 	}
-	if seenTypes[0] != "tool_invoked" || seenTypes[1] != "agent_text" || seenTypes[2] != "command_run" {
+	if seenTypes[0] != "command_run" || seenTypes[1] != "agent_text" || seenTypes[2] != "command_run" {
 		t.Fatalf("unexpected forwarded update types: %#v", seenTypes)
+	}
+}
+
+type acpProgressTestClient struct {
+	*acpClient
+}
+
+func (c *acpProgressTestClient) Run(context.Context, string, string) error {
+	return nil
+}
+
+type defaultAdapterACPProgressProcess struct {
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
+	waitCh  chan error
+	harness *contracts.FakeStdioJSONRPCHarness
+}
+
+func (p *defaultAdapterACPProgressProcess) Stdin() io.WriteCloser { return p.stdin }
+func (p *defaultAdapterACPProgressProcess) Stdout() io.ReadCloser { return p.stdout }
+func (p *defaultAdapterACPProgressProcess) Wait() error           { return <-p.waitCh }
+func (p *defaultAdapterACPProgressProcess) Kill() error {
+	if p.harness != nil {
+		_ = p.harness.Close()
+	}
+	select {
+	case p.waitCh <- nil:
+	default:
+	}
+	return nil
+}
+
+type defaultAdapterACPProgressAgent struct {
+	testACPAgent
+}
+
+func (a *defaultAdapterACPProgressAgent) Prompt(ctx context.Context, params *acp.PromptRequest) (*acp.PromptResponse, error) {
+	text := ""
+	if len(params.Prompt) > 0 && params.Prompt[0].IsText() {
+		text = params.Prompt[0].GetText().Text
+	}
+	a.mu.Lock()
+	a.prompts = append(a.prompts, promptRecord{SessionId: params.SessionId, Text: text})
+	a.promptCount++
+	a.mu.Unlock()
+
+	if a.client == nil {
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	}
+	if strings.TrimSpace(text) == verificationPrompt {
+		if err := a.client.SessionUpdate(ctx, &acp.SessionNotification{
+			SessionId: params.SessionId,
+			Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("DONE")),
+		}); err != nil {
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
+		return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+	}
+
+	updates := []*acp.SessionNotification{
+		{
+			SessionId: params.SessionId,
+			Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("Exploring repository")),
+		},
+		{
+			SessionId: params.SessionId,
+			Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("")),
+		},
+		{
+			SessionId: params.SessionId,
+			Update: acp.NewSessionUpdateToolCall(
+				acp.ToolCallId("tool-read-1"),
+				"Read README.md",
+				acp.ToolKindPtr(acp.ToolKindRead),
+				acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+				nil, nil,
+			),
+		},
+		{
+			SessionId: params.SessionId,
+			Update: acp.NewSessionUpdateToolCall(
+				acp.ToolCallId("tool-bash-1"),
+				"bash: go test ./internal/opencode/",
+				acp.ToolKindPtr(acp.ToolKindExecute),
+				acp.ToolCallStatusPtr(acp.ToolCallStatusInProgress),
+				nil, map[string]any{"command": "go test ./internal/opencode/"},
+			),
+		},
+		{
+			SessionId: params.SessionId,
+			Update:    acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText("Editing files")),
+		},
+	}
+	for _, update := range updates {
+		if err := a.client.SessionUpdate(ctx, update); err != nil {
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := a.client.RequestPermission(ctx, &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("tool-denied-1"),
+			Title:      "bash: rm protected.txt",
+			Kind:       acp.ToolKindPtr(acp.ToolKindExecute),
+			Status:     acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+		},
+	}); err != nil {
+		return nil, err
+	}
+	return &acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
+}
+
+func TestCLIRunnerAdapterDefaultRunEmitsSingleCanonicalACPProgressSequence(t *testing.T) {
+	harness := contracts.NewFakeStdioJSONRPCHarness()
+	t.Cleanup(func() {
+		_ = harness.Close()
+	})
+	clientStdin, clientStdout := harness.ClientIO()
+	serverStdin, serverStdout := harness.ServerIO()
+	process := &defaultAdapterACPProgressProcess{
+		stdin:   clientStdin,
+		stdout:  clientStdout,
+		waitCh:  make(chan error, 1),
+		harness: harness,
+	}
+	agent := &defaultAdapterACPProgressAgent{}
+	serverErr := make(chan error, 1)
+	go func() {
+		agentConn := acp.NewAgentSideConnection(agent, serverStdout, serverStdin)
+		agent.client = agentConn.Client()
+		serverErr <- agentConn.Start(context.Background())
+		process.waitCh <- nil
+	}()
+
+	adapter := &CLIRunnerAdapter{
+		runner: RunnerFunc(func(args []string, env map[string]string, stdoutPath string) (Process, error) {
+			return process, nil
+		}),
+	}
+	var progress []contracts.RunnerProgress
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-1",
+		RepoRoot: t.TempDir(),
+		Prompt:   "do x",
+		OnProgress: func(p contracts.RunnerProgress) {
+			progress = append(progress, p)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("unexpected ACP server error: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("expected ACP server to stop")
+	}
+
+	gotTypes := make([]string, 0, len(progress))
+	for _, p := range progress {
+		gotTypes = append(gotTypes, p.Type)
+	}
+	wantTypes := []string{
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeToolInvoked),
+		string(contracts.EventTypeCommandRun),
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeAgentBlocked),
+		string(contracts.EventTypeAgentFinished),
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeAgentFinished),
+	}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("canonical event types = %#v; want %#v; progress=%#v", gotTypes, wantTypes, progress)
+	}
+	if progress[1].Metadata["tool_call_id"] != "tool-read-1" || progress[1].Metadata["kind"] != "read" {
+		t.Fatalf("tool_invoked identity metadata mismatch: %#v", progress[1])
+	}
+	if progress[2].Metadata["tool_call_id"] != "tool-bash-1" || progress[2].Metadata["kind"] != "execute" {
+		t.Fatalf("command_run identity metadata mismatch: %#v", progress[2])
+	}
+	blocked := progress[4]
+	if blocked.Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("blocked reason = %q; want %q; progress=%#v", blocked.Metadata["reason"], contracts.BlockReasonPermissionDenied, blocked)
+	}
+	if blocked.Metadata["approval_id"] != "tool-denied-1" {
+		t.Fatalf("blocked approval_id = %q; want tool-denied-1", blocked.Metadata["approval_id"])
+	}
+}
+
+func TestCLIRunnerAdapterRunEmitsStructuredACPCanonicalProgressParity(t *testing.T) {
+	client := &acpProgressTestClient{acpClient: &acpClient{taskSessionID: "sess-1"}}
+	adapter := &CLIRunnerAdapter{
+		acpClient: client,
+		runWithACP: func(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpRunner ACPClient, onUpdate func(string), command ...string) error {
+			c, ok := acpRunner.(*acpProgressTestClient)
+			if !ok {
+				t.Fatalf("expected *acpProgressTestClient, got %T", acpRunner)
+			}
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("Exploring repository")),
+			}); err != nil {
+				t.Fatalf("SessionUpdate(agent message) = %v", err)
+			}
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("")),
+			}); err != nil {
+				t.Fatalf("SessionUpdate(empty message) = %v", err)
+			}
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update: acp.NewSessionUpdateToolCall(
+					acp.ToolCallId("tool-read-1"),
+					"Read README.md",
+					acp.ToolKindPtr(acp.ToolKindRead),
+					acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+					nil, nil,
+				),
+			}); err != nil {
+				t.Fatalf("SessionUpdate(read tool) = %v", err)
+			}
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update: acp.NewSessionUpdateToolCall(
+					acp.ToolCallId("tool-bash-1"),
+					"bash: go test ./internal/opencode/",
+					acp.ToolKindPtr(acp.ToolKindExecute),
+					acp.ToolCallStatusPtr(acp.ToolCallStatusInProgress),
+					nil, map[string]any{"command": "go test ./internal/opencode/"},
+				),
+			}); err != nil {
+				t.Fatalf("SessionUpdate(command tool) = %v", err)
+			}
+			commandUpdate := acp.NewSessionUpdateToolCallUpdate(
+				acp.ToolCallId("tool-bash-1"),
+				acp.ToolCallStatusPtr(acp.ToolCallStatusCompleted),
+				nil, map[string]any{"exit_code": 0},
+			)
+			commandUpdate.GetToolcallupdate().Kind = acp.ToolKindPtr(acp.ToolKindExecute)
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update:    commandUpdate,
+			}); err != nil {
+				t.Fatalf("SessionUpdate(command update) = %v", err)
+			}
+			if err := c.SessionUpdate(ctx, &acp.SessionNotification{
+				SessionId: "sess-1",
+				Update:    acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText("Editing files")),
+			}); err != nil {
+				t.Fatalf("SessionUpdate(agent thought) = %v", err)
+			}
+			if _, err := c.RequestPermission(ctx, &acp.RequestPermissionRequest{
+				ToolCall: acp.ToolCallUpdate{
+					ToolCallId: acp.ToolCallId("tool-denied-1"),
+					Title:      "bash: rm protected.txt",
+					Kind:       acp.ToolKindPtr(acp.ToolKindExecute),
+					Status:     acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+				},
+			}); err != nil {
+				t.Fatalf("RequestPermission() = %v", err)
+			}
+			return nil
+		},
+	}
+
+	var progress []contracts.RunnerProgress
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-1",
+		RepoRoot: t.TempDir(),
+		Prompt:   "do x",
+		OnProgress: func(p contracts.RunnerProgress) {
+			progress = append(progress, p)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != contracts.RunnerResultCompleted {
+		t.Fatalf("expected completed status, got %s", result.Status)
+	}
+
+	gotTypes := make([]string, 0, len(progress))
+	for _, p := range progress {
+		gotTypes = append(gotTypes, p.Type)
+	}
+	wantTypes := []string{
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeToolInvoked),
+		string(contracts.EventTypeCommandRun),
+		string(contracts.EventTypeCommandRun),
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeAgentBlocked),
+	}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("canonical event types = %#v; want %#v; progress=%#v", gotTypes, wantTypes, progress)
+	}
+	if progress[1].Metadata["tool_call_id"] != "tool-read-1" || progress[1].Metadata["kind"] != "read" {
+		t.Fatalf("tool_invoked identity metadata mismatch: %#v", progress[1])
+	}
+	if progress[2].Metadata["tool_call_id"] != "tool-bash-1" || progress[2].Metadata["kind"] != "execute" {
+		t.Fatalf("command_run identity metadata mismatch: %#v", progress[2])
+	}
+	blocked := progress[len(progress)-1]
+	if blocked.Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("blocked reason = %q; want %q; progress=%#v", blocked.Metadata["reason"], contracts.BlockReasonPermissionDenied, blocked)
+	}
+	if blocked.Metadata["approval_id"] != "tool-denied-1" {
+		t.Fatalf("blocked approval_id = %q; want tool-denied-1", blocked.Metadata["approval_id"])
+	}
+}
+
+func TestCLIRunnerAdapterACPFixtureEmitsCanonicalProgressParity(t *testing.T) {
+	var progress []contracts.RunnerProgress
+	appendACP := func(notification *acp.SessionNotification) {
+		t.Helper()
+		p, ok := NormalizeACPProgressNotification(notification)
+		if ok {
+			progress = append(progress, p)
+		}
+	}
+	appendSession := func(event contracts.TaskSessionEvent) {
+		t.Helper()
+		p, ok := NormalizeOpencodeTaskSessionEvent(event)
+		if ok {
+			progress = append(progress, p)
+		}
+	}
+
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("Exploring repository")),
+	})
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update:    acp.NewSessionUpdateAgentMessageChunk(acp.NewContentBlockText("")),
+	})
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update: acp.NewSessionUpdateToolCall(
+			acp.ToolCallId("tool-read-1"),
+			"Read README.md",
+			acp.ToolKindPtr(acp.ToolKindRead),
+			acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+			nil, nil,
+		),
+	})
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update: acp.NewSessionUpdateToolCall(
+			acp.ToolCallId("tool-bash-1"),
+			"bash: go test ./internal/opencode/",
+			acp.ToolKindPtr(acp.ToolKindExecute),
+			acp.ToolCallStatusPtr(acp.ToolCallStatusInProgress),
+			nil, map[string]any{"command": "go test ./internal/opencode/"},
+		),
+	})
+	commandUpdate := acp.NewSessionUpdateToolCallUpdate(
+		acp.ToolCallId("tool-bash-1"),
+		acp.ToolCallStatusPtr(acp.ToolCallStatusCompleted),
+		nil, map[string]any{"exit_code": 0},
+	)
+	commandUpdate.GetToolcallupdate().Kind = acp.ToolKindPtr(acp.ToolKindExecute)
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update:    commandUpdate,
+	})
+	appendACP(&acp.SessionNotification{
+		SessionId: "sess-1",
+		Update:    acp.NewSessionUpdateAgentThoughtChunk(acp.NewContentBlockText("Editing files")),
+	})
+
+	client := &acpClient{taskSessionID: "sess-1"}
+	client.setEventSink(contracts.TaskSessionEventSinkFunc(func(_ context.Context, event contracts.TaskSessionEvent) error {
+		appendSession(event)
+		return nil
+	}))
+	if _, err := client.RequestPermission(context.Background(), &acp.RequestPermissionRequest{
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallId: acp.ToolCallId("tool-denied-1"),
+			Title:      "bash: rm protected.txt",
+			Kind:       acp.ToolKindPtr(acp.ToolKindExecute),
+			Status:     acp.ToolCallStatusPtr(acp.ToolCallStatusPending),
+		},
+	}); err != nil {
+		t.Fatalf("RequestPermission() = %v", err)
+	}
+	finished, ok := NormalizeACPPromptResponse(&acp.PromptResponse{StopReason: acp.StopReasonEndTurn})
+	if !ok {
+		t.Fatalf("expected finish prompt response to normalize")
+	}
+	progress = append(progress, finished)
+
+	gotTypes := make([]string, 0, len(progress))
+	for _, p := range progress {
+		gotTypes = append(gotTypes, p.Type)
+	}
+	wantTypes := []string{
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeToolInvoked),
+		string(contracts.EventTypeCommandRun),
+		string(contracts.EventTypeCommandRun),
+		string(contracts.EventTypeAgentText),
+		string(contracts.EventTypeAgentBlocked),
+		string(contracts.EventTypeAgentFinished),
+	}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("canonical event types = %#v; want %#v; progress=%#v", gotTypes, wantTypes, progress)
+	}
+	if progress[1].Metadata["tool_call_id"] != "tool-read-1" || progress[1].Metadata["kind"] != "read" {
+		t.Fatalf("tool_invoked identity metadata mismatch: %#v", progress[1])
+	}
+	if progress[2].Metadata["tool_call_id"] != "tool-bash-1" || progress[2].Metadata["kind"] != "execute" {
+		t.Fatalf("command_run identity metadata mismatch: %#v", progress[2])
+	}
+	blocked := progress[len(progress)-2]
+	if blocked.Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("blocked reason = %q; want %q; progress=%#v", blocked.Metadata["reason"], contracts.BlockReasonPermissionDenied, blocked)
+	}
+	if blocked.Metadata["approval_id"] != "tool-denied-1" {
+		t.Fatalf("blocked approval_id = %q; want tool-denied-1", blocked.Metadata["approval_id"])
+	}
+}
+
+func TestNormalizeOpencodeTaskSessionEventApprovedPermissionIsNotPermissionDenied(t *testing.T) {
+	progress, ok := NormalizeOpencodeTaskSessionEvent(contracts.TaskSessionEvent{
+		Type:      contracts.TaskSessionEventTypeApprovalRequired,
+		SessionID: "sess-1",
+		Approval: &contracts.TaskSessionApprovalEvent{
+			Request: contracts.TaskSessionApprovalRequest{
+				ID:    "tool-approved-1",
+				Kind:  contracts.TaskSessionApprovalKindToolCall,
+				Title: "bash: go test ./internal/opencode/",
+			},
+			Decision: &contracts.TaskSessionApprovalDecision{
+				Outcome: contracts.TaskSessionApprovalApproved,
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("expected approved approval event to normalize")
+	}
+	if progress.Type == string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("approved permission request must not emit agent_blocked: %#v", progress)
+	}
+	if progress.Metadata["reason"] == string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("approved permission request must not carry permission_denied: %#v", progress)
+	}
+}
+
+func TestNormalizeOpencodeTaskSessionEventPermissionRequestWithoutDecisionIsNotDenied(t *testing.T) {
+	progress, ok := NormalizeOpencodeTaskSessionEvent(contracts.TaskSessionEvent{
+		Type:      contracts.TaskSessionEventTypeApprovalRequired,
+		SessionID: "sess-1",
+		Approval: &contracts.TaskSessionApprovalEvent{
+			Request: contracts.TaskSessionApprovalRequest{
+				ID:    "tool-pending-1",
+				Kind:  contracts.TaskSessionApprovalKindToolCall,
+				Title: "bash: go test ./internal/opencode/",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("expected permission request event to normalize")
+	}
+	if progress.Type == string(contracts.EventTypeAgentBlocked) {
+		t.Fatalf("permission request without denial must not emit agent_blocked: %#v", progress)
+	}
+	if progress.Metadata["reason"] == string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("permission request without denial must not carry permission_denied: %#v", progress)
 	}
 }
 

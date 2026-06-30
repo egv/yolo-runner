@@ -161,18 +161,22 @@ func emitMonitorEvent(ctx context.Context, events contracts.EventSink, event con
 
 func eventTypeForRunnerProgress(progressType string) contracts.EventType {
 	switch contracts.EventType(strings.TrimSpace(progressType)) {
-	case contracts.EventTypeToolInvoked:
-		return ""
-	case contracts.EventTypeCommandRun:
-		return contracts.EventTypeCommandRun
 	case contracts.EventTypeAgentText:
 		return contracts.EventTypeAgentText
-	case contracts.EventTypeAgentBlocked:
-		return contracts.EventTypeAgentBlocked
-	case contracts.EventTypeAgentHeartbeat:
-		return contracts.EventTypeAgentHeartbeat
 	case contracts.EventTypeAgentProgress:
 		return contracts.EventTypeAgentProgress
+	case contracts.EventTypeAgentBlocked:
+		return contracts.EventTypeAgentBlocked
+	case contracts.EventTypeCommandRun:
+		return contracts.EventTypeCommandRun
+	case contracts.EventTypeToolInvoked:
+		return contracts.EventTypeToolInvoked
+	case contracts.EventTypeTokenUsage:
+		return contracts.EventTypeTokenUsage
+	case contracts.EventTypeAgentFinished:
+		return contracts.EventTypeAgentFinished
+	case contracts.EventTypeAgentHeartbeat:
+		return contracts.EventTypeAgentHeartbeat
 	default:
 		return contracts.EventTypeAgentProgress
 	}

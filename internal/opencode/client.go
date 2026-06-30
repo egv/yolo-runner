@@ -154,6 +154,10 @@ func RunWithACP(ctx context.Context, issueID string, repoRoot string, prompt str
 }
 
 func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onLineUpdate func(string), command ...string) error {
+	return RunWithACPAndProgress(ctx, issueID, repoRoot, prompt, model, configRoot, configDir, logPath, runner, acpClient, onLineUpdate, nil, command...)
+}
+
+func RunWithACPAndProgress(ctx context.Context, issueID string, repoRoot string, prompt string, model string, configRoot string, configDir string, logPath string, runner Runner, acpClient ACPClient, onLineUpdate func(string), onProgress func(contracts.RunnerProgress), command ...string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -192,6 +196,9 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 	if err != nil {
 		return err
 	}
+
+	restoreACPProgress := installACPProgressCallbacks(acpClient, onProgress)
+	defer restoreACPProgress()
 
 	if acpClient == nil {
 		printACPToConsole := onLineUpdate == nil
@@ -244,11 +251,28 @@ func RunWithACPAndUpdates(ctx context.Context, issueID string, repoRoot string, 
 				if note == nil {
 					return
 				}
+				if progress, ok := NormalizeACPProgressNotification(note); ok && onProgress != nil {
+					onProgress(progress)
+				}
 				if line := aggregator.ProcessUpdate(&note.Update); line != "" {
 					emitUpdate(line)
 				}
 			}
-			runErr := RunACPClient(ctx, stdio.Stdin(), stdio.Stdout(), repoRoot, prompt, handler, onUpdate)
+			onPromptResponse := func(resp *acp.PromptResponse) {
+				if progress, ok := NormalizeACPPromptResponse(resp); ok && onProgress != nil {
+					onProgress(progress)
+				}
+			}
+			var eventSink contracts.TaskSessionEventSink
+			if onProgress != nil {
+				eventSink = contracts.TaskSessionEventSinkFunc(func(_ context.Context, event contracts.TaskSessionEvent) error {
+					if progress, ok := NormalizeOpencodeTaskSessionEvent(event); ok {
+						onProgress(progress)
+					}
+					return nil
+				})
+			}
+			runErr := RunACPClientWithCallbacks(ctx, stdio.Stdin(), stdio.Stdout(), repoRoot, prompt, handler, onUpdate, onPromptResponse, eventSink)
 			for _, line := range aggregator.FlushPending() {
 				emitUpdate(line)
 			}
