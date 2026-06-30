@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/sourcehost"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
@@ -115,6 +117,71 @@ func TestWatchSupervisorCancelsSourcesAndRunnersCleanly(t *testing.T) {
 	runnerStarter.assertStopped(t, "startrek-pool", 2)
 }
 
+func TestWatchSupervisorEmitsQueueSnapshotFromAutoscalePoll(t *testing.T) {
+	queuePath := filepath.Join(t.TempDir(), "watch.db")
+	store, err := workqueue.Open(queuePath)
+	if err != nil {
+		t.Fatalf("open queue: %v", err)
+	}
+	defer store.Close()
+
+	seedWatchQueueItem(t, store, "claimed-a", "source-a", "linux", "claimed")
+	seedWatchQueueItem(t, store, "done-a", "source-b", "mac", "done")
+	seedWatchQueueItem(t, store, "pending-a", "source-a", "linux", "pending")
+	seedWatchQueueItem(t, store, "pending-b", "source-a", "linux", "pending")
+
+	sink := &watchRecordingSink{}
+	supervisor := newWatchSupervisor(watchSupervisorConfig{
+		Watch: watchConfig{
+			QueuePath: queuePath,
+			Sources: []watchSourceConfig{
+				{Name: "source-a", Type: watchSourceBR, Preset: "linux"},
+				{Name: "source-b", Type: watchSourceBR, Preset: "mac"},
+			},
+			RunnerPools: []watchRunnerPoolConfig{
+				{Name: "linux-pool", Source: "source-a", Presets: []string{"linux"}, MinReplicas: 1, MaxReplicas: 3, Capacity: 1},
+			},
+		},
+		QueueDepth:    watchQueueDepthStore{store: store},
+		SourceStarter: newFakeWatchSourceStarter(),
+		RunnerStarter: newFakeWatchRunnerStarter(),
+		TickInterval:  time.Hour,
+		EventSink:     sink,
+		Now: func() time.Time {
+			return time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runWatchSupervisorForTest(t, ctx, supervisor)
+	waitForWatchCount(t, func() int {
+		return len(sink.eventsByType(contracts.EventTypeQueueSnapshot))
+	}, 1)
+	cancel()
+	waitWatchSupervisorDone(t, done)
+
+	events := sink.eventsByType(contracts.EventTypeQueueSnapshot)
+	if len(events) != 1 {
+		t.Fatalf("queue_snapshot events = %d, want 1", len(events))
+	}
+	got := events[0].Metadata
+	want := map[string]string{
+		"depth.source-a.pending": "2",
+		"depth.source-a.active":  "1",
+		"depth.source-b.pending": "0",
+		"depth.source-b.active":  "0",
+		"state.source-a.pending": "2",
+		"state.source-a.claimed": "1",
+		"state.source-b.done":    "1",
+		"state.total.pending":    "2",
+		"state.total.claimed":    "1",
+		"state.total.done":       "1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("queue_snapshot metadata = %#v, want %#v", got, want)
+	}
+}
+
 func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 	origBundle := newSourceBRRunBundle
 	t.Cleanup(func() { newSourceBRRunBundle = origBundle })
@@ -180,6 +247,45 @@ func TestDefaultWatchSourceStarterStartsBRSourceAndFeedsQueue(t *testing.T) {
 		}
 		return depth
 	}, 1)
+}
+
+func seedWatchQueueItem(t *testing.T, store *workqueue.Store, id string, source string, preset string, state string) {
+	t.Helper()
+	payload, err := json.Marshal(workitem.ImplementPayload{TaskID: id, Title: id})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	item, err := store.Enqueue(workqueue.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         source,
+		SourceRef:      id,
+		IdempotencyKey: source + "/" + id,
+		Preset:         preset,
+		Payload:        payload,
+	})
+	if err != nil {
+		t.Fatalf("enqueue %s: %v", id, err)
+	}
+	if state == "pending" {
+		return
+	}
+	claimed, err := store.Claim("runner-"+id, []string{preset}, time.Minute)
+	if err != nil {
+		t.Fatalf("claim %s: %v", id, err)
+	}
+	if claimed == nil || claimed.ID != item.ID {
+		t.Fatalf("claim %s got %#v, want item %s", id, claimed, item.ID)
+	}
+	switch state {
+	case "claimed":
+		return
+	case "done":
+		if err := store.Complete(item.ID, workqueue.Result{}); err != nil {
+			t.Fatalf("complete %s: %v", id, err)
+		}
+	default:
+		t.Fatalf("unsupported test queue state %q", state)
+	}
 }
 
 func TestDefaultWatchSourceStarterDefaultsBRRepoToWatchRepo(t *testing.T) {
@@ -465,4 +571,28 @@ func waitForWatchCount(t *testing.T, count func() int, want int) {
 		case <-ticker.C:
 		}
 	}
+}
+
+type watchRecordingSink struct {
+	mu     sync.Mutex
+	events []contracts.Event
+}
+
+func (s *watchRecordingSink) Emit(_ context.Context, event contracts.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event.WithClonedMetadata())
+	return nil
+}
+
+func (s *watchRecordingSink) eventsByType(eventType contracts.EventType) []contracts.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var events []contracts.Event
+	for _, event := range s.events {
+		if event.Type == eventType {
+			events = append(events, event)
+		}
+	}
+	return events
 }
