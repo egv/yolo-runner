@@ -354,14 +354,72 @@ func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *te
 		{
 			Method: "item/autoApprovalReview/completed",
 			Params: map[string]any{
-				"threadId":     "thread-1",
-				"turnId":       "turn-1",
-				"targetItemId": "cmd-denied",
-				"action":       "deny",
-				"command":      "rm -rf .git",
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-1",
+				"targetItemId":   "cmd-denied",
+				"startedAtMs":    float64(1),
+				"completedAtMs":  float64(2),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":    "command",
+					"source":  "agent",
+					"command": "rm -rf .git",
+					"cwd":     "/repo",
+				},
 				"review": map[string]any{
-					"status": "denied",
-					"reason": "command touches protected path",
+					"status":            "denied",
+					"riskLevel":         "high",
+					"userAuthorization": "low",
+					"rationale":         "command touches protected path",
+				},
+			},
+		},
+		{
+			Method: "item/autoApprovalReview/completed",
+			Params: map[string]any{
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-2",
+				"targetItemId":   nil,
+				"startedAtMs":    float64(3),
+				"completedAtMs":  float64(4),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":    "execve",
+					"source":  "agent",
+					"program": "/bin/rm",
+					"argv":    []any{"rm", "-rf", ".git"},
+					"cwd":     "/repo",
+				},
+				"review": map[string]any{
+					"status":    "denied",
+					"rationale": "execve removes repository metadata",
+				},
+			},
+		},
+		{
+			Method: "item/autoApprovalReview/completed",
+			Params: map[string]any{
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-3",
+				"targetItemId":   "permissions-1",
+				"startedAtMs":    float64(5),
+				"completedAtMs":  float64(6),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":   "requestPermissions",
+					"reason": "needs broader filesystem access",
+					"permissions": map[string]any{
+						"fileSystem": map[string]any{
+							"access": "write",
+						},
+					},
+				},
+				"review": map[string]any{
+					"status":    "denied",
+					"rationale": "permission escalation was not approved",
 				},
 			},
 		},
@@ -371,10 +429,22 @@ func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *te
 				"threadId": "thread-1",
 				"turnId":   "turn-1",
 				"error": map[string]any{
-					"message": "usage limit reached",
+					"message":        "usage limit reached",
+					"codexErrorInfo": "usageLimitExceeded",
+				},
+			},
+		},
+		{
+			Method: "error",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"error": map[string]any{
+					"message": "responses stream disconnected",
 					"codexErrorInfo": map[string]any{
-						"type":           "UsageLimitExceeded",
-						"httpStatusCode": float64(429),
+						"responseStreamDisconnected": map[string]any{
+							"httpStatusCode": float64(429),
+						},
 					},
 				},
 			},
@@ -383,11 +453,21 @@ func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *te
 			Method: "thread/tokenUsage/updated",
 			Params: map[string]any{
 				"threadId": "thread-1",
+				"turnId":   "turn-1",
 				"tokenUsage": map[string]any{
 					"total": map[string]any{
-						"inputTokens":  float64(42),
-						"outputTokens": float64(7),
-						"totalTokens":  float64(49),
+						"inputTokens":           float64(42),
+						"cachedInputTokens":     float64(5),
+						"outputTokens":          float64(7),
+						"reasoningOutputTokens": float64(2),
+						"totalTokens":           float64(49),
+					},
+					"last": map[string]any{
+						"inputTokens":           float64(10),
+						"cachedInputTokens":     float64(1),
+						"outputTokens":          float64(3),
+						"reasoningOutputTokens": float64(1),
+						"totalTokens":           float64(13),
 					},
 				},
 			},
@@ -423,8 +503,8 @@ func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *te
 		t.Fatalf("unexpected tool_invoked metadata %#v", toolInvoked.Metadata)
 	}
 	blocked := progressByType(updates, contracts.EventTypeAgentBlocked)
-	if len(blocked) != 4 {
-		t.Fatalf("expected approval, file approval, auto-approval denial, and error agent_blocked events, got %#v", updates)
+	if len(blocked) != 7 {
+		t.Fatalf("expected approvals, auto-approval denials, and error agent_blocked events, got %#v", updates)
 	}
 	if blocked[0].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
 		t.Fatalf("expected command approval permission denial reason, got %#v", blocked[0].Metadata)
@@ -432,11 +512,20 @@ func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *te
 	if blocked[1].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
 		t.Fatalf("expected file approval permission denial reason, got %#v", blocked[1].Metadata)
 	}
-	if blocked[2].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[2].Metadata["detail"] != "command touches protected path" {
-		t.Fatalf("expected auto approval denial metadata, got %#v", blocked[2].Metadata)
+	if blocked[2].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[2].Metadata["detail"] != "command touches protected path" || blocked[2].Metadata["action_type"] != "command" || blocked[2].Metadata["command"] != "rm -rf .git" {
+		t.Fatalf("expected command auto approval denial metadata, got %#v", blocked[2].Metadata)
 	}
-	if blocked[3].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[3].Metadata["http_status_code"] != "429" {
-		t.Fatalf("expected rate limit blocked metadata, got %#v", blocked[3].Metadata)
+	if blocked[3].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[3].Metadata["detail"] != "execve removes repository metadata" || blocked[3].Metadata["action_type"] != "execve" || blocked[3].Metadata["program"] != "/bin/rm" || blocked[3].Metadata["command"] != "rm -rf .git" {
+		t.Fatalf("expected execve auto approval denial metadata, got %#v", blocked[3].Metadata)
+	}
+	if blocked[4].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[4].Metadata["detail"] != "permission escalation was not approved" || blocked[4].Metadata["action_type"] != "requestPermissions" || blocked[4].Metadata["permission_reason"] != "needs broader filesystem access" {
+		t.Fatalf("expected requestPermissions auto approval denial metadata, got %#v", blocked[4].Metadata)
+	}
+	if blocked[5].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[5].Metadata["codex_error_info"] != "usageLimitExceeded" {
+		t.Fatalf("expected usage-limit blocked metadata, got %#v", blocked[5].Metadata)
+	}
+	if blocked[6].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[6].Metadata["http_status_code"] != "429" || blocked[6].Metadata["codex_error_info"] != "responseStreamDisconnected" {
+		t.Fatalf("expected tagged rate-limit blocked metadata, got %#v", blocked[6].Metadata)
 	}
 	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
 	if tokenUsage == nil {

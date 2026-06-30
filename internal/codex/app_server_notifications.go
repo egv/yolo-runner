@@ -95,11 +95,13 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 		if errorInfo == nil {
 			errorInfo = params
 		}
+		codexErrorInfo := lookupAny(errorInfo, "codexErrorInfo", "codex_error_info")
 		detail := coalesceMessage(extractText(errorInfo), extractText(params), "codex error")
 		metadata = setMetadataValue(metadata, "reason", string(blockReasonFromCodexError(errorInfo)))
 		metadata = setMetadataValue(metadata, "detail", detail)
-		metadata = setMetadataValue(metadata, "error_type", lookupString(errorInfo, "type", "code"))
-		metadata = setMetadataValue(metadata, "http_status_code", anyString(lookupAny(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info"), "httpStatusCode", "http_status_code", "status")))
+		metadata = setMetadataValue(metadata, "error_type", coalesceMessage(lookupString(errorInfo, "type", "code"), codexErrorInfoName(codexErrorInfo)))
+		metadata = setMetadataValue(metadata, "codex_error_info", codexErrorInfoName(codexErrorInfo))
+		metadata = setMetadataValue(metadata, "http_status_code", codexErrorInfoHTTPStatus(codexErrorInfo))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked)
 		event.Message = detail
@@ -184,8 +186,9 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 
 	if isAutoApprovalReviewDenied(method, itemType, params, item) && strings.HasSuffix(method, "/completed") {
 		review := autoApprovalReview(params, item)
+		action := guardianApprovalReviewAction(params, item)
 		detail := coalesceMessage(
-			lookupString(review, "reason", "message", "details", "detail"),
+			lookupString(review, "rationale", "reason", "message", "details", "detail"),
 			lookupString(params, "reason", "message", "title"),
 			lookupString(item, "reason", "message", "title"),
 			"auto approval denied",
@@ -193,9 +196,17 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 		metadata = setMetadataValue(metadata, "reason", string(contracts.BlockReasonPermissionDenied))
 		metadata = setMetadataValue(metadata, "detail", detail)
 		metadata = setMetadataValue(metadata, "review_status", lookupString(review, "status"))
-		metadata = setMetadataValue(metadata, "action", lookupString(params, "action"))
+		metadata = setMetadataValue(metadata, "review_id", lookupString(params, "reviewId", "review_id"))
+		metadata = setMetadataValue(metadata, "decision_source", lookupString(params, "decisionSource", "decision_source"))
+		metadata = setMetadataValue(metadata, "risk_level", lookupString(review, "riskLevel", "risk_level"))
+		metadata = setMetadataValue(metadata, "user_authorization", lookupString(review, "userAuthorization", "user_authorization"))
+		metadata = setMetadataValue(metadata, "action", legacyGuardianActionValue(params))
+		metadata = setMetadataValue(metadata, "action_type", guardianActionType(params, action))
 		metadata = setMetadataValue(metadata, "target_item_id", lookupString(params, "targetItemId", "target_item_id"))
-		metadata = setMetadataValue(metadata, "command", coalesceMessage(commandString(params), commandString(item)))
+		metadata = setMetadataValue(metadata, "command", coalesceMessage(guardianActionCommand(action), commandString(params), commandString(item)))
+		metadata = setMetadataValue(metadata, "program", lookupString(action, "program"))
+		metadata = setMetadataValue(metadata, "cwd", coalesceMessage(lookupString(action, "cwd"), lookupString(params, "cwd"), lookupString(item, "cwd")))
+		metadata = setMetadataValue(metadata, "permission_reason", lookupString(action, "reason"))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked)
 		event.Message = detail
@@ -612,6 +623,41 @@ func autoApprovalReview(params map[string]any, item map[string]any) map[string]a
 	return lookupMap(item, "review")
 }
 
+func guardianApprovalReviewAction(params map[string]any, item map[string]any) map[string]any {
+	if action := lookupMap(params, "action"); action != nil {
+		return action
+	}
+	return lookupMap(item, "action")
+}
+
+func legacyGuardianActionValue(params map[string]any) string {
+	if action := lookupString(params, "action"); action != "" {
+		return action
+	}
+	return ""
+}
+
+func guardianActionType(params map[string]any, action map[string]any) string {
+	if actionType := lookupString(action, "type"); actionType != "" {
+		return actionType
+	}
+	return legacyGuardianActionValue(params)
+}
+
+func guardianActionCommand(action map[string]any) string {
+	switch lookupString(action, "type") {
+	case "command":
+		return lookupString(action, "command")
+	case "execve":
+		if argv := stringSlice(lookupSlice(action, "argv")); len(argv) > 0 {
+			return strings.Join(argv, " ")
+		}
+		return lookupString(action, "program")
+	default:
+		return ""
+	}
+}
+
 func toolTarget(item map[string]any) string {
 	for _, key := range []string{"path", "filePath", "file_path", "target"} {
 		if target := lookupString(item, key); target != "" {
@@ -631,12 +677,14 @@ func toolTarget(item map[string]any) string {
 }
 
 func blockReasonFromCodexError(errorInfo map[string]any) contracts.BlockReason {
+	codexErrorInfo := lookupAny(errorInfo, "codexErrorInfo", "codex_error_info")
 	errorText := strings.ToLower(strings.Join(filterEmpty([]string{
 		lookupString(errorInfo, "type", "code", "message"),
 		extractText(errorInfo),
-		extractText(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info")),
+		codexErrorInfoName(codexErrorInfo),
+		extractText(codexErrorInfo),
 	}), " "))
-	status := anyString(lookupAny(lookupMap(errorInfo, "codexErrorInfo", "codex_error_info"), "httpStatusCode", "http_status_code", "status"))
+	status := codexErrorInfoHTTPStatus(codexErrorInfo)
 	switch {
 	case status == "429" || strings.Contains(errorText, "rate") || strings.Contains(errorText, "limit"):
 		return contracts.BlockReasonRateLimited
@@ -647,6 +695,42 @@ func blockReasonFromCodexError(errorInfo map[string]any) contracts.BlockReason {
 	default:
 		return contracts.BlockReasonOther
 	}
+}
+
+func codexErrorInfoName(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case map[string]any:
+		if name := lookupString(typed, "type", "kind", "code"); name != "" {
+			return name
+		}
+		for key := range typed {
+			if strings.TrimSpace(key) != "" {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+func codexErrorInfoHTTPStatus(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if status := anyString(lookupAny(typed, "httpStatusCode", "http_status_code", "status")); status != "" {
+			return status
+		}
+		for _, nested := range typed {
+			if mapped, ok := nested.(map[string]any); ok {
+				if status := anyString(lookupAny(mapped, "httpStatusCode", "http_status_code", "status")); status != "" {
+					return status
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func coalesceMessage(values ...string) string {
