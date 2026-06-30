@@ -90,6 +90,15 @@ type boardStoreOpener func(string) (boardStore, error)
 
 type streamMsg interface{}
 
+type boardTab int
+
+const (
+	boardTabCollectors boardTab = iota
+	boardTabQueue
+	boardTabRunners
+	boardTabCount
+)
+
 type pollTickMsg struct{}
 type pollMsg struct {
 	snapshot boardSnapshot
@@ -112,6 +121,7 @@ type boardModel struct {
 	stream       <-chan streamMsg
 	snapshot     boardSnapshot
 	events       []contracts.Event
+	activeTab    boardTab
 	runnerDetail string
 	collectorCur int
 	waitingForDB bool
@@ -190,17 +200,23 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab":
+			if m.runnerDetail == "" {
+				m.activeTab = (m.activeTab + 1) % boardTabCount
+			}
 		case "down", "j":
-			count := len(collectorRows(m.snapshot, m.events))
-			if m.collectorCur < count-1 {
-				m.collectorCur++
+			if m.activeTab == boardTabCollectors {
+				count := len(collectorRows(m.snapshot, m.events))
+				if m.collectorCur < count-1 {
+					m.collectorCur++
+				}
 			}
 		case "up", "k":
-			if m.collectorCur > 0 {
+			if m.activeTab == boardTabCollectors && m.collectorCur > 0 {
 				m.collectorCur--
 			}
 		case "enter":
-			if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+			if m.activeTab != boardTabQueue && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
@@ -221,7 +237,14 @@ func (m boardModel) View() string {
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
 	}
-	return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
+	switch m.activeTab {
+	case boardTabQueue:
+		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC())
+	case boardTabRunners:
+		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
+	default:
+		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
+	}
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {
