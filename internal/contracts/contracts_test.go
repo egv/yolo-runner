@@ -1,8 +1,10 @@
 package contracts
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"strconv"
 	"testing"
@@ -178,6 +180,109 @@ func TestEventDefaults(t *testing.T) {
 	event := Event{Type: EventTypeTaskStarted, TaskID: "t-1", Timestamp: time.Now().UTC()}
 	if event.Type == "" || event.TaskID == "" || event.Timestamp.IsZero() {
 		t.Fatalf("event fields should be populated")
+	}
+}
+
+func TestEventCanonicalFieldsRoundTripThroughDecoder(t *testing.T) {
+	timestamp := time.Date(2026, 6, 30, 10, 11, 12, 0, time.UTC)
+	event := Event{
+		Type:        EventTypeAgentBlocked,
+		Proc:        "runner",
+		TaskID:      "task-1",
+		ItemID:      "item-1",
+		TaskTitle:   "Implement schema",
+		WorkerID:    "worker-1",
+		ClonePath:   "/tmp/clones/item-1",
+		QueuePos:    7,
+		Priority:    2,
+		Message:     "permission required",
+		Metadata:    map[string]string{"phase": "execute"},
+		Timestamp:   timestamp,
+		Attempt:     2,
+		RetryCount:  1,
+		MaxAttempts: 3,
+		Source:      "startrek",
+		SourceRef:   "QUEUE-1",
+		Kind:        "implement",
+		Preset:      "codex",
+		RunnerID:    "runner-1",
+		Reason:      BlockReasonPermissionDenied,
+		Detail:      "shell approval denied",
+	}
+
+	line, err := MarshalEventJSONL(event)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	decoded, err := NewEventDecoder(bytes.NewBufferString(line)).Next()
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, event) {
+		t.Fatalf("decoded event mismatch\nexpected: %#v\nactual:   %#v", event, decoded)
+	}
+
+	decoder := NewEventDecoder(bytes.NewBufferString(line))
+	if _, err := decoder.Next(); err != nil {
+		t.Fatalf("decode should succeed: %v", err)
+	}
+	if _, err := decoder.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF after single event, got %v", err)
+	}
+}
+
+func TestNewEventStampsTimestampAndCopiesIdentity(t *testing.T) {
+	before := time.Now().UTC()
+	event := NewEvent(EventTypeAgentStarted, EventIdentity{
+		Source:    "github",
+		SourceRef: "42",
+		Kind:      "review",
+		Preset:    "codex",
+		RunnerID:  "runner-2",
+	})
+	after := time.Now().UTC()
+
+	if event.Type != EventTypeAgentStarted {
+		t.Fatalf("type = %q, want %q", event.Type, EventTypeAgentStarted)
+	}
+	if event.Timestamp.Before(before) || event.Timestamp.After(after) {
+		t.Fatalf("timestamp %s outside [%s, %s]", event.Timestamp, before, after)
+	}
+	if event.Source != "github" || event.SourceRef != "42" || event.Kind != "review" || event.Preset != "codex" || event.RunnerID != "runner-2" {
+		t.Fatalf("identity was not copied: %#v", event)
+	}
+}
+
+func TestCanonicalEventConstantsRemainAdditive(t *testing.T) {
+	expected := map[EventType]string{
+		EventTypeRunnerStarted:         "runner_started",
+		EventTypeRunnerFinished:        "runner_finished",
+		EventTypeRunnerProgress:        "runner_progress",
+		EventTypeRunnerHeartbeat:       "runner_heartbeat",
+		EventTypeRunnerCommandStarted:  "runner_cmd_started",
+		EventTypeRunnerCommandFinished: "runner_cmd_finished",
+		EventTypeRunnerOutput:          "runner_output",
+		EventTypeRunnerWarning:         "runner_warning",
+		EventTypeAgentStarted:          "agent_started",
+		EventTypeAgentFinished:         "agent_finished",
+		EventTypeAgentText:             "agent_text",
+		EventTypeAgentHeartbeat:        "agent_heartbeat",
+		EventTypeAgentProgress:         "agent_progress",
+		EventTypeAgentBlocked:          "agent_blocked",
+		EventTypeCommandRun:            "command_run",
+		EventTypeToolInvoked:           "tool_invoked",
+		EventTypeTokenUsage:            "token_usage",
+		EventTypeSourcePoll:            "source_poll",
+		EventTypeSourceHeartbeat:       "source_heartbeat",
+		EventTypeQueueSnapshot:         "queue_snapshot",
+		EventTypeRunnerRegistered:      "runner_registered",
+		EventTypeRunnerAlive:           "runner_alive",
+	}
+	for eventType, want := range expected {
+		if string(eventType) != want {
+			t.Fatalf("event type %q = %q, want %q", eventType, string(eventType), want)
+		}
 	}
 }
 
