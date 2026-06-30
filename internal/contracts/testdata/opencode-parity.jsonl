@@ -1,0 +1,4 @@
+{"type":"session_notification","session_id":"sess-1","update":"agent_message","text":"Exploring parity fixture"}
+{"type":"session_notification","session_id":"sess-1","update":"tool_call","tool_call_id":"edit-1","title":"Edit internal/parity/example.go","kind":"edit","status":"completed","target":"internal/parity/example.go"}
+{"type":"approval_required","session_id":"sess-1","approval_id":"approval-denied-1","title":"git push","decision":"rejected"}
+{"type":"prompt_response","stop_reason":"end_turn"}

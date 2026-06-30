@@ -1,0 +1,5 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Exploring parity fixture"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"edit-1","name":"Edit","input":{"file_path":"internal/parity/example.go"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"edit-1","is_error":false,"content":[{"type":"text","text":"updated"}]}]}}
+{"type":"denial","id":"approval-denied-1","message":{"text":"permission denied for git push"}}
+{"type":"result","subtype":"success"}

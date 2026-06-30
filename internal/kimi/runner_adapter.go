@@ -340,7 +340,7 @@ func (e *kimiStreamProgressEmitter) HandleLine(line string) bool {
 	if e.emitTokenUsage(message.Usage) {
 		handled = true
 	}
-	if e.emitBlockedEvent(event.Type, event.Subtype, messageText, message.Text, event.Text, event.Narration) {
+	if e.emitBlockedEvent(event.Type, event.Subtype, event.ID, messageText, message.Text, event.Text, event.Narration) {
 		handled = true
 	}
 	if !kimiIsBlockedEventType(event.Type, event.Subtype) {
@@ -446,7 +446,9 @@ func (e *kimiStreamProgressEmitter) emitToolResult(content kimiStreamContent) {
 	}
 	if strings.EqualFold(tool.Name, "bash") || strings.EqualFold(tool.Name, "shell") || strings.EqualFold(tool.Name, "command") {
 		e.emitCommandRun(tool, content)
+		return
 	}
+	e.emitToolInvoked(tool, content)
 }
 
 func (e *kimiStreamProgressEmitter) emitCommandRun(tool kimiPendingTool, result kimiStreamContent) {
@@ -477,6 +479,26 @@ func (e *kimiStreamProgressEmitter) emitCommandRun(tool kimiPendingTool, result 
 	})
 }
 
+func (e *kimiStreamProgressEmitter) emitToolInvoked(tool kimiPendingTool, result kimiStreamContent) {
+	metadata := map[string]string{
+		"tool":    tool.Name,
+		"outcome": "ok",
+	}
+	if result.IsError {
+		metadata["outcome"] = "error"
+	}
+	if strings.TrimSpace(tool.Target) != "" {
+		metadata["target"] = tool.Target
+		metadata["path"] = tool.Target
+	}
+	e.emit(contracts.RunnerProgress{
+		Type:      string(contracts.EventTypeToolInvoked),
+		Message:   strings.TrimSpace(tool.Name),
+		Metadata:  metadata,
+		Timestamp: e.now().UTC(),
+	})
+}
+
 func (e *kimiStreamProgressEmitter) emitNarration(text string) bool {
 	message := normalizeLine(text)
 	if message == "" {
@@ -491,17 +513,17 @@ func (e *kimiStreamProgressEmitter) emitNarration(text string) bool {
 	return true
 }
 
-func (e *kimiStreamProgressEmitter) emitBlockedEvent(eventType string, subtype string, candidates ...string) bool {
+func (e *kimiStreamProgressEmitter) emitBlockedEvent(eventType string, subtype string, approvalID string, candidates ...string) bool {
 	if !kimiIsBlockedEventType(eventType, subtype) {
 		return false
 	}
 	eventType = strings.ToLower(strings.TrimSpace(eventType))
 	for _, candidate := range candidates {
-		if e.emitBlocked(candidate, eventType) {
+		if e.emitBlockedWithApproval(candidate, eventType, approvalID) {
 			return true
 		}
 	}
-	return e.emitBlocked(eventType, eventType)
+	return e.emitBlockedWithApproval(eventType, eventType, approvalID)
 }
 
 func kimiIsBlockedEventType(eventType string, subtype string) bool {
@@ -511,13 +533,20 @@ func kimiIsBlockedEventType(eventType string, subtype string) bool {
 }
 
 func (e *kimiStreamProgressEmitter) emitBlocked(message string, reason string) bool {
+	return e.emitBlockedWithApproval(message, reason, "")
+}
+
+func (e *kimiStreamProgressEmitter) emitBlockedWithApproval(message string, reason string, approvalID string) bool {
 	message = normalizeLine(message)
 	if message == "" {
 		return false
 	}
 	metadata := map[string]string{}
 	if reason = strings.TrimSpace(reason); reason != "" {
-		metadata["reason"] = reason
+		metadata["reason"] = kimiBlockReason(message, reason)
+	}
+	if id := strings.TrimSpace(approvalID); id != "" {
+		metadata["approval_id"] = id
 	}
 	e.emit(contracts.RunnerProgress{
 		Type:      string(contracts.EventTypeAgentBlocked),
@@ -526,6 +555,14 @@ func (e *kimiStreamProgressEmitter) emitBlocked(message string, reason string) b
 		Timestamp: e.now().UTC(),
 	})
 	return true
+}
+
+func kimiBlockReason(message string, reason string) string {
+	normalized := strings.ToLower(strings.TrimSpace(message + " " + reason))
+	if strings.Contains(normalized, "permission") && (strings.Contains(normalized, "denied") || strings.Contains(normalized, "required")) {
+		return string(contracts.BlockReasonPermissionDenied)
+	}
+	return reason
 }
 
 func (e *kimiStreamProgressEmitter) emitTokenUsage(usage map[string]json.RawMessage) bool {
