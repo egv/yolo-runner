@@ -233,6 +233,12 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 		progressType = EventTypeAgentProgress
 	case TaskSessionEventType(EventTypeAgentBlocked):
 		progressType = EventTypeAgentBlocked
+	case TaskSessionEventType(EventTypeCommandRun):
+		progressType = EventTypeCommandRun
+	case TaskSessionEventType(EventTypeToolInvoked):
+		progressType = EventTypeToolInvoked
+	case TaskSessionEventType(EventTypeTokenUsage):
+		progressType = EventTypeTokenUsage
 	default:
 		if strings.TrimSpace(event.Message) == "" && len(event.Metadata) == 0 {
 			return RunnerProgress{}, false
