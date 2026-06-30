@@ -81,6 +81,7 @@ type boardConfig struct {
 type boardStore interface {
 	ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error)
 	ListRunners() ([]workqueue.RunnerRow, error)
+	CurrentItemForRunner(string) (*workitem.Item, error)
 	ListSources() ([]workqueue.SourceRow, error)
 	ItemStateCounts() (map[string]int, error)
 }
@@ -88,10 +89,11 @@ type boardStore interface {
 type boardStoreOpener func(string) (boardStore, error)
 
 type boardSnapshot struct {
-	items       []workitem.Item
-	runners     []workqueue.RunnerRow
-	sources     []workqueue.SourceRow
-	stateCounts map[string]int
+	items           []workitem.Item
+	runners         []workqueue.RunnerRow
+	currentByRunner map[string]*workitem.Item
+	sources         []workqueue.SourceRow
+	stateCounts     map[string]int
 }
 
 func (s boardSnapshot) itemCount() int {
@@ -218,7 +220,7 @@ func (m boardModel) View() string {
 	if m.errLine != "" {
 		line += "\n" + m.errLine
 	}
-	return line + "\n"
+	return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {
@@ -245,6 +247,16 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	if err != nil {
 		return pollErrorMsg{err: err}
 	}
+	currentByRunner := make(map[string]*workitem.Item, len(runners))
+	for _, runner := range runners {
+		current, err := store.CurrentItemForRunner(runner.ID)
+		if err != nil {
+			return pollErrorMsg{err: err}
+		}
+		if current != nil {
+			currentByRunner[runner.ID] = current
+		}
+	}
 	sources, err := store.ListSources()
 	if err != nil {
 		return pollErrorMsg{err: err}
@@ -255,10 +267,11 @@ func pollBoardStore(ctx context.Context, store boardStore) tea.Msg {
 	}
 	return pollMsg{
 		snapshot: boardSnapshot{
-			items:       items,
-			runners:     runners,
-			sources:     sources,
-			stateCounts: stateCounts,
+			items:           items,
+			runners:         runners,
+			currentByRunner: currentByRunner,
+			sources:         sources,
+			stateCounts:     stateCounts,
 		},
 	}
 }
