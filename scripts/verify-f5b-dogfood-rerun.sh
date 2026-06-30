@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="."
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+find_repo_root() {
+  local dir="$script_dir"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -x "$dir/bin/yolo-agent" && -x "$dir/bin/yolo-tui" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+repo_root="$(find_repo_root)" || {
+  echo "could not find repo root with executable bin/yolo-agent and bin/yolo-tui above $script_dir" >&2
+  exit 1
+}
+yolo_agent="$repo_root/bin/yolo-agent"
+yolo_tui="$repo_root/bin/yolo-tui"
+
+repo="$repo_root"
 events="/tmp/yolo-board.events.jsonl"
 tui_snapshot="/tmp/yolo-board.tui.txt"
 stream_log="/tmp/yolo-board.stream.jsonl"
@@ -36,6 +56,9 @@ Options:
 
 Required env for --run depends on .yolo-runner/config.yaml, typically:
   STARTREK_TOKEN and ARC_TOKEN for queue-backed Startrek/Arc PR operation.
+
+The script resolves yolo-agent and yolo-tui from the repository root that
+contains this script, so it may be launched from any working directory.
 EOF
 }
 
@@ -184,7 +207,7 @@ watch:
     default_mode: stream
 EOF
 
-  ./bin/yolo-agent runner \
+  "$yolo_agent" runner \
     --queue "$queue" \
     --environments "$env_file" \
     --presets f5b-dogfood \
@@ -220,9 +243,9 @@ if [[ "$run_watch" -eq 1 ]]; then
     setup_fixture "$(dirname "$events")"
   fi
 
-  ./bin/yolo-agent config validate --repo "$repo"
+  "$yolo_agent" config validate --repo "$repo"
 
-  ./bin/yolo-agent watch \
+  "$yolo_agent" watch \
     --repo "$repo" \
     --environments "$environments" \
     --events "$events" \
@@ -244,7 +267,7 @@ require_match '"reason"[[:space:]]*:[[:space:]]*"permission_denied"' "$events" "
 require_match '"type"[[:space:]]*:[[:space:]]*"source_poll"' "$events" "source_poll fleet event"
 require_match '"type"[[:space:]]*:[[:space:]]*"runner_alive"' "$events" "runner_alive fleet event"
 
-./bin/yolo-tui --events-stdin < "$events" > "$tui_snapshot"
+"$yolo_tui" --events-stdin < "$events" > "$tui_snapshot"
 
 require_file "$tui_snapshot"
 require_match 'agent_blocked' "$tui_snapshot" "agent_blocked TUI row"

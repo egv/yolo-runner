@@ -15,6 +15,12 @@ make build
 scripts/verify-f5b-dogfood-rerun.sh --run --duration 90
 ```
 
+The script walks upward from its own path to find executable `bin/yolo-agent`
+and `bin/yolo-tui`, so it may also be launched by absolute or relative script
+path from a clone subdirectory. The submitted repo includes the required
+binaries at `bin/yolo-agent` and `bin/yolo-tui`; run `make build` first if
+either binary is missing or stale.
+
 For local dogfood verification without Startrek/Arc tokens, use the isolated fixture mode. It still runs `yolo-agent watch`, a queue runner, the Claude permission-denied detector, and `yolo-tui` against a temporary repo/queue:
 
 ```bash
