@@ -144,3 +144,63 @@ go test ./cmd/yolo-agent ./cmd/yolo-tui ./internal/claude ./internal/executor -c
 ```
 
 Result: all passed.
+
+## 2026-06-30 Review Remediation Attempt 3
+
+Red check:
+
+```bash
+go test ./internal/claude -run TestCLIRunnerAdapterEmitsPermissionDeniedAgentBlockedFromClaudeBashToolResult -count=1
+```
+
+Result: failed before implementation. The CLI Claude adapter emitted only
+`command_run` for the denied Bash result, so no structured `agent_blocked`
+progress reached the watch event stream.
+
+Verifier hardening:
+
+- `scripts/verify-f5b-dogfood-rerun.sh` now parses NDJSON and requires one
+  event object with `type=agent_blocked` and `reason=permission_denied`.
+- The stale review evidence at `/tmp/yolo-board.events.jsonl` failed this
+  stricter check with `missing agent_blocked event with permission_denied
+  reason`.
+- The isolated fixture now emits a realistic Claude Bash `tool_use` followed
+  by the matching denied `tool_result`.
+
+Fix:
+
+- The Claude CLI stream parser now emits `agent_blocked` with
+  `reason=permission_denied` and `detail` when a Bash tool result contains the
+  Claude permission denial text.
+
+Verification command:
+
+```bash
+make build
+scripts/verify-f5b-dogfood-rerun.sh --run --fixture --duration 20
+```
+
+Result: passed.
+
+Evidence in `/tmp/yolo-board.events.jsonl`:
+
+- `source_poll`: present at `2026-06-30T12:39:13Z`
+- `runner_alive`: present at `2026-06-30T12:39:13Z`
+- `agent_blocked`: present for `F5B-DOGFOOD` at `2026-06-30T12:39:13Z`
+- `reason=permission_denied`: present as a top-level field on the
+  `agent_blocked` event
+
+Representative event:
+
+```json
+{"type":"agent_blocked","task_id":"F5B-DOGFOOD","message":"Claude requested permissions for Bash, but you haven't granted them.","reason":"permission_denied","detail":"Claude requested permissions for Bash, but you haven't granted them."}
+```
+
+TUI evidence:
+
+```bash
+rg 'agent_blocked|permission_denied' /tmp/yolo-board.tui.txt
+```
+
+Result: passed via the verifier; `/tmp/yolo-board.tui.txt` renders the
+`agent_blocked` row with `reason=permission_denied`.

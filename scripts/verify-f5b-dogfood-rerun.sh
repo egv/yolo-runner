@@ -130,6 +130,41 @@ require_match() {
   fi
 }
 
+require_json_event_match() {
+  local path="$1"
+  local label="$2"
+  local expression="$3"
+  if ! python3 - "$path" "$expression" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+expression = sys.argv[2]
+
+def matches(event):
+    if expression == "agent_blocked_permission_denied":
+        return event.get("type") == "agent_blocked" and event.get("reason") == "permission_denied"
+    raise SystemExit(f"unknown expression: {expression}")
+
+with open(path, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if matches(event):
+            sys.exit(0)
+sys.exit(1)
+PY
+  then
+    echo "missing $label in $path" >&2
+    exit 1
+  fi
+}
+
 setup_fixture() {
   local root="$1"
   local fixture_root="$root/f5b-fixture"
@@ -156,7 +191,8 @@ cat > "$fake_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' '{"type":"system","subtype":"init"}'
-printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_result","is_error":true,"content":[{"type":"text","text":"Claude requested permissions for Bash, but you haven'\''t granted them."}]}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_f5b","name":"Bash","input":{"command":"git status"}}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_f5b","is_error":true,"content":[{"type":"text","text":"Claude requested permissions for Bash, but you haven'\''t granted them."}]}]}}'
 printf '%s\n' '{"type":"result","subtype":"success"}'
 EOF
   chmod 755 "$fake_bin/claude"
@@ -262,8 +298,7 @@ if [[ "$run_watch" -eq 1 ]]; then
 fi
 
 require_file "$events"
-require_match '"type"[[:space:]]*:[[:space:]]*"agent_blocked"' "$events" "agent_blocked event"
-require_match '"reason"[[:space:]]*:[[:space:]]*"permission_denied"' "$events" "permission_denied reason"
+require_json_event_match "$events" "agent_blocked event with permission_denied reason" "agent_blocked_permission_denied"
 require_match '"type"[[:space:]]*:[[:space:]]*"source_poll"' "$events" "source_poll fleet event"
 require_match '"type"[[:space:]]*:[[:space:]]*"runner_alive"' "$events" "runner_alive fleet event"
 

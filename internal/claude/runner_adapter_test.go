@@ -149,6 +149,42 @@ func TestCLIRunnerAdapterEmitsCommandRunFromClaudeBashToolResult(t *testing.T) {
 	}
 }
 
+func TestCLIRunnerAdapterEmitsPermissionDeniedAgentBlockedFromClaudeBashToolResult(t *testing.T) {
+	detail := "Claude requested permissions for Bash, but you haven't granted them."
+	updates := []contracts.RunnerProgress{}
+	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		_, _ = io.WriteString(spec.Stdout, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"git status"}}]}}`+"\n")
+		_, _ = io.WriteString(spec.Stdout, fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":[{"type":"text","text":%q}]}]}}`+"\n", detail))
+		return nil
+	}))
+
+	_, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "t-permission-denied",
+		RepoRoot: t.TempDir(),
+		Prompt:   "implement",
+		OnProgress: func(progress contracts.RunnerProgress) {
+			updates = append(updates, progress)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	blocked := findProgressByType(updates, contracts.EventTypeAgentBlocked)
+	if blocked == nil {
+		t.Fatalf("expected agent_blocked progress, got %#v", updates)
+	}
+	if blocked.Message != detail {
+		t.Fatalf("message = %q; want %q", blocked.Message, detail)
+	}
+	if blocked.Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("reason = %q; want %q", blocked.Metadata["reason"], contracts.BlockReasonPermissionDenied)
+	}
+	if blocked.Metadata["detail"] != detail {
+		t.Fatalf("detail = %q; want %q", blocked.Metadata["detail"], detail)
+	}
+}
+
 func TestCLIRunnerAdapterEmitsToolInvokedFromClaudeEditToolResult(t *testing.T) {
 	updates := []contracts.RunnerProgress{}
 	adapter := NewCLIRunnerAdapter("claude-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
