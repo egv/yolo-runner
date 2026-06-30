@@ -24,6 +24,15 @@ func (s fakeBoardStore) ListItems(workqueue.ListItemsFilter) ([]workitem.Item, e
 	return s.items, nil
 }
 
+func (s fakeBoardStore) GetItem(id string) (workqueue.ItemDetail, error) {
+	for _, item := range s.items {
+		if item.ID == id {
+			return workqueue.ItemDetail{Item: item}, nil
+		}
+	}
+	return workqueue.ItemDetail{}, nil
+}
+
 func (s fakeBoardStore) ListUnconsumedResults(source string) ([]workqueue.UnconsumedResult, error) {
 	var results []workqueue.UnconsumedResult
 	for _, result := range s.results {

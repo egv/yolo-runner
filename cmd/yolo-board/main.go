@@ -80,6 +80,7 @@ type boardConfig struct {
 
 type boardStore interface {
 	ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error)
+	GetItem(string) (workqueue.ItemDetail, error)
 	ListUnconsumedResults(string) ([]workqueue.UnconsumedResult, error)
 	ListRunners() ([]workqueue.RunnerRow, error)
 	CurrentItemForRunner(string) (*workitem.Item, error)
@@ -130,6 +131,7 @@ type boardModel struct {
 	events           []contracts.Event
 	activeTab        boardTab
 	runnerDetail     string
+	queueDetail      *workqueue.ItemDetail
 	collectorDetail  string
 	collectorItems   []workitem.Item
 	collectorResults []workqueue.UnconsumedResult
@@ -224,19 +226,19 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "1":
-			if m.runnerDetail == "" {
+			if m.runnerDetail == "" && m.queueDetail == nil && m.collectorDetail == "" {
 				m.activeTab = boardTabCollectors
 			}
 		case "2":
-			if m.runnerDetail == "" {
+			if m.runnerDetail == "" && m.queueDetail == nil && m.collectorDetail == "" {
 				m.activeTab = boardTabQueue
 			}
 		case "3":
-			if m.runnerDetail == "" {
+			if m.runnerDetail == "" && m.queueDetail == nil && m.collectorDetail == "" {
 				m.activeTab = boardTabRunners
 			}
 		case "tab":
-			if m.runnerDetail == "" && m.collectorDetail == "" {
+			if m.runnerDetail == "" && m.queueDetail == nil && m.collectorDetail == "" {
 				m.activeTab = (m.activeTab + 1) % boardTabCount
 			}
 		case "down", "j":
@@ -245,6 +247,23 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveActiveCursor(-1)
 		case "enter":
 			switch m.activeTab {
+			case boardTabQueue:
+				items := sortedQueueItems(m.snapshot.items)
+				if len(items) == 0 {
+					return m, nil
+				}
+				cursor := selectedCursor([]int{m.queueCur}, len(items))
+				if m.store == nil {
+					m.errLine = "queue detail unavailable until queue DB is open"
+					return m, nil
+				}
+				detail, err := m.store.GetItem(items[cursor].ID)
+				if err != nil {
+					m.errLine = err.Error()
+					return m, nil
+				}
+				m.queueDetail = &detail
+				m.errLine = ""
 			case boardTabCollectors:
 				rows := collectorRows(m.snapshot, m.events)
 				if len(rows) > 0 {
@@ -263,11 +282,13 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case boardTabRunners:
 				if m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
-					m.runnerDetail = m.snapshot.runners[0].ID
+					cursor := selectedCursor([]int{m.runnerCur}, len(m.snapshot.runners))
+					m.runnerDetail = m.snapshot.runners[cursor].ID
 				}
 			}
 		case "esc":
 			m.runnerDetail = ""
+			m.queueDetail = nil
 			m.collectorDetail = ""
 			m.collectorItems = nil
 			m.collectorResults = nil
@@ -286,6 +307,9 @@ func (m boardModel) View() string {
 	}
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
+	}
+	if m.queueDetail != nil {
+		return line + "\n\n" + renderQueueItemDetail(*m.queueDetail, m.events)
 	}
 	if m.collectorDetail != "" {
 		return line + "\n\n" + renderCollectorDetail(m.collectorDetail, m.collectorItems, m.collectorResults, m.events, time.Now().UTC())
