@@ -148,7 +148,7 @@ func runIteration(ctx context.Context, source Source, sourceName string, queue *
 	}
 	if reaped > 0 {
 		emit(ctx, eventSink, contracts.Event{
-			Type:    contracts.EventTypeRunnerProgress,
+			Type:    contracts.EventTypeAgentProgress,
 			Message: "sourcehost reaped stale work items",
 			Metadata: map[string]string{
 				"component": "sourcehost",
@@ -304,19 +304,20 @@ func sanitizeProcID(procID string) string {
 
 func emitWarning(ctx context.Context, sink contracts.EventSink, sourceName string, procID string, err error) {
 	emit(ctx, sink, contracts.Event{
-		Type:    contracts.EventTypeRunnerWarning,
+		Type:    contracts.EventTypeAgentProgress,
 		Message: err.Error(),
 		Metadata: map[string]string{
 			"component": "sourcehost",
 			"source":    sourceName,
 			"proc":      procID,
+			"level":     "warning",
 		},
 	})
 }
 
 func emitHeartbeat(ctx context.Context, sink contracts.EventSink, sourceName string, procID string) {
 	emit(ctx, sink, contracts.Event{
-		Type:    contracts.EventTypeRunnerHeartbeat,
+		Type:    contracts.EventTypeAgentHeartbeat,
 		Message: "sourcehost heartbeat",
 		Metadata: map[string]string{
 			"component": "sourcehost",

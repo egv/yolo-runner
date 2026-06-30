@@ -77,8 +77,8 @@ func TestNewRunnerOutputProgressNormalizesOutput(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected progress event")
 	}
-	if progress.Type != "runner_output" {
-		t.Fatalf("expected runner_output type, got %q", progress.Type)
+	if progress.Type != "agent_text" {
+		t.Fatalf("expected agent_text type, got %q", progress.Type)
 	}
 	if progress.Message != "stderr: warn line" {
 		t.Fatalf("unexpected message %q", progress.Message)
@@ -92,6 +92,47 @@ func TestNewRunnerOutputProgressNormalizesOutput(t *testing.T) {
 
 	if _, ok := NewRunnerOutputProgress("stdout", " \n ", time.Now().UTC()); ok {
 		t.Fatalf("expected empty line to be ignored")
+	}
+}
+
+func TestNormalizeTaskSessionEventUsesAgentEventTypes(t *testing.T) {
+	now := time.Date(2026, 3, 18, 11, 30, 0, 0, time.UTC)
+
+	progress, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeOutput,
+		SessionID: "session-1",
+		Message:   "hello",
+		Timestamp: now,
+	})
+	if !ok {
+		t.Fatalf("expected output event to normalize")
+	}
+	if progress.Type != string(EventTypeAgentText) {
+		t.Fatalf("expected agent_text output, got %q", progress.Type)
+	}
+
+	blocked, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
+		Type:      TaskSessionEventTypeApprovalRequired,
+		SessionID: "session-1",
+		Message:   "waiting for approval",
+		Timestamp: now,
+		Approval: &TaskSessionApprovalEvent{Request: TaskSessionApprovalRequest{
+			ID:      "approval-1",
+			Kind:    TaskSessionApprovalKindCommand,
+			Message: "allow git status",
+		}},
+	})
+	if !ok {
+		t.Fatalf("expected approval event to normalize")
+	}
+	if blocked.Type != string(EventTypeAgentBlocked) {
+		t.Fatalf("expected agent_blocked approval event, got %q", blocked.Type)
+	}
+	if blocked.Metadata["reason"] != "approval_required" {
+		t.Fatalf("expected approval_required reason, got %#v", blocked.Metadata)
+	}
+	if blocked.Metadata["detail"] != "allow git status" {
+		t.Fatalf("expected approval detail, got %#v", blocked.Metadata)
 	}
 }
 

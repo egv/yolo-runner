@@ -397,10 +397,12 @@ func deriveTaskStage(eventType contracts.EventType) (contracts.TaskStage, bool) 
 	switch eventType {
 	case contracts.EventTypeTaskStarted:
 		return contracts.TaskStageSelecting, true
-	case contracts.EventTypeRunnerStarted:
+	case contracts.EventTypeAgentStarted:
 		return contracts.TaskStageRunning, true
-	case contracts.EventTypeRunnerFinished:
+	case contracts.EventTypeAgentFinished:
 		return contracts.TaskStageClosing, true
+	case contracts.EventTypeAgentBlocked:
+		return contracts.TaskStageBlocked, true
 	case contracts.EventTypeTaskFinished, contracts.EventTypeTaskCompleted:
 		return contracts.TaskStageDone, true
 	default:
@@ -410,10 +412,11 @@ func deriveTaskStage(eventType contracts.EventType) (contracts.TaskStage, bool) 
 
 var lifecycleEventTypes = map[contracts.EventType]bool{
 	contracts.EventTypeTaskStarted:    true,
-	contracts.EventTypeRunnerStarted:  true,
+	contracts.EventTypeAgentStarted:   true,
 	contracts.EventTypeReviewStarted:  true,
 	contracts.EventTypeReviewFinished: true,
-	contracts.EventTypeRunnerFinished: true,
+	contracts.EventTypeAgentFinished:  true,
+	contracts.EventTypeAgentBlocked:   true,
 	contracts.EventTypeTaskCompleted:  true,
 	contracts.EventTypeTaskFailed:     true,
 	contracts.EventTypeTaskFinished:   true,
@@ -448,14 +451,14 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		case started != "":
 			task.LastCommandSummary = started
 		}
-	case contracts.EventTypeRunnerOutput:
+	case contracts.EventTypeAgentText:
 		task.OutputCount++
 		kind := contracts.OutputEntryKind(strings.TrimSpace(event.Metadata["kind"]))
 		if kind == "" {
 			kind = contracts.OutputEntryKindText
 		}
 		task.OutputBuf = contracts.AppendOutputEntry(task.OutputBuf, contracts.OutputEntry{Kind: kind, Content: event.Message})
-	case contracts.EventTypeRunnerHeartbeat:
+	case contracts.EventTypeAgentHeartbeat:
 		activeCommand := strings.TrimSpace(task.LastCommandStarted)
 		lastOutputAge := strings.TrimSpace(event.Metadata["last_output_age"])
 		switch {
@@ -466,12 +469,14 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 		case lastOutputAge != "":
 			task.LastMessage = "heartbeat: last output " + lastOutputAge
 		}
-	case contracts.EventTypeRunnerWarning:
+	case contracts.EventTypeAgentBlocked:
 		task.WarningCount++
 		task.WarningActive = true
 		task.LastSeverity = "warning"
-		task.WarningBuf = contracts.AppendWarningEntry(task.WarningBuf, contracts.WarningEntry{Message: event.Message})
-	case contracts.EventTypeRunnerFinished:
+		task.TerminalStatus = "blocked"
+		task.LastMessage = renderAgentBlockedMessage(event)
+		task.WarningBuf = contracts.AppendWarningEntry(task.WarningBuf, contracts.WarningEntry{Message: task.LastMessage})
+	case contracts.EventTypeAgentFinished:
 		task.WarningActive = false
 		task.TerminalStatus = strings.TrimSpace(event.Message)
 		task.LastSeverity = severityFromTerminalStatus(task.TerminalStatus)
@@ -648,6 +653,12 @@ func (m *Model) View() string {
 	lines = append(lines, renderQueueRows(m.root.Tasks, m.queueFilter)...)
 	lines = append(lines, "Task Graph:")
 	lines = append(lines, renderTaskGraphRows(m.root.Tasks)...)
+	selectedTaskID := m.currentPanelTaskID()
+	if selectedTaskID == "" && strings.TrimSpace(m.currentTask) != "" {
+		selectedTaskID = m.currentTask
+	}
+	lines = append(lines, "Task Details:")
+	lines = append(lines, renderTaskDetails(m.root.Tasks[selectedTaskID])...)
 	lines = append(lines, renderWorkers(m.workers)...)
 	lines = append(lines, "Landing Queue:")
 	lines = append(lines, renderLandingQueue(m.landing)...)
@@ -991,10 +1002,34 @@ func (m *Model) deriveStatusMetrics() statusMetrics {
 	}
 
 	metrics.runSeverity = maxSeverity(metrics.taskSeverity, metrics.workerSeverity)
-	if m.phase == string(contracts.EventTypeRunnerWarning) {
+	if m.phase == string(contracts.EventTypeAgentBlocked) {
 		metrics.runSeverity = maxSeverity(metrics.runSeverity, "warning")
 	}
 	return metrics
+}
+
+func renderAgentBlockedMessage(event contracts.Event) string {
+	reason := strings.TrimSpace(string(event.Reason))
+	detail := strings.TrimSpace(event.Detail)
+	if reason == "" {
+		reason = strings.TrimSpace(event.Metadata["reason"])
+	}
+	if detail == "" {
+		detail = strings.TrimSpace(event.Metadata["detail"])
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(event.Message)
+	}
+	switch {
+	case reason != "" && detail != "":
+		return "blocked: " + reason + " | " + detail
+	case reason != "":
+		return "blocked: " + reason
+	case detail != "":
+		return "blocked: " + detail
+	default:
+		return "blocked"
+	}
 }
 
 func renderStatusBar(metrics statusMetrics) []string {

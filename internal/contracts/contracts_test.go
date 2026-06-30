@@ -369,8 +369,8 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected lifecycle event to normalize")
 	}
-	if progress.Type != string(EventTypeRunnerProgress) {
-		t.Fatalf("expected runner_progress, got %q", progress.Type)
+	if progress.Type != string(EventTypeAgentProgress) {
+		t.Fatalf("expected agent_progress, got %q", progress.Type)
 	}
 	if progress.Metadata["state"] != string(TaskSessionLifecycleReady) {
 		t.Fatalf("expected lifecycle state metadata, got %#v", progress.Metadata)
@@ -385,8 +385,8 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected output event to normalize")
 	}
-	if output.Type != string(EventTypeRunnerOutput) {
-		t.Fatalf("expected runner_output, got %q", output.Type)
+	if output.Type != string(EventTypeAgentText) {
+		t.Fatalf("expected agent_text, got %q", output.Type)
 	}
 
 	whitespaceOutput, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
@@ -411,8 +411,8 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected approval event to normalize")
 	}
-	if warning.Type != string(EventTypeRunnerWarning) {
-		t.Fatalf("expected runner_warning, got %q", warning.Type)
+	if warning.Type != string(EventTypeAgentBlocked) {
+		t.Fatalf("expected agent_blocked, got %q", warning.Type)
 	}
 
 	artifact, ok := NormalizeTaskSessionEvent(TaskSessionEvent{
@@ -424,8 +424,8 @@ func TestNormalizeTaskSessionEventMapsCommonRuntimeSignals(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected artifact event to normalize")
 	}
-	if artifact.Type != string(EventTypeRunnerProgress) {
-		t.Fatalf("expected artifact to map to runner_progress, got %q", artifact.Type)
+	if artifact.Type != string(EventTypeAgentProgress) {
+		t.Fatalf("expected artifact to map to agent_progress, got %q", artifact.Type)
 	}
 	if !reflect.DeepEqual(artifact.Metadata, map[string]string{"path": "/tmp/coverage.txt", "sequence": "0"}) {
 		t.Fatalf("unexpected artifact metadata %#v", artifact.Metadata)

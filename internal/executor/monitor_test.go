@@ -89,6 +89,45 @@ func assertTopLevelAttemptFields(t *testing.T, event contracts.Event, attempt in
 	}
 }
 
+func TestRunWithMonitoringPreservesAgentBlockedReasonAndDetail(t *testing.T) {
+	runner := &monitorTestRunner{
+		result: contracts.RunnerResult{Status: contracts.RunnerResultBlocked},
+		progress: []contracts.RunnerProgress{
+			{
+				Type:    string(contracts.EventTypeAgentBlocked),
+				Message: "Claude requested permissions for Bash, but you haven't granted them.",
+				Metadata: map[string]string{
+					"reason": string(contracts.BlockReasonPermissionDenied),
+					"detail": "Claude requested permissions for Bash, but you haven't granted them.",
+				},
+			},
+		},
+	}
+	sink := &monitorRecordingSink{}
+
+	_, err := RunWithMonitoring(context.Background(), runner, sink, contracts.RunnerRequest{
+		TaskID: "t-1",
+		Mode:   contracts.RunnerModeImplement,
+	}, MonitorEventContext{TaskID: "t-1"}, MonitorOptions{
+		HeartbeatInterval:    time.Hour,
+		NoOutputWarningAfter: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("run with monitoring failed: %v", err)
+	}
+
+	blocked := eventsByType(sink.Events(), contracts.EventTypeAgentBlocked)
+	if len(blocked) != 1 {
+		t.Fatalf("expected one agent_blocked event, got %d", len(blocked))
+	}
+	if blocked[0].Reason != contracts.BlockReasonPermissionDenied {
+		t.Fatalf("reason = %q; want %q", blocked[0].Reason, contracts.BlockReasonPermissionDenied)
+	}
+	if blocked[0].Detail == "" {
+		t.Fatalf("expected detail to be set: %#v", blocked[0])
+	}
+}
+
 type monitorTestRunner struct {
 	delay    time.Duration
 	result   contracts.RunnerResult

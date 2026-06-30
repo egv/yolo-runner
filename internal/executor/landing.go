@@ -607,6 +607,9 @@ func buildAgentEvent(eventType contracts.EventType, taskID string, taskTitle str
 	if eventType == contracts.EventTypeAgentBlocked && event.Reason == "" {
 		event.Reason = blockReasonFromMetadata(event.Metadata)
 	}
+	if eventType == contracts.EventTypeAgentBlocked && event.Detail == "" {
+		event.Detail = strings.TrimSpace(event.Metadata["detail"])
+	}
 	return event
 }
 
