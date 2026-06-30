@@ -49,8 +49,12 @@ func RunWithMonitoring(ctx context.Context, runner contracts.AgentRunner, events
 		lastOutputAt = eventTime
 		warned = false
 		progressMu.Unlock()
+		eventType := eventTypeForRunnerProgress(progress.Type)
+		if eventType == "" {
+			return
+		}
 		event := buildAgentEvent(
-			eventTypeForRunnerProgress(progress.Type),
+			eventType,
 			eventContext.TaskID,
 			eventContext.TaskTitle,
 			eventContext.WorkerID,
@@ -157,7 +161,9 @@ func emitMonitorEvent(ctx context.Context, events contracts.EventSink, event con
 
 func eventTypeForRunnerProgress(progressType string) contracts.EventType {
 	switch contracts.EventType(strings.TrimSpace(progressType)) {
-	case contracts.EventTypeRunnerCommandStarted, contracts.EventTypeRunnerCommandFinished, contracts.EventTypeCommandRun:
+	case contracts.EventTypeRunnerCommandStarted:
+		return ""
+	case contracts.EventTypeRunnerCommandFinished, contracts.EventTypeCommandRun:
 		return contracts.EventTypeCommandRun
 	case contracts.EventTypeRunnerOutput, contracts.EventTypeAgentText:
 		return contracts.EventTypeAgentText

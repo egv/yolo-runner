@@ -3295,7 +3295,7 @@ func TestLoopEmitsRunnerFinishedMetadataWithStallDiagnostics(t *testing.T) {
 
 func TestLoopEmitsRunnerProgressEventsFromRunnerCallback(t *testing.T) {
 	mgr := newFakeTaskManager(contracts.Task{ID: "t-1", Title: "Task 1", Status: contracts.TaskStatusOpen})
-	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "first attempt"}, {Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish"}, {Type: "runner_warning", Message: "stall warning"}}}
+	run := &fakeRunner{results: []contracts.RunnerResult{{Status: contracts.RunnerResultFailed, Reason: "first attempt"}, {Status: contracts.RunnerResultCompleted}}, progressEvents: []contracts.RunnerProgress{{Type: "runner_cmd_started", Message: "cmd start"}, {Type: "runner_output", Message: "line output"}, {Type: "runner_cmd_finished", Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}}, {Type: "runner_warning", Message: "stall warning"}}}
 	sink := &recordingSink{}
 	loop := NewLoop(mgr, run, sink, LoopOptions{ParentID: "root", MaxRetries: 1})
 
@@ -3306,16 +3306,16 @@ func TestLoopEmitsRunnerProgressEventsFromRunnerCallback(t *testing.T) {
 	commandEvents := eventsByType(sink.events, contracts.EventTypeCommandRun)
 	outputEvents := eventsByType(sink.events, contracts.EventTypeAgentText)
 	warningEvents := eventsByType(sink.events, contracts.EventTypeAgentBlocked)
-	if len(commandEvents) != 4 || len(outputEvents) != 2 || len(warningEvents) != 2 {
-		t.Fatalf("expected two command_run events plus text and blocked events, got commands=%d output=%d blocked=%d", len(commandEvents), len(outputEvents), len(warningEvents))
+	if len(commandEvents) != 2 || len(outputEvents) != 2 || len(warningEvents) != 2 {
+		t.Fatalf("expected one command_run event per attempt plus text and blocked events, got commands=%d output=%d blocked=%d", len(commandEvents), len(outputEvents), len(warningEvents))
 	}
-	if commandEvents[0].Message != "cmd start" || outputEvents[0].Message != "line output" || commandEvents[1].Message != "cmd finish" || warningEvents[0].Message != "stall warning" {
+	if commandEvents[0].Message != "cmd finish" || commandEvents[0].Metadata["exit_code"] != "0" || commandEvents[0].Metadata["duration_ms"] != "125" || outputEvents[0].Message != "line output" || warningEvents[0].Message != "stall warning" {
 		t.Fatalf("unexpected progress message mapping")
 	}
 	assertTopLevelAttemptFields(t, commandEvents[0], 1, 0, 2)
 	assertTopLevelAttemptFields(t, outputEvents[0], 1, 0, 2)
 	assertTopLevelAttemptFields(t, warningEvents[0], 1, 0, 2)
-	assertTopLevelAttemptFields(t, commandEvents[2], 2, 1, 2)
+	assertTopLevelAttemptFields(t, commandEvents[1], 2, 1, 2)
 	assertTopLevelAttemptFields(t, outputEvents[1], 2, 1, 2)
 	assertTopLevelAttemptFields(t, warningEvents[1], 2, 1, 2)
 }

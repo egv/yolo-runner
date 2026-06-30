@@ -17,6 +17,7 @@ func TestRunWithMonitoringEmitsHeartbeatAndProgressEvents(t *testing.T) {
 		},
 		progress: []contracts.RunnerProgress{
 			{Type: "runner_output", Message: "line output", Metadata: map[string]string{"stream": "stdout"}},
+			{Type: "runner_cmd_started", Message: "go test ./..."},
 			{Type: "runner_cmd_finished", Message: "go test ./...", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
 			{Type: "runner_warning", Message: "stall warning"},
 		},

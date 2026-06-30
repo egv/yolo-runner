@@ -183,6 +183,41 @@ func TestRunnerPreservesStreamingSplitterWhitespace(t *testing.T) {
 	}
 }
 
+func TestRunnerNormalizesCommandLifecycleToSingleCommandRun(t *testing.T) {
+	output := strictJSONOutputFixture(
+		strictJSONTaskFixture("T20", "Invoke strict splitter", "Call the strict splitter prompt.", []string{"none"}, []string{"none"}),
+	)
+	agent := &fakeSplitterAgentRunner{progress: []contracts.RunnerProgress{
+		{Type: string(contracts.EventTypeRunnerCommandStarted), Message: "cmd start"},
+		{Type: string(contracts.EventTypeRunnerCommandFinished), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+		{Type: string(contracts.EventTypeRunnerOutput), Message: output},
+	}}
+	runner := NewRunner(agent)
+	var progress []contracts.RunnerProgress
+
+	_, err := runner.Run(context.Background(), RunInput{
+		Task:       contracts.Task{ID: "parent-123", Title: "Implement broad tracker automation", Status: contracts.TaskStatusOpen},
+		QueueRoot:  contracts.Task{ID: "root-1", Title: "Tracker automation", Status: contracts.TaskStatusOpen},
+		OnProgress: func(event contracts.RunnerProgress) { progress = append(progress, event) },
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	var commands []contracts.RunnerProgress
+	for _, event := range progress {
+		if event.Type == string(contracts.EventTypeCommandRun) {
+			commands = append(commands, event)
+		}
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one command_run progress event, got %d: %#v", len(commands), progress)
+	}
+	if commands[0].Message != "cmd finish" || commands[0].Metadata["exit_code"] != "0" || commands[0].Metadata["duration_ms"] != "125" {
+		t.Fatalf("command_run did not preserve finished payload: %#v", commands[0])
+	}
+}
+
 type fakeSplitterAgentRunner struct {
 	output   string
 	progress []contracts.RunnerProgress

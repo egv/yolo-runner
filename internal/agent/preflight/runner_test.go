@@ -175,15 +175,56 @@ func TestRunnerPreservesStreamedWhitespaceTokens(t *testing.T) {
 	}
 }
 
+func TestRunnerNormalizesCommandLifecycleToSingleCommandRun(t *testing.T) {
+	agent := &fakeAgentRunner{
+		progress: []contracts.RunnerProgress{
+			{Type: string(contracts.EventTypeRunnerCommandStarted), Message: "cmd start"},
+			{Type: string(contracts.EventTypeRunnerCommandFinished), Message: "cmd finish", Metadata: map[string]string{"exit_code": "0", "duration_ms": "125"}},
+			{Type: string(contracts.EventTypeRunnerOutput), Message: `{"decision":"ready","confidence":1,"summary":"ok","questions":[]}`},
+		},
+	}
+	runner := NewRunner(agent)
+	var progress []contracts.RunnerProgress
+
+	_, err := runner.Run(context.Background(), RunInput{
+		Task:       contracts.Task{ID: "task-123", Title: "Add retry guard", Status: contracts.TaskStatusOpen},
+		QueueRoot:  contracts.Task{ID: "epic-1"},
+		OnProgress: func(event contracts.RunnerProgress) { progress = append(progress, event) },
+	})
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+
+	var commands []contracts.RunnerProgress
+	for _, event := range progress {
+		if event.Type == string(contracts.EventTypeCommandRun) {
+			commands = append(commands, event)
+		}
+	}
+	if len(commands) != 1 {
+		t.Fatalf("expected one command_run progress event, got %d: %#v", len(commands), progress)
+	}
+	if commands[0].Message != "cmd finish" || commands[0].Metadata["exit_code"] != "0" || commands[0].Metadata["duration_ms"] != "125" {
+		t.Fatalf("command_run did not preserve finished payload: %#v", commands[0])
+	}
+}
+
 type fakeAgentRunner struct {
 	output       string
 	outputChunks []string
+	progress     []contracts.RunnerProgress
 	requests     []contracts.RunnerRequest
 }
 
 func (f *fakeAgentRunner) Run(_ context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
 	f.requests = append(f.requests, request)
 	if request.OnProgress != nil {
+		if len(f.progress) > 0 {
+			for _, progress := range f.progress {
+				request.OnProgress(progress)
+			}
+			return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
+		}
 		if len(f.outputChunks) > 0 {
 			for _, chunk := range f.outputChunks {
 				request.OnProgress(contracts.RunnerProgress{

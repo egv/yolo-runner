@@ -52,7 +52,10 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 		MaxRetries: input.MaxRetries,
 		Metadata:   cloneRunMetadata(input.Metadata),
 		OnProgress: func(progress contracts.RunnerProgress) {
-			progress = normalizeAgentProgress(progress)
+			progress, ok := normalizeAgentProgress(progress)
+			if !ok {
+				return
+			}
 			if input.OnProgress != nil {
 				input.OnProgress(progress)
 			}
@@ -90,20 +93,22 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (StrictOutput, error) 
 	return parsed, nil
 }
 
-func normalizeAgentProgress(progress contracts.RunnerProgress) contracts.RunnerProgress {
+func normalizeAgentProgress(progress contracts.RunnerProgress) (contracts.RunnerProgress, bool) {
 	switch contracts.EventType(strings.TrimSpace(progress.Type)) {
 	case contracts.EventTypeRunnerOutput:
 		progress.Type = string(contracts.EventTypeAgentText)
 	case contracts.EventTypeRunnerWarning:
 		progress.Type = string(contracts.EventTypeAgentBlocked)
-	case contracts.EventTypeRunnerCommandStarted, contracts.EventTypeRunnerCommandFinished:
+	case contracts.EventTypeRunnerCommandStarted:
+		return contracts.RunnerProgress{}, false
+	case contracts.EventTypeRunnerCommandFinished:
 		progress.Type = string(contracts.EventTypeCommandRun)
 	case contracts.EventTypeRunnerProgress:
 		progress.Type = string(contracts.EventTypeAgentProgress)
 	case contracts.EventTypeRunnerHeartbeat:
 		progress.Type = string(contracts.EventTypeAgentHeartbeat)
 	}
-	return progress
+	return progress, true
 }
 
 func splitterParentID(input RunInput) string {
