@@ -134,9 +134,9 @@ func defaultRunWatch(ctx context.Context, cfg watchCommandConfig) error {
 	stream := mode == agentModeStream || mode == agentModeUI
 	var streamWriter io.Writer = os.Stdout
 	if mode == agentModeUI {
-		stdin, closeFn, err := launchYoloTUI()
+		stdin, closeFn, err := launchYoloBoard(watchCfg.QueuePath)
 		if err != nil {
-			return fmt.Errorf("start yolo-tui: %w", err)
+			return fmt.Errorf("start yolo-board: %w", err)
 		}
 		defer func() {
 			_ = closeFn()
