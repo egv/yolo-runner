@@ -109,6 +109,29 @@ func TestCollectorsTabLastPollIgnoresItemHeartbeat(t *testing.T) {
 	}
 }
 
+func TestCollectorsTabBucketsRepeatedSourceErrors(t *testing.T) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	snapshot := boardSnapshot{}
+	for i := 0; i < 3; i++ {
+		snapshot.applyEvent(contracts.Event{
+			Type:      contracts.EventTypeSourcePoll,
+			Source:    "startrek",
+			Proc:      "sourcehost-startrek",
+			Metadata:  map[string]string{"component": "sourcehost", "source": "startrek", "last_error": "startrek token missing"},
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	view := renderCollectorsTab(snapshot, nil, now.Add(10*time.Second), 0)
+	want := "> startrek\tstartrek\t0\t0\t0\t8s\tstartrek token missing (x3)\t-"
+	if !strings.Contains(view, want) {
+		t.Fatalf("renderCollectorsTab() missing bucketed error row %q:\n%s", want, view)
+	}
+	if strings.Count(view, "startrek token missing") != 1 {
+		t.Fatalf("renderCollectorsTab() should collapse repeated errors into one row:\n%s", view)
+	}
+}
+
 func TestCollectorsEnterShowsSelectedCollectorItemsResultsAndTimeline(t *testing.T) {
 	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
 	item := workitem.Item{

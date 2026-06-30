@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
@@ -22,6 +23,20 @@ type fakeBoardStore struct {
 
 func (s fakeBoardStore) ListItems(workqueue.ListItemsFilter) ([]workitem.Item, error) {
 	return s.items, nil
+}
+
+type limitedBoardStore struct {
+	fakeBoardStore
+	filters []workqueue.ListItemsFilter
+}
+
+func (s *limitedBoardStore) ListItems(filter workqueue.ListItemsFilter) ([]workitem.Item, error) {
+	s.filters = append(s.filters, filter)
+	items := s.items
+	if filter.Limit > 0 && len(items) > filter.Limit {
+		items = items[:filter.Limit]
+	}
+	return items, nil
 }
 
 func (s fakeBoardStore) GetItem(id string) (workqueue.ItemDetail, error) {
@@ -148,6 +163,44 @@ func TestPollBoardStorePopulatesSnapshotCounts(t *testing.T) {
 	}
 	if got := poll.snapshot.stateCounts["open"]; got != 1 {
 		t.Fatalf("open count = %d, want 1", got)
+	}
+}
+
+func TestPollBoardStoreCapsQueueItemsAndQueueTabShowsMoreHint(t *testing.T) {
+	items := make([]workitem.Item, 501)
+	for i := range items {
+		items[i] = workitem.Item{
+			ID:        "item",
+			Source:    "github",
+			SourceRef: "GH",
+			State:     "open",
+		}
+	}
+	store := &limitedBoardStore{
+		fakeBoardStore: fakeBoardStore{
+			items:       items,
+			sources:     []workqueue.SourceRow{{Source: "github", State: "open", Count: 501}},
+			stateCounts: map[string]int{"open": 501},
+		},
+	}
+
+	msg := pollBoardStore(context.Background(), store)
+	poll, ok := msg.(pollMsg)
+	if !ok {
+		t.Fatalf("message type = %T, want pollMsg", msg)
+	}
+	if len(store.filters) == 0 {
+		t.Fatal("ListItems was not called")
+	}
+	if got := store.filters[0].Limit; got != 500 {
+		t.Fatalf("ListItems Limit = %d, want 500", got)
+	}
+	if got := poll.snapshot.itemCount(); got != 500 {
+		t.Fatalf("item count = %d, want capped 500", got)
+	}
+	view := renderQueueTab(poll.snapshot, time.Time{})
+	if !strings.Contains(view, "1 more") {
+		t.Fatalf("renderQueueTab() missing truncated hint:\n%s", view)
 	}
 }
 

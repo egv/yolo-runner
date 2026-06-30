@@ -10,12 +10,14 @@ import (
 
 type boardSnapshot struct {
 	items             []workitem.Item
+	queueItemsMore    int
 	runners           []workqueue.RunnerRow
 	currentByRunner   map[string]*workitem.Item
 	sources           []workqueue.SourceRow
 	stateCounts       map[string]int
 	runtimeByItem     map[string]itemRuntimeSnapshot
 	unconsumedResults []workqueue.UnconsumedResult
+	collectorErrors   map[string]collectorErrorBucket
 }
 
 type itemRuntimeSnapshot struct {
@@ -23,6 +25,13 @@ type itemRuntimeSnapshot struct {
 	output      string
 	lastError   string
 	lastEventAt time.Time
+}
+
+type collectorErrorBucket struct {
+	source  string
+	message string
+	count   int
+	lastAt  time.Time
 }
 
 func (s boardSnapshot) itemCount() int {
@@ -39,7 +48,9 @@ func (s boardSnapshot) sourceCount() int {
 
 func (s *boardSnapshot) applyPoll(poll boardSnapshot) {
 	previousRuntime := s.runtimeByItem
+	previousCollectorErrors := s.collectorErrors
 	*s = poll
+	s.collectorErrors = previousCollectorErrors
 	if len(previousRuntime) == 0 {
 		s.runtimeByItem = runtimeFromPollItems(poll.items)
 		return
@@ -58,6 +69,8 @@ func (s *boardSnapshot) applyPoll(poll boardSnapshot) {
 }
 
 func (s *boardSnapshot) applyEvent(event contracts.Event) {
+	s.applyCollectorErrorEvent(event)
+
 	itemID := event.ItemID
 	if itemID == "" {
 		itemID = event.TaskID
@@ -81,6 +94,32 @@ func (s *boardSnapshot) applyEvent(event contracts.Event) {
 	}
 	runtime.lastEventAt = event.Timestamp
 	s.runtimeByItem[itemID] = runtime
+}
+
+func (s *boardSnapshot) applyCollectorErrorEvent(event contracts.Event) {
+	if event.Type != contracts.EventTypeSourcePoll {
+		return
+	}
+	source := eventSourceName(event)
+	if source == "" {
+		return
+	}
+	message := event.Metadata["last_error"]
+	if message == "" {
+		return
+	}
+	if s.collectorErrors == nil {
+		s.collectorErrors = make(map[string]collectorErrorBucket)
+	}
+	key := source + "\x00" + message
+	bucket := s.collectorErrors[key]
+	bucket.source = source
+	bucket.message = message
+	bucket.count++
+	if event.Timestamp.After(bucket.lastAt) {
+		bucket.lastAt = event.Timestamp
+	}
+	s.collectorErrors[key] = bucket
 }
 
 func runtimeFromPollItems(items []workitem.Item) map[string]itemRuntimeSnapshot {
