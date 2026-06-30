@@ -25,12 +25,15 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 	params := message.Params
 	threadID := lookupString(params, "threadId", "thread_id")
 	turnID := lookupString(params, "turnId", "turn_id")
-	itemID := lookupString(params, "itemId", "item_id")
+	itemID := lookupString(params, "itemId", "item_id", "targetItemId", "target_item_id")
 	item := lookupMap(params, "item")
 	if itemID == "" {
 		itemID = lookupString(item, "id", "itemId", "item_id")
 	}
 	itemType := normalizeItemType(lookupString(item, "type", "itemType", "item_type"))
+	if itemType == "" && method == "item/autoApprovalReview/completed" {
+		itemType = "autoApprovalReview"
+	}
 	if itemType == "" {
 		itemType = deriveItemTypeFromMethod(method)
 	}
@@ -87,10 +90,39 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 			completion.Artifacts = nil
 		}
 		return event, completion, true
+	case "error":
+		errorInfo := lookupMap(params, "error")
+		if errorInfo == nil {
+			errorInfo = params
+		}
+		codexErrorInfo := lookupAny(errorInfo, "codexErrorInfo", "codex_error_info")
+		detail := coalesceMessage(extractText(errorInfo), extractText(params), "codex error")
+		metadata = setMetadataValue(metadata, "reason", string(blockReasonFromCodexError(errorInfo)))
+		metadata = setMetadataValue(metadata, "detail", detail)
+		metadata = setMetadataValue(metadata, "error_type", coalesceMessage(lookupString(errorInfo, "type", "code"), codexErrorInfoName(codexErrorInfo)))
+		metadata = setMetadataValue(metadata, "codex_error_info", codexErrorInfoName(codexErrorInfo))
+		metadata = setMetadataValue(metadata, "http_status_code", codexErrorInfoHTTPStatus(codexErrorInfo))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked)
+		event.Message = detail
+		return event, nil, true
+	case "thread/tokenUsage/updated":
+		usage := normalizeCodexTokenUsage(params)
+		metadata = setMetadataValue(metadata, "input_tokens", usage["input_tokens"])
+		metadata = setMetadataValue(metadata, "output_tokens", usage["output_tokens"])
+		metadata = setMetadataValue(metadata, "total_tokens", usage["total_tokens"])
+		if len(metadata) == 0 {
+			return contracts.TaskSessionEvent{}, nil, false
+		}
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeTokenUsage)
+		event.Message = "token usage updated"
+		return event, nil, true
 	case "item/commandExecution/requestApproval":
-		command := stringSlice(lookupSlice(params, "command"))
-		approvalID := lookupString(params, "id", "approvalId", "approval_id")
+		command := commandApprovalParts(params)
+		approvalID := approvalRequestID(message, params)
 		metadata = setMetadataValue(metadata, "approval_id", approvalID)
+		metadata = setMetadataValue(metadata, "reason", string(contracts.BlockReasonPermissionDenied))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventTypeApprovalRequired
 		event.Message = coalesceMessage(
@@ -111,8 +143,9 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 		}
 		return event, nil, true
 	case "item/fileChange/requestApproval":
-		approvalID := lookupString(params, "id", "approvalId", "approval_id")
+		approvalID := approvalRequestID(message, params)
 		metadata = setMetadataValue(metadata, "approval_id", approvalID)
+		metadata = setMetadataValue(metadata, "reason", string(contracts.BlockReasonPermissionDenied))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventTypeApprovalRequired
 		event.Message = coalesceMessage(
@@ -148,6 +181,58 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 				Payload:  params,
 			},
 		}
+		return event, nil, true
+	}
+
+	if isAutoApprovalReviewDenied(method, itemType, params, item) && strings.HasSuffix(method, "/completed") {
+		review := autoApprovalReview(params, item)
+		action := guardianApprovalReviewAction(params, item)
+		detail := coalesceMessage(
+			lookupString(review, "rationale", "reason", "message", "details", "detail"),
+			lookupString(params, "reason", "message", "title"),
+			lookupString(item, "reason", "message", "title"),
+			"auto approval denied",
+		)
+		metadata = setMetadataValue(metadata, "reason", string(contracts.BlockReasonPermissionDenied))
+		metadata = setMetadataValue(metadata, "detail", detail)
+		metadata = setMetadataValue(metadata, "review_status", lookupString(review, "status"))
+		metadata = setMetadataValue(metadata, "review_id", lookupString(params, "reviewId", "review_id"))
+		metadata = setMetadataValue(metadata, "decision_source", lookupString(params, "decisionSource", "decision_source"))
+		metadata = setMetadataValue(metadata, "risk_level", lookupString(review, "riskLevel", "risk_level"))
+		metadata = setMetadataValue(metadata, "user_authorization", lookupString(review, "userAuthorization", "user_authorization"))
+		metadata = setMetadataValue(metadata, "action", legacyGuardianActionValue(params))
+		metadata = setMetadataValue(metadata, "action_type", guardianActionType(params, action))
+		metadata = setMetadataValue(metadata, "target_item_id", lookupString(params, "targetItemId", "target_item_id"))
+		metadata = setMetadataValue(metadata, "command", coalesceMessage(guardianActionCommand(action), commandString(params), commandString(item)))
+		metadata = setMetadataValue(metadata, "program", lookupString(action, "program"))
+		metadata = setMetadataValue(metadata, "cwd", coalesceMessage(lookupString(action, "cwd"), lookupString(params, "cwd"), lookupString(item, "cwd")))
+		metadata = setMetadataValue(metadata, "permission_reason", lookupString(action, "reason"))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeAgentBlocked)
+		event.Message = detail
+		return event, nil, true
+	}
+
+	if isCommandExecutionItem(itemType) && strings.HasSuffix(method, "/completed") {
+		command := commandString(item)
+		metadata = setMetadataValue(metadata, "command", command)
+		metadata = setMetadataValue(metadata, "cwd", lookupString(item, "cwd"))
+		metadata = setMetadataValue(metadata, "exit_code", anyString(lookupAny(item, "exitCode", "exit_code")))
+		metadata = setMetadataValue(metadata, "duration_ms", anyString(lookupAny(item, "durationMs", "duration_ms")))
+		metadata = setMetadataValue(metadata, "outcome", coalesceMessage(lookupString(item, "status", "outcome"), commandOutcome(item)))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeCommandRun)
+		event.Message = coalesceMessage(command, lookupString(item, "title", "name"), "command completed")
+		return event, nil, true
+	}
+
+	if isToolItem(itemType) && strings.HasSuffix(method, "/completed") {
+		metadata = setMetadataValue(metadata, "tool", itemType)
+		metadata = setMetadataValue(metadata, "target", toolTarget(item))
+		metadata = setMetadataValue(metadata, "outcome", coalesceMessage(lookupString(item, "status", "outcome"), "completed"))
+		event.Metadata = metadata
+		event.Type = contracts.TaskSessionEventType(contracts.EventTypeToolInvoked)
+		event.Message = coalesceMessage(lookupString(item, "title", "name"), toolTarget(item), itemType)
 		return event, nil, true
 	}
 
@@ -188,6 +273,12 @@ func RunnerProgressFromAppServerNotification(message contracts.JSONRPCMessage, m
 	progress, ok := contracts.NormalizeTaskSessionEvent(event)
 	if !ok {
 		return contracts.RunnerProgress{}, nil, false
+	}
+	if reason := strings.TrimSpace(event.Metadata["reason"]); reason != "" && event.Type == contracts.TaskSessionEventTypeApprovalRequired {
+		if progress.Metadata == nil {
+			progress.Metadata = map[string]string{}
+		}
+		progress.Metadata["reason"] = reason
 	}
 	return progress, completion, true
 }
@@ -314,6 +405,18 @@ func lookupRawString(data map[string]any, keys ...string) (string, bool) {
 	return "", false
 }
 
+func lookupAny(data map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if data == nil {
+			return nil
+		}
+		if value, ok := data[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
 func hasRawString(data map[string]any, keys ...string) bool {
 	_, ok := lookupRawString(data, keys...)
 	return ok
@@ -367,6 +470,267 @@ func stringSlice(values []any) []string {
 		}
 	}
 	return out
+}
+
+func commandApprovalParts(params map[string]any) []string {
+	if command := lookupString(params, "command"); command != "" {
+		return strings.Fields(command)
+	}
+	return stringSlice(lookupSlice(params, "command", "args", "argv"))
+}
+
+func approvalRequestID(message contracts.JSONRPCMessage, params map[string]any) string {
+	if approvalID := lookupString(params, "approvalId", "approval_id", "id"); approvalID != "" {
+		return approvalID
+	}
+	return jsonRPCIDString(message.ID)
+}
+
+func jsonRPCIDString(id json.RawMessage) string {
+	raw := strings.TrimSpace(string(id))
+	if raw == "" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal(id, &decoded); err != nil {
+		return raw
+	}
+	return anyString(decoded)
+}
+
+func anyString(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return strings.TrimSpace(typed.String())
+	case float64:
+		return fmt.Sprintf("%g", typed)
+	case float32:
+		return fmt.Sprintf("%g", typed)
+	case int:
+		return fmt.Sprintf("%d", typed)
+	case int64:
+		return fmt.Sprintf("%d", typed)
+	case int32:
+		return fmt.Sprintf("%d", typed)
+	case uint:
+		return fmt.Sprintf("%d", typed)
+	case uint64:
+		return fmt.Sprintf("%d", typed)
+	case uint32:
+		return fmt.Sprintf("%d", typed)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	default:
+		return ""
+	}
+}
+
+func normalizeCodexTokenUsage(params map[string]any) map[string]string {
+	usage := lookupMap(params, "tokenUsage", "token_usage", "usage")
+	total := lookupMap(usage, "total")
+	return map[string]string{
+		"input_tokens": firstTokenValue(
+			lookupAny(params, "inputTokens", "input_tokens"),
+			lookupAny(total, "inputTokens", "input_tokens"),
+			lookupAny(usage, "inputTokens", "input_tokens"),
+		),
+		"output_tokens": firstTokenValue(
+			lookupAny(params, "outputTokens", "output_tokens"),
+			lookupAny(total, "outputTokens", "output_tokens"),
+			lookupAny(usage, "outputTokens", "output_tokens"),
+		),
+		"total_tokens": firstTokenValue(
+			lookupAny(params, "totalTokens", "total_tokens"),
+			lookupAny(total, "totalTokens", "total_tokens"),
+			lookupAny(usage, "totalTokens", "total_tokens"),
+		),
+	}
+}
+
+func firstTokenValue(values ...any) string {
+	for _, value := range values {
+		if text := anyString(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func commandString(item map[string]any) string {
+	if command := lookupString(item, "command"); command != "" {
+		return command
+	}
+	parts := stringSlice(lookupSlice(item, "command"))
+	if len(parts) == 0 {
+		parts = stringSlice(lookupSlice(item, "args", "argv"))
+	}
+	return strings.Join(parts, " ")
+}
+
+func commandOutcome(item map[string]any) string {
+	exitCode := strings.TrimSpace(anyString(lookupAny(item, "exitCode", "exit_code")))
+	if exitCode == "" {
+		return ""
+	}
+	if exitCode == "0" {
+		return "ok"
+	}
+	return "error"
+}
+
+func isCommandExecutionItem(itemType string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(itemType), "_", ""))
+	return normalized == "commandexecution"
+}
+
+func isToolItem(itemType string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(itemType), "_", ""))
+	switch normalized {
+	case "", "commandexecution", "agentmessage":
+		return false
+	default:
+		return true
+	}
+}
+
+func isAutoApprovalReviewDenied(method string, itemType string, params map[string]any, item map[string]any) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(itemType), "_", ""))
+	if normalized != "autoapprovalreview" && method != "item/autoApprovalReview/completed" {
+		return false
+	}
+	review := autoApprovalReview(params, item)
+	status := strings.ToLower(coalesceMessage(
+		lookupString(review, "status", "state", "outcome"),
+		lookupString(params, "action", "status", "state", "outcome"),
+		lookupString(item, "status", "state", "outcome"),
+	))
+	return status == "denied" || status == "deny" || status == "rejected" || status == "blocked"
+}
+
+func autoApprovalReview(params map[string]any, item map[string]any) map[string]any {
+	if review := lookupMap(params, "review"); review != nil {
+		return review
+	}
+	return lookupMap(item, "review")
+}
+
+func guardianApprovalReviewAction(params map[string]any, item map[string]any) map[string]any {
+	if action := lookupMap(params, "action"); action != nil {
+		return action
+	}
+	return lookupMap(item, "action")
+}
+
+func legacyGuardianActionValue(params map[string]any) string {
+	if action := lookupString(params, "action"); action != "" {
+		return action
+	}
+	return ""
+}
+
+func guardianActionType(params map[string]any, action map[string]any) string {
+	if actionType := lookupString(action, "type"); actionType != "" {
+		return actionType
+	}
+	return legacyGuardianActionValue(params)
+}
+
+func guardianActionCommand(action map[string]any) string {
+	switch lookupString(action, "type") {
+	case "command":
+		return lookupString(action, "command")
+	case "execve":
+		if argv := stringSlice(lookupSlice(action, "argv")); len(argv) > 0 {
+			return strings.Join(argv, " ")
+		}
+		return lookupString(action, "program")
+	default:
+		return ""
+	}
+}
+
+func toolTarget(item map[string]any) string {
+	for _, key := range []string{"path", "filePath", "file_path", "target"} {
+		if target := lookupString(item, key); target != "" {
+			return target
+		}
+	}
+	for _, change := range lookupSlice(item, "changes") {
+		mapped, ok := change.(map[string]any)
+		if !ok {
+			continue
+		}
+		if target := lookupString(mapped, "path", "filePath", "file_path", "target"); target != "" {
+			return target
+		}
+	}
+	return ""
+}
+
+func blockReasonFromCodexError(errorInfo map[string]any) contracts.BlockReason {
+	codexErrorInfo := lookupAny(errorInfo, "codexErrorInfo", "codex_error_info")
+	errorText := strings.ToLower(strings.Join(filterEmpty([]string{
+		lookupString(errorInfo, "type", "code", "message"),
+		extractText(errorInfo),
+		codexErrorInfoName(codexErrorInfo),
+		extractText(codexErrorInfo),
+	}), " "))
+	status := codexErrorInfoHTTPStatus(codexErrorInfo)
+	switch {
+	case status == "429" || strings.Contains(errorText, "rate") || strings.Contains(errorText, "limit"):
+		return contracts.BlockReasonRateLimited
+	case status == "401" || status == "403" || strings.Contains(errorText, "auth") || strings.Contains(errorText, "unauthorized"):
+		return contracts.BlockReasonAuth
+	case strings.Contains(errorText, "permission") || strings.Contains(errorText, "denied"):
+		return contracts.BlockReasonPermissionDenied
+	default:
+		return contracts.BlockReasonOther
+	}
+}
+
+func codexErrorInfoName(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case map[string]any:
+		if name := lookupString(typed, "type", "kind", "code"); name != "" {
+			return name
+		}
+		for key := range typed {
+			if strings.TrimSpace(key) != "" {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+func codexErrorInfoHTTPStatus(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if status := anyString(lookupAny(typed, "httpStatusCode", "http_status_code", "status")); status != "" {
+			return status
+		}
+		for _, nested := range typed {
+			if mapped, ok := nested.(map[string]any); ok {
+				if status := anyString(lookupAny(mapped, "httpStatusCode", "http_status_code", "status")); status != "" {
+					return status
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func coalesceMessage(values ...string) string {

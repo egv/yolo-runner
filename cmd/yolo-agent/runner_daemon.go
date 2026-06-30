@@ -352,7 +352,7 @@ func (d runnerDaemon) emitRunnerRegisteredEvent(ctx context.Context, capacity in
 	if d.events == nil {
 		return
 	}
-	event := contracts.NewEvent(contracts.EventType("runner_registered"), contracts.EventIdentity{RunnerID: d.cfg.runnerID})
+	event := contracts.NewEvent(contracts.EventTypeAgentStarted, contracts.EventIdentity{RunnerID: d.cfg.runnerID})
 	event.Proc = d.cfg.runnerID
 	event.Metadata = map[string]string{
 		"pid":      fmt.Sprintf("%d", os.Getpid()),
@@ -366,7 +366,7 @@ func (d runnerDaemon) emitRunnerAliveEvent(ctx context.Context, current *workite
 	if d.events == nil {
 		return
 	}
-	event := contracts.NewEvent(contracts.EventType("runner_alive"), contracts.EventIdentity{RunnerID: d.cfg.runnerID})
+	event := contracts.NewEvent(contracts.EventTypeAgentHeartbeat, contracts.EventIdentity{RunnerID: d.cfg.runnerID})
 	event.Proc = d.cfg.runnerID
 	event.Metadata = map[string]string{
 		"heartbeat_age": "0s",

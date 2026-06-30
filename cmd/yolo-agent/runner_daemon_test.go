@@ -134,15 +134,15 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	if err != nil {
 		t.Fatalf("read runner events file: %v", err)
 	}
-	registered, ok := runnerDaemonEventByType(t, raw, "runner_registered")
+	registered, ok := runnerDaemonEventByTypeAndMetadata(t, raw, string(contracts.EventTypeAgentStarted), "capacity", "1")
 	if !ok {
-		t.Fatalf("runner events missing runner_registered; got %q", string(raw))
+		t.Fatalf("runner events missing registration start event; got %q", string(raw))
 	}
 	if registered.RunnerID != "runner-test" || registered.Proc != "runner-test" {
-		t.Fatalf("runner_registered identity = runner_id %q proc %q, want runner-test", registered.RunnerID, registered.Proc)
+		t.Fatalf("registration identity = runner_id %q proc %q, want runner-test", registered.RunnerID, registered.Proc)
 	}
 	if registered.Metadata["pid"] != strconv.Itoa(os.Getpid()) || registered.Metadata["presets"] != "linux" || registered.Metadata["capacity"] != "1" {
-		t.Fatalf("runner_registered metadata = %#v, want pid/presets/capacity", registered.Metadata)
+		t.Fatalf("registration metadata = %#v, want pid/presets/capacity", registered.Metadata)
 	}
 }
 
@@ -478,7 +478,7 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 		if event.Proc != "runner-heartbeat" {
 			t.Fatalf("event proc = %q, want runner-heartbeat in line %q", event.Proc, line)
 		}
-		if event.Type == "runner_alive" || event.Type == "runner_registered" {
+		if event.ItemID == "" {
 			seen[event.Type] = true
 			continue
 		}
@@ -498,18 +498,18 @@ func TestRunnerEventsFileIncludesProcItemIDAndHeartbeatKeepsLease(t *testing.T) 
 			t.Fatalf("runner events missing %q; got %q", eventType, string(raw))
 		}
 	}
-	alive, ok := runnerDaemonEventByTypeAndMetadata(t, raw, "runner_alive", "current_item_id", item.ID)
+	alive, ok := runnerDaemonEventByTypeAndMetadata(t, raw, string(contracts.EventTypeAgentHeartbeat), "current_item_id", item.ID)
 	if !ok {
-		t.Fatalf("runner events missing runner_alive; got %q", string(raw))
+		t.Fatalf("runner events missing heartbeat for current item; got %q", string(raw))
 	}
 	if alive.RunnerID != "runner-heartbeat" || alive.Proc != "runner-heartbeat" {
-		t.Fatalf("runner_alive identity = runner_id %q proc %q, want runner-heartbeat", alive.RunnerID, alive.Proc)
+		t.Fatalf("heartbeat identity = runner_id %q proc %q, want runner-heartbeat", alive.RunnerID, alive.Proc)
 	}
 	if alive.Metadata["current_item_id"] != item.ID {
-		t.Fatalf("runner_alive current_item_id = %q, want %q; metadata=%#v", alive.Metadata["current_item_id"], item.ID, alive.Metadata)
+		t.Fatalf("heartbeat current_item_id = %q, want %q; metadata=%#v", alive.Metadata["current_item_id"], item.ID, alive.Metadata)
 	}
 	if strings.TrimSpace(alive.Metadata["heartbeat_age"]) == "" {
-		t.Fatalf("runner_alive metadata missing heartbeat_age: %#v", alive.Metadata)
+		t.Fatalf("heartbeat metadata missing heartbeat_age: %#v", alive.Metadata)
 	}
 }
 

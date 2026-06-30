@@ -131,15 +131,16 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 		{
 			name: "approval request",
 			message: contracts.JSONRPCMessage{
+				ID:     json.RawMessage(`"rpc-approval-5"`),
 				Method: "item/commandExecution/requestApproval",
 				Params: map[string]any{
-					"threadId": "thread-1",
-					"turnId":   "turn-2",
-					"itemId":   "item-4",
-					"id":       "approval-5",
-					"title":    "Run pnpm test",
-					"reason":   "run tests",
-					"command":  []any{"pnpm", "test"},
+					"threadId":   "thread-1",
+					"turnId":     "turn-2",
+					"itemId":     "item-4",
+					"approvalId": "approval-5",
+					"title":      "Run pnpm test",
+					"reason":     "run tests",
+					"command":    "pnpm test",
 				},
 			},
 			mode:         contracts.RunnerModeImplement,
@@ -158,6 +159,36 @@ func TestNormalizeAppServerNotificationMapsLifecycleItemApprovalAndProgress(t *t
 				}
 				if progress.Metadata["approval_id"] != "approval-5" {
 					t.Fatalf("expected approval_id metadata, got %#v", progress.Metadata)
+				}
+			},
+		},
+		{
+			name: "approval request falls back to rpc id",
+			message: contracts.JSONRPCMessage{
+				ID:     json.RawMessage(`17`),
+				Method: "item/commandExecution/requestApproval",
+				Params: map[string]any{
+					"threadId": "thread-1",
+					"turnId":   "turn-2",
+					"itemId":   "item-4",
+					"title":    "Run go test",
+					"reason":   "run tests",
+					"command":  "go test ./internal/codex/",
+				},
+			},
+			mode:         contracts.RunnerModeImplement,
+			wantType:     contracts.TaskSessionEventTypeApprovalRequired,
+			wantProgress: string(contracts.EventTypeAgentBlocked),
+			assert: func(t *testing.T, event contracts.TaskSessionEvent, progress contracts.RunnerProgress) {
+				t.Helper()
+				if event.Approval == nil {
+					t.Fatalf("expected approval event")
+				}
+				if event.Approval.Request.ID != "17" {
+					t.Fatalf("expected rpc id fallback, got %q", event.Approval.Request.ID)
+				}
+				if progress.Metadata["approval_id"] != "17" {
+					t.Fatalf("expected approval_id metadata from rpc id, got %#v", progress.Metadata)
 				}
 			},
 		},
@@ -243,6 +274,285 @@ func TestRunnerProgressFromAppServerNotificationPreservesDeltaWhitespace(t *test
 			}
 		})
 	}
+}
+
+func TestRunnerProgressFromAppServerNotificationEmitsCanonicalParityEvents(t *testing.T) {
+	messages := []contracts.JSONRPCMessage{
+		{
+			Method: "item/agentMessage/delta",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "msg-1",
+				"delta":    "I will inspect the adapter.",
+			},
+		},
+		{
+			Method: "item/agentMessage/delta",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"itemId":   "msg-empty",
+				"delta":    "",
+			},
+		},
+		{
+			Method: "item/completed",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"item": map[string]any{
+					"id":         "cmd-1",
+					"type":       "commandExecution",
+					"command":    []any{"go", "test", "./internal/codex/"},
+					"cwd":        "/repo",
+					"status":     "completed",
+					"exitCode":   float64(0),
+					"durationMs": float64(321),
+				},
+			},
+		},
+		{
+			Method: "item/completed",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"item": map[string]any{
+					"id":     "edit-1",
+					"type":   "fileChange",
+					"status": "completed",
+					"changes": []any{
+						map[string]any{"path": "internal/codex/runner_adapter.go", "kind": "modify"},
+					},
+				},
+			},
+		},
+		{
+			Method: "item/commandExecution/requestApproval",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"itemId":     "cmd-denied",
+				"approvalId": "approval-1",
+				"reason":     "permission denied",
+				"command":    "git push",
+			},
+		},
+		{
+			Method: "item/fileChange/requestApproval",
+			Params: map[string]any{
+				"threadId":   "thread-1",
+				"turnId":     "turn-1",
+				"itemId":     "edit-denied",
+				"approvalId": "approval-2",
+				"reason":     "file change needs approval",
+				"changes": []any{
+					map[string]any{"path": "internal/codex/runner_adapter_test.go", "kind": "modify"},
+				},
+			},
+		},
+		{
+			Method: "item/autoApprovalReview/completed",
+			Params: map[string]any{
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-1",
+				"targetItemId":   "cmd-denied",
+				"startedAtMs":    float64(1),
+				"completedAtMs":  float64(2),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":    "command",
+					"source":  "agent",
+					"command": "rm -rf .git",
+					"cwd":     "/repo",
+				},
+				"review": map[string]any{
+					"status":            "denied",
+					"riskLevel":         "high",
+					"userAuthorization": "low",
+					"rationale":         "command touches protected path",
+				},
+			},
+		},
+		{
+			Method: "item/autoApprovalReview/completed",
+			Params: map[string]any{
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-2",
+				"targetItemId":   nil,
+				"startedAtMs":    float64(3),
+				"completedAtMs":  float64(4),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":    "execve",
+					"source":  "agent",
+					"program": "/bin/rm",
+					"argv":    []any{"rm", "-rf", ".git"},
+					"cwd":     "/repo",
+				},
+				"review": map[string]any{
+					"status":    "denied",
+					"rationale": "execve removes repository metadata",
+				},
+			},
+		},
+		{
+			Method: "item/autoApprovalReview/completed",
+			Params: map[string]any{
+				"threadId":       "thread-1",
+				"turnId":         "turn-1",
+				"reviewId":       "review-3",
+				"targetItemId":   "permissions-1",
+				"startedAtMs":    float64(5),
+				"completedAtMs":  float64(6),
+				"decisionSource": "guardian",
+				"action": map[string]any{
+					"type":   "requestPermissions",
+					"reason": "needs broader filesystem access",
+					"permissions": map[string]any{
+						"fileSystem": map[string]any{
+							"access": "write",
+						},
+					},
+				},
+				"review": map[string]any{
+					"status":    "denied",
+					"rationale": "permission escalation was not approved",
+				},
+			},
+		},
+		{
+			Method: "error",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"error": map[string]any{
+					"message":        "usage limit reached",
+					"codexErrorInfo": "usageLimitExceeded",
+				},
+			},
+		},
+		{
+			Method: "error",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"error": map[string]any{
+					"message": "responses stream disconnected",
+					"codexErrorInfo": map[string]any{
+						"responseStreamDisconnected": map[string]any{
+							"httpStatusCode": float64(429),
+						},
+					},
+				},
+			},
+		},
+		{
+			Method: "thread/tokenUsage/updated",
+			Params: map[string]any{
+				"threadId": "thread-1",
+				"turnId":   "turn-1",
+				"tokenUsage": map[string]any{
+					"total": map[string]any{
+						"inputTokens":           float64(42),
+						"cachedInputTokens":     float64(5),
+						"outputTokens":          float64(7),
+						"reasoningOutputTokens": float64(2),
+						"totalTokens":           float64(49),
+					},
+					"last": map[string]any{
+						"inputTokens":           float64(10),
+						"cachedInputTokens":     float64(1),
+						"outputTokens":          float64(3),
+						"reasoningOutputTokens": float64(1),
+						"totalTokens":           float64(13),
+					},
+				},
+			},
+		},
+	}
+
+	updates := []contracts.RunnerProgress{}
+	for _, message := range messages {
+		progress, _, ok := RunnerProgressFromAppServerNotification(message, contracts.RunnerModeImplement)
+		if ok {
+			updates = append(updates, progress)
+		}
+	}
+
+	if len(progressByType(updates, contracts.EventTypeAgentText)) != 1 {
+		t.Fatalf("expected one non-empty agent_text event, got %#v", updates)
+	}
+	commandRun := findProgressByType(updates, contracts.EventTypeCommandRun)
+	if commandRun == nil {
+		t.Fatalf("expected command_run progress, got %#v", updates)
+	}
+	if commandRun.Metadata["command"] != "go test ./internal/codex/" {
+		t.Fatalf("command = %q", commandRun.Metadata["command"])
+	}
+	if commandRun.Metadata["exit_code"] != "0" || commandRun.Metadata["duration_ms"] != "321" {
+		t.Fatalf("expected command result metadata, got %#v", commandRun.Metadata)
+	}
+	toolInvoked := findProgressByType(updates, contracts.EventTypeToolInvoked)
+	if toolInvoked == nil {
+		t.Fatalf("expected tool_invoked progress, got %#v", updates)
+	}
+	if toolInvoked.Metadata["tool"] != "fileChange" || toolInvoked.Metadata["target"] != "internal/codex/runner_adapter.go" || toolInvoked.Metadata["outcome"] != "completed" {
+		t.Fatalf("unexpected tool_invoked metadata %#v", toolInvoked.Metadata)
+	}
+	blocked := progressByType(updates, contracts.EventTypeAgentBlocked)
+	if len(blocked) != 7 {
+		t.Fatalf("expected approvals, auto-approval denials, and error agent_blocked events, got %#v", updates)
+	}
+	if blocked[0].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("expected command approval permission denial reason, got %#v", blocked[0].Metadata)
+	}
+	if blocked[1].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) {
+		t.Fatalf("expected file approval permission denial reason, got %#v", blocked[1].Metadata)
+	}
+	if blocked[2].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[2].Metadata["detail"] != "command touches protected path" || blocked[2].Metadata["action_type"] != "command" || blocked[2].Metadata["command"] != "rm -rf .git" {
+		t.Fatalf("expected command auto approval denial metadata, got %#v", blocked[2].Metadata)
+	}
+	if blocked[3].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[3].Metadata["detail"] != "execve removes repository metadata" || blocked[3].Metadata["action_type"] != "execve" || blocked[3].Metadata["program"] != "/bin/rm" || blocked[3].Metadata["command"] != "rm -rf .git" {
+		t.Fatalf("expected execve auto approval denial metadata, got %#v", blocked[3].Metadata)
+	}
+	if blocked[4].Metadata["reason"] != string(contracts.BlockReasonPermissionDenied) || blocked[4].Metadata["detail"] != "permission escalation was not approved" || blocked[4].Metadata["action_type"] != "requestPermissions" || blocked[4].Metadata["permission_reason"] != "needs broader filesystem access" {
+		t.Fatalf("expected requestPermissions auto approval denial metadata, got %#v", blocked[4].Metadata)
+	}
+	if blocked[5].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[5].Metadata["codex_error_info"] != "usageLimitExceeded" {
+		t.Fatalf("expected usage-limit blocked metadata, got %#v", blocked[5].Metadata)
+	}
+	if blocked[6].Metadata["reason"] != string(contracts.BlockReasonRateLimited) || blocked[6].Metadata["http_status_code"] != "429" || blocked[6].Metadata["codex_error_info"] != "responseStreamDisconnected" {
+		t.Fatalf("expected tagged rate-limit blocked metadata, got %#v", blocked[6].Metadata)
+	}
+	tokenUsage := findProgressByType(updates, contracts.EventTypeTokenUsage)
+	if tokenUsage == nil {
+		t.Fatalf("expected token_usage progress, got %#v", updates)
+	}
+	if tokenUsage.Metadata["input_tokens"] != "42" || tokenUsage.Metadata["output_tokens"] != "7" || tokenUsage.Metadata["total_tokens"] != "49" {
+		t.Fatalf("unexpected token usage metadata %#v", tokenUsage.Metadata)
+	}
+}
+
+func progressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) []contracts.RunnerProgress {
+	matches := []contracts.RunnerProgress{}
+	for _, update := range updates {
+		if update.Type == string(eventType) {
+			matches = append(matches, update)
+		}
+	}
+	return matches
+}
+
+func findProgressByType(updates []contracts.RunnerProgress, eventType contracts.EventType) *contracts.RunnerProgress {
+	for i := range updates {
+		if updates[i].Type == string(eventType) {
+			return &updates[i]
+		}
+	}
+	return nil
 }
 
 func TestAppServerTaskSessionRuntimeStartInitializesSessionWithoutStartingTurn(t *testing.T) {
@@ -1534,10 +1844,10 @@ func TestCLIRunnerAdapterRunsCodexAndStreamsProgress(t *testing.T) {
 	if len(updates) < 2 {
 		t.Fatalf("expected at least 2 progress updates, got %d", len(updates))
 	}
-	if updates[0].Type != "agent_text" || updates[0].Message != "working line" {
+	if updates[0].Type != string(contracts.EventTypeAgentText) || updates[0].Message != "working line" {
 		t.Fatalf("unexpected first update: %#v", updates[0])
 	}
-	if updates[1].Type != "agent_text" || updates[1].Message != "stderr: warn line" {
+	if updates[1].Type != string(contracts.EventTypeAgentText) || updates[1].Message != "stderr: warn line" {
 		t.Fatalf("unexpected second update: %#v", updates[1])
 	}
 
@@ -1779,7 +2089,7 @@ func TestCLIRunnerAdapterMapsAppServerNotificationsIntoProgressAndReviewCompleti
 		t.Fatalf("expected delta output progress, got %#v", updates[3])
 	}
 	if updates[4].Type != string(contracts.EventTypeAgentBlocked) || updates[4].Metadata["approval_id"] != "approval-1" {
-		t.Fatalf("expected approval warning progress, got %#v", updates[4])
+		t.Fatalf("expected approval blocked progress, got %#v", updates[4])
 	}
 	if updates[5].Type != string(contracts.EventTypeAgentProgress) || updates[5].Metadata["reason"] != "end_turn" {
 		t.Fatalf("expected completion progress with reason metadata, got %#v", updates[5])
@@ -2273,7 +2583,7 @@ func TestCLIRunnerAdapterAppServerHandlesUserInputRequestsAndTeardown(t *testing
 		t.Fatalf("expected user-input warning plus completion progress, got %d: %#v", len(updates), updates)
 	}
 	if updates[0].Type != string(contracts.EventTypeAgentBlocked) || updates[0].Message != "Choose a path" {
-		t.Fatalf("expected user-input warning progress, got %#v", updates[0])
+		t.Fatalf("expected user-input blocked progress, got %#v", updates[0])
 	}
 	if updates[1].Metadata["reason"] != "end_turn" {
 		t.Fatalf("expected completion reason metadata, got %#v", updates[1])
