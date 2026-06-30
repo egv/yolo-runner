@@ -286,7 +286,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.runnerDetail = m.snapshot.runners[cursor].ID
 				}
 			}
-		case "esc":
+		case "esc", "left":
 			m.runnerDetail = ""
 			m.queueDetail = nil
 			m.collectorDetail = ""

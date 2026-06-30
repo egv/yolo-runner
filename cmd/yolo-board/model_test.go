@@ -82,6 +82,84 @@ func TestBoardModelListNavigationMovesActiveTabCursor(t *testing.T) {
 	}
 }
 
+func TestBoardModelDrillDownEnterEscAndLeftAcrossTabs(t *testing.T) {
+	base := newBoardModel(boardConfig{}, nil, nil)
+	base.store = fakeBoardStore{
+		items: []workitem.Item{
+			{ID: "item-1", Kind: workitem.KindImplement, Source: "github", SourceRef: "GH-1", State: "pending"},
+		},
+	}
+	base.snapshot = boardSnapshot{
+		items: []workitem.Item{
+			{ID: "item-1", Kind: workitem.KindImplement, Source: "github", SourceRef: "GH-1", State: "pending"},
+		},
+		runners: []workqueue.RunnerRow{
+			{ID: "runner-1"},
+		},
+		sources: []workqueue.SourceRow{
+			{Source: "github", State: "pending", Count: 1},
+		},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		tab     boardTab
+		opened  func(boardModel) bool
+		closed  func(boardModel) bool
+	}{
+		{
+			name:   "collectors",
+			tab:    boardTabCollectors,
+			opened: func(m boardModel) bool { return m.collectorDetail == "github" },
+			closed: func(m boardModel) bool { return m.collectorDetail == "" && m.collectorItems == nil && m.collectorResults == nil },
+		},
+		{
+			name:   "queue",
+			tab:    boardTabQueue,
+			opened: func(m boardModel) bool { return m.queueDetail != nil && m.queueDetail.Item.ID == "item-1" },
+			closed: func(m boardModel) bool { return m.queueDetail == nil },
+		},
+		{
+			name:   "runners",
+			tab:    boardTabRunners,
+			opened: func(m boardModel) bool { return m.runnerDetail == "runner-1" },
+			closed: func(m boardModel) bool { return m.runnerDetail == "" },
+		},
+	} {
+		t.Run(tc.name+" esc", func(t *testing.T) {
+			board := base
+			board.activeTab = tc.tab
+			updated, _ := board.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			board = updated.(boardModel)
+			if !tc.opened(board) {
+				t.Fatalf("after enter detail was not opened: %#v", board)
+			}
+
+			updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			board = updated.(boardModel)
+			if !tc.closed(board) {
+				t.Fatalf("after esc detail was not closed: %#v", board)
+			}
+		})
+
+		t.Run(tc.name+" left", func(t *testing.T) {
+			board := base
+			board.activeTab = tc.tab
+			updated, _ := board.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			board = updated.(boardModel)
+			if !tc.opened(board) {
+				t.Fatalf("after enter detail was not opened: %#v", board)
+			}
+
+			updated, _ = board.Update(tea.KeyMsg{Type: tea.KeyLeft})
+			board = updated.(boardModel)
+			if !tc.closed(board) {
+				t.Fatalf("after left detail was not closed: %#v", board)
+			}
+		})
+	}
+}
+
 func TestBoardModelQuitKeysReturnQuitCommand(t *testing.T) {
 	for _, msg := range []tea.KeyMsg{
 		{Type: tea.KeyRunes, Runes: []rune("q")},
