@@ -291,7 +291,7 @@ drawings:
 }
 </style>
 
-<div class="cover-shell"><div class="cover-main"><div class="deck-kicker">Оркестрация кодинг-агентов</div><div class="hero-title">YOLO Runner</div><div class="hero-subtitle">Как я собираю себе control plane для долгой автономной работы кодинг-агентов: через задачи в трекере, оркестратор, раннеры и жесткие гардрейлы.</div><div class="cover-pills"><span class="cover-pill">tracker-first</span><span class="cover-pill">review + guardrails</span><span class="cover-pill">multi-runner</span><span class="cover-pill">hackathon ideas inside</span></div></div><div class="cover-panel accent-purple"><h3>Внутри</h3><ul class="soft-list tight-list"><li>почему chat-first loop перестал хватать</li><li>архитектура: tracker, orchestrator, runners</li><li>review, prompts и guardrails</li><li>идеи, которые можно утащить себе</li></ul><div class="cover-caption">Не про «еще один AI chat», а про слой управления длинной работой агентов.</div></div></div>
+<div class="cover-shell"><div class="cover-main"><div class="deck-kicker">Оркестрация кодинг-агентов</div><div class="hero-title">YOLO Runner</div><div class="hero-subtitle">Как я собираю себе control plane для долгой автономной работы кодинг-агентов: через задачи в трекере, оркестратор, раннеры и жесткие гардрейлы.</div><div class="cover-pills"><span class="cover-pill">tracker-first</span><span class="cover-pill">review + guardrails</span><span class="cover-pill">multi-runner</span><span class="cover-pill">ideas to take home</span></div></div><div class="cover-panel accent-purple"><h3>Внутри</h3><ul class="soft-list tight-list"><li>почему chat-first loop перестал хватать</li><li>архитектура: tracker, orchestrator, runners</li><li>review, prompts и guardrails</li><li>идеи, которые можно утащить себе</li></ul><div class="cover-caption">Не про «еще один AI chat», а про слой управления длинной работой агентов.</div></div></div>
 
 ---
 
@@ -685,7 +685,7 @@ layout: section
 
 ---
 
-# С чего начать на хакатоне
+# С чего начать у себя
 
 <div class="card-grid grid-2">
   <div class="idea-card accent-blue">
@@ -716,7 +716,7 @@ layout: section
   <div class="idea-card accent-purple">
     <h3>Implement lane</h3>
     <p><code>task -> implement -> review -> PR/merge</code></p>
-    <p>Хорошая базовая дорожка почти для любого хакатона.</p>
+    <p>Хорошая базовая дорожка почти для любого проекта.</p>
   </div>
   <div class="idea-card accent-blue">
     <h3>Bugfix lane</h3>
@@ -797,7 +797,7 @@ layout: section
   <div class="idea-card accent-purple">
     <h3>То, что можно превратить в kit</h3>
     <ul class="soft-list">
-      <li>starter templates для хакатона</li>
+      <li>starter templates для первых шагов</li>
       <li>набор готовых flow presets</li>
       <li>повторно используемые prompt / policy packs</li>
     </ul>
