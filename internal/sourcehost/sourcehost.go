@@ -116,6 +116,7 @@ func runLoop(ctx context.Context, source Source, sourceName string, queue *workq
 	}
 
 	consecutiveFailures := 0
+	lastEmittedPollError := ""
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -123,12 +124,21 @@ func runLoop(ctx context.Context, source Source, sourceName string, queue *workq
 
 		if err := runIteration(ctx, source, sourceName, queue, procID, eventSink); err != nil {
 			consecutiveFailures++
-			emitWarning(ctx, eventSink, sourceName, procID, err)
+			lastError := err.Error()
+			if lastError != lastEmittedPollError {
+				emitSourcePoll(ctx, eventSink, sourceName, procID, queue, err)
+				emitWarning(ctx, eventSink, sourceName, procID, err)
+				lastEmittedPollError = lastError
+			}
+			emitSourceHeartbeat(ctx, eventSink, sourceName, procID)
 			if opts.Once || (maxConsecutiveFailures > 0 && consecutiveFailures >= maxConsecutiveFailures) {
 				return err
 			}
 		} else {
 			consecutiveFailures = 0
+			lastEmittedPollError = ""
+			emitSourcePoll(ctx, eventSink, sourceName, procID, queue, nil)
+			emitSourceHeartbeat(ctx, eventSink, sourceName, procID)
 			emitHeartbeat(ctx, eventSink, sourceName, procID)
 			if opts.Once {
 				return nil
@@ -315,6 +325,52 @@ func emitWarning(ctx context.Context, sink contracts.EventSink, sourceName strin
 	})
 }
 
+func emitSourcePoll(ctx context.Context, sink contracts.EventSink, sourceName string, procID string, queue *workqueue.Store, lastErr error) {
+	event := contracts.NewEvent(contracts.EventTypeSourcePoll, contracts.EventIdentity{Source: sourceName})
+	event.Proc = procID
+	event.Message = "sourcehost poll"
+	event.Metadata = sourcehostMetadata(sourceName, procID)
+	if lastErr != nil {
+		event.Metadata["last_error"] = lastErr.Error()
+	}
+	counts, err := sourceItemStateCounts(queue, sourceName)
+	if err != nil {
+		event.Metadata["state_counts_error"] = err.Error()
+	} else {
+		for state, count := range counts {
+			state = strings.TrimSpace(state)
+			if state == "" {
+				continue
+			}
+			event.Metadata["state_"+state] = fmt.Sprintf("%d", count)
+		}
+	}
+	emit(ctx, sink, event)
+}
+
+func sourceItemStateCounts(queue *workqueue.Store, sourceName string) (map[string]int, error) {
+	sources, err := queue.ListSources()
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, source := range sources {
+		if source.Source != sourceName {
+			continue
+		}
+		counts[source.State] += source.Count
+	}
+	return counts, nil
+}
+
+func emitSourceHeartbeat(ctx context.Context, sink contracts.EventSink, sourceName string, procID string) {
+	event := contracts.NewEvent(contracts.EventTypeSourceHeartbeat, contracts.EventIdentity{Source: sourceName})
+	event.Proc = procID
+	event.Message = "sourcehost heartbeat"
+	event.Metadata = sourcehostMetadata(sourceName, procID)
+	emit(ctx, sink, event)
+}
+
 func emitHeartbeat(ctx context.Context, sink contracts.EventSink, sourceName string, procID string) {
 	emit(ctx, sink, contracts.Event{
 		Type:    contracts.EventTypeAgentHeartbeat,
@@ -325,6 +381,14 @@ func emitHeartbeat(ctx context.Context, sink contracts.EventSink, sourceName str
 			"proc":      procID,
 		},
 	})
+}
+
+func sourcehostMetadata(sourceName string, procID string) map[string]string {
+	return map[string]string{
+		"component": "sourcehost",
+		"source":    sourceName,
+		"proc":      procID,
+	}
 }
 
 func emit(ctx context.Context, sink contracts.EventSink, event contracts.Event) {
