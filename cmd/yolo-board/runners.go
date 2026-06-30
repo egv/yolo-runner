@@ -10,14 +10,21 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
-func renderRunnersTab(snapshot boardSnapshot, now time.Time) string {
+func renderRunnersTab(snapshot boardSnapshot, now time.Time, cursorArg ...int) string {
+	cursor := selectedCursor(cursorArg, len(snapshot.runners))
+
 	var b strings.Builder
 	b.WriteString("Runners\n")
 	b.WriteString("ID\tPID\tPRESETS\tCAP\tHEARTBEAT\tCURRENT\n")
-	for _, runner := range snapshot.runners {
+	for i, runner := range snapshot.runners {
+		prefix := "  "
+		if i == cursor {
+			prefix = "> "
+		}
 		fmt.Fprintf(
 			&b,
-			"%s\t%d\t%s\t%d\t%s\t%s\n",
+			"%s%s\t%d\t%s\t%d\t%s\t%s\n",
+			prefix,
 			runner.ID,
 			runner.Pid,
 			runner.Presets,

@@ -124,6 +124,8 @@ type boardModel struct {
 	activeTab    boardTab
 	runnerDetail string
 	collectorCur int
+	queueCur     int
+	runnerCur    int
 	waitingForDB bool
 	errLine      string
 	streamDone   bool
@@ -200,21 +202,26 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch typed.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "1":
+			if m.runnerDetail == "" {
+				m.activeTab = boardTabCollectors
+			}
+		case "2":
+			if m.runnerDetail == "" {
+				m.activeTab = boardTabQueue
+			}
+		case "3":
+			if m.runnerDetail == "" {
+				m.activeTab = boardTabRunners
+			}
 		case "tab":
 			if m.runnerDetail == "" {
 				m.activeTab = (m.activeTab + 1) % boardTabCount
 			}
 		case "down", "j":
-			if m.activeTab == boardTabCollectors {
-				count := len(collectorRows(m.snapshot, m.events))
-				if m.collectorCur < count-1 {
-					m.collectorCur++
-				}
-			}
+			m.moveActiveCursor(1)
 		case "up", "k":
-			if m.activeTab == boardTabCollectors && m.collectorCur > 0 {
-				m.collectorCur--
-			}
+			m.moveActiveCursor(-1)
 		case "enter":
 			if m.activeTab != boardTabQueue && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
@@ -239,12 +246,51 @@ func (m boardModel) View() string {
 	}
 	switch m.activeTab {
 	case boardTabQueue:
-		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC())
+		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC(), m.queueCur)
 	case boardTabRunners:
-		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
+		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC(), m.runnerCur)
 	default:
 		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
 	}
+}
+
+func (m *boardModel) moveActiveCursor(delta int) {
+	switch m.activeTab {
+	case boardTabCollectors:
+		m.collectorCur = moveCursor(m.collectorCur, len(collectorRows(m.snapshot, m.events)), delta)
+	case boardTabQueue:
+		m.queueCur = moveCursor(m.queueCur, len(m.snapshot.items), delta)
+	case boardTabRunners:
+		m.runnerCur = moveCursor(m.runnerCur, len(m.snapshot.runners), delta)
+	}
+}
+
+func moveCursor(current int, count int, delta int) int {
+	if count <= 0 {
+		return 0
+	}
+	next := current + delta
+	if next < 0 {
+		return 0
+	}
+	if next >= count {
+		return count - 1
+	}
+	return next
+}
+
+func selectedCursor(cursorArg []int, count int) int {
+	cursor := 0
+	if len(cursorArg) > 0 {
+		cursor = cursorArg[0]
+	}
+	if cursor < 0 {
+		return 0
+	}
+	if cursor >= count && count > 0 {
+		return count - 1
+	}
+	return cursor
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {
