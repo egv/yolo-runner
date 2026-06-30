@@ -172,7 +172,7 @@ func (m fullscreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForStreamMessage(m.stream)
 	case decodeErrorMsg:
 		m.errorLine = strings.TrimSpace(typed.err.Error())
-		m.monitor.Apply(contracts.Event{Type: contracts.EventTypeRunnerWarning, Message: "decode_error: " + m.errorLine})
+		m.monitor.Apply(contracts.Event{Type: contracts.EventTypeAgentBlocked, Message: "decode_error: " + m.errorLine, Metadata: map[string]string{"reason": "decode_error", "detail": m.errorLine}})
 		m.viewport.SetContent(m.renderBody())
 		return m, waitForStreamMessage(m.stream)
 	case streamDoneMsg:
@@ -571,7 +571,7 @@ func (m fullscreenModel) View() string {
 
 func isTerminalEvent(eventType contracts.EventType) bool {
 	switch eventType {
-	case contracts.EventTypeRunnerFinished, contracts.EventTypeTaskFinished:
+	case contracts.EventTypeAgentFinished, contracts.EventTypeTaskFinished:
 		return true
 	default:
 		return false
@@ -621,8 +621,9 @@ func renderFromStream(stream <-chan streamMsg, out io.Writer, errOut io.Writer) 
 			decodeFailures++
 			haveEvents = true
 			m.Apply(contracts.Event{
-				Type:    contracts.EventTypeRunnerWarning,
-				Message: "decode_error: " + typed.err.Error(),
+				Type:     contracts.EventTypeAgentBlocked,
+				Message:  "decode_error: " + typed.err.Error(),
+				Metadata: map[string]string{"reason": "decode_error", "detail": typed.err.Error()},
 			})
 			if _, writeErr := io.WriteString(out, m.View()); writeErr != nil {
 				return writeErr
@@ -669,13 +670,13 @@ func demoEvents(now time.Time) []contracts.Event {
 	return []contracts.Event{
 		{Type: contracts.EventTypeRunStarted, TaskID: "yr-s0go", TaskTitle: "E2 Agent backend abstraction and integrations", Metadata: map[string]string{"root_id": "yr-s0go", "concurrency": "2", "model": "openai/gpt-5.3-codex", "runner_timeout": "20m", "stream": "true", "verbose_stream": "false", "stream_output_interval": "150ms", "stream_output_buffer": "64"}, Timestamp: base},
 		{Type: contracts.EventTypeTaskStarted, TaskID: "yr-me4i", TaskTitle: "E2-T3 Implement Codex backend MVP", WorkerID: "worker-0", QueuePos: 1, Message: "starting implementation", Timestamp: base.Add(10 * time.Second)},
-		{Type: contracts.EventTypeRunnerStarted, TaskID: "yr-me4i", TaskTitle: "E2-T3 Implement Codex backend MVP", WorkerID: "worker-0", Message: "running codex implement", Timestamp: base.Add(20 * time.Second)},
+		{Type: contracts.EventTypeAgentStarted, TaskID: "yr-me4i", TaskTitle: "E2-T3 Implement Codex backend MVP", WorkerID: "worker-0", Message: "running codex implement", Timestamp: base.Add(20 * time.Second)},
 		{Type: contracts.EventTypeRunnerCommandStarted, TaskID: "yr-me4i", WorkerID: "worker-0", Message: "go test ./...", Timestamp: base.Add(25 * time.Second)},
-		{Type: contracts.EventTypeRunnerWarning, TaskID: "yr-me4i", WorkerID: "worker-0", Message: "needs backend policy helper", Timestamp: base.Add(40 * time.Second)},
+		{Type: contracts.EventTypeAgentBlocked, TaskID: "yr-me4i", WorkerID: "worker-0", Message: "needs backend policy helper", Metadata: map[string]string{"reason": "policy", "detail": "needs backend policy helper"}, Timestamp: base.Add(40 * time.Second)},
 		{Type: contracts.EventTypeTaskStarted, TaskID: "yr-ttw4", TaskTitle: "E2-T5 Implement Kimi backend MVP", WorkerID: "worker-1", QueuePos: 2, Message: "queued", Timestamp: base.Add(50 * time.Second)},
-		{Type: contracts.EventTypeRunnerStarted, TaskID: "yr-ttw4", TaskTitle: "E2-T5 Implement Kimi backend MVP", WorkerID: "worker-1", Message: "running kimi implement", Timestamp: base.Add(70 * time.Second)},
-		{Type: contracts.EventTypeRunnerOutput, TaskID: "yr-ttw4", WorkerID: "worker-1", Message: "created normalized outcome mapping", Timestamp: base.Add(85 * time.Second)},
-		{Type: contracts.EventTypeRunnerFinished, TaskID: "yr-ttw4", WorkerID: "worker-1", Message: "completed", Timestamp: base.Add(95 * time.Second)},
+		{Type: contracts.EventTypeAgentStarted, TaskID: "yr-ttw4", TaskTitle: "E2-T5 Implement Kimi backend MVP", WorkerID: "worker-1", Message: "running kimi implement", Timestamp: base.Add(70 * time.Second)},
+		{Type: contracts.EventTypeAgentText, TaskID: "yr-ttw4", WorkerID: "worker-1", Message: "created normalized outcome mapping", Timestamp: base.Add(85 * time.Second)},
+		{Type: contracts.EventTypeAgentFinished, TaskID: "yr-ttw4", WorkerID: "worker-1", Message: "completed", Timestamp: base.Add(95 * time.Second)},
 		{Type: contracts.EventTypeTaskFinished, TaskID: "yr-ttw4", TaskTitle: "E2-T5 Implement Kimi backend MVP", WorkerID: "worker-1", Message: "completed", Timestamp: base.Add(100 * time.Second)},
 	}
 }

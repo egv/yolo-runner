@@ -85,19 +85,19 @@ func TestE2E_FullscreenModelRendersRunningStoppingCompletedTransitions(t *testin
 			Timestamp: tnow,
 		},
 		{
-			Type:      contracts.EventTypeRunnerStarted,
+			Type:      contracts.EventTypeAgentStarted,
 			TaskID:    "task-1",
 			TaskTitle: "Smoke task",
 			WorkerID:  "worker-1",
-			Message:   "runner started",
+			Message:   "agent started",
 			Timestamp: tnow,
 		},
 		{
-			Type:      contracts.EventTypeRunnerFinished,
+			Type:      contracts.EventTypeAgentFinished,
 			TaskID:    "task-1",
 			TaskTitle: "Smoke task",
 			WorkerID:  "worker-1",
-			Message:   "runner completed",
+			Message:   "agent completed",
 			Timestamp: tnow,
 		},
 		{
@@ -138,7 +138,7 @@ func TestE2E_FullscreenModelRendersRunningStoppingCompletedTransitions(t *testin
 	consumeEvent()
 	consumeEvent()
 	view := model.View()
-	if !strings.Contains(view, "runner_started") {
+	if !strings.Contains(view, "agent_started") {
 		t.Fatalf("expected running phase, got %q", view)
 	}
 
@@ -158,8 +158,8 @@ func TestE2E_FullscreenModelRendersRunningStoppingCompletedTransitions(t *testin
 	if strings.Contains(model.View(), "Stopping...") {
 		t.Fatalf("expected stop banner to clear after completion event, got %q", model.View())
 	}
-	if !strings.Contains(model.View(), "runner_finished") {
-		t.Fatalf("expected runner_finished terminal status after runner_finished event, got %q", model.View())
+	if !strings.Contains(model.View(), "agent_finished") {
+		t.Fatalf("expected agent_finished terminal status after agent_finished event, got %q", model.View())
 	}
 
 	consumeEvent()

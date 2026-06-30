@@ -223,14 +223,14 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 		timestamp = time.Now().UTC()
 	}
 
-	progressType := EventTypeRunnerProgress
+	progressType := EventTypeAgentProgress
 	switch event.Type {
 	case TaskSessionEventTypeOutput, TaskSessionEventTypeLog:
-		progressType = EventTypeRunnerOutput
+		progressType = EventTypeAgentText
 	case TaskSessionEventTypeApprovalRequired, TaskSessionEventTypeQuestionAsked, TaskSessionEventTypeCancellation:
-		progressType = EventTypeRunnerWarning
+		progressType = EventTypeAgentBlocked
 	case TaskSessionEventTypeLifecycle, TaskSessionEventTypeProgress, TaskSessionEventTypeTeardown, TaskSessionEventTypeArtifact:
-		progressType = EventTypeRunnerProgress
+		progressType = EventTypeAgentProgress
 	case TaskSessionEventType(EventTypeAgentBlocked):
 		progressType = EventTypeAgentBlocked
 	default:
@@ -271,6 +271,8 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 				metadata = setMetadataValue(metadata, "kind", string(event.Approval.Request.Kind))
 			}
 			metadata = setMetadataValue(metadata, "approval_id", event.Approval.Request.ID)
+			metadata = setMetadataValue(metadata, "reason", string(event.Type))
+			metadata = setMetadataValue(metadata, "detail", firstNonEmpty(event.Approval.Request.Message, event.Approval.Request.Title, event.Approval.Request.ID))
 		}
 	case TaskSessionEventTypeQuestionAsked:
 		if event.Question != nil {
@@ -278,11 +280,14 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 				metadata = setMetadataValue(metadata, "context", event.Question.Request.Context)
 			}
 			metadata = setMetadataValue(metadata, "question_id", event.Question.Request.ID)
+			metadata = setMetadataValue(metadata, "reason", string(event.Type))
+			metadata = setMetadataValue(metadata, "detail", firstNonEmpty(event.Question.Request.Prompt, event.Question.Request.Context, event.Question.Request.ID))
 		}
 	case TaskSessionEventTypeCancellation:
 		if event.Cancellation != nil {
 			metadata = setMetadataValue(metadata, "reason", event.Cancellation.Reason)
 			metadata = setMetadataValue(metadata, "force", strconv.FormatBool(event.Cancellation.Force))
+			metadata = setMetadataValue(metadata, "detail", event.Message)
 		}
 	case TaskSessionEventTypeTeardown:
 		if event.Teardown != nil {
@@ -311,6 +316,15 @@ func NormalizeTaskSessionEvent(event TaskSessionEvent) (RunnerProgress, bool) {
 		Metadata:  metadata,
 		Timestamp: timestamp,
 	}, true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func shouldPreserveEventMessageWhitespace(eventType TaskSessionEventType, metadata map[string]string) bool {
