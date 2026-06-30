@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 )
@@ -90,6 +91,60 @@ func TestListItemsDefaultLimitCapsAtFiveHundred(t *testing.T) {
 	}
 }
 
+func TestGetItemReturnsDepsAndResult(t *testing.T) {
+	store := openInspectItemsTestStore(t)
+
+	seedInspectItem(t, store, "target", "github", "done", "fast", workitem.KindImplement, "", 10, "2026-06-30T08:00:00Z")
+	seedInspectItem(t, store, "blocks-a", "github", "pending", "fast", workitem.KindReview, "", 1, "2026-06-30T08:01:00Z")
+	seedInspectItem(t, store, "blocks-b", "startrek", "running", "slow", workitem.KindImplement, "", 2, "2026-06-30T08:02:00Z")
+	seedInspectItem(t, store, "blocked-by-a", "github", "done", "fast", workitem.KindReview, "", 3, "2026-06-30T08:03:00Z")
+
+	seedInspectDep(t, store, "target", "blocks-a")
+	seedInspectDep(t, store, "target", "blocks-b")
+	seedInspectDep(t, store, "blocked-by-a", "target")
+	seedInspectResult(t, store, Result{
+		ItemID:     "target",
+		Status:     ResultStatusCompleted,
+		Payload:    json.RawMessage(`{"status":"ok"}`),
+		LogPath:    "runner-logs/target.log",
+		StartedAt:  time.Date(2026, 6, 30, 8, 4, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 6, 30, 8, 5, 0, 0, time.UTC),
+	})
+
+	detail, err := store.GetItem("target")
+	if err != nil {
+		t.Fatalf("GetItem() error = %v", err)
+	}
+	if detail.Item.ID != "target" {
+		t.Fatalf("GetItem() item ID = %q, want target", detail.Item.ID)
+	}
+	if got, want := detail.Blocks, []Dep{
+		{ID: "blocks-a", Kind: workitem.KindReview, SourceRef: "blocks-a-ref", State: "pending"},
+		{ID: "blocks-b", Kind: workitem.KindImplement, SourceRef: "blocks-b-ref", State: "running"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetItem() Blocks = %#v, want %#v", got, want)
+	}
+	if got, want := detail.BlockedBy, []Dep{
+		{ID: "blocked-by-a", Kind: workitem.KindReview, SourceRef: "blocked-by-a-ref", State: "done"},
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetItem() BlockedBy = %#v, want %#v", got, want)
+	}
+	if detail.Result == nil {
+		t.Fatalf("GetItem() Result is nil, want populated result")
+	}
+	if detail.Result.ItemID != "target" || detail.Result.Status != ResultStatusCompleted || string(detail.Result.Payload) != `{"status":"ok"}` || detail.Result.LogPath != "runner-logs/target.log" {
+		t.Fatalf("GetItem() Result = %#v, want populated target result", detail.Result)
+	}
+
+	missing, err := store.GetItem("missing")
+	if err == nil {
+		t.Fatalf("GetItem() missing error = nil, want error")
+	}
+	if !reflect.DeepEqual(missing, ItemDetail{}) {
+		t.Fatalf("GetItem() missing detail = %#v, want zero value", missing)
+	}
+}
+
 func openInspectItemsTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -149,6 +204,41 @@ INSERT INTO work_items (
 	)
 	if err != nil {
 		t.Fatalf("seed item %q: %v", id, err)
+	}
+}
+
+func seedInspectDep(t *testing.T, store *Store, itemID string, dependsOn string) {
+	t.Helper()
+
+	if _, err := store.db.Exec("INSERT INTO item_deps (item_id, depends_on) VALUES (?, ?)", itemID, dependsOn); err != nil {
+		t.Fatalf("seed dependency %q -> %q: %v", itemID, dependsOn, err)
+	}
+}
+
+func seedInspectResult(t *testing.T, store *Store, result Result) {
+	t.Helper()
+
+	if _, err := store.db.Exec(`
+INSERT INTO work_results (
+	item_id,
+	status,
+	payload,
+	log_path,
+	started_at,
+	finished_at,
+	consumed_at,
+	consumed_by
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		result.ItemID,
+		string(result.Status),
+		string(result.Payload),
+		result.LogPath,
+		formatQueueTime(result.StartedAt),
+		formatQueueTime(result.FinishedAt),
+		formatQueueTime(result.ConsumedAt),
+		result.ConsumedBy,
+	); err != nil {
+		t.Fatalf("seed result for %q: %v", result.ItemID, err)
 	}
 }
 
