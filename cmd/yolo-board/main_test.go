@@ -27,6 +27,10 @@ func (s fakeBoardStore) ListRunners() ([]workqueue.RunnerRow, error) {
 	return s.runners, nil
 }
 
+func (s fakeBoardStore) CurrentItemForRunner(string) (*workitem.Item, error) {
+	return nil, nil
+}
+
 func (s fakeBoardStore) ListSources() ([]workqueue.SourceRow, error) {
 	return s.sources, nil
 }
