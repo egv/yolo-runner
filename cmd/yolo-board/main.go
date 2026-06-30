@@ -93,8 +93,9 @@ type streamMsg interface{}
 type boardTab int
 
 const (
-	boardTabRunners boardTab = iota
+	boardTabCollectors boardTab = iota
 	boardTabQueue
+	boardTabRunners
 	boardTabCount
 )
 
@@ -122,6 +123,7 @@ type boardModel struct {
 	events       []contracts.Event
 	activeTab    boardTab
 	runnerDetail string
+	collectorCur int
 	waitingForDB bool
 	errLine      string
 	streamDone   bool
@@ -202,8 +204,19 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.runnerDetail == "" {
 				m.activeTab = (m.activeTab + 1) % boardTabCount
 			}
+		case "down", "j":
+			if m.activeTab == boardTabCollectors {
+				count := len(collectorRows(m.snapshot, m.events))
+				if m.collectorCur < count-1 {
+					m.collectorCur++
+				}
+			}
+		case "up", "k":
+			if m.activeTab == boardTabCollectors && m.collectorCur > 0 {
+				m.collectorCur--
+			}
 		case "enter":
-			if m.activeTab == boardTabRunners && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
+			if m.activeTab != boardTabQueue && m.runnerDetail == "" && len(m.snapshot.runners) > 0 {
 				m.runnerDetail = m.snapshot.runners[0].ID
 			}
 		case "esc":
@@ -214,7 +227,7 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m boardModel) View() string {
-	if m.waitingForDB && m.snapshot.itemCount() == 0 {
+	if m.waitingForDB && m.snapshot.itemCount() == 0 && len(collectorRows(m.snapshot, m.events)) == 0 {
 		return "waiting for queue DB\n"
 	}
 	line := fmt.Sprintf("polling %d items across %d sources", m.snapshot.itemCount(), m.snapshot.sourceCount())
@@ -224,10 +237,14 @@ func (m boardModel) View() string {
 	if m.runnerDetail != "" {
 		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
 	}
-	if m.activeTab == boardTabQueue {
+	switch m.activeTab {
+	case boardTabQueue:
 		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC())
+	case boardTabRunners:
+		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
+	default:
+		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
 	}
-	return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC())
 }
 
 func nextPollCmd(interval time.Duration) tea.Cmd {
