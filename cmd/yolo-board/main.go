@@ -34,9 +34,13 @@ func RunMain(args []string, in io.Reader, out io.Writer, errOut io.Writer) int {
 	queuePath := fs.String("queue", "", "Path to queue DB")
 	eventsStdin := fs.Bool("events-stdin", true, "Read NDJSON events from stdin")
 	pollInterval := fs.Duration("poll-interval", time.Second, "Queue DB poll interval")
-	_ = fs.Bool("demo-state", false, "Render seeded demo state")
+	demoState := fs.Bool("demo-state", false, "Render seeded demo state")
 	if err := fs.Parse(args); err != nil {
 		return 1
+	}
+	if *demoState {
+		renderDemoState(out)
+		return 0
 	}
 	if strings.TrimSpace(*queuePath) == "" {
 		fmt.Fprintln(errOut, "--queue is required")
@@ -298,6 +302,10 @@ func (m boardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m boardModel) View() string {
+	return m.viewAt(time.Now().UTC())
+}
+
+func (m boardModel) viewAt(now time.Time) string {
 	if m.waitingForDB && m.snapshot.itemCount() == 0 && len(collectorRows(m.snapshot, m.events)) == 0 {
 		return "waiting for queue DB\n"
 	}
@@ -306,22 +314,150 @@ func (m boardModel) View() string {
 		line += "\n" + m.errLine
 	}
 	if m.runnerDetail != "" {
-		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, time.Now().UTC())
+		return line + "\n\n" + renderRunnerDetail(m.snapshot, m.events, m.runnerDetail, now)
 	}
 	if m.queueDetail != nil {
 		return line + "\n\n" + renderQueueItemDetail(*m.queueDetail, m.events)
 	}
 	if m.collectorDetail != "" {
-		return line + "\n\n" + renderCollectorDetail(m.collectorDetail, m.collectorItems, m.collectorResults, m.events, time.Now().UTC())
+		return line + "\n\n" + renderCollectorDetail(m.collectorDetail, m.collectorItems, m.collectorResults, m.events, now)
 	}
 	switch m.activeTab {
 	case boardTabQueue:
-		return line + "\n\n" + renderQueueTab(m.snapshot, time.Now().UTC(), m.queueCur)
+		return line + "\n\n" + renderQueueTab(m.snapshot, now, m.queueCur)
 	case boardTabRunners:
-		return line + "\n\n" + renderRunnersTab(m.snapshot, time.Now().UTC(), m.runnerCur)
+		return line + "\n\n" + renderRunnersTab(m.snapshot, now, m.runnerCur)
 	default:
-		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, time.Now().UTC(), m.collectorCur)
+		return line + "\n\n" + renderCollectorsTab(m.snapshot, m.events, now, m.collectorCur)
 	}
+}
+
+func renderDemoState(out io.Writer) {
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	snapshot, events, detail := demoBoardState(now)
+
+	model := newBoardModel(boardConfig{}, nil, nil)
+	model.waitingForDB = false
+	model.snapshot = snapshot
+	model.events = events
+
+	views := make([]string, 0, 4)
+	model.activeTab = boardTabCollectors
+	views = append(views, model.viewAt(now))
+	model.activeTab = boardTabQueue
+	views = append(views, model.viewAt(now))
+	model.activeTab = boardTabRunners
+	views = append(views, model.viewAt(now))
+	model.queueDetail = &detail
+	views = append(views, model.viewAt(now))
+
+	fmt.Fprint(out, strings.Join(views, "\n---\n"))
+}
+
+func demoBoardState(now time.Time) (boardSnapshot, []contracts.Event, workqueue.ItemDetail) {
+	openItem := workitem.Item{
+		ID:             "yolo-18-a",
+		Kind:           workitem.KindImplement,
+		Source:         "github",
+		SourceRef:      "#42",
+		IdempotencyKey: "github:#42",
+		Preset:         "codex",
+		Priority:       3,
+		Payload:        []byte(`{"title":"Implement demo state"}`),
+		State:          "open",
+		MaxAttempts:    3,
+		CreatedAt:      now.Add(-30 * time.Minute),
+		UpdatedAt:      now.Add(-25 * time.Minute),
+	}
+	runningItem := workitem.Item{
+		ID:             "yolo-18-b",
+		Kind:           workitem.KindReview,
+		Source:         "startrek",
+		SourceRef:      "FLEET-7",
+		IdempotencyKey: "startrek:FLEET-7",
+		Preset:         "gpt-5",
+		Priority:       2,
+		Payload:        []byte(`{"title":"Review fleet TUI"}`),
+		State:          "running",
+		Attempt:        1,
+		MaxAttempts:    3,
+		ClaimedBy:      "runner-alpha",
+		LeaseExpiresAt: now.Add(4 * time.Minute),
+		HeartbeatAt:    now.Add(-1 * time.Minute),
+		CreatedAt:      now.Add(-2 * time.Hour),
+		UpdatedAt:      now.Add(-2 * time.Minute),
+	}
+	doneItem := workitem.Item{
+		ID:             "yolo-18-c",
+		Kind:           workitem.KindPRReview,
+		Source:         "github",
+		SourceRef:      "#43",
+		IdempotencyKey: "github:#43",
+		Preset:         "author",
+		Priority:       1,
+		Payload:        []byte(`{"title":"PR review pass"}`),
+		State:          "done",
+		Attempt:        1,
+		MaxAttempts:    3,
+		CreatedAt:      now.Add(-3 * time.Hour),
+		UpdatedAt:      now.Add(-40 * time.Minute),
+	}
+
+	events := []contracts.Event{
+		{
+			Type:      contracts.EventTypeSourcePoll,
+			Proc:      "sourcehost-github",
+			Source:    "github",
+			Message:   "poll complete",
+			Metadata:  map[string]string{"component": "sourcehost"},
+			Timestamp: now.Add(-25 * time.Minute),
+		},
+		{
+			Type:      contracts.EventTypeSourceHeartbeat,
+			Proc:      "sourcehost-github",
+			Source:    "github",
+			Message:   "alive",
+			Metadata:  map[string]string{"component": "sourcehost"},
+			Timestamp: now.Add(-20 * time.Minute),
+		},
+		{
+			Type:      contracts.EventTypeAgentProgress,
+			ItemID:    runningItem.ID,
+			RunnerID:  "runner-alpha",
+			Source:    runningItem.Source,
+			SourceRef: runningItem.SourceRef,
+			Message:   "applying patch",
+			Timestamp: now.Add(-30 * time.Second),
+		},
+	}
+
+	snapshot := boardSnapshot{
+		items: []workitem.Item{openItem, runningItem, doneItem},
+		runners: []workqueue.RunnerRow{
+			{ID: "runner-alpha", Pid: 4242, Presets: "codex,gpt-5", Capacity: 1, StartedAt: now.Add(-2 * time.Hour), HeartbeatAt: now.Add(-1 * time.Minute)},
+			{ID: "runner-beta", Pid: 4343, Presets: "codex", Capacity: 2, StartedAt: now.Add(-90 * time.Minute), HeartbeatAt: now.Add(-15 * time.Minute)},
+		},
+		currentByRunner: map[string]*workitem.Item{
+			"runner-alpha": &runningItem,
+		},
+		sources: []workqueue.SourceRow{
+			{Source: "github", State: "open", Count: 1},
+			{Source: "github", State: "done", Count: 1},
+			{Source: "startrek", State: "running", Count: 1},
+		},
+		stateCounts: map[string]int{
+			"open":    1,
+			"running": 1,
+			"done":    1,
+		},
+	}
+	detail := workqueue.ItemDetail{
+		Item: runningItem,
+		Blocks: []workqueue.Dep{
+			{ID: openItem.ID, Kind: openItem.Kind, SourceRef: openItem.SourceRef, State: openItem.State},
+		},
+	}
+	return snapshot, events, detail
 }
 
 func (m *boardModel) moveActiveCursor(delta int) {
