@@ -521,123 +521,25 @@ func resolveEventsPath(cfg runConfig) string {
 }
 
 func runWithComponents(ctx context.Context, cfg runConfig, taskManager contracts.TaskManager, runner contracts.AgentRunner, vcs contracts.VCS) error {
-	sinks := []contracts.EventSink{}
-	closers := []func(){}
-	var signalFileSink contracts.EventSink
-	if cfg.stream {
-		streamWriter := io.Writer(os.Stdout)
-		if cfg.mode == agentModeUI {
-			stdin, closeFn, err := launchYoloTUI()
-			if err != nil {
-				return fmt.Errorf("start yolo-tui: %w", err)
-			}
-			streamWriter = stdin
-			closers = append(closers, func() {
-				_ = closeFn()
-			})
-		}
-		sinks = append(sinks, contracts.NewStreamEventSinkWithOptions(streamWriter, contracts.StreamEventSinkOptions{
-			VerboseOutput:  cfg.verboseStream,
-			OutputInterval: cfg.streamOutputInterval,
-			MaxPending:     cfg.streamOutputBuffer,
-		}))
+	loopRunner := func(r contracts.AgentRunner, events contracts.EventSink, options agent.LoopOptions) *agent.Loop {
+		return agent.NewLoop(taskManager, r, events, options)
 	}
-	if cfg.eventsPath != "" {
-		fileSink := contracts.NewFileEventSink(cfg.eventsPath)
-		if cfg.stream {
-			signalFileSink = fileSink
-			mirror := newMirrorEventSink(fileSink, cfg.streamOutputBuffer)
-			closers = append(closers, mirror.Close)
-			sinks = append(sinks, mirror)
-		} else {
-			sinks = append(sinks, fileSink)
-		}
-	}
-	defer func() {
-		for _, closeFn := range closers {
-			closeFn()
-		}
-	}()
-	eventSink := contracts.EventSink(nil)
-	if len(sinks) == 1 {
-		eventSink = sinks[0]
-	} else if len(sinks) > 1 {
-		eventSink = contracts.NewFanoutEventSink(sinks...)
-	}
-	terminalEvents := newRunTerminalEventEmitter(cfg, eventSink, signalFileSink)
-	defer terminalEvents.recoverPanic()
-	runCtx, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
-	stopSignalHandler := terminalEvents.installSignalHandler(cancelRun)
-	defer stopSignalHandler()
-	runner = terminalEvents.wrapRunner(runner)
-	cloneManager, err := runCloneManager(cfg)
-	if err != nil {
-		return err
-	}
-	dispatcher, closeDispatcher, err := runWorkDispatcher(cfg)
-	if err != nil {
-		return err
-	}
-	if closeDispatcher != nil {
-		closers = append(closers, func() {
-			_ = closeDispatcher()
-		})
-	}
-	vcsFactory := cloneScopedVCSFactory(cfg, vcs)
-	embeddedRunner, err := maybeStartEmbeddedQueueRunner(runCtx, cfg, runner, eventSink)
-	if err != nil {
-		return err
-	}
-	if embeddedRunner != nil {
-		go embeddedRunner.cancelRunOnError(cancelRun)
-	}
-	loop := agent.NewLoop(taskManager, runner, eventSink, agent.LoopOptions{
-		ParentID:             cfg.rootID,
-		MaxRetries:           cfg.retryBudget,
-		MaxTasks:             cfg.maxTasks,
-		Concurrency:          cfg.concurrency,
-		QualityGateThreshold: cfg.qualityThreshold,
-		QualityGateTools:     cfg.qualityGateTools,
-		QCGateTools:          cfg.qcGateTools,
-		AllowLowQuality:      cfg.allowLowQuality,
-		DryRun:               cfg.dryRun,
-		RepoRoot:             cfg.repoRoot,
-		Backend:              cfg.backend,
-		Model:                cfg.model,
-		RunnerTimeout:        cfg.runnerTimeout,
-		WatchdogTimeout:      cfg.watchdogTimeout,
-		WatchdogInterval:     cfg.watchdogInterval,
-		TDDMode:              cfg.tddMode,
-		VCS:                  vcs,
-		RequireReview:        true,
-		MergeOnSuccess:       true,
-		CloneManager:         cloneManager,
-		VCSFactory:           vcsFactory,
-		Dispatcher:           dispatcher,
-	})
-	if eventSink != nil {
-		_ = eventSink.Emit(runCtx, contracts.Event{
-			Type:      contracts.EventTypeRunStarted,
-			TaskID:    cfg.rootID,
-			TaskTitle: "run",
-			Metadata:  buildRunStartedMetadata(cfg),
-			Timestamp: time.Now().UTC(),
-		})
-	}
-
-	summary, err := loop.Run(runCtx)
-	if embeddedRunner != nil {
-		cancelRun()
-		if stopErr := embeddedRunner.Stop(); stopErr != nil && (err == nil || errors.Is(err, context.Canceled)) {
-			err = stopErr
-		}
-	}
-	terminalEvents.emitFinished(summary, err)
-	return err
+	return runAgentLoop(ctx, cfg, runner, vcs, loopRunner)
 }
 
 func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contracts.StorageBackend, taskEngine contracts.TaskEngine, runner contracts.AgentRunner, vcs contracts.VCS) error {
+	loopRunner := func(r contracts.AgentRunner, events contracts.EventSink, options agent.LoopOptions) *agent.Loop {
+		return agent.NewLoopWithTaskEngine(storage, taskEngine, r, events, options)
+	}
+	return runAgentLoop(ctx, cfg, runner, vcs, loopRunner)
+}
+
+// runAgentLoop is the shared body of runWithComponents and runWithStorageComponents.
+// The two differ only in how the *agent.Loop is constructed, expressed here via
+// loopRunner (which receives the panic-recovering wrapped runner). Everything
+// else — event sinks, signal handling, clone/dispatcher setup, embedded queue
+// runner, run-started emit, and final teardown — is identical.
+func runAgentLoop(ctx context.Context, cfg runConfig, runner contracts.AgentRunner, vcs contracts.VCS, loopRunner func(runner contracts.AgentRunner, events contracts.EventSink, options agent.LoopOptions) *agent.Loop) error {
 	sinks := []contracts.EventSink{}
 	closers := []func(){}
 	var signalFileSink contracts.EventSink
@@ -709,7 +611,7 @@ func runWithStorageComponents(ctx context.Context, cfg runConfig, storage contra
 	if embeddedRunner != nil {
 		go embeddedRunner.cancelRunOnError(cancelRun)
 	}
-	loop := agent.NewLoopWithTaskEngine(storage, taskEngine, runner, eventSink, agent.LoopOptions{
+	loop := loopRunner(runner, eventSink, agent.LoopOptions{
 		ParentID:             cfg.rootID,
 		MaxRetries:           cfg.retryBudget,
 		MaxTasks:             cfg.maxTasks,
@@ -1054,10 +956,6 @@ func (h *embeddedQueueRunnerHandle) cancelRunOnError(cancel context.CancelFunc) 
 	if err := h.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		cancel()
 	}
-}
-
-func queueHasLiveRunnerForPreset(queuePath string, preset string, now time.Time) (bool, error) {
-	return queueHasLiveRunnerForPresetInPool(queuePath, preset, "", now)
 }
 
 func queueHasLiveRunnerForPresetInPool(queuePath string, preset string, pool string, now time.Time) (bool, error) {
