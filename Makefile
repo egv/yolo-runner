@@ -37,12 +37,12 @@ release-v2.7.0:
 build:
 	mkdir -p bin
 	go build -o bin/yolo-agent ./cmd/yolo-agent
+	go build -o bin/yolo-board ./cmd/yolo-board
 	go build -o bin/yolo-tui ./cmd/yolo-tui
 
-PREFIX ?= /usr/local
+PREFIX ?= $(HOME)/.local
 
 install: build
 	mkdir -p $(PREFIX)/bin
-	cp bin/yolo-agent $(PREFIX)/bin/yolo-agent
-	cp bin/yolo-tui $(PREFIX)/bin/yolo-tui
-	chmod 755 $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-tui
+	cp bin/yolo-agent bin/yolo-board bin/yolo-tui $(PREFIX)/bin/
+	chmod 755 $(PREFIX)/bin/yolo-agent $(PREFIX)/bin/yolo-board $(PREFIX)/bin/yolo-tui
