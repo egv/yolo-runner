@@ -287,14 +287,6 @@ func TestParseTaskDependenciesNormalizesWhitespaceAndSorting(t *testing.T) {
 	if parsed[0] != "task-2" || parsed[1] != "task-1" || parsed[2] != "task-3" {
 		t.Fatalf("unexpected parse result %#v", parsed)
 	}
-
-	merged := dedupeSortedDependencies(parsed, []string{"task-5", "task-4", "task-2"})
-	if len(merged) != 5 {
-		t.Fatalf("expected merged dependency list, got %#v", merged)
-	}
-	if merged[0] != "task-1" || merged[4] != "task-5" {
-		t.Fatalf("expected sorted merge output, got %#v", merged)
-	}
 }
 
 func TestModelDerivesRunnerCommandAndOutputSummaries(t *testing.T) {

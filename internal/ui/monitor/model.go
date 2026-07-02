@@ -622,14 +622,7 @@ func ageSince(now time.Time, when time.Time) string {
 }
 
 func (m *Model) View() string {
-	age := "n/a"
-	if !m.lastOutputAt.IsZero() {
-		seconds := int(m.now().Sub(m.lastOutputAt).Round(time.Second).Seconds())
-		if seconds < 0 {
-			seconds = 0
-		}
-		age = fmt.Sprintf("%ds", seconds)
-	}
+	age := ageSince(m.now(), m.lastOutputAt)
 	lines := []string{
 		"Run Parameters:",
 		"Status Bar:",
@@ -814,12 +807,8 @@ func (m *Model) panelRows() []panelRow {
 }
 
 func (m *Model) isPanelExpanded(panelID string) bool {
-	expanded, ok := m.panelExpand[panelID]
-	if ok {
+	if expanded, ok := m.panelExpand[panelID]; ok {
 		return expanded
-	}
-	if strings.HasPrefix(panelID, "worker:") {
-		return false
 	}
 	return false
 }
@@ -1482,24 +1471,6 @@ func dedupeTaskDependencies(raw []string) []string {
 		out = append(out, dep)
 	}
 	return out
-}
-
-func dedupeSortedDependencies(left []string, right []string) []string {
-	merged := make([]string, 0, len(left)+len(right))
-	seen := map[string]struct{}{}
-	for _, dep := range append(left, right...) {
-		dep = strings.TrimSpace(dep)
-		if dep == "" {
-			continue
-		}
-		if _, ok := seen[dep]; ok {
-			continue
-		}
-		seen[dep] = struct{}{}
-		merged = append(merged, dep)
-	}
-	sort.Strings(merged)
-	return merged
 }
 
 func normalizeTriageStatus(value string) string {
