@@ -238,9 +238,13 @@ func TestProcessSupervisorRunKillsProcessWhenReadinessTimesOut(t *testing.T) {
 	defer cancel()
 
 	done := make(chan error, 1)
+	callbackCalled := make(chan struct{}, 1)
 	go func() {
 		done <- supervisor.Run(ctx, func(context.Context, SupervisedProcess) error {
-			t.Fatal("run callback should not be called when readiness times out")
+			select {
+			case callbackCalled <- struct{}{}:
+			default:
+			}
 			return nil
 		})
 	}()
@@ -259,6 +263,12 @@ func TestProcessSupervisorRunKillsProcessWhenReadinessTimesOut(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected supervisor to return after readiness timeout")
+	}
+
+	select {
+	case <-callbackCalled:
+		t.Fatal("run callback should not be called when readiness times out")
+	default:
 	}
 
 	if proc.stopCount != 1 {

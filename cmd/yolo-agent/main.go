@@ -951,6 +951,7 @@ func maybeStartEmbeddedQueueRunner(ctx context.Context, cfg runConfig, runner co
 	for replica := 0; replica < replicas; replica++ {
 		daemon, runnerID, err := buildEmbeddedQueueRunnerWorker(cfg, runner, events, store, runners, baseCfg, preset, embeddedPreset, pool, replica)
 		if err != nil {
+			cancel() // release runCtx before returning; handle won't be returned to own it
 			_ = runners.Close()
 			_ = store.Close()
 			return nil, err

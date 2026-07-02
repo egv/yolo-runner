@@ -457,7 +457,7 @@ func TestTaskGraphCalculateConcurrencyAcrossTopologies(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewTaskGraph() error = %v", err)
 			}
-			if got := callTaskGraphCalculateConcurrency(t, &graph); got != tc.want {
+			if got := callTaskGraphCalculateConcurrency(t, graph); got != tc.want {
 				t.Fatalf("CalculateConcurrency() = %d, want %d", got, tc.want)
 			}
 		})
@@ -477,7 +477,7 @@ func TestTaskGraphCalculateConcurrencyIgnoresTerminalTasks(t *testing.T) {
 		t.Fatalf("NewTaskGraph() error = %v", err)
 	}
 
-	if got := callTaskGraphCalculateConcurrency(t, &graph); got != 1 {
+	if got := callTaskGraphCalculateConcurrency(t, graph); got != 1 {
 		t.Fatalf("CalculateConcurrency() = %d, want 1 for pending tasks only", got)
 	}
 }
@@ -492,7 +492,7 @@ func TestTaskGraphIsCompleteReturnsTrueWhenAllTasksFinished(t *testing.T) {
 		t.Fatalf("NewTaskGraph() error = %v", err)
 	}
 
-	if callTaskGraphIsComplete(t, &graph) {
+	if callTaskGraphIsComplete(t, graph) {
 		t.Fatalf("IsComplete() = true for pending graph, want false")
 	}
 
@@ -505,14 +505,14 @@ func TestTaskGraphIsCompleteReturnsTrueWhenAllTasksFinished(t *testing.T) {
 	if err := graph.SetState("c", TaskStateRunning); err != nil {
 		t.Fatalf("SetState(c) error = %v", err)
 	}
-	if callTaskGraphIsComplete(t, &graph) {
+	if callTaskGraphIsComplete(t, graph) {
 		t.Fatalf("IsComplete() = true with running task, want false")
 	}
 
 	if err := graph.SetState("c", TaskStateCanceled); err != nil {
 		t.Fatalf("SetState(c) error = %v", err)
 	}
-	if !callTaskGraphIsComplete(t, &graph) {
+	if !callTaskGraphIsComplete(t, graph) {
 		t.Fatalf("IsComplete() = false after all tasks reached terminal states, want true")
 	}
 }

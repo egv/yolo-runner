@@ -53,8 +53,8 @@ type NodeInspection struct {
 	Dependents []string
 }
 
-func NewTaskGraph(nodes []TaskNode) (TaskGraph, error) {
-	graph := TaskGraph{
+func NewTaskGraph(nodes []TaskNode) (*TaskGraph, error) {
+	graph := &TaskGraph{
 		nodes:        make(map[string]TaskNode, len(nodes)),
 		dependencies: make(map[string][]string, len(nodes)),
 		dependents:   make(map[string][]string, len(nodes)),
@@ -62,10 +62,10 @@ func NewTaskGraph(nodes []TaskNode) (TaskGraph, error) {
 
 	for _, node := range nodes {
 		if node.ID == "" {
-			return TaskGraph{}, fmt.Errorf("task id cannot be empty")
+			return nil, fmt.Errorf("task id cannot be empty")
 		}
 		if _, exists := graph.nodes[node.ID]; exists {
-			return TaskGraph{}, fmt.Errorf("duplicate task id %q", node.ID)
+			return nil, fmt.Errorf("duplicate task id %q", node.ID)
 		}
 
 		graph.nodes[node.ID] = node
@@ -77,7 +77,7 @@ func NewTaskGraph(nodes []TaskNode) (TaskGraph, error) {
 	for id, deps := range graph.dependencies {
 		for _, depID := range deps {
 			if _, exists := graph.nodes[depID]; !exists {
-				return TaskGraph{}, fmt.Errorf("task %q depends on unknown task %q", id, depID)
+				return nil, fmt.Errorf("task %q depends on unknown task %q", id, depID)
 			}
 			graph.dependents[depID] = append(graph.dependents[depID], id)
 		}
@@ -88,7 +88,7 @@ func NewTaskGraph(nodes []TaskNode) (TaskGraph, error) {
 		graph.dependents[id] = dependents
 	}
 	if cycle := findDependencyCycle(graph.dependencies); len(cycle) > 0 {
-		return TaskGraph{}, fmt.Errorf("circular dependency detected: %s", strings.Join(cycle, " -> "))
+		return nil, fmt.Errorf("circular dependency detected: %s", strings.Join(cycle, " -> "))
 	}
 
 	return graph, nil
