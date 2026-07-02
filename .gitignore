@@ -5,6 +5,8 @@
 bin/
 node_modules/
 /yolo-agent
+/yolo-board
+/yolo-tui
 /yolo-runner
 
 # Runtime logs and OpenCode outputs
