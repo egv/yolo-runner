@@ -372,17 +372,7 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 						retryData["triage_reason"] = strings.TrimSpace(runnerResult.Reason)
 					}
 					retryData = appendExecutorDecisionMetadata(retryData, "retry", runnerResult.Reason)
-					if err := setExecutorTaskData(ctx, taskManager, task.ID, retryData); err != nil {
-						return workitem.ImplementResult{}, err
-					}
-					if task.Metadata == nil {
-						task.Metadata = map[string]string{}
-					}
-					for key, value := range retryData {
-						task.Metadata[key] = value
-					}
-					_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: retryData, Timestamp: time.Now().UTC()})
-					if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusOpen); err != nil {
+					if err := recordTaskRetry(ctx, taskManager, events, &task, workerID, repoRoot, e.QueuePos, retryData); err != nil {
 						return workitem.ImplementResult{}, err
 					}
 					continue
@@ -400,17 +390,7 @@ func (e *Executor) Execute(ctx context.Context, payload workitem.ImplementPayloa
 					retryData := map[string]string{"completion_retry_count": fmt.Sprintf("%d", completionRetries), "completion_addendum": completionAddendum, "triage_reason": completionReason}
 					retryData = appendExecutorDecisionMetadata(retryData, "retry", completionReason)
 					retryData = appendExecutorReviewOutcomeMetadata(retryData, runnerResult)
-					if err := setExecutorTaskData(ctx, taskManager, task.ID, retryData); err != nil {
-						return workitem.ImplementResult{}, err
-					}
-					if task.Metadata == nil {
-						task.Metadata = map[string]string{}
-					}
-					for key, value := range retryData {
-						task.Metadata[key] = value
-					}
-					_ = emitExecutorEvent(ctx, events, contracts.Event{Type: contracts.EventTypeTaskDataUpdated, TaskID: task.ID, TaskTitle: task.Title, WorkerID: workerID, ClonePath: repoRoot, QueuePos: e.QueuePos, Metadata: retryData, Timestamp: time.Now().UTC()})
-					if err := setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusOpen); err != nil {
+					if err := recordTaskRetry(ctx, taskManager, events, &task, workerID, repoRoot, e.QueuePos, retryData); err != nil {
 						return workitem.ImplementResult{}, err
 					}
 					continue
@@ -1023,6 +1003,32 @@ func setExecutorTaskData(ctx context.Context, tasks contracts.TaskManager, taskI
 		return nil
 	}
 	return tasks.SetTaskData(ctx, taskID, data)
+}
+
+// recordTaskRetry persists retry metadata, merges it into the in-memory task,
+// emits a TaskDataUpdated event, and reopens the task. Shared by the review-
+// retry and completion-retry paths in Execute.
+func recordTaskRetry(ctx context.Context, taskManager contracts.TaskManager, events contracts.EventSink, task *contracts.Task, workerID string, repoRoot string, queuePos int, retryData map[string]string) error {
+	if err := setExecutorTaskData(ctx, taskManager, task.ID, retryData); err != nil {
+		return err
+	}
+	if task.Metadata == nil {
+		task.Metadata = map[string]string{}
+	}
+	for key, value := range retryData {
+		task.Metadata[key] = value
+	}
+	_ = emitExecutorEvent(ctx, events, contracts.Event{
+		Type:      contracts.EventTypeTaskDataUpdated,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		WorkerID:  workerID,
+		ClonePath: repoRoot,
+		QueuePos:  queuePos,
+		Metadata:  retryData,
+		Timestamp: time.Now().UTC(),
+	})
+	return setExecutorTaskStatus(ctx, taskManager, task.ID, contracts.TaskStatusOpen)
 }
 
 // HasTestsForTDDMode reports whether repoRoot contains any _test.* files and,
