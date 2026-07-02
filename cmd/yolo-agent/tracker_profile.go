@@ -357,59 +357,74 @@ func resolveTrackerProfile(repoRoot string, selectedProfile string, rootID strin
 	return newTrackerConfigService().ResolveTrackerProfile(repoRoot, selectedProfile, rootID, getenv)
 }
 
+// resolveLinearAuth validates the linear tracker block for profile and returns
+// the resolved Linear config (workspace + token). Shared by the task-manager
+// and storage-backend builders.
+func resolveLinearAuth(profile resolvedTrackerProfile) (linear.Config, string, error) {
+	if profile.Tracker.Linear == nil {
+		return linear.Config{}, "", fmt.Errorf("tracker.linear settings are required for profile %q", profile.Name)
+	}
+	workspace := strings.TrimSpace(profile.Tracker.Linear.Scope.Workspace)
+	if workspace == "" {
+		return linear.Config{}, "", fmt.Errorf("%s is required for profile %q", "linear.scope.workspace", profile.Name)
+	}
+	tokenEnv := strings.TrimSpace(profile.Tracker.Linear.Auth.TokenEnv)
+	if tokenEnv == "" {
+		return linear.Config{}, "", fmt.Errorf("%s is required for profile %q", linearTokenEnvVarLabel, profile.Name)
+	}
+	tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
+	if tokenValue == "" {
+		return linear.Config{}, "", fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
+	}
+	return linear.Config{Workspace: workspace, Token: tokenValue}, tokenEnv, nil
+}
+
+// resolveGitHubAuth validates the github tracker block for profile and returns
+// the resolved GitHub config (owner + repo + token). Shared by the task-manager
+// and storage-backend builders.
+func resolveGitHubAuth(profile resolvedTrackerProfile) (githubtracker.Config, string, error) {
+	if profile.Tracker.GitHub == nil {
+		return githubtracker.Config{}, "", fmt.Errorf("tracker.github settings are required for profile %q", profile.Name)
+	}
+	owner := strings.TrimSpace(profile.Tracker.GitHub.Scope.Owner)
+	if owner == "" {
+		return githubtracker.Config{}, "", fmt.Errorf("%s is required for profile %q", "github.scope.owner", profile.Name)
+	}
+	repo := strings.TrimSpace(profile.Tracker.GitHub.Scope.Repo)
+	if repo == "" {
+		return githubtracker.Config{}, "", fmt.Errorf("%s is required for profile %q", "github.scope.repo", profile.Name)
+	}
+	tokenEnv := strings.TrimSpace(profile.Tracker.GitHub.Auth.TokenEnv)
+	if tokenEnv == "" {
+		return githubtracker.Config{}, "", fmt.Errorf("%s is required for profile %q", githubTokenEnvVarLabel, profile.Name)
+	}
+	tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
+	if tokenValue == "" {
+		return githubtracker.Config{}, "", fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
+	}
+	return githubtracker.Config{Owner: owner, Repo: repo, Token: tokenValue}, tokenEnv, nil
+}
+
 func buildTaskManagerForTracker(repoRoot string, profile resolvedTrackerProfile) (contracts.TaskManager, error) {
 	switch profile.Tracker.Type {
 	case trackerTypeTK:
 		return newTKTaskManager(repoRoot)
 	case trackerTypeLinear:
-		if profile.Tracker.Linear == nil {
-			return nil, fmt.Errorf("tracker.linear settings are required for profile %q", profile.Name)
+		cfg, tokenEnv, err := resolveLinearAuth(profile)
+		if err != nil {
+			return nil, err
 		}
-		workspace := strings.TrimSpace(profile.Tracker.Linear.Scope.Workspace)
-		if workspace == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "linear.scope.workspace", profile.Name)
-		}
-		tokenEnv := strings.TrimSpace(profile.Tracker.Linear.Auth.TokenEnv)
-		if tokenEnv == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", linearTokenEnvVarLabel, profile.Name)
-		}
-		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
-		if tokenValue == "" {
-			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
-		}
-		manager, err := newLinearTaskManager(linear.Config{
-			Workspace: workspace,
-			Token:     tokenValue,
-		})
+		manager, err := newLinearTaskManager(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("linear auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
 		return manager, nil
 	case trackerTypeGitHub:
-		if profile.Tracker.GitHub == nil {
-			return nil, fmt.Errorf("tracker.github settings are required for profile %q", profile.Name)
+		cfg, tokenEnv, err := resolveGitHubAuth(profile)
+		if err != nil {
+			return nil, err
 		}
-		owner := strings.TrimSpace(profile.Tracker.GitHub.Scope.Owner)
-		if owner == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.owner", profile.Name)
-		}
-		repo := strings.TrimSpace(profile.Tracker.GitHub.Scope.Repo)
-		if repo == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.repo", profile.Name)
-		}
-		tokenEnv := strings.TrimSpace(profile.Tracker.GitHub.Auth.TokenEnv)
-		if tokenEnv == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", githubTokenEnvVarLabel, profile.Name)
-		}
-		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
-		if tokenValue == "" {
-			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
-		}
-		manager, err := newGitHubTaskManager(githubtracker.Config{
-			Owner: owner,
-			Repo:  repo,
-			Token: tokenValue,
-		})
+		manager, err := newGitHubTaskManager(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
@@ -430,55 +445,22 @@ func buildStorageBackendForTracker(repoRoot string, profile resolvedTrackerProfi
 		}
 		return backend, nil
 	case trackerTypeGitHub:
-		if profile.Tracker.GitHub == nil {
-			return nil, fmt.Errorf("tracker.github settings are required for profile %q", profile.Name)
+		cfg, tokenEnv, err := resolveGitHubAuth(profile)
+		if err != nil {
+			return nil, err
 		}
-		owner := strings.TrimSpace(profile.Tracker.GitHub.Scope.Owner)
-		if owner == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.owner", profile.Name)
-		}
-		repo := strings.TrimSpace(profile.Tracker.GitHub.Scope.Repo)
-		if repo == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "github.scope.repo", profile.Name)
-		}
-		tokenEnv := strings.TrimSpace(profile.Tracker.GitHub.Auth.TokenEnv)
-		if tokenEnv == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", githubTokenEnvVarLabel, profile.Name)
-		}
-		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
-		if tokenValue == "" {
-			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
-		}
-		backend, err := newGitHubStorageBackend(githubtracker.Config{
-			Owner:     owner,
-			Repo:      repo,
-			Token:     tokenValue,
-			StatePath: filepath.Join(repoRoot, ".yolo-runner", fmt.Sprintf("github-state-%s-%s.json", owner, repo)),
-		})
+		cfg.StatePath = filepath.Join(repoRoot, ".yolo-runner", fmt.Sprintf("github-state-%s-%s.json", cfg.Owner, cfg.Repo))
+		backend, err := newGitHubStorageBackend(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("github auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
 		return backend, nil
 	case trackerTypeLinear:
-		if profile.Tracker.Linear == nil {
-			return nil, fmt.Errorf("tracker.linear settings are required for profile %q", profile.Name)
+		cfg, tokenEnv, err := resolveLinearAuth(profile)
+		if err != nil {
+			return nil, err
 		}
-		workspace := strings.TrimSpace(profile.Tracker.Linear.Scope.Workspace)
-		if workspace == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", "linear.scope.workspace", profile.Name)
-		}
-		tokenEnv := strings.TrimSpace(profile.Tracker.Linear.Auth.TokenEnv)
-		if tokenEnv == "" {
-			return nil, fmt.Errorf("%s is required for profile %q", linearTokenEnvVarLabel, profile.Name)
-		}
-		tokenValue := strings.TrimSpace(os.Getenv(tokenEnv))
-		if tokenValue == "" {
-			return nil, fmt.Errorf("missing auth token from %s for profile %q", tokenEnv, profile.Name)
-		}
-		backend, err := newLinearStorageBackend(linear.Config{
-			Workspace: workspace,
-			Token:     tokenValue,
-		})
+		backend, err := newLinearStorageBackend(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("linear auth validation failed for profile %q using %s: %w", profile.Name, tokenEnv, err)
 		}
@@ -672,7 +654,7 @@ func resolveTrackerAgentConfig(model trackerAgentConfigModel, repoRoot string) (
 	if lockPath := strings.TrimSpace(model.LockPath); lockPath != "" {
 		cfg.LockPath = lockPath
 	}
-	cfg.LockPath = resolveTrackerAgentLockPath(repoRoot, cfg.LockPath)
+	cfg.LockPath = resolveRepoLocalPath(repoRoot, cfg.LockPath)
 
 	cfg.Labels.Ready = resolveTrackerAgentLabel(model.Labels.Ready, cfg.Labels.Ready)
 	cfg.Labels.InProgress = resolveTrackerAgentLabel(model.Labels.InProgress, cfg.Labels.InProgress)
@@ -706,14 +688,6 @@ func defaultTrackerAgentConfig() trackerAgentConfig {
 			CompletedResolution: "fixed",
 		},
 	}
-}
-
-func resolveTrackerAgentLockPath(repoRoot string, lockPath string) string {
-	cleaned := filepath.Clean(strings.TrimSpace(lockPath))
-	if filepath.IsAbs(cleaned) || strings.TrimSpace(repoRoot) == "" {
-		return cleaned
-	}
-	return filepath.Join(repoRoot, cleaned)
 }
 
 func resolveTrackerAgentLabel(raw string, fallback string) string {
