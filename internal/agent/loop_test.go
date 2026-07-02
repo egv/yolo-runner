@@ -4539,12 +4539,6 @@ func (b *blockingRunner) Run(_ context.Context, _ contracts.RunnerRequest) (cont
 	return contracts.RunnerResult{Status: contracts.RunnerResultCompleted}, nil
 }
 
-func TestRunnerLogBackendDirSupportsClaude(t *testing.T) {
-	if got := runnerLogBackendDir("claude"); got != "claude" {
-		t.Fatalf("expected claude backend dir, got %q", got)
-	}
-}
-
 type statusTransition struct {
 	taskID string
 	status contracts.TaskStatus

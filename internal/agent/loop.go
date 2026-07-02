@@ -3,9 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -734,51 +731,6 @@ func appendTaskRuntimeMetadata(metadata map[string]string, runtime taskRuntimeCo
 	return compactMetadata(metadata)
 }
 
-func hasTestsForTDDMode(repoRoot string) (bool, bool, error) {
-	root := strings.TrimSpace(repoRoot)
-	if root == "" {
-		return false, false, nil
-	}
-
-	found := false
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			if info.Name() == ".git" || info.Name() == "node_modules" || info.Name() == "vendor" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.Contains(filepath.Base(path), "_test.") {
-			found = true
-		}
-		return nil
-	})
-	if err != nil {
-		return false, false, err
-	}
-	if !found {
-		return false, false, nil
-	}
-	failing, err := hasFailingTestsForTDDMode(root)
-	return found, failing, err
-}
-
-func hasFailingTestsForTDDMode(repoRoot string) (bool, error) {
-	cmd := exec.Command("go", "test", "./...")
-	cmd.Dir = repoRoot
-	_, err := cmd.CombinedOutput()
-	if err == nil {
-		return false, nil
-	}
-	if _, ok := err.(*exec.ExitError); ok {
-		return true, nil
-	}
-	return false, fmt.Errorf("run tests for tdd mode: %w", err)
-}
-
 func metadataRetryCount(metadata map[string]string, key string) (int, error) {
 	if len(metadata) == 0 {
 		return 0, fmt.Errorf("metadata missing")
@@ -917,47 +869,6 @@ func isRecoverableModelFailureReason(reason string) bool {
 
 func isRecoverableModelFailureResult(result contracts.RunnerResult, currentModel string, fallbackModel string) bool {
 	return isRecoverableModelFailureReason(result.Reason) && strings.TrimSpace(currentModel) != "" && strings.TrimSpace(fallbackModel) != "" && !strings.EqualFold(strings.TrimSpace(currentModel), strings.TrimSpace(fallbackModel))
-}
-
-func defaultRunnerLogPath(repoRoot string, taskID string, epicID string, backend string) string {
-	if strings.TrimSpace(repoRoot) == "" || strings.TrimSpace(taskID) == "" {
-		return ""
-	}
-	parts := []string{repoRoot, "runner-logs"}
-	if epicID = strings.TrimSpace(epicID); epicID != "" {
-		parts = append(parts, epicID)
-	}
-	parts = append(parts, strings.TrimSpace(taskID))
-	parts = append(parts, runnerLogBackendDir(backend))
-	parts = append(parts, taskID+".jsonl")
-	return filepath.Join(parts...)
-}
-
-func ensureRunnerLogDirectory(repoRoot string, logPath string) error {
-	if strings.TrimSpace(repoRoot) == "" {
-		return nil
-	}
-	if _, err := os.Stat(repoRoot); err != nil {
-		return nil
-	}
-	logPath = strings.TrimSpace(logPath)
-	if logPath == "" {
-		return nil
-	}
-	return os.MkdirAll(filepath.Dir(logPath), 0o755)
-}
-
-func runnerLogBackendDir(backend string) string {
-	switch strings.TrimSpace(strings.ToLower(backend)) {
-	case "codex":
-		return "codex"
-	case "claude":
-		return "claude"
-	case "kimi":
-		return "kimi"
-	default:
-		return "opencode"
-	}
 }
 
 func buildRunnerStartedMetadata(mode contracts.RunnerMode, backend string, model string, clonePath string, logPath string, startedAt time.Time) map[string]string {

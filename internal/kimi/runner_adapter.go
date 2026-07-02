@@ -6,14 +6,13 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/agentrun"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
@@ -23,14 +22,9 @@ var structuredReviewVerdictLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_VERD
 var structuredReviewFailFeedbackLinePattern = regexp.MustCompile(`(?i)^\s*REVIEW_(?:FAIL_)?FEEDBACK\s*:\s*(.+?)\s*$`)
 var tokenRedactionPattern = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`)
 
-type CommandSpec struct {
-	Binary string
-	Args   []string
-	Env    []string
-	Dir    string
-	Stdout io.Writer
-	Stderr io.Writer
-}
+// CommandSpec aliases the shared agent-backend command spec so existing
+// call sites and tests keep working while the type lives in one place.
+type CommandSpec = agentrun.CommandSpec
 
 type CommandRunner interface {
 	Run(ctx context.Context, spec CommandSpec) error
@@ -40,6 +34,11 @@ type commandRunnerFunc func(ctx context.Context, spec CommandSpec) error
 
 func (f commandRunnerFunc) Run(ctx context.Context, spec CommandSpec) error {
 	return f(ctx, spec)
+}
+
+// runCommand executes a kimi command via the shared agentrun helper.
+func runCommand(ctx context.Context, spec CommandSpec) error {
+	return agentrun.RunCommand(ctx, defaultBinary, spec)
 }
 
 type CLIRunnerAdapter struct {
@@ -219,29 +218,6 @@ func resolveBackendArgs(raw []string, backend string, request contracts.RunnerRe
 		out = append(out, text)
 	}
 	return out
-}
-
-func runCommand(ctx context.Context, spec CommandSpec) error {
-	if strings.TrimSpace(spec.Binary) == "" {
-		return errors.New("kimi binary is required")
-	}
-	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
-	if strings.TrimSpace(spec.Dir) != "" {
-		cmd.Dir = spec.Dir
-	}
-	if len(spec.Env) > 0 {
-		cmd.Env = append(os.Environ(), spec.Env...)
-	}
-	cmd.Stdout = spec.Stdout
-	cmd.Stderr = spec.Stderr
-	err := cmd.Run()
-	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return context.DeadlineExceeded
-	}
-	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
-		return context.Canceled
-	}
-	return err
 }
 
 func buildRunnerArtifacts(request contracts.RunnerRequest, result contracts.RunnerResult) map[string]string {
@@ -749,53 +725,9 @@ func normalizeLine(line string) string {
 	return trimmed
 }
 
-type lineWriter struct {
-	target  io.Writer
-	emit    func(string)
-	mu      sync.Mutex
-	pending strings.Builder
-}
+// lineWriter aliases the shared line-buffered writer from agentrun.
+type lineWriter = agentrun.LineWriter
 
 func newLineWriter(target io.Writer, emit func(string)) *lineWriter {
-	return &lineWriter{target: target, emit: emit}
-}
-
-func (w *lineWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.target != nil {
-		if _, err := w.target.Write(p); err != nil {
-			return 0, err
-		}
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	w.consumeLocked(string(p))
-	return len(p), nil
-}
-
-func (w *lineWriter) Flush() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.pending.Len() == 0 {
-		return
-	}
-	if w.emit != nil {
-		w.emit(w.pending.String())
-	}
-	w.pending.Reset()
-}
-
-func (w *lineWriter) consumeLocked(chunk string) {
-	for _, r := range chunk {
-		if r == '\n' {
-			if w.emit != nil {
-				w.emit(w.pending.String())
-			}
-			w.pending.Reset()
-			continue
-		}
-		w.pending.WriteRune(r)
-	}
+	return agentrun.NewLineWriter(target, emit)
 }

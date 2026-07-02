@@ -642,7 +642,7 @@ func (e *Executor) shouldRunQualityGate(payload workitem.ImplementPayload) bool 
 }
 
 func (e *Executor) runTDDGate(ctx context.Context, task contracts.Task, tasks contracts.TaskManager, events contracts.EventSink, workerID string, repoRoot string) (bool, string, error) {
-	testsPresent, testsFailing, err := hasTestsForTDDMode(repoRoot)
+	testsPresent, testsFailing, err := HasTestsForTDDMode(repoRoot)
 	if err != nil {
 		return false, "", err
 	}
@@ -1025,7 +1025,9 @@ func setExecutorTaskData(ctx context.Context, tasks contracts.TaskManager, taskI
 	return tasks.SetTaskData(ctx, taskID, data)
 }
 
-func hasTestsForTDDMode(repoRoot string) (bool, bool, error) {
+// HasTestsForTDDMode reports whether repoRoot contains any _test.* files and,
+// if so, whether those tests currently fail. Shared with internal/agent.
+func HasTestsForTDDMode(repoRoot string) (bool, bool, error) {
 	root := strings.TrimSpace(repoRoot)
 	if root == "" {
 		return false, false, nil
@@ -1052,11 +1054,13 @@ func hasTestsForTDDMode(repoRoot string) (bool, bool, error) {
 	if !found {
 		return false, false, nil
 	}
-	failing, err := hasFailingTestsForTDDMode(root)
+	failing, err := HasFailingTestsForTDDMode(root)
 	return found, failing, err
 }
 
-func hasFailingTestsForTDDMode(repoRoot string) (bool, error) {
+// HasFailingTestsForTDDMode runs `go test ./...` in repoRoot and reports
+// whether any tests fail. Shared with internal/agent.
+func HasFailingTestsForTDDMode(repoRoot string) (bool, error) {
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = repoRoot
 	_, err := cmd.CombinedOutput()
