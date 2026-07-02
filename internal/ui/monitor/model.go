@@ -35,10 +35,6 @@ type Model struct {
 	queueFilter        string
 }
 
-type Snapshot struct {
-	Root RunState
-}
-
 type PerformanceSnapshot struct {
 	HistorySize        int
 	TotalPanelRows     int
@@ -492,18 +488,6 @@ func applyDerivedTaskEvent(task *TaskState, event contracts.Event) {
 			task.LastMessage = task.TerminalStatus + " | " + reason
 		}
 	}
-}
-
-func (m *Model) Snapshot() Snapshot {
-	workers := map[string]WorkerState{}
-	for id, worker := range m.root.Workers {
-		workers[id] = worker
-	}
-	tasks := map[string]TaskState{}
-	for id, task := range m.root.Tasks {
-		tasks[id] = task
-	}
-	return Snapshot{Root: RunState{RunID: m.root.RunID, Workers: workers, Tasks: tasks}}
 }
 
 func (m *Model) UIState() UIState {

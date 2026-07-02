@@ -122,11 +122,10 @@ func TestModelBuildsDerivedRunWorkerTaskState(t *testing.T) {
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentStarted, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", QueuePos: 1, Timestamp: now.Add(-3 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentFinished, TaskID: "task-1", TaskTitle: "First", WorkerID: "worker-0", Message: "completed", Timestamp: now.Add(-1 * time.Second)})
 
-	state := model.Snapshot()
-	if state.Root.Workers["worker-0"].CurrentTaskID != "task-1" {
-		t.Fatalf("expected worker current task, got %#v", state.Root.Workers["worker-0"])
+	if model.root.Workers["worker-0"].CurrentTaskID != "task-1" {
+		t.Fatalf("expected worker current task, got %#v", model.root.Workers["worker-0"])
 	}
-	task := state.Root.Tasks["task-1"]
+	task := model.root.Tasks["task-1"]
 	if task.TaskID != "task-1" || task.Title != "First" {
 		t.Fatalf("unexpected task snapshot %#v", task)
 	}
@@ -150,7 +149,7 @@ func TestModelRendersAgentBlockedReasonAndDetail(t *testing.T) {
 		Timestamp: now.Add(-2 * time.Second),
 	})
 
-	task := model.Snapshot().Root.Tasks["task-1"]
+	task := model.root.Tasks["task-1"]
 	if task.TerminalStatus != "blocked" {
 		t.Fatalf("expected blocked terminal status, got %#v", task)
 	}
@@ -298,7 +297,7 @@ func TestModelDerivesRunnerCommandAndOutputSummaries(t *testing.T) {
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "task-2", WorkerID: "worker-1", Message: "ok", Timestamp: now.Add(-3 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeCommandRun, TaskID: "task-2", WorkerID: "worker-1", Message: "exit=0", Timestamp: now.Add(-2 * time.Second)})
 
-	task := model.Snapshot().Root.Tasks["task-2"]
+	task := model.root.Tasks["task-2"]
 	if task.CommandStartedCount != 1 || task.CommandFinishedCount != 1 {
 		t.Fatalf("expected command counters to be derived, got %#v", task)
 	}
@@ -337,7 +336,7 @@ func TestModelDerivesWarningLifecycleAsActiveThenResolved(t *testing.T) {
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-3", TaskTitle: "Third", WorkerID: "worker-2", Timestamp: now.Add(-5 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentBlocked, TaskID: "task-3", WorkerID: "worker-2", Message: "no output for 5m", Timestamp: now.Add(-4 * time.Second)})
-	warnTask := model.Snapshot().Root.Tasks["task-3"]
+	warnTask := model.root.Tasks["task-3"]
 	if !warnTask.WarningActive {
 		t.Fatalf("expected warning lifecycle to be active, got %#v", warnTask)
 	}
@@ -346,7 +345,7 @@ func TestModelDerivesWarningLifecycleAsActiveThenResolved(t *testing.T) {
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentFinished, TaskID: "task-3", WorkerID: "worker-2", Message: "completed", Timestamp: now.Add(-2 * time.Second)})
-	finishedTask := model.Snapshot().Root.Tasks["task-3"]
+	finishedTask := model.root.Tasks["task-3"]
 	if finishedTask.WarningActive {
 		t.Fatalf("expected warning lifecycle resolved on runner finish, got %#v", finishedTask)
 	}
@@ -841,22 +840,22 @@ func TestTaskStateStageTracksExecutionLifecycle(t *testing.T) {
 	model := NewModel(func() time.Time { return now })
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-1", Timestamp: now.Add(-5 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageSelecting {
+	if got := model.root.Tasks["task-1"].Stage; got != contracts.TaskStageSelecting {
 		t.Fatalf("expected Stage %q after task_started, got %q", contracts.TaskStageSelecting, got)
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentStarted, TaskID: "task-1", Timestamp: now.Add(-4 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageRunning {
+	if got := model.root.Tasks["task-1"].Stage; got != contracts.TaskStageRunning {
 		t.Fatalf("expected Stage %q after agent_started, got %q", contracts.TaskStageRunning, got)
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentFinished, TaskID: "task-1", Message: "completed", Timestamp: now.Add(-3 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageClosing {
+	if got := model.root.Tasks["task-1"].Stage; got != contracts.TaskStageClosing {
 		t.Fatalf("expected Stage %q after agent_finished, got %q", contracts.TaskStageClosing, got)
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-1", Message: "closed", Timestamp: now.Add(-1 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-1"].Stage; got != contracts.TaskStageDone {
+	if got := model.root.Tasks["task-1"].Stage; got != contracts.TaskStageDone {
 		t.Fatalf("expected Stage %q after task_finished, got %q", contracts.TaskStageDone, got)
 	}
 }
@@ -869,7 +868,7 @@ func TestTaskStateOutputBufAccumulatesRunnerOutputEvents(t *testing.T) {
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "task-2", Message: "line one", Timestamp: now.Add(-2 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentText, TaskID: "task-2", Message: "line two", Metadata: map[string]string{"kind": "thinking"}, Timestamp: now.Add(-1 * time.Second)})
 
-	task := model.Snapshot().Root.Tasks["task-2"]
+	task := model.root.Tasks["task-2"]
 	if len(task.OutputBuf) != 2 {
 		t.Fatalf("expected 2 output entries, got %d: %#v", len(task.OutputBuf), task.OutputBuf)
 	}
@@ -889,7 +888,7 @@ func TestTaskStateWarningBufAccumulatesRunnerWarningEvents(t *testing.T) {
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentBlocked, TaskID: "task-4", Message: "stall warning one", Timestamp: now.Add(-2 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentBlocked, TaskID: "task-4", Message: "stall warning two", Timestamp: now.Add(-1 * time.Second)})
 
-	task := model.Snapshot().Root.Tasks["task-4"]
+	task := model.root.Tasks["task-4"]
 	if len(task.WarningBuf) != 2 {
 		t.Fatalf("expected 2 warning entries, got %d: %#v", len(task.WarningBuf), task.WarningBuf)
 	}
@@ -906,17 +905,17 @@ func TestTaskStateReviewCountIncrementedByReviewFinishedEvent(t *testing.T) {
 	model := NewModel(func() time.Time { return now })
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentStarted, TaskID: "task-3", Timestamp: now.Add(-4 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 0 {
+	if got := model.root.Tasks["task-3"].ReviewCount; got != 0 {
 		t.Fatalf("expected ReviewCount 0 before any review, got %d", got)
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: "task-3", Message: "approved", Timestamp: now.Add(-2 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 1 {
+	if got := model.root.Tasks["task-3"].ReviewCount; got != 1 {
 		t.Fatalf("expected ReviewCount 1 after one review_finished, got %d", got)
 	}
 
 	model.Apply(contracts.Event{Type: contracts.EventTypeReviewFinished, TaskID: "task-3", Message: "approved again", Timestamp: now.Add(-1 * time.Second)})
-	if got := model.Snapshot().Root.Tasks["task-3"].ReviewCount; got != 2 {
+	if got := model.root.Tasks["task-3"].ReviewCount; got != 2 {
 		t.Fatalf("expected ReviewCount 2 after two review_finished events, got %d", got)
 	}
 }
@@ -1147,7 +1146,7 @@ func TestTaskStateStatusBufAccumulatesLifecycleEvents(t *testing.T) {
 	model.Apply(contracts.Event{Type: contracts.EventTypeAgentFinished, TaskID: "task-6", Message: "completed", Timestamp: now.Add(-2 * time.Second)})
 	model.Apply(contracts.Event{Type: contracts.EventTypeTaskFinished, TaskID: "task-6", Message: "closed", Timestamp: now.Add(-1 * time.Second)})
 
-	task := model.Snapshot().Root.Tasks["task-6"]
+	task := model.root.Tasks["task-6"]
 	if len(task.StatusBuf) != 6 {
 		t.Fatalf("expected 6 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
 	}
@@ -1181,7 +1180,7 @@ func TestTaskStateStatusBufAccumulatesCompletedAndFailed(t *testing.T) {
 		model := NewModel(func() time.Time { return now })
 		model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-c", Timestamp: now.Add(-2 * time.Second)})
 		model.Apply(contracts.Event{Type: contracts.EventTypeTaskCompleted, TaskID: "task-c", Message: "success", Timestamp: now.Add(-1 * time.Second)})
-		task := model.Snapshot().Root.Tasks["task-c"]
+		task := model.root.Tasks["task-c"]
 		if len(task.StatusBuf) != 2 {
 			t.Fatalf("expected 2 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
 		}
@@ -1197,7 +1196,7 @@ func TestTaskStateStatusBufAccumulatesCompletedAndFailed(t *testing.T) {
 		model := NewModel(func() time.Time { return now })
 		model.Apply(contracts.Event{Type: contracts.EventTypeTaskStarted, TaskID: "task-f", Timestamp: now.Add(-2 * time.Second)})
 		model.Apply(contracts.Event{Type: contracts.EventTypeTaskFailed, TaskID: "task-f", Message: "error", Timestamp: now.Add(-1 * time.Second)})
-		task := model.Snapshot().Root.Tasks["task-f"]
+		task := model.root.Tasks["task-f"]
 		if len(task.StatusBuf) != 2 {
 			t.Fatalf("expected 2 status entries, got %d: %#v", len(task.StatusBuf), task.StatusBuf)
 		}
