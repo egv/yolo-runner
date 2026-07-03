@@ -128,6 +128,7 @@ profiles:
         token_env: STARTREK_TEST_TOKEN
         queues:
           - key: VAY
+            assignee: bot-1
             root: `+repoRoot+`
 tracker_agent:
   poll_interval: 1s
@@ -243,6 +244,7 @@ profiles:
         token_env: STARTREK_TEST_TOKEN
         queues:
           - key: VAY
+            assignee: bot-1
             root: `+repoRoot+`
 tracker_agent:
   poll_interval: 1s
@@ -374,8 +376,7 @@ func TestBuildSourceStartrekRunBundleConfiguresSourcehostOptions(t *testing.T) {
 				PollInterval: 10 * time.Second,
 				LockPath:     filepath.Join(repoRoot, ".yolo-runner", "custom-startrek.lock"),
 				Labels: trackerAgentLabelNamesConfig{
-					Ready:      "yolo-agent-ready-custom",
-					InProgress: "yolo-agent-in-progress-custom",
+					Ready: "yolo-agent-ready-custom",
 				},
 				StatusTransitions: trackerAgentStatusTransitions{
 					Ready:      "open",
@@ -444,8 +445,8 @@ func TestBuildSourceStartrekRunBundleConfiguresSourcehostOptions(t *testing.T) {
 	if source.Source.ReadyLabel != "yolo-agent-ready-custom" {
 		t.Fatalf("source ready label = %q, want yolo-agent-ready-custom", source.Source.ReadyLabel)
 	}
-	if source.Source.ProcessingLabel != "yolo-agent-in-progress-custom" {
-		t.Fatalf("source processing label = %q, want yolo-agent-in-progress-custom", source.Source.ProcessingLabel)
+	if source.Source.ProcessingLabel != "yolo-agent-in-progress" {
+		t.Fatalf("source processing label = %q, want yolo-agent-in-progress", source.Source.ProcessingLabel)
 	}
 	if source.State == nil {
 		t.Fatalf("source state is nil")
@@ -694,6 +695,10 @@ func (b *fakeSourceStartrekPollBackend) GetTaskTree(context.Context, string) (*c
 			Type:   contracts.RelationParent,
 		}},
 	}, nil
+}
+
+func (b *fakeSourceStartrekPollBackend) GetTaskTreeForQueue(ctx context.Context, opts startrek.QueueSearchOptions) (*contracts.TaskTree, error) {
+	return b.GetTaskTree(ctx, opts.QueueKey)
 }
 
 func (b *fakeSourceStartrekPollBackend) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {

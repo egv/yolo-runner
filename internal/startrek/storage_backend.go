@@ -6,35 +6,19 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 const defaultStorageReadyLabel = "yolo-agent-ready"
-const defaultStorageInProgressLabel = "yolo-agent-in-progress"
-const defaultStorageCompletedLabel = "yolo-agent-completed"
-const defaultStorageBlockedLabel = "yolo-agent-blocked"
-const defaultStorageFailedLabel = "yolo-agent-failed"
 const startrekSubtaskLabel = "agent:subtask"
 
 // StorageBackend adapts Startrek issues to the storage-only contracts.StorageBackend API.
 type StorageBackend struct {
 	client            *Client
 	readyLabel        string
-	statusLabels      statusLabelNames
 	statusTransitions StatusTransitionNames
 	searchPerPage     int
-	overrideMu        sync.RWMutex
-	statusOverrides   map[string]contracts.TaskStatus
-}
-
-type statusLabelNames struct {
-	Ready      string
-	InProgress string
-	Completed  string
-	Blocked    string
-	Failed     string
 }
 
 var _ contracts.StorageBackend = (*StorageBackend)(nil)
@@ -48,27 +32,49 @@ func NewStorageBackend(cfg Config) (*StorageBackend, error) {
 		client:            client,
 		readyLabel:        strings.TrimSpace(cfg.ReadyLabel),
 		statusTransitions: trimStatusTransitions(cfg.StatusTransitions),
-		statusOverrides:   map[string]contracts.TaskStatus{},
-		statusLabels: statusLabelNames{
-			Ready:      strings.TrimSpace(cfg.ReadyLabel),
-			InProgress: strings.TrimSpace(cfg.InProgressLabel),
-			Completed:  strings.TrimSpace(cfg.CompletedLabel),
-			Blocked:    strings.TrimSpace(cfg.BlockedLabel),
-			Failed:     strings.TrimSpace(cfg.FailedLabel),
-		},
 	}, nil
 }
 
+// QueueSearchOptions carries the per-queue discovery trigger into the backend.
+type QueueSearchOptions struct {
+	QueueKey string
+	Assignee string
+	Label    string
+}
+
+// GetTaskTreeForQueue is the discovery entry point: it searches the queue for
+// issues assigned to Assignee and carrying Label, then builds the task tree
+// from the native Startrek workflow status.
+func (b *StorageBackend) GetTaskTreeForQueue(ctx context.Context, opts QueueSearchOptions) (*contracts.TaskTree, error) {
+	if b == nil || b.client == nil {
+		return nil, errors.New("startrek storage backend is not initialized")
+	}
+	queueKey := strings.TrimSpace(opts.QueueKey)
+	if queueKey == "" {
+		return nil, errors.New("startrek queue key is required")
+	}
+	label := strings.TrimSpace(opts.Label)
+	if label == "" {
+		label = b.effectiveReadyLabel()
+	}
+	return b.buildTaskTree(ctx, queueKey, label, strings.TrimSpace(opts.Assignee))
+}
+
+// GetTaskTree satisfies contracts.StorageBackend. It is retained for callers
+// that build a tree from an explicit root without the per-queue discovery
+// trigger; discovery uses GetTaskTreeForQueue instead.
 func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*contracts.TaskTree, error) {
 	if b == nil || b.client == nil {
 		return nil, errors.New("startrek storage backend is not initialized")
 	}
-
 	queueKey = strings.TrimSpace(queueKey)
 	if queueKey == "" {
 		return nil, errors.New("startrek queue key is required")
 	}
+	return b.buildTaskTree(ctx, queueKey, b.effectiveReadyLabel(), "")
+}
 
+func (b *StorageBackend) buildTaskTree(ctx context.Context, queueKey string, label string, assignee string) (*contracts.TaskTree, error) {
 	root := contracts.Task{
 		ID:     queueKey,
 		Title:  queueKey,
@@ -80,66 +86,40 @@ func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*con
 	relations := make([]contracts.TaskRelation, 0)
 	seenRelations := map[string]struct{}{}
 
-	page := defaultIssueSearchPage
 	perPage := b.searchPerPage
 	if perPage <= 0 {
 		perPage = defaultIssueSearchPerPage
 	}
 
 	issuesBySearchID := map[string]Issue{}
-	for _, label := range b.searchStatusLabels() {
-		page = defaultIssueSearchPage
-		for {
-			result, err := b.client.SearchIssues(ctx, IssueSearchOptions{
-				QueueKey:   queueKey,
-				ReadyLabel: label,
-				Page:       page,
-				PerPage:    perPage,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("search startrek queue %q: %w", queueKey, err)
-			}
-
-			for _, issue := range result.Issues {
-				issueID := strings.TrimSpace(issue.ID)
-				if issueID == "" {
-					continue
-				}
-				issuesBySearchID[issueID] = issue
-			}
-
-			if result.TotalPages <= page || result.TotalPages <= 0 {
-				break
-			}
-			page++
-		}
-	}
-	issueKeys := make([]string, 0, len(issuesBySearchID))
-	statusOverrides := b.statusOverrideSnapshot()
-	for issueID := range statusOverrides {
-		if issueID == "" {
-			continue
-		}
-		if !strings.EqualFold(deriveQueueKey(issueID), queueKey) {
-			continue
-		}
-		if _, ok := issuesBySearchID[issueID]; ok {
-			continue
-		}
-		issue, err := b.client.GetIssue(ctx, issueID)
+	page := defaultIssueSearchPage
+	for {
+		result, err := b.client.SearchIssues(ctx, IssueSearchOptions{
+			QueueKey:   queueKey,
+			ReadyLabel: label,
+			Assignee:   assignee,
+			Page:       page,
+			PerPage:    perPage,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("get startrek issue %q with local status override: %w", issueID, err)
+			return nil, fmt.Errorf("search startrek queue %q: %w", queueKey, err)
 		}
-		resolvedID := strings.TrimSpace(issue.ID)
-		if resolvedID == "" {
-			continue
+
+		for _, issue := range result.Issues {
+			issueID := strings.TrimSpace(issue.ID)
+			if issueID == "" {
+				continue
+			}
+			issuesBySearchID[issueID] = issue
 		}
-		if !strings.EqualFold(deriveQueueKey(resolvedID), queueKey) {
-			continue
+
+		if result.TotalPages <= page || result.TotalPages <= 0 {
+			break
 		}
-		issuesBySearchID[resolvedID] = issue
+		page++
 	}
 
+	issueKeys := make([]string, 0, len(issuesBySearchID))
 	for issueID := range issuesBySearchID {
 		issueKeys = append(issueKeys, issueID)
 	}
@@ -165,10 +145,6 @@ func (b *StorageBackend) GetTaskTree(ctx context.Context, queueKey string) (*con
 		task.ID = strings.TrimSpace(task.ID)
 		if task.ID == "" {
 			continue
-		}
-		task.Status = b.taskStatusFromLabels(issue.Labels)
-		if status, ok := statusOverrides[task.ID]; ok {
-			task.Status = status
 		}
 
 		task.ParentID = startrekTreeParentID(issue, root.ID, issueIDs)
@@ -249,7 +225,6 @@ func (b *StorageBackend) GetTask(ctx context.Context, taskID string) (*contracts
 		QueueKey: queueKey,
 		RootID:   queueKey,
 	})
-	task.Status = b.taskStatusFromLabels(issue.Labels)
 	return &task, nil
 }
 
@@ -261,25 +236,7 @@ func (b *StorageBackend) SetTaskStatus(ctx context.Context, taskID string, statu
 	if taskID == "" {
 		return errors.New("startrek task ID is required")
 	}
-	addLabel, removeLabels, err := b.statusLabelTransition(status)
-	if err != nil {
-		return err
-	}
-	if err := b.transitionIssueStatus(ctx, taskID, status); err != nil {
-		return err
-	}
-	for _, label := range removeLabels {
-		if err := b.client.RemoveLabel(ctx, taskID, label); err != nil {
-			return fmt.Errorf("remove startrek status label %q from issue %q: %w", label, taskID, err)
-		}
-	}
-	if addLabel != "" {
-		if err := b.client.AddLabel(ctx, taskID, addLabel); err != nil {
-			return fmt.Errorf("add startrek status label %q to issue %q: %w", addLabel, taskID, err)
-		}
-	}
-	b.recordStatusOverride(taskID, status)
-	return nil
+	return b.transitionIssueStatus(ctx, taskID, status)
 }
 
 func (b *StorageBackend) transitionIssueStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error {
@@ -320,14 +277,8 @@ func (b *StorageBackend) issueAlreadyInTargetStatus(ctx context.Context, taskID 
 	if err != nil {
 		return false, err
 	}
-	// The workflow status is authoritative: agent labels can lag behind it,
-	// e.g. a review retry swaps in_progress -> ready labels without a
-	// configured "open" transition, leaving the issue In Progress. The next
-	// claim then has no in-progress transition to execute and must be a no-op.
-	if workflowStatusMatchesTaskStatus(issue.Status, status) {
-		return true, nil
-	}
-	return b.issueLabelsExclusivelyMarkStatus(issue.Labels, status)
+	// The native workflow status is the single source of truth for status.
+	return workflowStatusMatchesTaskStatus(issue.Status, status), nil
 }
 
 func workflowStatusMatchesTaskStatus(workflowStatus string, status contracts.TaskStatus) bool {
@@ -354,25 +305,6 @@ func workflowStatusMatchesTaskStatus(workflowStatus string, status contracts.Tas
 		}
 	}
 	return false
-}
-
-func (b *StorageBackend) issueLabelsExclusivelyMarkStatus(issueLabels []string, status contracts.TaskStatus) (bool, error) {
-	addLabel, removeLabels, err := b.statusLabelTransition(status)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(addLabel) == "" {
-		return false, nil
-	}
-	if !hasStartrekLabel(issueLabels, addLabel) {
-		return false, nil
-	}
-	for _, label := range removeLabels {
-		if hasStartrekLabel(issueLabels, label) {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 func (b *StorageBackend) statusTransition(status contracts.TaskStatus) (string, string, []string, error) {
@@ -410,172 +342,36 @@ func (b *StorageBackend) effectiveReadyLabel() string {
 	return fallbackText(b.readyLabel, defaultStorageReadyLabel)
 }
 
-func (b *StorageBackend) effectiveStatusLabels() statusLabelNames {
-	if b == nil {
-		return statusLabelNames{
-			Ready:      defaultStorageReadyLabel,
-			InProgress: defaultStorageInProgressLabel,
-			Completed:  defaultStorageCompletedLabel,
-			Blocked:    defaultStorageBlockedLabel,
-			Failed:     defaultStorageFailedLabel,
-		}
+// taskStatusFromIssueStatus maps the native Startrek workflow status key to a
+// contracts.TaskStatus. It is the inverse of workflowStatusMatchesTaskStatus
+// and the single source of truth for read-path status derivation; the 4 status
+// labels are gone.
+func taskStatusFromIssueStatus(workflowStatus string) contracts.TaskStatus {
+	workflowStatus = strings.TrimSpace(workflowStatus)
+	if workflowStatus == "" {
+		return contracts.TaskStatusOpen
 	}
-	return statusLabelNames{
-		Ready:      fallbackText(b.statusLabels.Ready, defaultStorageReadyLabel),
-		InProgress: fallbackText(b.statusLabels.InProgress, defaultStorageInProgressLabel),
-		Completed:  fallbackText(b.statusLabels.Completed, defaultStorageCompletedLabel),
-		Blocked:    fallbackText(b.statusLabels.Blocked, defaultStorageBlockedLabel),
-		Failed:     fallbackText(b.statusLabels.Failed, defaultStorageFailedLabel),
-	}
-}
-
-func (b *StorageBackend) searchStatusLabels() []string {
-	labels := b.effectiveStatusLabels()
-	return uniqueLabels([]string{labels.Ready, labels.InProgress, labels.Completed, labels.Blocked, labels.Failed})
-}
-
-func uniqueLabels(labels []string) []string {
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		label = strings.TrimSpace(label)
-		if label == "" {
-			continue
-		}
-		key := strings.ToLower(label)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, label)
-	}
-	return out
-}
-
-func (b *StorageBackend) taskStatusFromLabels(issueLabels []string) contracts.TaskStatus {
-	labels := b.effectiveStatusLabels()
 	switch {
-	case hasStartrekLabel(issueLabels, labels.Failed):
+	case equalsAnyKey(workflowStatus, "needInfo", "need_info", "failed"):
 		return contracts.TaskStatusFailed
-	case hasStartrekLabel(issueLabels, labels.Blocked):
+	case equalsAnyKey(workflowStatus, "blocked", "paused"):
 		return contracts.TaskStatusBlocked
-	case hasStartrekLabel(issueLabels, labels.Completed):
+	case equalsAnyKey(workflowStatus, "closed", "resolved", "done"):
 		return contracts.TaskStatusClosed
-	case hasStartrekLabel(issueLabels, labels.InProgress):
+	case equalsAnyKey(workflowStatus, "inProgress", "in_progress"):
 		return contracts.TaskStatusInProgress
 	default:
 		return contracts.TaskStatusOpen
 	}
 }
 
-func (b *StorageBackend) statusLabelTransition(status contracts.TaskStatus) (string, []string, error) {
-	labels := b.effectiveStatusLabels()
-	all := []string{labels.Ready, labels.InProgress, labels.Completed, labels.Blocked, labels.Failed}
-	switch status {
-	case contracts.TaskStatusOpen:
-		return labels.Ready, labelsExcept(all, labels.Ready), nil
-	case contracts.TaskStatusInProgress:
-		return labels.InProgress, labelsExcept(all, labels.InProgress), nil
-	case contracts.TaskStatusClosed:
-		return labels.Completed, labelsExcept(all, labels.Completed), nil
-	case contracts.TaskStatusBlocked:
-		return labels.Blocked, labelsExcept(all, labels.Blocked), nil
-	case contracts.TaskStatusFailed:
-		return labels.Failed, labelsExcept(all, labels.Failed), nil
-	default:
-		return "", nil, fmt.Errorf("unsupported startrek task status %q", status)
-	}
-}
-
-func (b *StorageBackend) taskStatusForLabel(label string) (contracts.TaskStatus, bool) {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return "", false
-	}
-	labels := b.effectiveStatusLabels()
-	switch {
-	case strings.EqualFold(label, labels.Ready):
-		return contracts.TaskStatusOpen, true
-	case strings.EqualFold(label, labels.InProgress):
-		return contracts.TaskStatusInProgress, true
-	case strings.EqualFold(label, labels.Completed):
-		return contracts.TaskStatusClosed, true
-	case strings.EqualFold(label, labels.Blocked):
-		return contracts.TaskStatusBlocked, true
-	case strings.EqualFold(label, labels.Failed):
-		return contracts.TaskStatusFailed, true
-	default:
-		return "", false
-	}
-}
-
-func (b *StorageBackend) recordStatusOverride(taskID string, status contracts.TaskStatus) {
-	if b == nil {
-		return
-	}
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" || status == "" {
-		return
-	}
-	b.overrideMu.Lock()
-	defer b.overrideMu.Unlock()
-	if b.statusOverrides == nil {
-		b.statusOverrides = map[string]contracts.TaskStatus{}
-	}
-	b.statusOverrides[taskID] = status
-}
-
-func (b *StorageBackend) clearStatusOverrideIf(taskID string, status contracts.TaskStatus) {
-	if b == nil {
-		return
-	}
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" || status == "" {
-		return
-	}
-	b.overrideMu.Lock()
-	defer b.overrideMu.Unlock()
-	if b.statusOverrides == nil {
-		return
-	}
-	if current, ok := b.statusOverrides[taskID]; ok && current == status {
-		delete(b.statusOverrides, taskID)
-	}
-}
-
-func (b *StorageBackend) statusOverrideSnapshot() map[string]contracts.TaskStatus {
-	if b == nil {
-		return nil
-	}
-	b.overrideMu.RLock()
-	defer b.overrideMu.RUnlock()
-	if len(b.statusOverrides) == 0 {
-		return nil
-	}
-	out := make(map[string]contracts.TaskStatus, len(b.statusOverrides))
-	for taskID, status := range b.statusOverrides {
-		out[taskID] = status
-	}
-	return out
-}
-
-func labelsExcept(labels []string, keep string) []string {
-	keep = strings.TrimSpace(keep)
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(labels))
-	for _, label := range labels {
-		label = strings.TrimSpace(label)
-		if label == "" || label == keep {
-			continue
+func equalsAnyKey(value string, keys ...string) bool {
+	for _, key := range keys {
+		if strings.EqualFold(value, key) {
+			return true
 		}
-		key := strings.ToLower(label)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, label)
 	}
-	return out
+	return false
 }
 
 func trimStatusTransitions(transitions StatusTransitionNames) StatusTransitionNames {

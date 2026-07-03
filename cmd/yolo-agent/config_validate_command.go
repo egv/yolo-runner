@@ -157,10 +157,6 @@ func validateResolvedTrackerAgentConfigDefaults(cfg trackerAgentConfig) error {
 		value string
 	}{
 		{field: "tracker_agent.labels.ready", value: cfg.Labels.Ready},
-		{field: "tracker_agent.labels.in_progress", value: cfg.Labels.InProgress},
-		{field: "tracker_agent.labels.completed", value: cfg.Labels.Completed},
-		{field: "tracker_agent.labels.blocked", value: cfg.Labels.Blocked},
-		{field: "tracker_agent.labels.failed", value: cfg.Labels.Failed},
 	}
 	for _, label := range labels {
 		if strings.TrimSpace(label.value) == "" {
@@ -211,7 +207,7 @@ func validateExplicitTrackerAgentConfigValues(repoRoot string) error {
 		return fmt.Errorf("tracker_agent.labels in %s must be a mapping", trackerConfigRelPath)
 	}
 
-	for _, labelField := range []string{"ready", "in_progress", "completed", "blocked", "failed"} {
+	for _, labelField := range []string{"ready"} {
 		if node := configValidationYAMLMappingValue(labelsNode, labelField); node != nil && strings.TrimSpace(node.Value) == "" {
 			return fmt.Errorf("tracker_agent.labels.%s in %s must not be empty", labelField, trackerConfigRelPath)
 		}
@@ -392,10 +388,6 @@ func inferConfigField(message string) string {
 		"tracker_agent.poll_interval",
 		"tracker_agent.lock_path",
 		"tracker_agent.labels.ready",
-		"tracker_agent.labels.in_progress",
-		"tracker_agent.labels.completed",
-		"tracker_agent.labels.blocked",
-		"tracker_agent.labels.failed",
 		"tracker_agent.status_transitions.ready",
 		"tracker_agent.status_transitions.in_progress",
 		"tracker_agent.status_transitions.completed",
@@ -524,14 +516,6 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set tracker_agent.lock_path to a non-empty file path, or omit it to use the default."
 	case "tracker_agent.labels.ready":
 		return "Set tracker_agent.labels.ready to a non-empty label name, or omit it to use the default."
-	case "tracker_agent.labels.in_progress":
-		return "Set tracker_agent.labels.in_progress to a non-empty label name, or omit it to use the default."
-	case "tracker_agent.labels.completed":
-		return "Set tracker_agent.labels.completed to a non-empty label name, or omit it to use the default."
-	case "tracker_agent.labels.blocked":
-		return "Set tracker_agent.labels.blocked to a non-empty label name, or omit it to use the default."
-	case "tracker_agent.labels.failed":
-		return "Set tracker_agent.labels.failed to a non-empty label name, or omit it to use the default."
 	case "tracker_agent.status_transitions.ready":
 		return "Set tracker_agent.status_transitions.ready to a Tracker transition id, set it to an empty string to disable it, or omit it to use the default."
 	case "tracker_agent.status_transitions.in_progress":

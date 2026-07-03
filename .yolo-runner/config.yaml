@@ -27,8 +27,10 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
+            assignee: genaevstratov
             root: /home/genaevstratov/arcadia
           - key: LUMI
+            assignee: genaevstratov
             root: .yolo-runner/arc-mounts/lumi
             arc_mount:
               enabled: true
@@ -46,8 +48,10 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: ADAPTABOT
+            assignee: genaevstratov
             root: /home/genaevstratov/arcadia
           - key: LUMI
+            assignee: genaevstratov
             preset: startrek-lumi
             root: /home/genaevstratov/arcadia/marvel/gena/lumi
             arc_mount:
@@ -69,12 +73,6 @@ agent:
 tracker_agent:
   poll_interval: 30s
   lock_path: .yolo-runner/tracker-agent.lock
-  labels:
-    ready: yolo-agent-ready
-    in_progress: yolo-agent-in-progress
-    completed: yolo-agent-completed
-    blocked: yolo-agent-blocked
-    failed: yolo-agent-failed
   status_transitions:
     in_progress: inProgress
     completed: closed

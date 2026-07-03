@@ -38,10 +38,6 @@ const (
 	defaultTrackerAgentPollInterval = 30 * time.Second
 	defaultTrackerAgentLockPath     = ".yolo-runner/tracker-agent.lock"
 	defaultTrackerAgentReadyLabel   = "yolo-agent-ready"
-	defaultTrackerAgentRunningLabel = "yolo-agent-in-progress"
-	defaultTrackerAgentDoneLabel    = "yolo-agent-completed"
-	defaultTrackerAgentBlockedLabel = "yolo-agent-blocked"
-	defaultTrackerAgentFailedLabel  = "yolo-agent-failed"
 
 	defaultArcReviewWatchPollInterval   = 30 * time.Second
 	defaultArcReviewWatchLockPath       = ".yolo-runner/arc-review-watch.lock"
@@ -135,6 +131,8 @@ type startrekQueueModel struct {
 	Key      string            `yaml:"key"`
 	Preset   string            `yaml:"preset,omitempty"`
 	Root     string            `yaml:"root"`
+	Assignee string            `yaml:"assignee,omitempty"`
+	Label    string            `yaml:"label,omitempty"`
 	ArcMount *startrekArcMount `yaml:"arc_mount,omitempty"`
 }
 
@@ -171,11 +169,7 @@ type trackerAgentConfigModel struct {
 }
 
 type trackerAgentLabelNamesConfig struct {
-	Ready      string `yaml:"ready,omitempty"`
-	InProgress string `yaml:"in_progress,omitempty"`
-	Completed  string `yaml:"completed,omitempty"`
-	Blocked    string `yaml:"blocked,omitempty"`
-	Failed     string `yaml:"failed,omitempty"`
+	Ready string `yaml:"ready,omitempty"`
 }
 
 type trackerAgentStatusTransitionsConfig struct {
@@ -657,10 +651,6 @@ func resolveTrackerAgentConfig(model trackerAgentConfigModel, repoRoot string) (
 	cfg.LockPath = resolveRepoLocalPath(repoRoot, cfg.LockPath)
 
 	cfg.Labels.Ready = resolveTrackerAgentLabel(model.Labels.Ready, cfg.Labels.Ready)
-	cfg.Labels.InProgress = resolveTrackerAgentLabel(model.Labels.InProgress, cfg.Labels.InProgress)
-	cfg.Labels.Completed = resolveTrackerAgentLabel(model.Labels.Completed, cfg.Labels.Completed)
-	cfg.Labels.Blocked = resolveTrackerAgentLabel(model.Labels.Blocked, cfg.Labels.Blocked)
-	cfg.Labels.Failed = resolveTrackerAgentLabel(model.Labels.Failed, cfg.Labels.Failed)
 	cfg.StatusTransitions.Ready = resolveTrackerAgentTransition(model.StatusTransitions.Ready, cfg.StatusTransitions.Ready)
 	cfg.StatusTransitions.InProgress = resolveTrackerAgentTransition(model.StatusTransitions.InProgress, cfg.StatusTransitions.InProgress)
 	cfg.StatusTransitions.Completed = resolveTrackerAgentTransition(model.StatusTransitions.Completed, cfg.StatusTransitions.Completed)
@@ -676,11 +666,7 @@ func defaultTrackerAgentConfig() trackerAgentConfig {
 		PollInterval: defaultTrackerAgentPollInterval,
 		LockPath:     defaultTrackerAgentLockPath,
 		Labels: trackerAgentLabelNamesConfig{
-			Ready:      defaultTrackerAgentReadyLabel,
-			InProgress: defaultTrackerAgentRunningLabel,
-			Completed:  defaultTrackerAgentDoneLabel,
-			Blocked:    defaultTrackerAgentBlockedLabel,
-			Failed:     defaultTrackerAgentFailedLabel,
+			Ready: defaultTrackerAgentReadyLabel,
 		},
 		StatusTransitions: trackerAgentStatusTransitions{
 			InProgress:          "inProgress",
@@ -1084,6 +1070,10 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 			if key == "" {
 				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s", fmt.Sprintf("startrek.queues[%d].key", i), profileName, trackerConfigRelPath)
 			}
+			assignee := strings.TrimSpace(model.Startrek.Queues[i].Assignee)
+			if assignee == "" {
+				return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to the Startrek user the watcher should pick up issues for", fmt.Sprintf("startrek.queues[%d].assignee", i), profileName, trackerConfigRelPath)
+			}
 			preset := strings.TrimSpace(model.Startrek.Queues[i].Preset)
 			arcMountEnabled := model.Startrek.Queues[i].ArcMount != nil && model.Startrek.Queues[i].ArcMount.Enabled
 			root := strings.TrimSpace(model.Startrek.Queues[i].Root)
@@ -1092,6 +1082,7 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 					return trackerModel{}, fmt.Errorf("%s is required for profile %q in %s; set it to an existing Arcadia root path", fmt.Sprintf("startrek.queues[%d].root", i), profileName, trackerConfigRelPath)
 				}
 				model.Startrek.Queues[i].Key = key
+				model.Startrek.Queues[i].Assignee = assignee
 				model.Startrek.Queues[i].Preset = preset
 				continue
 			}
@@ -1106,6 +1097,7 @@ func validateTrackerModel(profileName string, model trackerModel, rootID string,
 				}
 			}
 			model.Startrek.Queues[i].Key = key
+			model.Startrek.Queues[i].Assignee = assignee
 			model.Startrek.Queues[i].Root = cleanRoot
 			model.Startrek.Queues[i].Preset = preset
 		}

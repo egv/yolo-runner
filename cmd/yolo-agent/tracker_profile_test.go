@@ -349,9 +349,11 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: QUEUEA
+            assignee: bot-a
             preset: queue-a
             root: %s
           - key: QUEUEB
+            assignee: bot-b
             root: %s
 `, queueARoot, queueBRoot))
 
@@ -405,6 +407,7 @@ profiles:
         endpoint: https://st-api.example.test
         queues:
           - key: QUEUEA
+            assignee: bot-a
             root: %s
 `, queueRoot))
 
@@ -456,6 +459,7 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
+            assignee: bot-1
             arc_mount:
               enabled: true
               mount: .yolo-runner/arc-mounts/vay

@@ -301,26 +301,14 @@ func (b *StorageBackend) RemoveLabel(ctx context.Context, issueID string, label 
 	if b == nil || b.client == nil {
 		return errors.New("startrek storage backend is not initialized")
 	}
-	if err := b.client.RemoveLabel(ctx, issueID, label); err != nil {
-		return err
-	}
-	if status, ok := b.taskStatusForLabel(label); ok {
-		b.clearStatusOverrideIf(issueID, status)
-	}
-	return nil
+	return b.client.RemoveLabel(ctx, issueID, label)
 }
 
 func (b *StorageBackend) AddLabel(ctx context.Context, issueID string, label string) error {
 	if b == nil || b.client == nil {
 		return errors.New("startrek storage backend is not initialized")
 	}
-	if err := b.client.AddLabel(ctx, issueID, label); err != nil {
-		return err
-	}
-	if status, ok := b.taskStatusForLabel(label); ok {
-		b.recordStatusOverride(issueID, status)
-	}
-	return nil
+	return b.client.AddLabel(ctx, issueID, label)
 }
 
 func (b *StorageBackend) CreateIssueComment(ctx context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error) {

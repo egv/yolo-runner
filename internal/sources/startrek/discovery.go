@@ -18,14 +18,20 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
+// Queue describes one watched Startrek queue. Assignee and Label are the
+// discovery trigger: an issue is discovered iff it is assigned to Assignee AND
+// carries Label. Label defaults to "yolo-agent-ready" when empty.
 type Queue struct {
-	Key    string
-	Preset string
+	Key      string
+	Preset   string
+	Assignee string
+	Label    string
 }
 
 type DiscoveryBackend interface {
 	contracts.StorageBackend
 	ResumeNeedsInfoTasks(ctx context.Context, input trackerstartrek.NeedsInfoResumeInput) ([]string, error)
+	GetTaskTreeForQueue(ctx context.Context, opts trackerstartrek.QueueSearchOptions) (*contracts.TaskTree, error)
 }
 
 func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
@@ -67,7 +73,11 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 		}
 		resumed := resumedIssueSet(resumedIDs)
 
-		tree, err := backend.GetTaskTree(ctx, queueKey)
+		tree, err := backend.GetTaskTreeForQueue(ctx, trackerstartrek.QueueSearchOptions{
+			QueueKey: queueKey,
+			Assignee: strings.TrimSpace(queue.Assignee),
+			Label:    queueLabel(queue),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -126,6 +136,16 @@ func (s *Source) discoveryBackend() (DiscoveryBackend, error) {
 		return backend, nil
 	}
 	return nil, errors.New("startrek source backend is required")
+}
+
+// queueLabel resolves the discovery label for a queue: the per-queue Label wins,
+// falling back to the source-level ReadyLabel (which itself defaults to
+// "yolo-agent-ready" via readyLabel()).
+func queueLabel(queue Queue) string {
+	if label := strings.TrimSpace(queue.Label); label != "" {
+		return label
+	}
+	return defaultReadyLabel
 }
 
 func (s *Source) hasOpenQueueItem(sourceRef string) (bool, error) {

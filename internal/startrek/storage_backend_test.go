@@ -15,8 +15,8 @@ import (
 )
 
 func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t *testing.T) {
-	var capturedLabels []string
 	var capturedRequests []string
+	var capturedFilter map[string]any
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		capturedRequests = append(capturedRequests, req.Method+" "+req.URL.String())
 
@@ -34,7 +34,7 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 		if got := filter["queue"]; got != "VAY" {
 			t.Fatalf("expected queue filter VAY, got %#v", got)
 		}
-		capturedLabels = append(capturedLabels, strings.TrimSpace(fmt.Sprint(filter["tags"])))
+		capturedFilter = filter
 
 		return jsonResponseWithHeaders(http.StatusOK, `[
 			{
@@ -43,6 +43,7 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 				"summary": "Parent issue ready for splitting",
 				"description": "Implement the parent issue.",
 				"tags": ["yolo-agent-ready"],
+				"status": {"key": "open", "display": "Open"},
 				"createdBy": {
 					"id": "112233",
 					"display": "Ada Lovelace"
@@ -64,9 +65,13 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 		t.Fatalf("new storage backend: %v", err)
 	}
 
-	tree, err := backend.GetTaskTree(context.Background(), " VAY ")
+	tree, err := backend.GetTaskTreeForQueue(context.Background(), QueueSearchOptions{
+		QueueKey: " VAY ",
+		Assignee: "bot-1",
+		Label:    "yolo-agent-ready",
+	})
 	if err != nil {
-		t.Fatalf("GetTaskTree returned error: %v", err)
+		t.Fatalf("GetTaskTreeForQueue returned error: %v", err)
 	}
 
 	if tree.Root.ID != "VAY" {
@@ -99,22 +104,15 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 		Type:   contracts.RelationParent,
 	})
 
-	wantLabels := []string{
-		"yolo-agent-ready",
-		"yolo-agent-in-progress",
-		"yolo-agent-completed",
-		"yolo-agent-blocked",
-		"yolo-agent-failed",
+	// Discovery now issues a single search filtered by queue + label + assignee.
+	if got := capturedFilter["tags"]; got != "yolo-agent-ready" {
+		t.Fatalf("expected single search tagged yolo-agent-ready, got %#v", capturedFilter["tags"])
 	}
-	if !reflect.DeepEqual(capturedLabels, wantLabels) {
-		t.Fatalf("unexpected status label searches:\n got %#v\nwant %#v", capturedLabels, wantLabels)
+	if got := capturedFilter["assignee"]; got != "bot-1" {
+		t.Fatalf("expected assignee filter bot-1, got %#v", got)
 	}
 
 	wantRequests := []string{
-		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
-		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
-		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
-		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
 		"POST https://api.tracker.yandex.net/v3/issues/_search?page=1&perPage=50",
 	}
 	if strings.Join(capturedRequests, "\n") != strings.Join(wantRequests, "\n") {
@@ -122,58 +120,7 @@ func TestStorageBackendGetTaskTreeReturnsSyntheticQueueRootWithEligibleParent(t 
 	}
 }
 
-func TestStorageBackendSetTaskStatusMapsStatusToLabels(t *testing.T) {
-	var operations []string
-	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodPatch || req.URL.Path != "/v3/issues/VAY-42" {
-			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
-		}
-		var body struct {
-			Tags map[string][]string `json:"tags"`
-		}
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-			t.Fatalf("decode label patch: %v", err)
-		}
-		for _, label := range body.Tags["remove"] {
-			operations = append(operations, "remove "+label)
-		}
-		for _, label := range body.Tags["add"] {
-			operations = append(operations, "add "+label)
-		}
-		return jsonResponse(http.StatusOK, `{}`), nil
-	})
-
-	backend, err := NewStorageBackend(Config{
-		Endpoint:        "https://api.tracker.yandex.net/v3",
-		Token:           "tracker-token",
-		HTTPClient:      httpClient,
-		ReadyLabel:      "ready",
-		InProgressLabel: "running",
-		CompletedLabel:  "done",
-		BlockedLabel:    "blocked",
-		FailedLabel:     "failed",
-	})
-	if err != nil {
-		t.Fatalf("new storage backend: %v", err)
-	}
-
-	if err := backend.SetTaskStatus(context.Background(), " VAY-42 ", contracts.TaskStatusClosed); err != nil {
-		t.Fatalf("SetTaskStatus returned error: %v", err)
-	}
-
-	want := []string{
-		"remove ready",
-		"remove running",
-		"remove blocked",
-		"remove failed",
-		"add done",
-	}
-	if !reflect.DeepEqual(operations, want) {
-		t.Fatalf("unexpected label operations:\n got %#v\nwant %#v", operations, want)
-	}
-}
-
-func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *testing.T) {
+func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionOnly(t *testing.T) {
 	var operations []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
@@ -186,20 +133,6 @@ func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *
 			}
 			operations = append(operations, "transition close resolution="+body["resolution"])
 			return jsonResponse(http.StatusOK, `{}`), nil
-		case "PATCH /v3/issues/VAY-42":
-			var body struct {
-				Tags map[string][]string `json:"tags"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-				t.Fatalf("decode label patch: %v", err)
-			}
-			for _, label := range body.Tags["remove"] {
-				operations = append(operations, "remove "+label)
-			}
-			for _, label := range body.Tags["add"] {
-				operations = append(operations, "add "+label)
-			}
-			return jsonResponse(http.StatusOK, `{}`), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
 			return nil, nil
@@ -207,14 +140,10 @@ func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *
 	})
 
 	backend, err := NewStorageBackend(Config{
-		Endpoint:        "https://api.tracker.yandex.net/v3",
-		Token:           "tracker-token",
-		HTTPClient:      httpClient,
-		ReadyLabel:      "ready",
-		InProgressLabel: "running",
-		CompletedLabel:  "done",
-		BlockedLabel:    "blocked",
-		FailedLabel:     "failed",
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+		ReadyLabel: "ready",
 		StatusTransitions: StatusTransitionNames{
 			Completed:           "closed",
 			CompletedResolution: "fixed",
@@ -224,17 +153,14 @@ func TestStorageBackendSetTaskStatusExecutesConfiguredTransitionBeforeLabels(t *
 		t.Fatalf("new storage backend: %v", err)
 	}
 
-	if err := backend.SetTaskStatus(context.Background(), "VAY-42", contracts.TaskStatusClosed); err != nil {
+	if err := backend.SetTaskStatus(context.Background(), " VAY-42 ", contracts.TaskStatusClosed); err != nil {
 		t.Fatalf("SetTaskStatus returned error: %v", err)
 	}
 
+	// SetTaskStatus now drives only the native workflow transition; the 4 status
+	// labels are gone, so there are no PATCH/label operations.
 	want := []string{
 		"transition close resolution=fixed",
-		"remove ready",
-		"remove running",
-		"remove blocked",
-		"remove failed",
-		"add done",
 	}
 	if !reflect.DeepEqual(operations, want) {
 		t.Fatalf("unexpected operations:\n got %#v\nwant %#v", operations, want)
@@ -256,10 +182,9 @@ func TestStorageBackendSetTaskStatusDoesNotRelabelWhenTransitionFails(t *testing
 	})
 
 	backend, err := NewStorageBackend(Config{
-		Endpoint:       "https://api.tracker.yandex.net/v3",
-		Token:          "tracker-token",
-		HTTPClient:     httpClient,
-		CompletedLabel: "done",
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
 		StatusTransitions: StatusTransitionNames{
 			Completed: "closed",
 		},
@@ -295,10 +220,9 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenWorkflowAlreadySta
 				"summary": "Task",
 				"description": "",
 				"tags": ["running"],
+				"status": {"key": "inProgress", "display": "In Progress"},
 				"updatedAt": "2026-05-28T01:02:03.000+0000"
 			}`), nil
-		case "PATCH /v3/issues/VAY-42":
-			return jsonResponse(http.StatusOK, `{}`), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
 			return nil, nil
@@ -306,14 +230,10 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenWorkflowAlreadySta
 	})
 
 	backend, err := NewStorageBackend(Config{
-		Endpoint:        "https://api.tracker.yandex.net/v3",
-		Token:           "tracker-token",
-		HTTPClient:      httpClient,
-		ReadyLabel:      "ready",
-		InProgressLabel: "running",
-		CompletedLabel:  "done",
-		BlockedLabel:    "blocked",
-		FailedLabel:     "failed",
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+		ReadyLabel: "ready",
 		StatusTransitions: StatusTransitionNames{
 			InProgress: "inProgress",
 		},
@@ -326,14 +246,11 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenWorkflowAlreadySta
 		t.Fatalf("SetTaskStatus returned error: %v", err)
 	}
 
+	// No matching in-progress transition; the issue is already inProgress, so
+	// the transition is a no-op via native status. No label PATCHes occur.
 	want := []string{
 		"GET /v3/issues/VAY-42/transitions",
 		"GET /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
 	}
 	if !reflect.DeepEqual(operations, want) {
 		t.Fatalf("unexpected operations for idempotent in-progress transition:\n got %#v\nwant %#v", operations, want)
@@ -341,9 +258,9 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenWorkflowAlreadySta
 }
 
 func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenLabelsLagBehindWorkflow(t *testing.T) {
-	// Review retry swaps the in_progress label back to ready without a
-	// configured "open" workflow transition, so the next claim sees the
-	// ready label while the issue is still In Progress in the workflow.
+	// Review retry swaps the ready label back without a configured "open"
+	// workflow transition; the issue is still In Progress in the workflow, so
+	// the in-progress claim is a no-op via native status.
 	var operations []string
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		operations = append(operations, req.Method+" "+req.URL.Path)
@@ -359,8 +276,6 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenLabelsLagBehindWor
 				"status": {"key": "inProgress", "display": "In Progress"},
 				"updatedAt": "2026-05-28T01:02:03.000+0000"
 			}`), nil
-		case "PATCH /v3/issues/VAY-42":
-			return jsonResponse(http.StatusOK, `{}`), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
 			return nil, nil
@@ -368,14 +283,10 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenLabelsLagBehindWor
 	})
 
 	backend, err := NewStorageBackend(Config{
-		Endpoint:        "https://api.tracker.yandex.net/v3",
-		Token:           "tracker-token",
-		HTTPClient:      httpClient,
-		ReadyLabel:      "ready",
-		InProgressLabel: "running",
-		CompletedLabel:  "done",
-		BlockedLabel:    "blocked",
-		FailedLabel:     "failed",
+		Endpoint:   "https://api.tracker.yandex.net/v3",
+		Token:      "tracker-token",
+		HTTPClient: httpClient,
+		ReadyLabel: "ready",
 		StatusTransitions: StatusTransitionNames{
 			InProgress: "inProgress",
 		},
@@ -391,40 +302,31 @@ func TestStorageBackendSetTaskStatusInProgressIsIdempotentWhenLabelsLagBehindWor
 	want := []string{
 		"GET /v3/issues/VAY-42/transitions",
 		"GET /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
-		"PATCH /v3/issues/VAY-42",
 	}
 	if !reflect.DeepEqual(operations, want) {
 		t.Fatalf("unexpected operations for workflow-status idempotent transition:\n got %#v\nwant %#v", operations, want)
 	}
 }
 
-func TestStorageBackendGetTaskTreeIncludesLocalStatusOverrideWhenSearchLags(t *testing.T) {
+func TestStorageBackendDerivesStatusFromNativeWorkflowStatus(t *testing.T) {
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
-		case "PATCH /v3/issues/VAY-42":
-			return jsonResponse(http.StatusOK, `{}`), nil
-		case "POST /v3/issues/_search":
-			return jsonResponseWithHeaders(http.StatusOK, `[]`, http.Header{
-				"X-Total-Count": []string{"0"},
-				"X-Total-Pages": []string{"1"},
-			}), nil
 		case "GET /v3/issues/VAY-42":
 			return jsonResponse(http.StatusOK, `{
 				"id": "64200b5f7b5b7c0011223344",
 				"key": "VAY-42",
-				"summary": "Ready issue with lagged search index",
+				"summary": "In-progress issue",
 				"description": "Implement the issue.",
-				"tags": ["yolo-agent-in-progress"],
+				"tags": ["yolo-agent-ready"],
+				"status": {"key": "inProgress", "display": "In Progress"},
 				"createdBy": {
 					"id": "112233",
 					"display": "Ada Lovelace"
 				},
 				"updatedAt": "2026-05-28T01:02:03.000+0000"
 			}`), nil
+		case "GET /v3/issues/VAY-42/comments":
+			return jsonResponse(http.StatusOK, `[]`), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
 			return nil, nil
@@ -440,30 +342,14 @@ func TestStorageBackendGetTaskTreeIncludesLocalStatusOverrideWhenSearchLags(t *t
 		t.Fatalf("new storage backend: %v", err)
 	}
 
-	if err := backend.AddLabel(context.Background(), "VAY-42", "yolo-agent-ready"); err != nil {
-		t.Fatalf("AddLabel returned error: %v", err)
-	}
-
-	tree, err := backend.GetTaskTree(context.Background(), "VAY")
+	// Native workflow status is the single source of truth: an issue in
+	// inProgress maps to TaskStatusInProgress regardless of its tags.
+	task, err := backend.GetTask(context.Background(), "VAY-42")
 	if err != nil {
-		t.Fatalf("GetTaskTree returned error: %v", err)
+		t.Fatalf("GetTask returned error: %v", err)
 	}
-
-	task, ok := tree.Tasks["VAY-42"]
-	if !ok {
-		t.Fatalf("expected override issue VAY-42 in task tree, got tasks %#v", tree.Tasks)
-	}
-	if task.Status != contracts.TaskStatusOpen {
-		t.Fatalf("expected local ready override to make VAY-42 open, got %q", task.Status)
-	}
-
-	taskEngine := enginepkg.NewTaskEngine()
-	graph, err := taskEngine.BuildGraph(tree)
-	if err != nil {
-		t.Fatalf("BuildGraph returned error: %v", err)
-	}
-	if got, want := startrekSummaryIDs(taskEngine.GetNextAvailable(graph)), []string{"VAY-42"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected locally ready issue runnable, got %v want %v", got, want)
+	if task.Status != contracts.TaskStatusInProgress {
+		t.Fatalf("expected native inProgress to map to TaskStatusInProgress, got %q", task.Status)
 	}
 }
 
@@ -480,6 +366,7 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 				"summary": "Split parent issue",
 				"description": "Parent issue already split into subtasks.",
 				"tags": ["yolo-agent-ready"],
+				"status": {"key": "open", "display": "Open"},
 				"createdBy": {
 					"id": "112233",
 					"display": "Ada Lovelace"
@@ -492,6 +379,7 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 				"summary": "Implement first leaf",
 				"description": "First generated subtask.",
 				"tags": ["yolo-agent-ready", "agent:subtask"],
+				"status": {"key": "open", "display": "Open"},
 				"parent": {"key": "VAY-42"},
 				"createdBy": {
 					"id": "112233",
@@ -505,6 +393,7 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 				"summary": "Implement dependent leaf",
 				"description": "Second generated subtask.",
 				"tags": ["yolo-agent-ready", "agent:subtask", "depends-on:VAY-43"],
+				"status": {"key": "open", "display": "Open"},
 				"parent": {"key": "VAY-42"},
 				"createdBy": {
 					"id": "112233",
@@ -645,6 +534,7 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 					"summary":     "Split parent issue",
 					"description": "Parent issue already split into subtasks.",
 					"tags":        []string{"yolo-agent-ready"},
+					"status":      map[string]any{"key": "open", "display": "Open"},
 					"createdBy": map[string]any{
 						"id":      "112233",
 						"display": "Ada Lovelace",
@@ -658,6 +548,7 @@ func TestStorageBackendSplitSubtasksOrderDependenciesGateAvailability(t *testing
 					"summary":     issue.Summary,
 					"description": issue.Description,
 					"tags":        issue.Tags,
+					"status":      map[string]any{"key": "open", "display": "Open"},
 					"parent": map[string]any{
 						"key": issue.Parent,
 					},

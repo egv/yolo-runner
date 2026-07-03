@@ -344,6 +344,7 @@ profiles:
         token_env: STARTREK_TEST_TOKEN
         queues:
           - key: VAY
+            assignee: bot-1
             root: `+repoRoot+`
 `)
 	t.Setenv("STARTREK_TEST_TOKEN", "token")

@@ -22,7 +22,7 @@ func MapIssueToTask(issue Issue, comments []IssueComment, opts TaskMappingOption
 		ID:          id,
 		Title:       title,
 		Description: buildTaskDescription(issue, comments, title, queueKey, rootID),
-		Status:      contracts.TaskStatusOpen,
+		Status:      taskStatusFromIssueStatus(issue.Status),
 		ParentID:    rootID,
 	}
 }

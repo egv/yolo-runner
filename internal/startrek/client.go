@@ -43,10 +43,6 @@ type Config struct {
 	HTTPClient        HTTPClient
 	MaxResponseBytes  int64
 	ReadyLabel        string
-	InProgressLabel   string
-	CompletedLabel    string
-	BlockedLabel      string
-	FailedLabel       string
 	StatusTransitions StatusTransitionNames
 }
 
@@ -69,6 +65,7 @@ type Client struct {
 type IssueSearchOptions struct {
 	QueueKey   string
 	ReadyLabel string
+	Assignee   string
 	Page       int
 	PerPage    int
 }
@@ -157,6 +154,7 @@ func (c *Client) SearchIssues(ctx context.Context, opts IssueSearchOptions) (Iss
 	if readyLabel == "" {
 		return IssueSearchPage{}, errors.New("startrek issue search ready label is required")
 	}
+	assignee := strings.TrimSpace(opts.Assignee)
 
 	page := opts.Page
 	if page <= 0 {
@@ -167,11 +165,15 @@ func (c *Client) SearchIssues(ctx context.Context, opts IssueSearchOptions) (Iss
 		perPage = defaultIssueSearchPerPage
 	}
 
+	filter := map[string]any{
+		"queue": queueKey,
+		"tags":  readyLabel,
+	}
+	if assignee != "" {
+		filter["assignee"] = assignee
+	}
 	requestBody := map[string]any{
-		"filter": map[string]any{
-			"queue": queueKey,
-			"tags":  readyLabel,
-		},
+		"filter": filter,
 	}
 
 	var rawIssues []startrekIssueSearchItem

@@ -34,6 +34,7 @@ func TestTrackerAgentPOCRunbookDocumentsOperatorWorkflow(t *testing.T) {
 		"br sync --flush-only",
 		".yolo-runner/tracker-agent.lock",
 		"Known Limitations",
+		"assignee: genaevstratov",
 	}
 	for _, needle := range required {
 		if !strings.Contains(runbook, needle) {

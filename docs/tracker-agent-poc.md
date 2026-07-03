@@ -6,7 +6,7 @@ For production-style queue-backed operation, prefer `yolo-agent watch`; it start
 
 ## Configuration
 
-Configure the tracker profile, tracker-agent polling labels, and Arc PR landing in `.yolo-runner/config.yaml`.
+Configure the tracker profile, the per-queue discovery trigger, the tracker-agent polling, and Arc PR landing in `.yolo-runner/config.yaml`.
 
 ```yaml
 default_profile: beads
@@ -22,6 +22,8 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
+            assignee: genaevstratov       # required: pick up issues assigned to this Startrek user
+            label: yolo-agent-ready       # optional, defaults to yolo-agent-ready
             preset: startrek-poc
             root: .yolo-runner/arc-mounts/vay
             arc_mount:
@@ -43,12 +45,6 @@ agent:
 tracker_agent:
   poll_interval: 30s
   lock_path: .yolo-runner/tracker-agent.lock
-  labels:
-    ready: yolo-agent-ready
-    in_progress: yolo-agent-in-progress
-    completed: yolo-agent-completed
-    blocked: yolo-agent-blocked
-    failed: yolo-agent-failed
   status_transitions:
     in_progress: inProgress
     completed: closed
@@ -155,22 +151,22 @@ For a config-driven run, keep the same root and profile but rely on `.yolo-runne
 
 The source owns all Startrek semantics (the labels and transitions below); the runner owns workspace isolation (arc mount preparation moves to the preset's `arc-shared` materialization) and execution. Queue leases replace `scheduler-state.json` recovery.
 
-## Labels And Status Transitions
+## Discovery Trigger And Status
 
-The watcher searches each configured Startrek queue for issues with `yolo-agent-ready`. During preflight it removes `yolo-agent-ready`, adds `yolo-agent-in-progress`, then either restores `yolo-agent-ready` or applies the needs-info transition. If at least one task passes preflight, the watcher runs the normal implementation loop for that queue root and persists task status through the configured Startrek labels.
+The watcher searches each configured Startrek queue for issues that are **assigned to the queue's `assignee`** and **carry the queue's `label`** (default `yolo-agent-ready`). Both conditions must hold — this is the sole opt-in signal. During preflight it removes the label, adds `yolo-agent-in-progress`, then either restores the label or applies the needs-info transition.
+
+Task status is read from the **native Startrek workflow status**, not from labels: an issue is runnable only when its workflow status maps to Open, and it drops out of the candidate set once transitioned to In Progress or Closed. The four legacy status labels (`yolo-agent-in-progress`/`-completed`/`-blocked`/`-failed`) are gone. Only the operational labels remain: `yolo-agent-ready` (the opt-in scope marker), `yolo-agent-in-progress` (the preflight/processing marker), `needs-info`, and `agent:subtask`.
 
 For Startrek issue workflow status, `tracker_agent.status_transitions` maps runner task states to Tracker transition IDs. By default the watcher uses `inProgress` when work starts and `closed` with resolution `fixed` when a task completes. `ready`, `blocked`, and `failed` transitions are disabled by default because many queues do not have generic matching workflow transitions. Set any transition field to an empty string to disable it explicitly.
 
-Default labels:
+Operational labels:
 
-- `yolo-agent-ready`
-- `yolo-agent-in-progress`
-- `yolo-agent-completed`
-- `yolo-agent-blocked`
-- `yolo-agent-failed`
-- `needs-info`
+- `yolo-agent-ready` — the discovery opt-in tag (configurable per queue via `label`, defaults to this name)
+- `yolo-agent-in-progress` — transient preflight/processing marker, added then removed by the source
+- `needs-info` — marks an issue awaiting author input
+- `agent:subtask` — marks a generated split subtask
 
-Keep label names stable across watcher and operator reset steps. If a custom label is configured under `tracker_agent.labels`, use that configured value everywhere.
+Keep label names stable across watcher and operator reset steps. If a custom label is configured per queue (`queues[].label`), use that configured value everywhere.
 
 ## Reset Procedure
 
@@ -178,7 +174,7 @@ Use this reset when an operator stops a run or a watcher process exits midway:
 
 1. Stop `yolo-agent watch` and any long-lived `yolo-agent tracker-watch` or `source startrek` process.
 2. Remove stale lock files: `rm -f .yolo-runner/tracker-agent.lock`.
-3. For interrupted Startrek issues, remove `yolo-agent-in-progress`; re-add `yolo-agent-ready` only when the issue should be retried.
+3. For interrupted Startrek issues, remove `yolo-agent-in-progress`; re-add the queue's label (default `yolo-agent-ready`) only when the issue should be retried.
 4. If a preflight question was posted, leave `needs-info` in place until the author replies.
 5. Reset interrupted beads tasks to open, then flush local bead state:
 
@@ -193,11 +189,11 @@ br sync --flush-only
 rm -rf .yolo-runner/clones/<task-id>
 ```
 
-Queue-backed runs recover from queue leases, and the tracker source reconciles from Startrek labels on restart. `scheduler-state.json` is no longer written.
+Queue-backed runs recover from queue leases, and the tracker source reconciles from Startrek on restart. `scheduler-state.json` is no longer written.
 
 ## Known Limitations
 
 - Arc PR landing requires a working local `arc` CLI. With `arc_mount.enabled`, the watcher creates the Arcadia root before running preflight and implementation; without it, `root` must point to an existing Arcadia checkout/mount.
-- Startrek status updates are label-driven in this PoC, so manual label edits can make a task eligible or hidden from the watcher.
+- Discovery requires the issue to be assigned to the configured `assignee`; unassigned or differently-assigned issues are invisible to the watcher even if they carry the label.
 - The watcher lock is local to the repo checkout. Multiple checkouts can still run competing watchers if operators start them independently.
 - Dry-run mode validates command wiring but intentionally skips Startrek mutations.

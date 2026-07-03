@@ -37,6 +37,7 @@ type sourceStartrekConfigResolver interface {
 type sourceStartrekBackend interface {
 	trackerWatchStartrekBackend
 	ResumeNeedsInfoTasks(ctx context.Context, input startrek.NeedsInfoResumeInput) ([]string, error)
+	GetTaskTreeForQueue(ctx context.Context, opts startrek.QueueSearchOptions) (*contracts.TaskTree, error)
 }
 
 type sourceStartrekRuntimeSource struct {
@@ -181,7 +182,7 @@ func buildSourceStartrekRunBundle(ctx context.Context, cfg sourceStartrekCommand
 			Queues:          sourceStartrekQueues(profile.Tracker.Startrek.Queues),
 			Preset:          cfg.profile,
 			ReadyLabel:      trackerAgentConfig.Labels.Ready,
-			ProcessingLabel: trackerAgentConfig.Labels.InProgress,
+			ProcessingLabel: trackerWatchStartrekProcessingLabel,
 			NeedsInfoLabel:  trackerWatchStartrekNeedsInfoLabel,
 			Marker:          trackerWatchStartrekNeedsInfoMarker,
 			SubtaskLabel:    "agent:subtask",
@@ -289,8 +290,10 @@ func sourceStartrekQueues(queues []startrekQueueModel) []startreksource.Queue {
 	out := make([]startreksource.Queue, 0, len(queues))
 	for _, queue := range queues {
 		out = append(out, startreksource.Queue{
-			Key:    queue.Key,
-			Preset: queue.Preset,
+			Key:      queue.Key,
+			Preset:   queue.Preset,
+			Assignee: queue.Assignee,
+			Label:    queue.Label,
 		})
 	}
 	return out

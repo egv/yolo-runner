@@ -22,6 +22,7 @@ const (
 	trackerWatchStartrekNeedsInfoLabel                 = "needs-info"
 	trackerWatchStartrekNeedsInfoMarker                = "needs-info"
 	trackerWatchStartrekSplitVersion                   = "strict-v1"
+	trackerWatchStartrekProcessingLabel                = "yolo-agent-in-progress"
 )
 
 type trackerWatchLock struct {
@@ -259,13 +260,9 @@ func buildTrackerWatchStartrekBackend(profile resolvedTrackerProfile, trackerAge
 		token = os.Getenv(tokenEnv)
 	}
 	backend, err := startrek.NewStorageBackend(startrek.Config{
-		Endpoint:        profile.Tracker.Startrek.Endpoint,
-		Token:           token,
-		ReadyLabel:      trackerAgentConfig.Labels.Ready,
-		InProgressLabel: trackerAgentConfig.Labels.InProgress,
-		CompletedLabel:  trackerAgentConfig.Labels.Completed,
-		BlockedLabel:    trackerAgentConfig.Labels.Blocked,
-		FailedLabel:     trackerAgentConfig.Labels.Failed,
+		Endpoint:   profile.Tracker.Startrek.Endpoint,
+		Token:      token,
+		ReadyLabel: trackerAgentConfig.Labels.Ready,
 		StatusTransitions: startrek.StatusTransitionNames{
 			Ready:               trackerAgentConfig.StatusTransitions.Ready,
 			InProgress:          trackerAgentConfig.StatusTransitions.InProgress,

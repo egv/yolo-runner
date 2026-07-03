@@ -141,7 +141,6 @@ tracker_agent:
   lock_path: locks/tracker-agent.lock
   labels:
     ready: custom-ready
-    in_progress: custom-running
   status_transitions:
     in_progress: start
     completed: finish
@@ -162,18 +161,6 @@ tracker_agent:
 	}
 	if cfg.Labels.Ready != "custom-ready" {
 		t.Fatalf("expected custom ready label, got %q", cfg.Labels.Ready)
-	}
-	if cfg.Labels.InProgress != "custom-running" {
-		t.Fatalf("expected custom in-progress label, got %q", cfg.Labels.InProgress)
-	}
-	if cfg.Labels.Completed != "yolo-agent-completed" {
-		t.Fatalf("expected default completed label, got %q", cfg.Labels.Completed)
-	}
-	if cfg.Labels.Blocked != "yolo-agent-blocked" {
-		t.Fatalf("expected default blocked label, got %q", cfg.Labels.Blocked)
-	}
-	if cfg.Labels.Failed != "yolo-agent-failed" {
-		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
 	}
 	if cfg.StatusTransitions.InProgress != "start" {
 		t.Fatalf("expected custom in-progress transition, got %q", cfg.StatusTransitions.InProgress)
@@ -211,18 +198,6 @@ profiles:
 	}
 	if cfg.Labels.Ready != "yolo-agent-ready" {
 		t.Fatalf("expected default ready label, got %q", cfg.Labels.Ready)
-	}
-	if cfg.Labels.InProgress != "yolo-agent-in-progress" {
-		t.Fatalf("expected default in-progress label, got %q", cfg.Labels.InProgress)
-	}
-	if cfg.Labels.Completed != "yolo-agent-completed" {
-		t.Fatalf("expected default completed label, got %q", cfg.Labels.Completed)
-	}
-	if cfg.Labels.Blocked != "yolo-agent-blocked" {
-		t.Fatalf("expected default blocked label, got %q", cfg.Labels.Blocked)
-	}
-	if cfg.Labels.Failed != "yolo-agent-failed" {
-		t.Fatalf("expected default failed label, got %q", cfg.Labels.Failed)
 	}
 	if cfg.StatusTransitions.InProgress != "inProgress" {
 		t.Fatalf("expected default in-progress transition, got %q", cfg.StatusTransitions.InProgress)

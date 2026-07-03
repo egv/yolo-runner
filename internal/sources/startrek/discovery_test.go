@@ -374,6 +374,10 @@ func (f *fakeStartrekDiscoveryBackend) GetTaskTree(_ context.Context, queueKey s
 	return &tree, nil
 }
 
+func (f *fakeStartrekDiscoveryBackend) GetTaskTreeForQueue(ctx context.Context, opts trackerstartrek.QueueSearchOptions) (*contracts.TaskTree, error) {
+	return f.GetTaskTree(ctx, opts.QueueKey)
+}
+
 func (f *fakeStartrekDiscoveryBackend) GetTask(_ context.Context, taskID string) (*contracts.Task, error) {
 	task := f.details[taskID]
 	task.Metadata = cloneStartrekStringMap(task.Metadata)

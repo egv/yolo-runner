@@ -172,6 +172,8 @@ profiles:
         token_env: STARTREK_TOKEN
         queues:
           - key: VAY
+            assignee: genaevstratov   # required: pick up issues assigned to this Startrek user
+            label: yolo-agent-ready   # optional, defaults to yolo-agent-ready
             preset: adapta
             root: ~/arcadia/marvel/gena/adapta
   arc-review:
@@ -180,12 +182,6 @@ profiles:
 
 tracker_agent:
   poll_interval: 30s
-  labels:
-    ready: yolo-agent-ready
-    in_progress: yolo-agent-in-progress
-    completed: yolo-agent-completed
-    blocked: yolo-agent-blocked
-    failed: yolo-agent-failed
 
 arc_review_watch:
   poll_interval: 30s
