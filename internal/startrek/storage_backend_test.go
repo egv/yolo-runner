@@ -378,7 +378,7 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 				"key": "VAY-43",
 				"summary": "Implement first leaf",
 				"description": "First generated subtask.",
-				"tags": ["yolo-agent-ready", "agent:subtask"],
+				"tags": ["yolo-agent-ready"],
 				"status": {"key": "open", "display": "Open"},
 				"parent": {"key": "VAY-42"},
 				"createdBy": {
@@ -392,9 +392,10 @@ func TestStorageBackendGetTaskTreeExpandsSplitSubtasksAndSkipsParentAsWork(t *te
 				"key": "VAY-44",
 				"summary": "Implement dependent leaf",
 				"description": "Second generated subtask.",
-				"tags": ["yolo-agent-ready", "agent:subtask", "depends-on:VAY-43"],
+				"tags": ["yolo-agent-ready"],
 				"status": {"key": "open", "display": "Open"},
 				"parent": {"key": "VAY-42"},
+				"dependsOn": [{"key": "VAY-43"}],
 				"createdBy": {
 					"id": "112233",
 					"display": "Ada Lovelace"

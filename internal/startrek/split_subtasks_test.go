@@ -61,7 +61,7 @@ func TestSplitSubtaskCreationServiceCreatesTrackerSubtasksWithBodiesLabelsAndLin
 	if first.QueueKey != "VAY" || first.ParentID != "VAY-42" || first.Title != "T20 Invoke strict splitter" {
 		t.Fatalf("unexpected first create options: %#v", first)
 	}
-	if got, want := first.Labels, []string{"yolo-agent-ready", "agent:subtask"}; !reflect.DeepEqual(got, want) {
+	if got, want := first.Labels, []string{"yolo-agent-ready"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected first labels:\n got %#v\nwant %#v", got, want)
 	}
 	for _, want := range []string{
@@ -84,7 +84,7 @@ func TestSplitSubtaskCreationServiceCreatesTrackerSubtasksWithBodiesLabelsAndLin
 	if second.QueueKey != "VAY" || second.ParentID != "VAY-42" || second.Title != "T21 Parse strict splitter output" {
 		t.Fatalf("unexpected second create options: %#v", second)
 	}
-	if got, want := second.Labels, []string{"yolo-agent-ready", "agent:subtask"}; !reflect.DeepEqual(got, want) {
+	if got, want := second.Labels, []string{"yolo-agent-ready"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected second labels:\n got %#v\nwant %#v", got, want)
 	}
 	if got, want := tracker.links, []IssueLinkCreateOptions{

@@ -38,9 +38,8 @@ type SplitSubtaskCreationTracker interface {
 }
 
 type SplitSubtaskCreationService struct {
-	Tracker      SplitSubtaskCreationTracker
-	ReadyLabel   string
-	SubtaskLabel string
+	Tracker    SplitSubtaskCreationTracker
+	ReadyLabel string
 }
 
 type SplitSubtasksInput struct {
@@ -93,7 +92,7 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 			ParentID:    parentID,
 			Title:       splitSubtaskTitle(task),
 			Description: buildSplitSubtaskBody(task, splitSubtaskContext(input, tasks, task)),
-			Labels:      splitSubtaskLabels(s.effectiveReadyLabel(), s.effectiveSubtaskLabel()),
+			Labels:      []string{s.effectiveReadyLabel()},
 		})
 		if err != nil {
 			return SplitSubtasksResult{}, fmt.Errorf("create startrek subtask for split task %q: %w", taskID, err)
@@ -122,10 +121,6 @@ func (s SplitSubtaskCreationService) Create(ctx context.Context, input SplitSubt
 
 func (s SplitSubtaskCreationService) effectiveReadyLabel() string {
 	return fallbackText(s.ReadyLabel, defaultStorageReadyLabel)
-}
-
-func (s SplitSubtaskCreationService) effectiveSubtaskLabel() string {
-	return fallbackText(s.SubtaskLabel, startrekSubtaskLabel)
 }
 
 func (c *Client) CreateIssue(ctx context.Context, opts IssueCreateOptions) (Issue, error) {
@@ -593,26 +588,6 @@ func normalizedSplitItems(items []string) []string {
 		}
 	}
 	return normalized
-}
-
-func splitSubtaskLabels(readyLabel string, subtaskLabel string) []string {
-	labels := make([]string, 0, 2)
-	seen := map[string]struct{}{}
-	appendLabel := func(label string) {
-		label = strings.TrimSpace(label)
-		if label == "" {
-			return
-		}
-		if _, ok := seen[label]; ok {
-			return
-		}
-		seen[label] = struct{}{}
-		labels = append(labels, label)
-	}
-
-	appendLabel(readyLabel)
-	appendLabel(subtaskLabel)
-	return labels
 }
 
 func splitDependencyIssueIDs(dependsOn []string, createdIssueIDs map[string]string) []string {

@@ -71,7 +71,6 @@ func TestTrackerWatchSplitToPRIntegrationCreatesOneParentPRComment(t *testing.T)
 	splitResult, err := (startrek.IdempotentSplitSubtaskCreationService{
 		Tracker:      storage,
 		ReadyLabel:   "yolo-agent-ready",
-		SubtaskLabel: "agent:subtask",
 		SplitVersion: "strict-v1",
 	}).Create(ctx, startrek.SplitSubtasksInput{
 		QueueKey: "VAY",

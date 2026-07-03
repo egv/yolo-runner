@@ -236,67 +236,7 @@ func (s *Source) preflightParentID(queueRoot contracts.Task, task contracts.Task
 	if parentID != "" && !strings.EqualFold(parentID, rootID) {
 		return parentID
 	}
-	if !s.taskHasSubtaskLabel(task) {
-		return ""
-	}
-	for _, dependencyID := range taskDependencyIDs(task) {
-		if dependencyID == "" || strings.EqualFold(dependencyID, rootID) || strings.EqualFold(dependencyID, strings.TrimSpace(task.ID)) {
-			continue
-		}
-		if dependencyTask, ok := tasks[dependencyID]; ok {
-			dependencyParentID := strings.TrimSpace(dependencyTask.ParentID)
-			if dependencyParentID != "" && !strings.EqualFold(dependencyParentID, rootID) {
-				continue
-			}
-		}
-		return dependencyID
-	}
 	return ""
-}
-
-func (s *Source) taskHasSubtaskLabel(task contracts.Task) bool {
-	label := fallbackSourceText(s.SubtaskLabel, defaultSplitSubtaskLabel)
-	for _, token := range taskDescriptionTokens(task) {
-		if strings.EqualFold(strings.Trim(token, ".,;"), label) {
-			return true
-		}
-	}
-	return false
-}
-
-func taskDependencyIDs(task contracts.Task) []string {
-	seen := map[string]struct{}{}
-	ids := make([]string, 0)
-	for _, raw := range strings.Split(task.Metadata["dependencies"], ",") {
-		ids = appendUniqueTaskDependencyID(ids, seen, raw)
-	}
-	for _, token := range taskDescriptionTokens(task) {
-		dependencyID, ok := strings.CutPrefix(strings.TrimSpace(token), "depends-on:")
-		if !ok {
-			continue
-		}
-		ids = appendUniqueTaskDependencyID(ids, seen, dependencyID)
-	}
-	return ids
-}
-
-func taskDescriptionTokens(task contracts.Task) []string {
-	return strings.FieldsFunc(task.Description, func(r rune) bool {
-		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
-	})
-}
-
-func appendUniqueTaskDependencyID(ids []string, seen map[string]struct{}, raw string) []string {
-	id := strings.Trim(strings.TrimSpace(raw), ".,;")
-	if id == "" {
-		return ids
-	}
-	key := strings.ToLower(id)
-	if _, ok := seen[key]; ok {
-		return ids
-	}
-	seen[key] = struct{}{}
-	return append(ids, id)
 }
 
 func (s *Source) preflightSubmission(ctx context.Context, queue Queue, task contracts.Task, queueRoot contracts.Task, graphPriority *int, resumed bool) (workqueue.Submission, error) {

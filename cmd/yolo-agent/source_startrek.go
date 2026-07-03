@@ -185,7 +185,6 @@ func buildSourceStartrekRunBundle(ctx context.Context, cfg sourceStartrekCommand
 			ProcessingLabel: trackerWatchStartrekProcessingLabel,
 			NeedsInfoLabel:  trackerWatchStartrekNeedsInfoLabel,
 			Marker:          trackerWatchStartrekNeedsInfoMarker,
-			SubtaskLabel:    "agent:subtask",
 			SplitVersion:    trackerWatchStartrekSplitVersion,
 		},
 		Backend: backend,

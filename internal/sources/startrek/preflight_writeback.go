@@ -56,7 +56,6 @@ type Source struct {
 	ProcessingLabel string
 	NeedsInfoLabel  string
 	Marker          string
-	SubtaskLabel    string
 	SplitVersion    string
 }
 

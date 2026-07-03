@@ -29,8 +29,7 @@ const (
 )
 
 var (
-	startrekDependencyDirectivePattern = regexp.MustCompile(`(?i)\b(?:depends[-_ ]?on|blocked[-_ ]?by|deps?)\s*:\s*(.+)$`)
-	startrekIssueKeyPattern            = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*-\d+\b`)
+	startrekIssueKeyPattern = regexp.MustCompile(`(?i)\b[A-Z][A-Z0-9_]*-\d+\b`)
 )
 
 type HTTPClient interface {
@@ -949,23 +948,7 @@ func startrekDependencyIDs(raw startrekIssueSearchItem) []string {
 	for _, ref := range raw.BlockedBy {
 		ids = append(ids, issueRefTaskID(ref))
 	}
-	ids = append(ids, parseStartrekDependencyDirectives(raw.Tags)...)
-	ids = append(ids, parseStartrekDependencyDirectives([]string{raw.Description})...)
 	return normalizedIssueIDs(ids)
-}
-
-func parseStartrekDependencyDirectives(values []string) []string {
-	ids := make([]string, 0)
-	for _, value := range values {
-		for _, line := range strings.Split(value, "\n") {
-			matches := startrekDependencyDirectivePattern.FindStringSubmatch(line)
-			if len(matches) != 2 {
-				continue
-			}
-			ids = append(ids, startrekIssueKeyPattern.FindAllString(matches[1], -1)...)
-		}
-	}
-	return ids
 }
 
 func normalizedIssueIDs(raw []string) []string {

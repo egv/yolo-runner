@@ -50,7 +50,6 @@ func TestSourceHandleSplitResultCreatesSubtasksEnqueuesImplementDepsAndRecordsSt
 		State:        state,
 		Queue:        queue,
 		ReadyLabel:   "yolo-agent-ready",
-		SubtaskLabel: "agent:subtask",
 		SplitVersion: "strict-v1",
 	}
 
@@ -105,8 +104,8 @@ func TestSourceHandleSplitResultCreatesSubtasksEnqueuesImplementDepsAndRecordsSt
 	if got, want := len(tracker.creates), 2; got != want {
 		t.Fatalf("created subtasks = %d, want %d", got, want)
 	}
-	if !containsString(tracker.creates[0].Labels, "yolo-agent-ready") || !containsString(tracker.creates[0].Labels, "agent:subtask") {
-		t.Fatalf("first subtask labels = %#v, want ready and subtask labels", tracker.creates[0].Labels)
+	if !containsString(tracker.creates[0].Labels, "yolo-agent-ready") {
+		t.Fatalf("first subtask labels = %#v, want ready label", tracker.creates[0].Labels)
 	}
 	if containsString(tracker.creates[1].Labels, "depends-on:VAY-43") {
 		t.Fatalf("second subtask labels = %#v, did not expect dependency tag", tracker.creates[1].Labels)

@@ -11,7 +11,6 @@ import (
 )
 
 const defaultStorageReadyLabel = "yolo-agent-ready"
-const startrekSubtaskLabel = "agent:subtask"
 
 // StorageBackend adapts Startrek issues to the storage-only contracts.StorageBackend API.
 type StorageBackend struct {
@@ -386,8 +385,8 @@ func trimStatusTransitions(transitions StatusTransitionNames) StatusTransitionNa
 }
 
 func startrekTreeParentID(issue Issue, rootID string, issueIDs map[string]struct{}) string {
-	if hasStartrekLabel(issue.Labels, startrekSubtaskLabel) {
-		parentID := strings.TrimSpace(issue.ParentID)
+	parentID := strings.TrimSpace(issue.ParentID)
+	if parentID != "" {
 		if _, ok := issueIDs[parentID]; ok {
 			return parentID
 		}

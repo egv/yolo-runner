@@ -171,7 +171,6 @@ type IdempotentSplitSubtaskCreationTracker interface {
 type IdempotentSplitSubtaskCreationService struct {
 	Tracker      IdempotentSplitSubtaskCreationTracker
 	ReadyLabel   string
-	SubtaskLabel string
 	SplitVersion string
 }
 
@@ -210,9 +209,8 @@ func (s IdempotentSplitSubtaskCreationService) Create(ctx context.Context, input
 	}
 
 	result, err := SplitSubtaskCreationService{
-		Tracker:      s.Tracker,
-		ReadyLabel:   s.ReadyLabel,
-		SubtaskLabel: s.SubtaskLabel,
+		Tracker:    s.Tracker,
+		ReadyLabel: s.ReadyLabel,
 	}.Create(ctx, input)
 	if err != nil {
 		return SplitSubtasksResult{}, err

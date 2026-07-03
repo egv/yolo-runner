@@ -16,8 +16,6 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
-const defaultSplitSubtaskLabel = "agent:subtask"
-
 type SplitSubtaskItemRecord struct {
 	ParentIssueID           string    `json:"parent_issue_id"`
 	SplitTaskID             string    `json:"split_task_id"`
@@ -79,7 +77,6 @@ func (s *Source) handleSplitResult(ctx context.Context, item workitem.Item, resu
 	subtasks, err := (trackerstartrek.IdempotentSplitSubtaskCreationService{
 		Tracker:      tracker,
 		ReadyLabel:   s.readyLabel(),
-		SubtaskLabel: s.subtaskLabel(),
 		SplitVersion: s.splitVersion(),
 	}).Create(ctx, trackerstartrek.SplitSubtasksInput{
 		QueueKey:          queueKey,
@@ -207,10 +204,6 @@ WHERE parent_issue_id = ? AND subtask_issue_id = ?`,
 	record.CreatedAt = parseSourceStateTime(createdAt)
 	record.UpdatedAt = parseSourceStateTime(updatedAt)
 	return record, true, nil
-}
-
-func (s *Source) subtaskLabel() string {
-	return fallbackSourceText(s.SubtaskLabel, defaultSplitSubtaskLabel)
 }
 
 func (s *Source) splitVersion() string {
