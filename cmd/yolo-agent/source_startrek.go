@@ -183,7 +183,6 @@ func buildSourceStartrekRunBundle(ctx context.Context, cfg sourceStartrekCommand
 			Preset:          cfg.profile,
 			ReadyLabel:      trackerAgentConfig.Labels.Ready,
 			ProcessingLabel: trackerWatchStartrekProcessingLabel,
-			NeedsInfoLabel:  trackerWatchStartrekNeedsInfoLabel,
 			Marker:          trackerWatchStartrekNeedsInfoMarker,
 			SplitVersion:    trackerWatchStartrekSplitVersion,
 		},

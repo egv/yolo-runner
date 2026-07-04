@@ -74,8 +74,10 @@ tracker_agent:
   poll_interval: 30s
   lock_path: .yolo-runner/tracker-agent.lock
   status_transitions:
-    in_progress: inProgress
-    completed: closed
+    in_progress: start_progress
+    blocked: need_info
+    ready: provide_info
+    completed: close
     completed_resolution: fixed
 landing:
   type: git

@@ -594,6 +594,15 @@ func (f *fakeTrackerWatchStartrek) handle(w http.ResponseWriter, r *http.Request
 		f.writeJSON(w, http.StatusOK, f.issueSnapshot())
 	case r.Method == http.MethodGet && r.URL.Path == "/issues/VAY-42/comments":
 		f.writeJSON(w, http.StatusOK, f.commentsSnapshot())
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/issues/VAY-42/transitions"):
+		f.writeJSON(w, http.StatusOK, []map[string]any{
+			{"id": "start_progress"},
+			{"id": "need_info"},
+			{"id": "provide_info"},
+			{"id": "close"},
+		})
+	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/transitions/") && strings.HasSuffix(r.URL.Path, "/_execute"):
+		f.handleTransitionExecute(w, r)
 	case r.Method == http.MethodPatch && r.URL.Path == "/issues/VAY-42":
 		f.handleLabelPatch(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/issues/VAY-42/comments":
@@ -601,6 +610,48 @@ func (f *fakeTrackerWatchStartrek) handle(w http.ResponseWriter, r *http.Request
 	default:
 		f.t.Fatalf("unexpected Startrek request: %s %s", r.Method, r.URL.String())
 	}
+}
+
+func transitionToStatusKey(transitionID string) string {
+	switch transitionID {
+	case "need_info":
+		return "needInfo"
+	case "start_progress":
+		return "inProgress"
+	case "provide_info":
+		return "open"
+	case "close":
+		return "closed"
+	default:
+		return ""
+	}
+}
+
+func (f *fakeTrackerWatchStartrek) handleTransitionExecute(w http.ResponseWriter, r *http.Request) {
+	// path: /issues/VAY-42/transitions/<id>/_execute
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	transitionID := ""
+	if len(parts) >= 4 {
+		transitionID = parts[3]
+	}
+	statusKey := transitionToStatusKey(transitionID)
+
+	f.mu.Lock()
+	f.issue["status"] = map[string]any{"key": statusKey, "display": statusKey}
+	f.mu.Unlock()
+
+	f.writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func (f *fakeTrackerWatchStartrek) status(issueID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	status, _ := f.issue["status"].(map[string]any)
+	if status == nil {
+		return ""
+	}
+	key, _ := status["key"].(string)
+	return key
 }
 
 func (f *fakeTrackerWatchStartrek) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -614,9 +665,21 @@ func (f *fakeTrackerWatchStartrek) handleSearch(w http.ResponseWriter, r *http.R
 		f.t.Fatalf("expected VAY queue search, got %q", got)
 	}
 	label := strings.TrimSpace(fmt.Sprint(payload.Filter["tags"]))
+	statusFilter := strings.TrimSpace(fmt.Sprint(payload.Filter["status"]))
 
 	f.mu.Lock()
-	include := hasLabel(mapStringSlice(f.issue["tags"]), label)
+	issueStatus := ""
+	if status, _ := f.issue["status"].(map[string]any); status != nil {
+		issueStatus, _ = status["key"].(string)
+	}
+	// Resume searches by status (needInfo) with no tag filter; discovery
+	// searches by tag (yolo-agent-ready). Match whichever is requested.
+	include := false
+	if statusFilter != "" && statusFilter != "<nil>" {
+		include = issueStatus == statusFilter
+	} else {
+		include = hasLabel(mapStringSlice(f.issue["tags"]), label)
+	}
 	issue := cloneJSONMap(f.issue)
 	f.mu.Unlock()
 

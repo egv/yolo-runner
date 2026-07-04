@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 func TestNeedsInfoTransitionServiceAppliesLabelsCommentAndMarkerData(t *testing.T) {
@@ -31,7 +33,7 @@ func TestNeedsInfoTransitionServiceAppliesLabelsCommentAndMarkerData(t *testing.
 
 	wantOps := []string{
 		"remove VAY-42 processing",
-		"add VAY-42 needs-info",
+		"transition VAY-42 blocked",
 		"comment VAY-42",
 		"data VAY-42",
 	}
@@ -197,6 +199,11 @@ func (f *fakeNeedsInfoTransitionTracker) CreateIssueComment(_ context.Context, i
 func (f *fakeNeedsInfoTransitionTracker) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
 	f.ops = append(f.ops, "data "+taskID)
 	f.data = data
+	return nil
+}
+
+func (f *fakeNeedsInfoTransitionTracker) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
+	f.ops = append(f.ops, "transition "+taskID+" "+string(status))
 	return nil
 }
 

@@ -91,7 +91,7 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 					"data VAY-44 completion_retry_count=2 decision=blocked landing_status=blocked reason=needs a product decision triage_reason=needs a product decision triage_status=blocked",
 					"status VAY-44 blocked",
 					"remove VAY-44 yolo-agent-in-progress",
-					"add VAY-44 needs-info",
+					"status VAY-44 blocked",
 					"comment VAY-44 marker=needs-info author=author-44",
 					"data VAY-44 needs_info_marker=needs-info needs_info_marker_comment_id=comment-1 needs_info_marker_created_at=2026-06-12T12:00:01Z",
 				},
@@ -127,7 +127,7 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 					"data VAY-46 decision=blocked reason=runner timeout after 20m0s triage_reason=runner timeout after 20m0s triage_status=blocked",
 					"status VAY-46 blocked",
 					"remove VAY-46 yolo-agent-in-progress",
-					"add VAY-46 needs-info",
+					"status VAY-46 blocked",
 					"comment VAY-46 marker=needs-info author=author-46",
 					"data VAY-46 needs_info_marker=needs-info needs_info_marker_comment_id=comment-1 needs_info_marker_created_at=2026-06-12T12:00:01Z",
 				},
@@ -194,7 +194,6 @@ func TestSourceHandleImplementResultWritesStatusCommentsAndFinalizeOnce(t *testi
 					Tracker:         tracker,
 					State:           state,
 					ProcessingLabel: "yolo-agent-in-progress",
-					NeedsInfoLabel:  "needs-info",
 				}
 
 				item := implementWritebackItem(t, "item-"+tt.taskID, tt.taskID, "st/"+tt.taskID+"/implement/rev7", contracts.Task{

@@ -133,6 +133,12 @@ profiles:
 tracker_agent:
   poll_interval: 1s
   lock_path: .yolo-runner/source-startrek.lock
+  status_transitions:
+    in_progress: start_progress
+    blocked: need_info
+    ready: provide_info
+    completed: close
+    completed_resolution: fixed
 `)
 
 	runCalled := false
@@ -249,6 +255,12 @@ profiles:
 tracker_agent:
   poll_interval: 1s
   lock_path: .yolo-runner/source-startrek.lock
+  status_transitions:
+    in_progress: start_progress
+    blocked: need_info
+    ready: provide_info
+    completed: close
+    completed_resolution: fixed
 `)
 
 	runOnce := func(phase string) {
@@ -304,8 +316,9 @@ tracker_agent:
 	if hasLabel(labels, "yolo-agent-in-progress") {
 		t.Fatalf("expected needs-info writeback to remove in-progress label, got %#v", labels)
 	}
-	if !hasLabel(labels, "needs-info") {
-		t.Fatalf("expected needs-info writeback to add needs-info label, got %#v", labels)
+	// needs-info is now the native needInfo workflow status, not a tag.
+	if got := startrek.status("VAY-42"); got != "needInfo" {
+		t.Fatalf("expected needs-info writeback to transition issue to needInfo status, got %q", got)
 	}
 	if got := countNeedsInfoComments(startrek.commentTexts()); got != 1 {
 		t.Fatalf("needs-info marker comments = %d, want 1", got)

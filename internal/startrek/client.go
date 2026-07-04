@@ -65,6 +65,7 @@ type IssueSearchOptions struct {
 	QueueKey   string
 	ReadyLabel string
 	Assignee   string
+	Status     string
 	Page       int
 	PerPage    int
 }
@@ -150,8 +151,9 @@ func (c *Client) SearchIssues(ctx context.Context, opts IssueSearchOptions) (Iss
 		return IssueSearchPage{}, errors.New("startrek issue search queue key is required")
 	}
 	readyLabel := strings.TrimSpace(opts.ReadyLabel)
-	if readyLabel == "" {
-		return IssueSearchPage{}, errors.New("startrek issue search ready label is required")
+	status := strings.TrimSpace(opts.Status)
+	if readyLabel == "" && status == "" {
+		return IssueSearchPage{}, errors.New("startrek issue search requires a ready label or a status")
 	}
 	assignee := strings.TrimSpace(opts.Assignee)
 
@@ -166,7 +168,12 @@ func (c *Client) SearchIssues(ctx context.Context, opts IssueSearchOptions) (Iss
 
 	filter := map[string]any{
 		"queue": queueKey,
-		"tags":  readyLabel,
+	}
+	if readyLabel != "" {
+		filter["tags"] = readyLabel
+	}
+	if status != "" {
+		filter["status"] = status
 	}
 	if assignee != "" {
 		filter["assignee"] = assignee

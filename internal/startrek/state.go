@@ -8,14 +8,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 const (
 	defaultNeedsInfoProcessingLabel = "processing"
-	defaultNeedsInfoLabel           = "needs-info"
 	defaultNeedsInfoMarker          = "needs-info"
-	englishNeedsInfoProxyNotice     = "This comment was posted by yolo-runner by proxy on behalf of the automation."
-	russianNeedsInfoProxyNotice     = "Комментарий опубликован yolo-runner через прокси от имени автоматизации."
+	// defaultNeedsInfoStatusKey is the Startrek workflow status key that
+	// represents a blocked/needs-info issue. Resume searches by this status.
+	defaultNeedsInfoStatusKey   = "needInfo"
+	englishNeedsInfoProxyNotice = "This comment was posted by yolo-runner by proxy on behalf of the automation."
+	russianNeedsInfoProxyNotice = "Комментарий опубликован yolo-runner через прокси от имени автоматизации."
 
 	needsInfoMarkerKey          = "needs_info_marker"
 	needsInfoMarkerCommentIDKey = "needs_info_marker_comment_id"
@@ -36,12 +40,12 @@ type NeedsInfoTransitionTracker interface {
 	AddLabel(ctx context.Context, issueID string, label string) error
 	CreateIssueComment(ctx context.Context, issueID string, opts IssueCommentCreateOptions) (IssueComment, error)
 	SetTaskData(ctx context.Context, taskID string, data map[string]string) error
+	SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error
 }
 
 type NeedsInfoTransitionService struct {
 	Tracker         NeedsInfoTransitionTracker
 	ProcessingLabel string
-	NeedsInfoLabel  string
 	Marker          string
 	Clock           func() time.Time
 }
@@ -77,7 +81,6 @@ func (s NeedsInfoTransitionService) Apply(ctx context.Context, input NeedsInfoTr
 	}
 
 	processingLabel := fallbackText(s.ProcessingLabel, defaultNeedsInfoProcessingLabel)
-	needsInfoLabel := fallbackText(s.NeedsInfoLabel, defaultNeedsInfoLabel)
 	marker := fallbackText(s.Marker, defaultNeedsInfoMarker)
 
 	comments, err := s.Tracker.GetIssueComments(ctx, issueID)
@@ -88,8 +91,9 @@ func (s NeedsInfoTransitionService) Apply(ctx context.Context, input NeedsInfoTr
 	if err := s.Tracker.RemoveLabel(ctx, issueID, processingLabel); err != nil {
 		return NeedsInfoTransitionResult{}, fmt.Errorf("remove startrek processing label from issue %q: %w", issueID, err)
 	}
-	if err := s.Tracker.AddLabel(ctx, issueID, needsInfoLabel); err != nil {
-		return NeedsInfoTransitionResult{}, fmt.Errorf("add startrek needs-info label to issue %q: %w", issueID, err)
+	// needs-info is now the native needInfo workflow status, not a tag.
+	if err := s.Tracker.SetTaskStatus(ctx, issueID, contracts.TaskStatusBlocked); err != nil {
+		return NeedsInfoTransitionResult{}, fmt.Errorf("transition startrek issue %q to needs-info: %w", issueID, err)
 	}
 
 	if comment, ok := latestNeedsInfoMarkerComment(comments, marker); ok {

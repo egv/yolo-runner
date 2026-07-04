@@ -7,12 +7,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
 type NeedsInfoResumeInput struct {
 	QueueKey       string
 	ReadyLabel     string
-	NeedsInfoLabel string
 	Marker         string
 	AgentAuthorIDs []string
 }
@@ -29,11 +30,11 @@ func (b *StorageBackend) ResumeNeedsInfoTasks(ctx context.Context, input NeedsIn
 	if queueKey == "" {
 		return nil, errors.New("startrek queue key is required")
 	}
-	readyLabel := fallbackText(input.ReadyLabel, b.effectiveReadyLabel())
-	needsInfoLabel := fallbackText(input.NeedsInfoLabel, defaultNeedsInfoLabel)
 	marker := fallbackText(input.Marker, defaultNeedsInfoMarker)
 
-	issues, err := b.searchIssuesByLabel(ctx, queueKey, needsInfoLabel)
+	// needs-info is the native needInfo workflow status now; find candidates
+	// by status, not by a tag.
+	issues, err := b.searchIssuesByStatus(ctx, queueKey, defaultNeedsInfoStatusKey)
 	if err != nil {
 		return nil, err
 	}
@@ -62,11 +63,15 @@ func (b *StorageBackend) ResumeNeedsInfoTasks(ctx context.Context, input NeedsIn
 			continue
 		}
 
+		// Resume flips needInfo -> open via the configured ready transition
+		// (e.g. provide_info) and re-applies the ready discovery tag so the
+		// next discovery poll picks the issue back up.
+		if err := b.SetTaskStatus(ctx, issueID, contracts.TaskStatusOpen); err != nil {
+			return nil, fmt.Errorf("transition startrek needs-info issue %q back to open: %w", issueID, err)
+		}
+		readyLabel := fallbackText(input.ReadyLabel, b.effectiveReadyLabel())
 		if err := b.AddLabel(ctx, issueID, readyLabel); err != nil {
 			return nil, fmt.Errorf("add startrek ready label to resumed needs-info issue %q: %w", issueID, err)
-		}
-		if err := b.RemoveLabel(ctx, issueID, needsInfoLabel); err != nil {
-			return nil, fmt.Errorf("remove startrek needs-info label from resumed issue %q: %w", issueID, err)
 		}
 		resumed = append(resumed, issueID)
 	}
@@ -74,7 +79,7 @@ func (b *StorageBackend) ResumeNeedsInfoTasks(ctx context.Context, input NeedsIn
 	return resumed, nil
 }
 
-func (b *StorageBackend) searchIssuesByLabel(ctx context.Context, queueKey string, label string) ([]Issue, error) {
+func (b *StorageBackend) searchIssuesByStatus(ctx context.Context, queueKey string, status string) ([]Issue, error) {
 	page := defaultIssueSearchPage
 	perPage := b.searchPerPage
 	if perPage <= 0 {
@@ -84,13 +89,13 @@ func (b *StorageBackend) searchIssuesByLabel(ctx context.Context, queueKey strin
 	issuesByID := map[string]Issue{}
 	for {
 		result, err := b.client.SearchIssues(ctx, IssueSearchOptions{
-			QueueKey:   queueKey,
-			ReadyLabel: label,
-			Page:       page,
-			PerPage:    perPage,
+			QueueKey: queueKey,
+			Status:   status,
+			Page:     page,
+			PerPage:  perPage,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("search startrek queue %q for label %q: %w", queueKey, label, err)
+			return nil, fmt.Errorf("search startrek queue %q for status %q: %w", queueKey, status, err)
 		}
 		for _, issue := range result.Issues {
 			issueID := strings.TrimSpace(issue.ID)

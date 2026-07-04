@@ -58,7 +58,7 @@ func TestSourceHandlePreflightResultWritesNeedsInfoReplyAndRecordsState(t *testi
 		wantOps := []string{
 			"comments VAY-42",
 			"remove VAY-42 yolo-agent-in-progress",
-			"add VAY-42 needs-info",
+			"transition VAY-42 blocked",
 			"comment VAY-42 marker=needs-info author=author-1",
 			"data VAY-42 needs-info comment-1",
 		}
@@ -134,7 +134,7 @@ func TestSourceHandlePreflightResultWritesNeedsInfoReplyAndRecordsState(t *testi
 
 		wantOps := []string{
 			"remove VAY-43 yolo-agent-in-progress",
-			"add VAY-43 needs-info",
+			"transition VAY-43 blocked",
 			"comment VAY-43 marker=needs-info author=author-2",
 		}
 		if !reflect.DeepEqual(tracker.ops, wantOps) {
@@ -397,5 +397,10 @@ func (f *fakePreflightWritebackTracker) CreateIssueComment(_ context.Context, is
 
 func (f *fakePreflightWritebackTracker) SetTaskData(_ context.Context, taskID string, data map[string]string) error {
 	f.ops = append(f.ops, "data "+taskID+" "+data["needs_info_marker"]+" "+data["needs_info_marker_comment_id"])
+	return nil
+}
+
+func (f *fakePreflightWritebackTracker) SetTaskStatus(_ context.Context, taskID string, status contracts.TaskStatus) error {
+	f.ops = append(f.ops, "transition "+taskID+" "+string(status))
 	return nil
 }

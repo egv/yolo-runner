@@ -4,6 +4,8 @@
   "summary": "Clarify watcher needs-info flow",
   "description": "Run preflight before executing this task.",
   "tags": ["yolo-agent-ready"],
+  "status": {"key": "open", "display": "Open"},
+  "assignee": {"id": "assignee-1", "display": "Grace Hopper"},
   "createdBy": {
     "id": "author-1",
     "display": "Ada Lovelace"

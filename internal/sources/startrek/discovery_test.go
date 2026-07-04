@@ -101,15 +101,14 @@ func TestSourcePollResumeNeedsInfoTasksSubmitsFreshPreflight(t *testing.T) {
 		},
 	}
 	src := &Source{
-		SourceName:     "startrek-st-dev",
-		Backend:        backend,
-		State:          state,
-		Queue:          store,
-		Queues:         []Queue{{Key: "VAY"}},
-		Preset:         "st-dev",
-		ReadyLabel:     "yolo-agent-ready",
-		NeedsInfoLabel: "needs-info",
-		Marker:         "needs-info",
+		SourceName: "startrek-st-dev",
+		Backend:    backend,
+		State:      state,
+		Queue:      store,
+		Queues:     []Queue{{Key: "VAY"}},
+		Preset:     "st-dev",
+		ReadyLabel: "yolo-agent-ready",
+		Marker:     "needs-info",
 	}
 
 	submissions, err := src.Poll(ctx)
@@ -212,15 +211,14 @@ func TestSourcePollSkipsIssueWithUnresolvedNeedsInfoWriteback(t *testing.T) {
 		},
 	}
 	src := &Source{
-		SourceName:     "startrek-st-dev",
-		Backend:        backend,
-		State:          state,
-		Queue:          store,
-		Queues:         []Queue{{Key: "VAY"}},
-		Preset:         "st-dev",
-		ReadyLabel:     "yolo-agent-ready",
-		NeedsInfoLabel: "needs-info",
-		Marker:         "needs-info",
+		SourceName: "startrek-st-dev",
+		Backend:    backend,
+		State:      state,
+		Queue:      store,
+		Queues:     []Queue{{Key: "VAY"}},
+		Preset:     "st-dev",
+		ReadyLabel: "yolo-agent-ready",
+		Marker:     "needs-info",
 	}
 
 	submissions, err := src.Poll(ctx)

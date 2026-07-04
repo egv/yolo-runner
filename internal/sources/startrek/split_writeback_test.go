@@ -274,6 +274,10 @@ func (f *fakeSplitWritebackTracker) SetTaskData(_ context.Context, taskID string
 	return nil
 }
 
+func (f *fakeSplitWritebackTracker) SetTaskStatus(_ context.Context, _ string, _ contracts.TaskStatus) error {
+	return nil
+}
+
 func (f *fakeSplitWritebackTracker) CreateIssue(_ context.Context, opts trackerstartrek.IssueCreateOptions) (trackerstartrek.Issue, error) {
 	opts.Labels = append([]string(nil), opts.Labels...)
 	f.creates = append(f.creates, opts)

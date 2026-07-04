@@ -151,7 +151,6 @@ func (s *Source) handleImplementResult(ctx context.Context, item workitem.Item, 
 		res, err := (trackerstartrek.NeedsInfoTransitionService{
 			Tracker:         tracker,
 			ProcessingLabel: s.processingLabel(),
-			NeedsInfoLabel:  s.needsInfoLabel(),
 			Marker:          s.marker(),
 		}).Apply(ctx, trackerstartrek.NeedsInfoTransitionInput{
 			IssueID:    taskID,

@@ -23,7 +23,6 @@ const (
 	defaultSourceName            = "startrek"
 	defaultReadyLabel            = "yolo-agent-ready"
 	defaultPreflightProcessLabel = "yolo-agent-in-progress"
-	defaultNeedsInfoLabel        = "needs-info"
 	defaultNeedsInfoMarker       = "needs-info"
 )
 
@@ -33,11 +32,12 @@ type PreflightWritebackTracker interface {
 	AddLabel(ctx context.Context, issueID string, label string) error
 	CreateIssueComment(ctx context.Context, issueID string, opts trackerstartrek.IssueCommentCreateOptions) (trackerstartrek.IssueComment, error)
 	SetTaskData(ctx context.Context, taskID string, data map[string]string) error
+	SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error
 }
 
 type PreflightReplyTracker interface {
 	RemoveLabel(ctx context.Context, issueID string, label string) error
-	AddLabel(ctx context.Context, issueID string, label string) error
+	SetTaskStatus(ctx context.Context, taskID string, status contracts.TaskStatus) error
 	CreateIssueComment(ctx context.Context, issueID string, opts trackerstartrek.IssueCommentCreateOptions) (trackerstartrek.IssueComment, error)
 }
 
@@ -54,7 +54,6 @@ type Source struct {
 	Engine          contracts.TaskEngine
 	ReadyLabel      string
 	ProcessingLabel string
-	NeedsInfoLabel  string
 	Marker          string
 	SplitVersion    string
 }
@@ -131,7 +130,6 @@ func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, 
 		res, err := (trackerstartrek.NeedsInfoTransitionService{
 			Tracker:         s.Tracker,
 			ProcessingLabel: s.processingLabel(),
-			NeedsInfoLabel:  s.needsInfoLabel(),
 			Marker:          s.marker(),
 		}).Apply(ctx, trackerstartrek.NeedsInfoTransitionInput{
 			IssueID:    issueID,
@@ -152,7 +150,6 @@ func (s *Source) handlePreflightResult(ctx context.Context, item workitem.Item, 
 		comment, err = ApplyPreflightReply(ctx, s.Tracker, PreflightReplyInput{
 			IssueID:         issueID,
 			ProcessingLabel: s.processingLabel(),
-			NeedsInfoLabel:  s.needsInfoLabel(),
 			Marker:          s.marker(),
 			ReplyText:       preflightResult.ReplyText,
 			SummoneeID:      summoneeID,
@@ -194,10 +191,6 @@ func (s *Source) readyLabel() string {
 
 func (s *Source) processingLabel() string {
 	return fallbackSourceText(s.ProcessingLabel, defaultPreflightProcessLabel)
-}
-
-func (s *Source) needsInfoLabel() string {
-	return fallbackSourceText(s.NeedsInfoLabel, defaultNeedsInfoLabel)
 }
 
 func (s *Source) marker() string {
@@ -295,7 +288,6 @@ func cloneStartrekStringMap(values map[string]string) map[string]string {
 type PreflightReplyInput struct {
 	IssueID         string
 	ProcessingLabel string
-	NeedsInfoLabel  string
 	Marker          string
 	ReplyText       string
 	SummoneeID      string
@@ -317,14 +309,14 @@ func ApplyPreflightReply(ctx context.Context, tracker PreflightReplyTracker, inp
 		return trackerstartrek.IssueComment{}, errors.New("startrek preflight reply text is required")
 	}
 	processingLabel := fallbackSourceText(input.ProcessingLabel, defaultPreflightProcessLabel)
-	needsInfoLabel := fallbackSourceText(input.NeedsInfoLabel, defaultNeedsInfoLabel)
 	marker := fallbackSourceText(input.Marker, defaultNeedsInfoMarker)
 
 	if err := tracker.RemoveLabel(ctx, issueID, processingLabel); err != nil {
 		return trackerstartrek.IssueComment{}, fmt.Errorf("remove startrek processing label from issue %q before preflight reply: %w", issueID, err)
 	}
-	if err := tracker.AddLabel(ctx, issueID, needsInfoLabel); err != nil {
-		return trackerstartrek.IssueComment{}, fmt.Errorf("add startrek needs-info label to issue %q after preflight reply: %w", issueID, err)
+	// needs-info is the native needInfo workflow status now; transition to it.
+	if err := tracker.SetTaskStatus(ctx, issueID, contracts.TaskStatusBlocked); err != nil {
+		return trackerstartrek.IssueComment{}, fmt.Errorf("transition startrek issue %q to needs-info after preflight reply: %w", issueID, err)
 	}
 	comment, err := tracker.CreateIssueComment(ctx, issueID, trackerstartrek.IssueCommentCreateOptions{
 		Body:     replyText,

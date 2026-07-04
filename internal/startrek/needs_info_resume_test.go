@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -19,8 +18,11 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 				t.Fatalf("decode search body: %v", err)
 			}
 			filter, _ := capturedBody["filter"].(map[string]any)
-			if got := strings.TrimSpace(filter["tags"].(string)); got != "needs-info" {
-				t.Fatalf("expected needs-info search, got %q", got)
+			if got, _ := filter["status"].(string); got != "needInfo" {
+				t.Fatalf("expected needInfo status search, got %q", got)
+			}
+			if _, hasTags := filter["tags"]; hasTags {
+				t.Fatalf("expected no tags filter for needs-info status search, got %#v", filter)
 			}
 			return jsonResponseWithHeaders(http.StatusOK, `[
 				{
@@ -28,7 +30,7 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 					"key": "VAY-42",
 					"summary": "Needs info",
 					"description": "Waiting on user.",
-					"tags": ["needs-info"],
+					"status": {"key": "needInfo"},
 					"createdBy": {"id": "author-1", "display": "Ada Lovelace"},
 					"assignee": {"id": "assignee-1", "display": "Grace Hopper"},
 					"updatedAt": "2026-05-28T05:02:00.000+0000"
@@ -54,6 +56,11 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 					"updatedAt": "2026-05-28T05:01:00.000+0000"
 				}
 			]`), nil
+		case "GET /v3/issues/VAY-42/transitions":
+			return jsonResponse(http.StatusOK, `[{"id":"provide_info"}]`), nil
+		case "POST /v3/issues/VAY-42/transitions/provide_info/_execute":
+			operations = append(operations, "transition provide_info")
+			return jsonResponse(http.StatusOK, `{}`), nil
 		case "PATCH /v3/issues/VAY-42":
 			var body struct {
 				Tags map[string][]string `json:"tags"`
@@ -63,9 +70,6 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 			}
 			for _, label := range body.Tags["add"] {
 				operations = append(operations, "add "+label)
-			}
-			for _, label := range body.Tags["remove"] {
-				operations = append(operations, "remove "+label)
 			}
 			return jsonResponse(http.StatusOK, `{}`), nil
 		default:
@@ -78,6 +82,9 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 		Endpoint:   "https://api.tracker.yandex.net/v3",
 		Token:      "tracker-token",
 		HTTPClient: httpClient,
+		StatusTransitions: StatusTransitionNames{
+			Ready: "provide_info",
+		},
 	})
 	if err != nil {
 		t.Fatalf("new storage backend: %v", err)
@@ -93,14 +100,16 @@ func TestStorageBackendResumeNeedsInfoTasksReopensAfterAuthorReply(t *testing.T)
 		t.Fatalf("unexpected resumed issues: %#v", resumed)
 	}
 
-	wantOps := []string{"add yolo-agent-ready", "remove needs-info"}
+	// Resume now fires the native needInfo -> open transition (provide_info),
+	// then re-applies the ready discovery tag for the next poll.
+	wantOps := []string{"transition provide_info", "add yolo-agent-ready"}
 	if !reflect.DeepEqual(operations, wantOps) {
-		t.Fatalf("unexpected label operations:\n got %#v\nwant %#v", operations, wantOps)
+		t.Fatalf("unexpected operations:\n got %#v\nwant %#v", operations, wantOps)
 	}
 }
 
 func TestStorageBackendResumeNeedsInfoTasksWaitsWithoutAuthorReply(t *testing.T) {
-	var patchCount int
+	var transitionCount int
 	httpClient := fakeHTTPClient(func(req *http.Request) (*http.Response, error) {
 		switch req.Method + " " + req.URL.Path {
 		case "POST /v3/issues/_search":
@@ -110,7 +119,7 @@ func TestStorageBackendResumeNeedsInfoTasksWaitsWithoutAuthorReply(t *testing.T)
 					"key": "VAY-42",
 					"summary": "Needs info",
 					"description": "Waiting on user.",
-					"tags": ["needs-info"],
+					"status": {"key": "needInfo"},
 					"createdBy": {"id": "author-1", "display": "Ada Lovelace"},
 					"updatedAt": "2026-05-28T05:02:00.000+0000"
 				}
@@ -128,8 +137,11 @@ func TestStorageBackendResumeNeedsInfoTasksWaitsWithoutAuthorReply(t *testing.T)
 					"updatedAt": "2026-05-28T05:00:00.000+0000"
 				}
 			]`), nil
-		case "PATCH /v3/issues/VAY-42":
-			patchCount++
+		case "GET /v3/issues/VAY-42/transitions":
+			transitionCount++
+			return jsonResponse(http.StatusOK, `[{"id":"provide_info"}]`), nil
+		case "POST /v3/issues/VAY-42/transitions/provide_info/_execute":
+			transitionCount++
 			return jsonResponse(http.StatusOK, `{}`), nil
 		default:
 			t.Fatalf("unexpected request %s %s", req.Method, req.URL.Path)
@@ -141,6 +153,9 @@ func TestStorageBackendResumeNeedsInfoTasksWaitsWithoutAuthorReply(t *testing.T)
 		Endpoint:   "https://api.tracker.yandex.net/v3",
 		Token:      "tracker-token",
 		HTTPClient: httpClient,
+		StatusTransitions: StatusTransitionNames{
+			Ready: "provide_info",
+		},
 	})
 	if err != nil {
 		t.Fatalf("new storage backend: %v", err)
@@ -155,7 +170,7 @@ func TestStorageBackendResumeNeedsInfoTasksWaitsWithoutAuthorReply(t *testing.T)
 	if len(resumed) != 0 {
 		t.Fatalf("expected no resumed issues, got %#v", resumed)
 	}
-	if patchCount != 0 {
-		t.Fatalf("expected no label patches without author reply, got %d", patchCount)
+	if transitionCount != 0 {
+		t.Fatalf("expected no transition without author reply, got %d", transitionCount)
 	}
 }

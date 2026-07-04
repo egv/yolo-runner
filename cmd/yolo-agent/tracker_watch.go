@@ -19,7 +19,6 @@ var errTrackerWatchLockHeld = errors.New("tracker-watch lock held")
 
 const (
 	defaultTrackerWatchResilientMaxConsecutiveFailures = 20
-	trackerWatchStartrekNeedsInfoLabel                 = "needs-info"
 	trackerWatchStartrekNeedsInfoMarker                = "needs-info"
 	trackerWatchStartrekSplitVersion                   = "strict-v1"
 	trackerWatchStartrekProcessingLabel                = "yolo-agent-in-progress"

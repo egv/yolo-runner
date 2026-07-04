@@ -63,10 +63,9 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 		}
 
 		resumedIDs, err := backend.ResumeNeedsInfoTasks(ctx, trackerstartrek.NeedsInfoResumeInput{
-			QueueKey:       queueKey,
-			ReadyLabel:     s.readyLabel(),
-			NeedsInfoLabel: s.needsInfoLabel(),
-			Marker:         s.marker(),
+			QueueKey:   queueKey,
+			ReadyLabel: s.readyLabel(),
+			Marker:     s.marker(),
 		})
 		if err != nil {
 			return nil, err
