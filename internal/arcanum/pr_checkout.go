@@ -45,14 +45,21 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	}
 
 	root := filepath.Join(home, ".yolo-runner")
-	objectStore := strings.TrimSpace(cfg.ObjectsBaseDir)
-	if objectStore == "" {
-		objectStore = filepath.Join(root, "pr-objects")
+	objectsBaseDir := strings.TrimSpace(cfg.ObjectsBaseDir)
+	if objectsBaseDir == "" {
+		objectsBaseDir = filepath.Join(root, "pr-objects")
 	}
 	mountsBaseDir := strings.TrimSpace(cfg.MountsBaseDir)
 	if mountsBaseDir == "" {
 		mountsBaseDir = filepath.Join(root, "pr-mounts")
 	}
+	// Each PR gets its own object store and mount point. A single shared store
+	// cannot serve multiple PRs: arc binds a store to the first repository it
+	// mounts and rejects subsequent PRs from other branches ("store was
+	// previously mounted into different repository"), and a store can only be
+	// mounted at one location at a time. Per-PR stores make checkouts fully
+	// isolated and parallel-safe.
+	objectStore := filepath.Join(objectsBaseDir, prID)
 	mountPath := filepath.Join(mountsBaseDir, prID)
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
@@ -63,9 +70,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
 	}
 
-	// A fresh isolated arc working copy sharing one object store across PRs:
-	// `arc mount -m <mount> -S <store>` (verified against the arc CLI; `arc init`
-	// is for bare/path-filtered repos and rejects this form).
+	// A fresh isolated arc working copy per PR: `arc mount -m <mount> -S <store>`
+	// (verified against the arc CLI; `arc init` is for bare/path-filtered repos
+	// and rejects this form).
 	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
 	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
 		return nil, workspaceArcError("", mountArgs, stderr, err)
@@ -87,6 +94,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 			}
 			if err := os.RemoveAll(mountPath); err != nil {
 				return fmt.Errorf("remove arc PR mount %s: %w", mountPath, err)
+			}
+			if err := os.RemoveAll(objectStore); err != nil {
+				return fmt.Errorf("remove arc PR object store %s: %w", objectStore, err)
 			}
 			return nil
 		}),

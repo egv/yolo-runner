@@ -38,7 +38,7 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 		t.Fatalf("PreparePRCheckout() error = %v", err)
 	}
 
-	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
 	mountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787")
 	if checkout.MountPath != mountPath {
 		t.Fatalf("PreparePRCheckout() mount path = %q, want %q", checkout.MountPath, mountPath)
@@ -73,7 +73,7 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 	}
 }
 
-func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndSharedObjectStore(t *testing.T) {
+func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndPerPRObjectStores(t *testing.T) {
 	oldExec := arcExec
 	t.Cleanup(func() {
 		arcExec = oldExec
@@ -126,19 +126,25 @@ func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndSharedObjectStore(t
 		t.Fatalf("init calls = %d, want 2", len(inits))
 	}
 
-	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
+	// Each PR gets its own distinct mount path AND its own object store. A
+	// shared store cannot serve PRs from different branches, so per-PR stores
+	// make checkouts fully isolated and parallel-safe.
 	mounts := []string{inits[0].mountPath, inits[1].mountPath}
+	stores := []string{inits[0].objectStore, inits[1].objectStore}
 	sort.Strings(mounts)
+	sort.Strings(stores)
 	wantMounts := []string{
 		filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787"),
 		filepath.Join(home, ".yolo-runner", "pr-mounts", "2293788"),
 	}
+	wantStores := []string{
+		filepath.Join(home, ".yolo-runner", "pr-objects", "2293787"),
+		filepath.Join(home, ".yolo-runner", "pr-objects", "2293788"),
+	}
 	if !reflect.DeepEqual(mounts, wantMounts) {
 		t.Fatalf("mount paths = %#v, want %#v", mounts, wantMounts)
 	}
-	for _, call := range inits {
-		if call.objectStore != objectStore {
-			t.Fatalf("object store = %q, want %q", call.objectStore, objectStore)
-		}
+	if !reflect.DeepEqual(stores, wantStores) {
+		t.Fatalf("object stores = %#v, want %#v", stores, wantStores)
 	}
 }
