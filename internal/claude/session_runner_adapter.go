@@ -2,15 +2,23 @@ package claude
 
 import (
 	"context"
+	"io"
 	"strings"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 )
 
+// maxPromptCLIBytes is the threshold above which the prompt is written to a
+// temp file and passed via stdin instead of as a CLI argument, to avoid the
+// OS ARG_MAX limit ("argument list too long"). macOS ARG_MAX is ~256KB; 128KB
+// leaves headroom for the other args + environment.
+const maxPromptCLIBytes = 128 * 1024
+
 // SessionRunnerAdapter implements contracts.AgentRunner backed by the claude
 // stdin/stdout TaskSessionRuntime. Each Run() call spawns one claude process,
-// passes the prompt as a CLI argument, reads stream-json events, then tears down.
+// passes the prompt as a CLI argument (or via stdin when it exceeds ARG_MAX
+// headroom), reads stream-json events, then tears down.
 type SessionRunnerAdapter struct {
 	runtime *TaskSessionRuntime
 }
@@ -23,15 +31,20 @@ func NewSessionRunnerAdapter(binary string) *SessionRunnerAdapter {
 
 var _ contracts.AgentRunner = (*SessionRunnerAdapter)(nil)
 
-// buildClaudeArgs returns the full claude CLI argument list with the prompt as
-// the last positional argument. Passing the prompt via args (not stdin) means
-// claude processes it immediately without waiting for stdin EOF.
-func buildClaudeArgs(model, prompt string) []string {
-	args := []string{"--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+// buildClaudeArgs returns the full claude CLI argument list plus a stdin
+// prompt. When the prompt fits in argv it is the last positional argument and
+// the stdin prompt is empty. When the prompt exceeds maxPromptCLIBytes it is
+// returned separately so the caller writes it to the subprocess stdin (the
+// positional argument is omitted), avoiding the OS ARG_MAX limit.
+func buildClaudeArgs(model, prompt string) (args []string, stdinPrompt string) {
+	args = []string{"--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 	if m := strings.TrimSpace(model); m != "" {
 		args = append(args, "--model", m)
 	}
-	return append(args, prompt)
+	if len(prompt) > maxPromptCLIBytes {
+		return args, prompt
+	}
+	return append(args, prompt), ""
 }
 
 func (a *SessionRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequest) (contracts.RunnerResult, error) {
@@ -48,18 +61,32 @@ func (a *SessionRunnerAdapter) Run(ctx context.Context, request contracts.Runner
 		metadata[k] = v
 	}
 
+	args, largePrompt := buildClaudeArgs(request.Model, request.Prompt)
 	startReq := contracts.TaskSessionStartRequest{
 		TaskID:   request.TaskID,
 		RepoRoot: request.RepoRoot,
 		Metadata: metadata,
 		// Pass the prompt as a CLI argument so claude processes it immediately
-		// without waiting for stdin input.
-		Command: buildClaudeArgs(request.Model, request.Prompt),
+		// without waiting for stdin input. For large prompts (>maxPromptCLIBytes)
+		// the positional arg is omitted and the prompt is written to stdin
+		// after start (avoids "argument list too long").
+		Command: args,
 	}
 
 	session, err := a.runtime.Start(runCtx, startReq)
 	if err != nil {
 		return contracts.NormalizeBackendRunnerResult(startedAt, time.Now().UTC(), request, err, nil), nil
+	}
+
+	// When the prompt is too large for argv, write it to the subprocess stdin
+	// now so claude reads it from there (the positional arg was omitted).
+	if largePrompt != "" {
+		if ts, ok := session.(*StdinTaskSession); ok {
+			if _, writeErr := io.WriteString(ts.proc.Stdin(), largePrompt); writeErr != nil {
+				_ = session.Teardown(context.Background(), contracts.TaskSessionTeardown{Force: true})
+				return contracts.NormalizeBackendRunnerResult(startedAt, time.Now().UTC(), request, writeErr, nil), nil
+			}
+		}
 	}
 
 	if err := session.WaitReady(runCtx); err != nil {

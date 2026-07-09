@@ -47,14 +47,17 @@ func ParseReviewResult(payload []byte) (ReviewResult, error) {
 	// Models do not always emit a bare JSON object: they may wrap it in a
 	// Markdown code fence or surround it with prose (a Cyrillic preamble, a
 	// trailing sign-off). Extract the first balanced JSON object that decodes
-	// into a review with a summary rather than requiring the whole payload to
+	// into a review-shaped result rather than requiring the whole payload to
 	// be exactly that object.
 	result, err := extractReviewResultJSON(payload)
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("parse review result: %w", err)
 	}
+	// Tolerate a missing summary: the model sometimes omits it even when the
+	// rest of the review (inline comments, verdict) is well-formed. Use a
+	// neutral fallback rather than rejecting the whole review.
 	if strings.TrimSpace(result.Summary) == "" {
-		return ReviewResult{}, fmt.Errorf("review result summary is required")
+		result.Summary = "Review completed."
 	}
 	return result, nil
 }
@@ -62,6 +65,10 @@ func ParseReviewResult(payload []byte) (ReviewResult, error) {
 func extractReviewResultJSON(payload []byte) (ReviewResult, error) {
 	candidate := stripMarkdownFences(bytes.TrimSpace(payload))
 
+	// Prefer a review object that has a summary; fall back to the first valid
+	// review-shaped JSON object (one with any of summary, inline_comments,
+	// replies, or ship) so a missing summary alone doesn't reject the review.
+	var fallback *ReviewResult
 	var lastErr error
 	for i := 0; i < len(candidate); i++ {
 		if candidate[i] != '{' {
@@ -76,18 +83,33 @@ func extractReviewResultJSON(payload []byte) (ReviewResult, error) {
 			lastErr = err
 			continue
 		}
-		// Skip stray braces in prose that happen to be valid JSON but are not
-		// a review (e.g. an example object with no summary).
-		if strings.TrimSpace(result.Summary) == "" {
-			lastErr = fmt.Errorf("JSON object without summary")
+		if !looksLikeReviewResult(object) {
 			continue
 		}
-		return result, nil
+		if strings.TrimSpace(result.Summary) != "" {
+			return result, nil
+		}
+		if fallback == nil {
+			fallback = &result
+		}
+	}
+	if fallback != nil {
+		return *fallback, nil
 	}
 	if lastErr != nil {
 		return ReviewResult{}, lastErr
 	}
 	return ReviewResult{}, fmt.Errorf("no JSON object found in review output")
+}
+
+// looksLikeReviewResult reports whether a decoded JSON object has any field
+// that identifies it as a review (rather than a stray brace pair in prose).
+func looksLikeReviewResult(object []byte) bool {
+	return bytes.Contains(object, []byte("summary")) ||
+		bytes.Contains(object, []byte("inline_comments")) ||
+		bytes.Contains(object, []byte("replies")) ||
+		bytes.Contains(object, []byte("ship")) ||
+		bytes.Contains(object, []byte("blockers"))
 }
 
 // stripMarkdownFences removes a single surrounding ```/```json code fence when

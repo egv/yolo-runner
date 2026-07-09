@@ -1,6 +1,9 @@
 package arcreview
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseReviewResultExtractsJSONFromNoisyOutput(t *testing.T) {
 	cases := []struct {
@@ -55,7 +58,6 @@ func TestParseReviewResultErrors(t *testing.T) {
 	}{
 		{name: "empty", payload: "   "},
 		{name: "no json", payload: "no object here at all"},
-		{name: "object without summary", payload: `{"ship":{"verdict":"ship"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,5 +65,20 @@ func TestParseReviewResultErrors(t *testing.T) {
 				t.Fatalf("ParseReviewResult() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestParseReviewResultToleratesMissingSummary(t *testing.T) {
+	// A review-shaped object with a ship verdict but no summary should parse
+	// successfully with a fallback summary, not be rejected.
+	result, err := ParseReviewResult([]byte(`{"ship":{"verdict":"ship"}}`))
+	if err != nil {
+		t.Fatalf("ParseReviewResult() error = %v, want nil (missing summary should be tolerated)", err)
+	}
+	if strings.TrimSpace(result.Summary) == "" {
+		t.Fatalf("ParseReviewResult() summary is empty, want fallback")
+	}
+	if strings.TrimSpace(result.Ship.Verdict) != "ship" {
+		t.Fatalf("ParseReviewResult() verdict = %q, want ship", result.Ship.Verdict)
 	}
 }

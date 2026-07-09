@@ -300,7 +300,7 @@ func TestOsStdinProcess_Stop_NoErrorWhenAlreadyDone(t *testing.T) {
 // deadlock that occurs in --print mode when reading from stdin.
 func TestBuildClaudeArgs_RequiredFlagsAndPrompt(t *testing.T) {
 	prompt := "do the thing"
-	args := buildClaudeArgs("claude-test-model", prompt)
+	args, stdinPrompt := buildClaudeArgs("claude-test-model", prompt)
 	for _, required := range []string{"--print", "--output-format", "stream-json", "--dangerously-skip-permissions"} {
 		if !slices.Contains(args, required) {
 			t.Errorf("buildClaudeArgs missing %q; got %v", required, args)
@@ -310,13 +310,16 @@ func TestBuildClaudeArgs_RequiredFlagsAndPrompt(t *testing.T) {
 	if idx == -1 || idx+1 >= len(args) || args[idx+1] != "claude-test-model" {
 		t.Errorf("expected --model claude-test-model in args; got %v", args)
 	}
+	if stdinPrompt != "" {
+		t.Errorf("small prompt should not use stdin; got stdinPrompt=%q", stdinPrompt)
+	}
 	if args[len(args)-1] != prompt {
 		t.Errorf("prompt not last arg; got %v", args)
 	}
 }
 
 func TestBuildClaudeArgs_NoModelFlag(t *testing.T) {
-	args := buildClaudeArgs("", "hello")
+	args, _ := buildClaudeArgs("", "hello")
 	if slices.Contains(args, "--model") {
 		t.Errorf("expected no --model flag for empty model; got %v", args)
 	}
