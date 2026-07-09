@@ -165,7 +165,7 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 		t.Fatalf("Getwd() error = %v", err)
 	}
 	assertPRReviewE2EArcCalls(t, arcCallsPath, []string{
-		testCWD + "\tarc mount -m " + prMountPath + " -S " + filepath.Join(home, ".yolo-runner", "pr-objects"),
+		testCWD + "\tarc mount -m " + prMountPath + " -S " + filepath.Join(home, ".yolo-runner", "pr-objects", "777"),
 		prMountPath + "\tarc pr checkout 777 --detached --force",
 		testCWD + "\tarc unmount --forget " + prMountPath,
 	})
@@ -177,10 +177,19 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 	}}) {
 		t.Fatalf("writeback replies = %#v", writebackClient.replies)
 	}
+	wantSummaryBody := strings.Join([]string{
+		"The revision needs a follow-up before shipping.",
+		"",
+		"Offline gate must not ship.",
+		"",
+		"По результатам ревью — не к мержу, есть открытые замечания.",
+		"",
+		"<!-- yolo-reviewer: reviewed_from_id=rev-777 -->",
+	}, "\n")
 	if !reflect.DeepEqual(writebackClient.summaries, []prReviewE2ESummary{{
 		prID:     "777",
 		revision: "rev-777",
-		body:     "Automated PR review for revision rev-777: do_not_ship.",
+		body:     wantSummaryBody,
 	}}) {
 		t.Fatalf("writeback review summaries = %#v", writebackClient.summaries)
 	}

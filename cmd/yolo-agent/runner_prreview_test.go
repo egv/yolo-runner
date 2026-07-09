@@ -147,6 +147,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 			{CommentID: "comment-1", Body: "The nil path is covered by the guard above."},
 		},
 		ReviewVerdict:    "ship",
+		ShipReason:       "No blockers remain.",
 		ShipReady:        true,
 		RevisionReviewed: "r7",
 	}
@@ -173,7 +174,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 		t.Fatalf("model metadata = %#v", call.Metadata)
 	}
 
-	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
@@ -421,7 +422,7 @@ func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 	}
 
 	prMountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "42")
-	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},

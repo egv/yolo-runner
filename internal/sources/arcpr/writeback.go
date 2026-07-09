@@ -565,9 +565,10 @@ func (s *Source) applyPRReview(ctx context.Context, state arcreview.PRRuntimeSta
 		return err
 	}
 	payload, err := json.Marshal(arcreview.ReviewResult{
-		Summary: prReviewSummary(result, revision),
+		Summary: prReviewSummary(result),
 		Ship: arcreview.ReviewShipDecision{
 			Verdict: strings.TrimSpace(result.ReviewVerdict),
+			Reason:  strings.TrimSpace(result.ShipReason),
 		},
 	})
 	if err != nil {
@@ -714,14 +715,59 @@ func stateWithAnsweredComments(state arcreview.PRRuntimeState, commentIDs []stri
 	return state
 }
 
-func prReviewSummary(result workitem.PRReviewResult, revision string) string {
-	verdict := strings.TrimSpace(result.ReviewVerdict)
-	if verdict == "" {
-		verdict = "recorded"
+// prReviewSummary renders the review summary comment posted to the PR. It uses
+// the model's own summary and ship reason in natural language (not raw enum
+// values or revision SHAs in the visible text), with the reviewed revision
+// tracked in an HTML comment so re-reviews are detectable without polluting the
+// readable body.
+func prReviewSummary(result workitem.PRReviewResult) string {
+	var b strings.Builder
+
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		b.WriteString(summary)
 	}
-	revision = strings.TrimSpace(revision)
-	if revision == "" {
-		return "Automated PR review: " + verdict + "."
+
+	if reason := strings.TrimSpace(result.ShipReason); reason != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(reason)
 	}
-	return fmt.Sprintf("Automated PR review for revision %s: %s.", revision, verdict)
+
+	verdictLine := prReviewVerdictLine(strings.TrimSpace(result.ReviewVerdict))
+	if verdictLine != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(verdictLine)
+	}
+
+	// Track the reviewed revision in an invisible HTML comment (same convention
+	// as other automated reviewers) so re-reviews are detectable without
+	// exposing the raw SHA in the readable body.
+	if revision := strings.TrimSpace(result.RevisionReviewed); revision != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("<!-- yolo-reviewer: reviewed_from_id=" + revision + " -->")
+	}
+
+	if b.Len() == 0 {
+		return "Reviewed."
+	}
+	return b.String()
+}
+
+// prReviewVerdictLine translates the raw ship verdict into a short natural
+// sentence. Returns empty for unknown/missing verdicts so no mechanical text is
+// posted.
+func prReviewVerdictLine(verdict string) string {
+	switch strings.ToLower(verdict) {
+	case "ship":
+		return "По результатам ревью — шипуй."
+	case "do_not_ship", "donotship", "do not ship":
+		return "По результатам ревью — не к мержу, есть открытые замечания."
+	default:
+		return ""
+	}
 }

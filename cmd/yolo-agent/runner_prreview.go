@@ -250,6 +250,7 @@ func (c *runnerPRReviewResultCapture) captureReview(state arcreview.PRRuntimeSta
 	c.result.InlineComments = runnerPRReviewInlineComments(result.InlineComments)
 	c.result.Replies = runnerPRReviewReplies(result.Replies)
 	c.result.ReviewVerdict = strings.TrimSpace(result.Ship.Verdict)
+	c.result.ShipReason = strings.TrimSpace(result.Ship.Reason)
 	c.result.ShipReady = runnerPRReviewReviewShipReady(result)
 	c.result.RevisionReviewed = runnerPRReviewCurrentRevision(state)
 }

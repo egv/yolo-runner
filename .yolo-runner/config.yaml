@@ -86,19 +86,10 @@ landing:
 watch:
   queue_path: .yolo-runner/watch.db
   sources:
-    - name: startrek-adapta
-      type: startrek
-      profile: startrek-adapta
     - name: arcpr
       type: arcpr
       profile: arcpr
   runner_pools:
-    - name: startrek-adapta-implementers
-      source: startrek-adapta
-      presets: [startrek-adapta, startrek-lumi]
-      min_replicas: 1
-      max_replicas: 2
-      capacity: 1
     - name: arcpr-reviewers
       source: arcpr
       presets: [arcpr]
@@ -106,7 +97,8 @@ watch:
       max_replicas: 2
       capacity: 2
   autoscale:
-    min_runners: 2
-    max_runners: 4
+    min_runners: 1
+    max_runners: 2
   tui:
     default_mode: stream
+

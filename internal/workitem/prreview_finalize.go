@@ -21,6 +21,7 @@ type PRReviewResult struct {
 	Replies          []PRReviewReply           `json:"replies,omitempty"`
 	CommentDecisions []PRReviewCommentDecision `json:"comment_decisions,omitempty"`
 	ReviewVerdict    string                    `json:"review_verdict"`
+	ShipReason       string                    `json:"ship_reason,omitempty"`
 	ShipReady        bool                      `json:"ship_ready"`
 	RevisionReviewed string                    `json:"revision_reviewed,omitempty"`
 }
