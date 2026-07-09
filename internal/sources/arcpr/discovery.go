@@ -44,6 +44,11 @@ type Source struct {
 	SourceName string
 	Preset     string
 	Reviewer   string
+	// Author is the Arcadia login whose PRs trigger author-mode triage
+	// (argue/resolve/implement on review comments). May equal Reviewer. When
+	// empty, no PR is processed in author mode. At least one of Reviewer or
+	// Author must be set for discovery to poll anything.
+	Author string
 	// WritebackWorkspace is only for result handling while discovery is cross-project.
 	WritebackWorkspace string
 	// WritebackWorkspaces are tried in order for result handling while discovery is cross-project.
@@ -91,15 +96,17 @@ func NewSource() *Source {
 type discoveredPR struct {
 	ID       string
 	Revision string
+	Author   string
 }
 
 type arcanumPRLister struct {
 	Reviewer  string
+	Author    string
 	APIClient *arcanum.APIClient
 }
 
 func (l arcanumPRLister) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
-	return arcanum.ListReviewPRsWithClient(ctx, l.APIClient, l.Reviewer)
+	return arcanum.ListReviewPRsForRoles(ctx, l.APIClient, l.Reviewer, l.Author)
 }
 
 type arcanumPRStateFetcher struct{}
@@ -175,9 +182,19 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			}
 		}
 
+		// Select the review mode per-PR: PRs authored by the configured author
+		// login run in author mode (triage review comments); all others run in
+		// reviewer mode. Author mode is skipped entirely when no author login is
+		// configured.
+		mode := workitem.PRReviewModeReviewer
+		if s.Author != "" && strings.EqualFold(strings.TrimSpace(pr.Author), s.Author) {
+			mode = workitem.PRReviewModeAuthor
+		}
+
 		payload, err := json.Marshal(workitem.PRReviewPayload{
 			PRID:                 prID,
 			Revision:             revision,
+			Mode:                 mode,
 			UnansweredCommentIDs: unansweredCommentIDs,
 			Ship:                 s.AllowShip,
 		})
@@ -189,7 +206,7 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			Kind:           workitem.KindPRReview,
 			Source:         s.Name(),
 			SourceRef:      "pr:" + prID,
-			IdempotencyKey: prReviewIdempotencyKey(s.Name(), prID, revision, unansweredCommentIDs, triggeringReplies),
+			IdempotencyKey: prReviewIdempotencyKey(s.Name(), prID, revision, mode, unansweredCommentIDs, triggeringReplies),
 			Preset:         preset,
 			Priority:       s.Priority,
 			Payload:        payload,
@@ -220,6 +237,7 @@ func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 		discovered = append(discovered, discoveredPR{
 			ID:       prID,
 			Revision: revision,
+			Author:   strings.TrimSpace(pr.Author),
 		})
 	}
 	return discovered, nil
@@ -291,6 +309,7 @@ func (s *Source) lister() PRLister {
 	}
 	return arcanumPRLister{
 		Reviewer:  s.Reviewer,
+		Author:    s.Author,
 		APIClient: s.APIClient,
 	}
 }
@@ -302,12 +321,13 @@ func (s *Source) stateFetcher() PRStateFetcher {
 	return arcanumPRStateFetcher{}
 }
 
-func prReviewIdempotencyKey(sourceName string, prID string, revision string, commentIDs []string, triggeringReplies map[string]string) string {
+func prReviewIdempotencyKey(sourceName string, prID string, revision string, mode string, commentIDs []string, triggeringReplies map[string]string) string {
 	return strings.Join([]string{
 		strings.TrimSpace(sourceName),
 		"pr-review",
 		strings.TrimSpace(prID),
 		strings.TrimSpace(revision),
+		strings.TrimSpace(mode),
 		commentSetHash(commentIDs, triggeringReplies),
 	}, "/")
 }

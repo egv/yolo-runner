@@ -185,7 +185,8 @@ tracker_agent:
 
 arc_review_watch:
   poll_interval: 30s
-  reviewer: alice
+  reviewer: alice        # review PRs where alice is a reviewer
+  author: alice          # triage review comments on PRs alice authored
   allow_ship: false
   objects_base_dir: ~/.yolo-runner/pr-objects
   mounts_base_dir: ~/.yolo-runner/pr-mounts

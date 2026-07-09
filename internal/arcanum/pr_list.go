@@ -135,16 +135,37 @@ func ListReviewPRsWithClient(ctx context.Context, apiClient *APIClient, user str
 	if user == "" {
 		return nil, nil
 	}
+	return ListReviewPRsForRoles(ctx, apiClient, user, user)
+}
+
+// ListReviewPRsForRoles lists open PRs for two independent roles: reviewer PRs
+// (PRs where reviewer is a subscriber/reviewer) and author PRs (PRs authored by
+// author). Either login may be empty to skip that role. The two sets are deduped
+// by PR ID. At least one login should be non-empty; if both are empty the result
+// is nil with no API calls.
+func ListReviewPRsForRoles(ctx context.Context, apiClient *APIClient, reviewer string, author string) ([]PRSummary, error) {
+	reviewer = strings.TrimSpace(reviewer)
+	author = strings.TrimSpace(author)
+	if reviewer == "" && author == "" {
+		return nil, nil
+	}
 
 	client := NewPRListArcanumClient(apiClient)
 
-	reviewerPRs, err := client.ListReviewerReviewPRs(ctx, user)
-	if err != nil {
-		return nil, err
+	var reviewerPRs, authorPRs []PRSummary
+	if reviewer != "" {
+		prs, err := client.ListReviewerReviewPRs(ctx, reviewer)
+		if err != nil {
+			return nil, err
+		}
+		reviewerPRs = prs
 	}
-	authorPRs, err := client.ListAuthorReviewPRs(ctx, user)
-	if err != nil {
-		return nil, err
+	if author != "" {
+		prs, err := client.ListAuthorReviewPRs(ctx, author)
+		if err != nil {
+			return nil, err
+		}
+		authorPRs = prs
 	}
 	return dedupePRSummaries(reviewerPRs, authorPRs), nil
 }

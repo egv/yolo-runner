@@ -201,6 +201,7 @@ type arcReviewWatchConfigModel struct {
 	PollInterval   string `yaml:"poll_interval,omitempty"`
 	StatePath      string `yaml:"state_path,omitempty"`
 	Reviewer       string `yaml:"reviewer,omitempty"`
+	Author         string `yaml:"author,omitempty"`
 	AllowShip      bool   `yaml:"allow_ship,omitempty"`
 	ObjectsBaseDir string `yaml:"objects_base_dir,omitempty"`
 	MountsBaseDir  string `yaml:"mounts_base_dir,omitempty"`
@@ -211,6 +212,7 @@ type arcReviewWatchConfig struct {
 	LockPath       string
 	StatePath      string
 	Reviewer       string
+	Author         string
 	AllowShip      bool
 	ObjectsBaseDir string
 	MountsBaseDir  string
@@ -711,6 +713,7 @@ func resolveArcReviewWatchConfig(model arcReviewWatchConfigModel, repoRoot strin
 	}
 	cfg.StatePath = resolveRepoLocalPath(repoRoot, cfg.StatePath)
 	cfg.Reviewer = strings.TrimSpace(model.Reviewer)
+	cfg.Author = strings.TrimSpace(model.Author)
 	cfg.AllowShip = model.AllowShip
 
 	if objectsBaseDir := strings.TrimSpace(model.ObjectsBaseDir); objectsBaseDir != "" {

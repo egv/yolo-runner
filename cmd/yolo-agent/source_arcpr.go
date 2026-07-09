@@ -182,6 +182,7 @@ func buildSourceArcPRRunBundle(ctx context.Context, cfg sourceArcPRCommandConfig
 	source.SourceName = sourceArcPRSourceName(cfg.profile)
 	source.Preset = cfg.profile
 	source.Reviewer = reviewWatchConfig.Reviewer
+	source.Author = reviewWatchConfig.Author
 	source.ObjectsBaseDir = reviewWatchConfig.ObjectsBaseDir
 	source.MountsBaseDir = reviewWatchConfig.MountsBaseDir
 	source.AllowShip = reviewWatchConfig.AllowShip

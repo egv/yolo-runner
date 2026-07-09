@@ -225,3 +225,118 @@ func TestListReviewPRsWithClientBlankUserMakesNoAPICalls(t *testing.T) {
 		t.Fatalf("ListReviewPRsWithClient() = %#v, want empty", got)
 	}
 }
+
+func TestListReviewPRsForRolesSeparatesReviewerAndAuthorLogins(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			t.Fatalf("parse query: %v", err)
+		}
+		q := query.Get("query")
+		queries = append(queries, q)
+		w.Header().Set("Content-Type", "application/json")
+		switch q {
+		case "subscriber(reviewer-login);open()":
+			if _, err := w.Write([]byte(`{"data":[{"id":"100","status":"open","summary":"their PR","author":"author-login","reviewers":["reviewer-login"],"from_id":"rev-100"}]}`)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+		case "author(author-login);open()":
+			if _, err := w.Write([]byte(`{"data":[{"id":"200","status":"open","summary":"my PR","author":"author-login","reviewers":["reviewer-login"],"from_id":"rev-200"}]}`)); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL:     server.URL + "/api",
+		HTTPClient:  server.Client(),
+		TokenSource: func(context.Context) (string, error) { return "token", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	got, err := ListReviewPRsForRoles(context.Background(), client, "reviewer-login", "author-login")
+	if err != nil {
+		t.Fatalf("ListReviewPRsForRoles() error = %v", err)
+	}
+
+	// Both roles are queried with their own login, not the same one.
+	wantQueries := []string{"subscriber(reviewer-login);open()", "author(author-login);open()"}
+	if !reflect.DeepEqual(queries, wantQueries) {
+		t.Fatalf("queries = %#v, want %#v", queries, wantQueries)
+	}
+	gotIDs := make([]string, 0, len(got))
+	for _, pr := range got {
+		gotIDs = append(gotIDs, pr.ID)
+	}
+	if !reflect.DeepEqual(gotIDs, []string{"100", "200"}) {
+		t.Fatalf("ids = %#v, want [100 200]", gotIDs)
+	}
+}
+
+func TestListReviewPRsForRolesAuthorOnlySkipsReviewerQuery(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query, _ := url.ParseQuery(r.URL.RawQuery)
+		queries = append(queries, query.Get("query"))
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"data":[{"id":"300","status":"open","summary":"mine","author":"alice","from_id":"rev-300"}]}`)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL:     server.URL + "/api",
+		HTTPClient:  server.Client(),
+		TokenSource: func(context.Context) (string, error) { return "token", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	got, err := ListReviewPRsForRoles(context.Background(), client, "", "alice")
+	if err != nil {
+		t.Fatalf("ListReviewPRsForRoles() error = %v", err)
+	}
+	// Only the author query fires; no reviewer query.
+	if !reflect.DeepEqual(queries, []string{"author(alice);open()"}) {
+		t.Fatalf("queries = %#v, want only author(alice)", queries)
+	}
+	if len(got) != 1 || got[0].ID != "300" {
+		t.Fatalf("got = %#v, want [300]", got)
+	}
+}
+
+func TestListReviewPRsForRolesBothBlankMakesNoAPICalls(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL:     server.URL + "/api",
+		HTTPClient:  server.Client(),
+		TokenSource: func(context.Context) (string, error) { return "token", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	got, err := ListReviewPRsForRoles(context.Background(), client, "", "  ")
+	if err != nil {
+		t.Fatalf("ListReviewPRsForRoles() error = %v", err)
+	}
+	if called {
+		t.Fatal("expected no API calls when both logins blank")
+	}
+	if len(got) != 0 {
+		t.Fatalf("got = %#v, want empty", got)
+	}
+}

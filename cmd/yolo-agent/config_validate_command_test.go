@@ -219,6 +219,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   poll_interval: 0s
 `,
 			wantField: "arc_review_watch.poll_interval",
@@ -232,6 +233,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   state_path: ""
 `,
 			wantField: "arc_review_watch.state_path",
@@ -245,6 +247,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   allow_ship: maybe
 `,
 			wantField: "arc_review_watch.allow_ship",
@@ -258,6 +261,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   workspaces:
     - /arcadia/reviews/a
 `,
@@ -272,6 +276,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   branches:
     - trunk
 `,
@@ -286,6 +291,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   objects_base_dir: ""
 `,
 			wantField: "arc_review_watch.objects_base_dir",
@@ -299,6 +305,7 @@ profiles:
     tracker:
       type: tk
 arc_review_watch:
+  reviewer: alice
   mounts_base_dir: ""
 `,
 			wantField: "arc_review_watch.mounts_base_dir",

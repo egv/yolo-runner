@@ -88,8 +88,8 @@ func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.
 	if len(first) != 2 {
 		t.Fatalf("Poll() returned %d submissions, want 2: %#v", len(first), first)
 	}
-	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", nil, true)
-	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "103", "rev-3", nil, true)
+	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", workitem.PRReviewModeReviewer, nil, true)
+	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "103", "rev-3", workitem.PRReviewModeReviewer, nil, true)
 
 	for _, submission := range first {
 		payload, err := workitem.DecodePRReviewPayload(submission.Payload)
@@ -163,7 +163,7 @@ func TestSourcePollSubmitsReviewedIncomingPRWhenUnansweredCommentsRemain(t *test
 	if len(first) != 1 {
 		t.Fatalf("Poll() returned %d submissions, want 1: %#v", len(first), first)
 	}
-	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", []string{"c-new"}, false)
+	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", workitem.PRReviewModeReviewer, []string{"c-new"}, false)
 
 	if err := state.StoreAnsweredCommentIDs(ctx, "101", []string{"c-new"}); err != nil {
 		t.Fatalf("StoreAnsweredCommentIDs(c-new) error = %v", err)
@@ -284,6 +284,7 @@ esac
 		SourceName: "arcpr-adapta",
 		Preset:     "adapta",
 		Reviewer:   "alice",
+		Author:     "alice",
 		APIClient:  apiClient,
 		State:      state,
 	}
@@ -302,9 +303,9 @@ esac
 	if len(first) != 3 {
 		t.Fatalf("Poll() returned %d submissions, want 3: %#v", len(first), first)
 	}
-	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", []string{"c-new"}, false)
-	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "102", "rev-2", nil, false)
-	assertPRReviewSubmission(t, first[2], "arcpr-adapta", "adapta", "103", "rev-3", nil, false)
+	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", workitem.PRReviewModeReviewer, []string{"c-new"}, false)
+	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "102", "rev-2", workitem.PRReviewModeAuthor, nil, false)
+	assertPRReviewSubmission(t, first[2], "arcpr-adapta", "adapta", "103", "rev-3", workitem.PRReviewModeAuthor, nil, false)
 
 	for _, submission := range first {
 		payload, err := workitem.DecodePRReviewPayload(submission.Payload)
@@ -402,7 +403,7 @@ func writeDiscoveryFakeExecutable(t *testing.T, dir string, name string, content
 	}
 }
 
-func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName string, preset string, prID string, revision string, comments []string, ship bool) {
+func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName string, preset string, prID string, revision string, mode string, comments []string, ship bool) {
 	t.Helper()
 
 	if got.Kind != workitem.KindPRReview {
@@ -418,7 +419,7 @@ func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName
 		t.Fatalf("submission preset = %q, want %q", got.Preset, preset)
 	}
 
-	wantKey := strings.Join([]string{sourceName, "pr-review", prID, revision, testCommentSetHash(comments, nil)}, "/")
+	wantKey := strings.Join([]string{sourceName, "pr-review", prID, revision, mode, testCommentSetHash(comments, nil)}, "/")
 	if got.IdempotencyKey != wantKey {
 		t.Fatalf("submission idempotency key = %q, want %q", got.IdempotencyKey, wantKey)
 	}
@@ -426,6 +427,9 @@ func assertPRReviewSubmission(t *testing.T, got workqueue.Submission, sourceName
 	payload, err := workitem.DecodePRReviewPayload(got.Payload)
 	if err != nil {
 		t.Fatalf("DecodePRReviewPayload() error = %v", err)
+	}
+	if payload.Mode != mode {
+		t.Fatalf("payload mode = %q, want %q", payload.Mode, mode)
 	}
 	if payload.PRID != prID || payload.Revision != revision || payload.Ship != ship || !reflect.DeepEqual(payload.UnansweredCommentIDs, comments) {
 		t.Fatalf("payload = %#v, want PR %q revision %q comments %#v ship %v", payload, prID, revision, comments, ship)
@@ -522,7 +526,7 @@ func TestSourcePollReSurfacesAnsweredThreadOnNewNonSelfReply(t *testing.T) {
 		t.Fatalf("Poll() returned %d submissions, want 1 re-surfaced thread: %#v", len(first), first)
 	}
 
-	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-new"})}, "/")
+	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", "", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-new"})}, "/")
 	if first[0].IdempotencyKey != wantKey {
 		t.Fatalf("IdempotencyKey = %q, want %q", first[0].IdempotencyKey, wantKey)
 	}
@@ -609,8 +613,100 @@ func TestSourcePollReSurfacesAnsweredThreadOnNestedNonSelfReply(t *testing.T) {
 	if len(subs) != 1 {
 		t.Fatalf("Poll() returned %d submissions, want 1 nested re-surface: %#v", len(subs), subs)
 	}
-	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-nested"})}, "/")
+	wantKey := strings.Join([]string{"arcpr-adapta", "pr-review", "101", "rev-1", "", testCommentSetHash([]string{"c1"}, map[string]string{"c1": "r-nested"})}, "/")
 	if subs[0].IdempotencyKey != wantKey {
 		t.Fatalf("IdempotencyKey = %q, want %q", subs[0].IdempotencyKey, wantKey)
+	}
+}
+
+func TestSourcePollSelectsAuthorModeForPRsAuthoredByConfiguredAuthor(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Reviewer:   "alice",
+		Author:     "alice",
+		State:      state,
+		Lister: PRListerFunc(func(_ context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{
+				{ID: "101", FromID: "rev-1", Status: "open", Author: "alice"}, // authored by alice -> author mode
+				{ID: "102", FromID: "rev-2", Status: "open", Author: "bob"},   // authored by bob -> reviewer mode
+				{ID: "103", FromID: "rev-3", Status: "open", Author: "Alice"}, // case-insensitive match -> author mode
+			}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}, nil
+		}),
+	}
+
+	subs, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(subs) != 3 {
+		t.Fatalf("Poll() returned %d submissions, want 3", len(subs))
+	}
+
+	modesByID := map[string]string{}
+	for _, sub := range subs {
+		payload, err := workitem.DecodePRReviewPayload(sub.Payload)
+		if err != nil {
+			t.Fatalf("decode payload for %q: %v", sub.SourceRef, err)
+		}
+		modesByID[payload.PRID] = payload.Mode
+	}
+	if modesByID["101"] != workitem.PRReviewModeAuthor {
+		t.Fatalf("PR 101 (authored by alice) mode = %q, want author", modesByID["101"])
+	}
+	if modesByID["102"] != workitem.PRReviewModeReviewer {
+		t.Fatalf("PR 102 (authored by bob) mode = %q, want reviewer", modesByID["102"])
+	}
+	if modesByID["103"] != workitem.PRReviewModeAuthor {
+		t.Fatalf("PR 103 (authored by Alice, case differ) mode = %q, want author", modesByID["103"])
+	}
+
+	// Author and reviewer mode must produce distinct idempotency keys for the
+	// same PR/revision so they don't collide in the queue.
+	authKey := subs[0].IdempotencyKey
+	reviewKey := subs[1].IdempotencyKey
+	if authKey == reviewKey {
+		t.Fatalf("author and reviewer idempotency keys collide: %q", authKey)
+	}
+}
+
+func TestSourcePollDefaultsToReviewerModeWhenAuthorNotConfigured(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Reviewer:   "alice",
+		State:      state,
+		Lister: PRListerFunc(func(_ context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{
+				{ID: "101", FromID: "rev-1", Status: "open", Author: "alice"},
+			}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}, nil
+		}),
+	}
+
+	subs, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("Poll() returned %d submissions, want 1", len(subs))
+	}
+	payload, err := workitem.DecodePRReviewPayload(subs[0].Payload)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	// No author configured -> even a PR authored by the reviewer runs in
+	// reviewer mode (back-compat with the pre-author-mode behavior).
+	if payload.Mode != workitem.PRReviewModeReviewer {
+		t.Fatalf("mode = %q, want reviewer (empty) when Author unset", payload.Mode)
 	}
 }

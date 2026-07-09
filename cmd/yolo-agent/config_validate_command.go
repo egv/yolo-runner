@@ -279,7 +279,7 @@ func validateExplicitArcReviewWatchConfigValues(repoRoot string) error {
 		}
 	}
 
-	for _, field := range []string{"poll_interval", "state_path", "reviewer", "objects_base_dir", "mounts_base_dir"} {
+	for _, field := range []string{"poll_interval", "state_path", "reviewer", "author", "objects_base_dir", "mounts_base_dir"} {
 		if node := configValidationYAMLMappingValue(watchNode, field); node != nil && strings.TrimSpace(node.Value) == "" {
 			return fmt.Errorf("arc_review_watch.%s in %s must not be empty", field, trackerConfigRelPath)
 		}
@@ -289,6 +289,16 @@ func validateExplicitArcReviewWatchConfigValues(repoRoot string) error {
 		return fmt.Errorf("arc_review_watch.allow_ship in %s must not be empty", trackerConfigRelPath)
 	} else if node != nil && node.Tag != "!!bool" {
 		return fmt.Errorf("arc_review_watch.allow_ship in %s must be true or false", trackerConfigRelPath)
+	}
+
+	// At least one of reviewer or author is required: without either, discovery
+	// has no PRs to poll. Only enforced when the arc_review_watch block exists.
+	reviewerNode := configValidationYAMLMappingValue(watchNode, "reviewer")
+	authorNode := configValidationYAMLMappingValue(watchNode, "author")
+	reviewerSet := reviewerNode != nil && strings.TrimSpace(reviewerNode.Value) != ""
+	authorSet := authorNode != nil && strings.TrimSpace(authorNode.Value) != ""
+	if !reviewerSet && !authorSet {
+		return fmt.Errorf("arc_review_watch.reviewer or arc_review_watch.author in %s is required; set at least one Arcadia login to poll review requests for", trackerConfigRelPath)
 	}
 	return nil
 }
@@ -397,6 +407,7 @@ func inferConfigField(message string) string {
 		"arc_review_watch.poll_interval",
 		"arc_review_watch.state_path",
 		"arc_review_watch.reviewer",
+		"arc_review_watch.author",
 		"arc_review_watch.allow_ship",
 		"arc_review_watch.objects_base_dir",
 		"arc_review_watch.mounts_base_dir",
@@ -534,6 +545,8 @@ func inferConfigRemediation(field string, message string) string {
 		return "Set arc_review_watch.state_path to a non-empty file path, or omit it to use the default."
 	case "arc_review_watch.reviewer":
 		return "Set arc_review_watch.reviewer to a non-empty reviewer login, or omit it to leave reviewer filtering unset."
+	case "arc_review_watch.author":
+		return "Set arc_review_watch.author to a non-empty author login whose PRs should be triaged in author mode, or omit it to disable author mode."
 	case "arc_review_watch.allow_ship":
 		return "Set arc_review_watch.allow_ship to true or false, or omit it to keep shipping disabled."
 	case "arc_review_watch.objects_base_dir":
