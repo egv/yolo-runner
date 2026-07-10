@@ -67,15 +67,16 @@ func (a *Adapter) Checkout(_ context.Context, ref string) error {
 	return err
 }
 
-// CheckoutPRBranch resolves the name of the branch currently checked out for
-// the PR. The PR working tree is prepared elsewhere (e.g. `arc pr checkout`),
-// so the adapter only reports the current branch here.
-func (a *Adapter) CheckoutPRBranch(context.Context, string) (string, error) {
-	out, err := a.runArc("rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
+// CheckoutPRBranch returns a stable landing identity for a PR checkout. The
+// working tree is already prepared by `arc pr checkout --detached`; unlike Git,
+// Arc's rev-parse does not support --abbrev-ref, and landing only needs a
+// non-empty identity before committing and force-pushing the current checkout.
+func (a *Adapter) CheckoutPRBranch(_ context.Context, prID string) (string, error) {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return "", fmt.Errorf("PR ID is required")
 	}
-	return strings.TrimSpace(out), nil
+	return "pr/" + prID, nil
 }
 
 func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {

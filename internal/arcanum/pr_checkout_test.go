@@ -66,7 +66,7 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 		{
 			workspace: "",
 			name:      "arc",
-			args:      []string{"unmount", "--forget", mountPath},
+			args:      []string{"unmount", "--force", "--forget", mountPath},
 		},
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {

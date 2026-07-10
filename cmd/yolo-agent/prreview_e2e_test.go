@@ -167,7 +167,7 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 	assertPRReviewE2EArcCalls(t, arcCallsPath, []string{
 		testCWD + "\tarc mount -m " + prMountPath + " -S " + filepath.Join(home, ".yolo-runner", "pr-objects", "777"),
 		prMountPath + "\tarc pr checkout 777 --detached --force",
-		testCWD + "\tarc unmount --forget " + prMountPath,
+		testCWD + "\tarc unmount --force --forget " + prMountPath,
 	})
 
 	if !reflect.DeepEqual(writebackClient.replies, []prReviewE2EReply{{
@@ -328,7 +328,7 @@ case "$*" in
   printf 'Use service-specific AI minion review conventions.\n' > taxi/backend-cpp/services/ai_minion/AGENTS.md
   printf 'int deterministic_retry;\n' > taxi/backend-cpp/services/ai_minion/main.cpp
   ;;
-"unmount --forget "*)
+"unmount --force --forget "*)
   ;;
 *)
   printf 'unexpected arc args: %s\n' "$*" >&2

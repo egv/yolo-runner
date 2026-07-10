@@ -281,28 +281,32 @@ func TestPushPRBranchPropagatesError(t *testing.T) {
 	assertCalls(t, runner.calls, call{name: "arc", args: []string{"push", "-f"}})
 }
 
-func TestCheckoutPRBranchReturnsCurrentBranch(t *testing.T) {
-	runner := &fakeRunner{output: "task/abc-123\n"}
+func TestCheckoutPRBranchReturnsStablePRIdentity(t *testing.T) {
+	runner := &fakeRunner{}
 	adapter := New(runner)
 
 	branch, err := adapter.CheckoutPRBranch(context.Background(), "123456")
 	if err != nil {
 		t.Fatalf("expected checkout to succeed, got %v", err)
 	}
-	if branch != "task/abc-123" {
-		t.Fatalf("expected branch task/abc-123, got %q", branch)
+	if branch != "pr/123456" {
+		t.Fatalf("expected branch pr/123456, got %q", branch)
 	}
-	assertCalls(t, runner.calls, call{name: "arc", args: []string{"rev-parse", "--abbrev-ref", "HEAD"}})
+	if len(runner.calls) != 0 {
+		t.Fatalf("CheckoutPRBranch() calls = %#v, want none", runner.calls)
+	}
 }
 
-func TestCheckoutPRBranchPropagatesError(t *testing.T) {
-	runner := &fakeRunner{err: errors.New("boom")}
+func TestCheckoutPRBranchRejectsEmptyPRID(t *testing.T) {
+	runner := &fakeRunner{}
 	adapter := New(runner)
 
-	if _, err := adapter.CheckoutPRBranch(context.Background(), "123456"); err == nil {
-		t.Fatal("expected rev-parse error to propagate")
+	if _, err := adapter.CheckoutPRBranch(context.Background(), " "); err == nil {
+		t.Fatal("expected empty PR ID error")
 	}
-	assertCalls(t, runner.calls, call{name: "arc", args: []string{"rev-parse", "--abbrev-ref", "HEAD"}})
+	if len(runner.calls) != 0 {
+		t.Fatalf("CheckoutPRBranch() calls = %#v, want none", runner.calls)
+	}
 }
 
 func TestArcCommandAdapterRoutesFlatCommandRunnerCalls(t *testing.T) {

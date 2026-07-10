@@ -328,7 +328,7 @@ case "$*" in
 "pr changes 777")
   printf '%s\n' 'diff --git a/project/README.md b/project/README.md'
   ;;
-"unmount --forget "*)
+"unmount --force --forget "*)
   ;;
 *)
   printf 'unexpected arc args: %s\n' "$*" >&2
@@ -428,7 +428,7 @@ esac
 		mountPath+"\tarc pr status --json 777",
 		mountPath+"\tcurl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 		mountPath+"\tarc pr changes 777",
-		"arc unmount --forget "+mountPath,
+		"arc unmount --force --forget "+mountPath,
 	)
 	assertSourceArcPRCallsDoNotContain(t, calls,
 		"arc mount --list --json",

@@ -178,7 +178,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
-		{args: "unmount --forget " + prMountPath},
+		{args: "unmount --force --forget " + prMountPath},
 	})
 }
 
@@ -426,7 +426,7 @@ func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
 		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
-		{args: "unmount --forget " + prMountPath},
+		{args: "unmount --force --forget " + prMountPath},
 	})
 }
 

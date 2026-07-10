@@ -88,7 +88,7 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	checkoutArgs := []string{"pr", "checkout", prID, "--detached", "--force"}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
 		// Best-effort unmount so a failed checkout does not leak a mount.
-		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--forget", mountPath)
+		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
 		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
 	}
 
@@ -96,7 +96,7 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		MountPath: mountPath,
 		Cleanup: oncePRCheckoutCleanup(func() error {
 			defer releaseCheckout()
-			unmountArgs := []string{"unmount", "--forget", mountPath}
+			unmountArgs := []string{"unmount", "--force", "--forget", mountPath}
 			if _, stderr, err := arcExec(context.Background(), "", "arc", unmountArgs...); err != nil {
 				return workspaceArcError(mountPath, unmountArgs, stderr, err)
 			}
