@@ -17,6 +17,9 @@ type PRCheckout struct {
 type PRCheckoutConfig struct {
 	ObjectsBaseDir string
 	MountsBaseDir  string
+	// Rebase rebases the checked-out PR head onto its target branch and
+	// force-pushes the result before returning the checkout to the caller.
+	Rebase bool
 }
 
 func PreparePRCheckout(prID string) (*PRCheckout, error) {
@@ -91,6 +94,14 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
 		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
 	}
+	if cfg.Rebase {
+		if err := rebasePRCheckout(ctx, mountPath, prID); err != nil {
+			_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
+			_ = os.RemoveAll(mountPath)
+			_ = os.RemoveAll(objectStore)
+			return nil, err
+		}
+	}
 
 	checkout := &PRCheckout{
 		MountPath: mountPath,
@@ -111,6 +122,32 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	}
 	releaseOnReturn = false
 	return checkout, nil
+}
+
+func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error {
+	statusArgs := []string{"pr", "status", "--json", prID}
+	statusOutput, stderr, err := arcExec(ctx, mountPath, "arc", statusArgs...)
+	if err != nil {
+		return workspaceArcError(mountPath, statusArgs, stderr, err)
+	}
+	details, err := ParsePRDetailsJSON(statusOutput)
+	if err != nil {
+		return fmt.Errorf("parse PR %q status before rebase: %w", prID, err)
+	}
+	targetBranch := strings.TrimSpace(details.TargetBranch)
+	if targetBranch == "" {
+		return fmt.Errorf("PR %q target branch is required before rebase", prID)
+	}
+
+	rebaseArgs := []string{"rebase", targetBranch}
+	if _, stderr, err := arcExec(ctx, mountPath, "arc", rebaseArgs...); err != nil {
+		return workspaceArcError(mountPath, rebaseArgs, stderr, err)
+	}
+	pushArgs := []string{"push", "-f"}
+	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
+		return workspaceArcError(mountPath, pushArgs, stderr, err)
+	}
+	return nil
 }
 
 var prCheckoutLocks sync.Map

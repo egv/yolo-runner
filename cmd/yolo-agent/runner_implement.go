@@ -17,7 +17,9 @@ import (
 
 // runnerImplementPreparePRCheckout is a seam over arcanum.PreparePRCheckout so
 // the author-mode (arcpr-author) branch can be tested without a real arc mount.
-var runnerImplementPreparePRCheckout = arcanum.PreparePRCheckout
+var runnerImplementPreparePRCheckout = func(prID string) (*arcanum.PRCheckout, error) {
+	return arcanum.PreparePRCheckoutWithConfig(context.Background(), prID, arcanum.PRCheckoutConfig{Rebase: true})
+}
 
 var runnerImplementPRVCS = func(path string) contracts.VCS {
 	return arcvcs.New(localGitRunner{dir: path})

@@ -74,6 +74,51 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	type arcCall struct {
+		workspace string
+		args      []string
+	}
+	var calls []arcCall
+	arcExec = func(_ context.Context, workspace string, _ string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, arcCall{workspace: workspace, args: append([]string{}, args...)})
+		if reflect.DeepEqual(args, []string{"pr", "status", "--json", "2293787"}) {
+			return []byte(`{"id":2293787,"status":"open","from_id":"head","to_branch":"trunk"}`), nil, nil
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckoutWithConfig(context.Background(), "2293787", PRCheckoutConfig{Rebase: true})
+	if err != nil {
+		t.Fatalf("PreparePRCheckoutWithConfig() error = %v", err)
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
+	want := []arcCall{
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--detached", "--force"}},
+		{workspace: mountPath, args: []string{"pr", "status", "--json", "2293787"}},
+		{workspace: mountPath, args: []string{"rebase", "trunk"}},
+		{workspace: mountPath, args: []string{"push", "-f"}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("arc calls = %#v, want %#v", calls, want)
+	}
+}
+
 func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndPerPRObjectStores(t *testing.T) {
 	oldExec := arcExec
 	t.Cleanup(func() {

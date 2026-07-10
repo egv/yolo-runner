@@ -58,7 +58,9 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		return workqueue.Result{}, fmt.Errorf("decode PR review payload for item %q: %w", item.ID, err)
 	}
 
-	checkout, err := arcanum.PreparePRCheckout(payload.PRID)
+	checkout, err := arcanum.PreparePRCheckoutWithConfig(ctx, payload.PRID, arcanum.PRCheckoutConfig{
+		Rebase: runnerPRReviewIsAuthorMode(payload.Mode),
+	})
 	if err != nil {
 		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q: %w", item.ID, strings.TrimSpace(payload.PRID), err)
 	}

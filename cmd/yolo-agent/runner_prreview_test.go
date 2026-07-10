@@ -494,6 +494,9 @@ if [ "$1" = "pr" ] && [ "$2" = "checkout" ]; then
 	printf '# fixture ya.make\n' > taxi/backend-cpp/services/ai_minion/ya.make
 	printf 'Use service-specific AI minion review conventions.\n' > taxi/backend-cpp/services/ai_minion/AGENTS.md
 fi
+if [ "$1" = "pr" ] && [ "$2" = "status" ]; then
+	printf '%s\n' '{"id":42,"status":"open","from_id":"r7","to_branch":"trunk"}'
+fi
 	`
 	if err := os.WriteFile(filepath.Join(fakeBin, "arc"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake arc: %v", err)
@@ -536,7 +539,7 @@ func assertRunnerPRReviewArcCalls(t *testing.T, path string, want []runnerPRRevi
 func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	installRunnerPRReviewFakeArc(t)
+	arcCallsPath := installRunnerPRReviewFakeArc(t)
 
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	store, err := workqueue.Open(dbPath)
@@ -678,6 +681,17 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 	if !reflect.DeepEqual(result, want) {
 		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
 	}
+
+	prMountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "42")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
+	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
+		{args: "mount -m " + prMountPath + " -S " + objectStore},
+		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
+		{cwd: prMountPath, args: "pr status --json 42"},
+		{cwd: prMountPath, args: "rebase trunk"},
+		{cwd: prMountPath, args: "push -f"},
+		{args: "unmount --force --forget " + prMountPath},
+	})
 }
 
 func TestRunnerPRReviewHandlerReviewerAnswerModeIsUnchanged(t *testing.T) {
