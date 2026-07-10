@@ -67,7 +67,12 @@ func runnerKindIsolated(kind workitem.Kind) bool {
 }
 
 func runnerKindNeedsPresetWorkspace(kind workitem.Kind) bool {
-	return kind != workitem.KindPRReview
+	switch kind {
+	case workitem.KindPRReview, workitem.KindResolvePRComment:
+		return false
+	default:
+		return true
+	}
 }
 
 func runnerItemNeedsPresetWorkspace(item workitem.Item) bool {

@@ -22,6 +22,9 @@ func TestRunnerResolvePRCommentStubHandlerIsRegisteredNonIsolatedAndEchoesPayloa
 	if runnerKindIsolated(workitem.KindResolvePRComment) {
 		t.Fatalf("runnerKindIsolated(%q) = true, want false (no isolated workspace; resolve is driven by HandleResult)", workitem.KindResolvePRComment)
 	}
+	if runnerKindNeedsPresetWorkspace(workitem.KindResolvePRComment) {
+		t.Fatalf("runnerKindNeedsPresetWorkspace(%q) = true, want false (resolve has no code workspace)", workitem.KindResolvePRComment)
+	}
 
 	payload, err := json.Marshal(workitem.ResolvePRCommentPayload{
 		PRID:      "1234567",
