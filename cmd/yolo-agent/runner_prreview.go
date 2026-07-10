@@ -235,7 +235,7 @@ type runnerPRReviewPayloadRevisionStore struct {
 }
 
 func (s runnerPRReviewPayloadRevisionStore) GetReviewedRevision(context.Context, string) (string, error) {
-	if s.payload.Ship || len(s.payload.UnansweredCommentIDs) > 0 {
+	if runnerPRReviewIsAuthorMode(s.payload.Mode) || s.payload.Ship || len(s.payload.UnansweredCommentIDs) > 0 {
 		return strings.TrimSpace(s.payload.Revision), nil
 	}
 	return "", nil

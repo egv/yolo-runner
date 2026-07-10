@@ -550,10 +550,9 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 	})
 
 	payload, err := json.Marshal(workitem.PRReviewPayload{
-		PRID:                 "42",
-		Revision:             "r7",
-		Mode:                 workitem.PRReviewModeAuthor,
-		UnansweredCommentIDs: []string{"comment-1"},
+		PRID:     "42",
+		Revision: "r7",
+		Mode:     workitem.PRReviewModeAuthor,
 	})
 	if err != nil {
 		t.Fatalf("marshal PR review payload: %v", err)
