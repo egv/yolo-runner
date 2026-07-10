@@ -9,16 +9,16 @@ import (
 	"testing"
 )
 
-func TestResolveArcanumClientResolvesCommentViaPOST(t *testing.T) {
+func TestResolveArcanumClientResolvesCommentViaPATCH(t *testing.T) {
 	const commentID = "comment-123"
 
 	var gotPayload map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Method; got != http.MethodPost {
-			t.Fatalf("method = %q, want POST", got)
+		if got := r.Method; got != http.MethodPatch {
+			t.Fatalf("method = %q, want PATCH", got)
 		}
-		if got := r.URL.Path; got != "/api/v1/review-requests-comments/"+commentID+"/resolve" {
-			t.Fatalf("path = %q, want /api/v1/review-requests-comments/%s/resolve", got, commentID)
+		if got := r.URL.Path; got != "/api/v1/public/review-requests-comments/"+commentID {
+			t.Fatalf("path = %q, want /api/v1/public/review-requests-comments/%s", got, commentID)
 		}
 		if got := r.Header.Get("Authorization"); got != "OAuth test-token" {
 			t.Fatalf("Authorization = %q, want OAuth test-token", got)
@@ -54,10 +54,8 @@ func TestResolveArcanumClientResolvesCommentViaPOST(t *testing.T) {
 		t.Fatalf("ResolveComment() error = %v", err)
 	}
 
-	// Resolve sends an empty JSON object — the request shape is confirmed later
-	// against the live Arcanum API (see resolve_client.go candidate alternatives).
-	if len(gotPayload) != 0 {
-		t.Fatalf("resolve request body = %#v, want empty object {}", gotPayload)
+	if got := string(gotPayload["issue_status"]); got != `"resolved"` {
+		t.Fatalf("resolve request body = %#v, want issue_status=resolved", gotPayload)
 	}
 }
 
@@ -82,7 +80,7 @@ func TestResolveArcanumClientRejectsEmptyCommentID(t *testing.T) {
 
 func TestResolveArcanumClientSurfacesResolveErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/review-requests-comments/comment-123/resolve" {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/public/review-requests-comments/comment-123" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		w.WriteHeader(http.StatusBadGateway)
@@ -108,7 +106,7 @@ func TestResolveArcanumClientSurfacesResolveErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveComment() error = nil")
 	}
-	for _, want := range []string{"resolve comment", "POST", "/v1/review-requests-comments/comment-123/resolve", "502", "upstream unavailable"} {
+	for _, want := range []string{"resolve comment", "PATCH", "/v1/public/review-requests-comments/comment-123", "502", "upstream unavailable"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("ResolveComment() error = %q, want substring %q", err.Error(), want)
 		}

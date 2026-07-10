@@ -35,7 +35,7 @@ func (c *ResolveArcanumClient) ResolveComment(ctx context.Context, _ string, com
 		return fmt.Errorf("comment ID is required")
 	}
 
-	if err := apiClient.PostJSON(ctx, reviewRequestCommentResolvePath(commentID), resolveCommentRequest{}, nil); err != nil {
+	if err := apiClient.PatchJSON(ctx, reviewRequestCommentResolvePath(commentID), resolveCommentRequest{IssueStatus: "resolved"}, nil); err != nil {
 		return fmt.Errorf("resolve comment: %w", err)
 	}
 	return nil
@@ -51,19 +51,12 @@ func (c *ResolveArcanumClient) api() (*APIClient, error) {
 	return c.apiClient, nil
 }
 
-// reviewRequestCommentResolvePath is the ONE place the resolve endpoint lives;
-// only this constant changes when the real Arcanum API is confirmed.
-//
-// Candidate alternatives to confirm against the live Arcanum API (none tested
-// yet — ARC_TOKEN + internal network required):
-//   - POST/PUT /v1/review-requests-comments/{id}/status with {"status":"resolved"}
-//   - PATCH /v1/review-requests-comments/{id} with {"resolved":true}
-//
-// Until then resolve via POST .../{id}/resolve with an empty body.
+// reviewRequestCommentResolvePath is the live Arcanum endpoint for changing a
+// review issue status. It was verified against the production API.
 func reviewRequestCommentResolvePath(commentID string) string {
-	return "/v1/review-requests-comments/" + url.PathEscape(strings.TrimSpace(commentID)) + "/resolve"
+	return "/v1/public/review-requests-comments/" + url.PathEscape(strings.TrimSpace(commentID))
 }
 
-// resolveCommentRequest is intentionally empty: the resolve request shape is
-// confirmed later (see reviewRequestCommentResolvePath candidate alternatives).
-type resolveCommentRequest struct{}
+type resolveCommentRequest struct {
+	IssueStatus string `json:"issue_status"`
+}
