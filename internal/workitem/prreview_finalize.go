@@ -77,6 +77,7 @@ type PRReviewImplementScope struct {
 type ResolvePRCommentPayload struct {
 	PRID      string `json:"pr_id"`
 	CommentID string `json:"comment_id"`
+	ReplyBody string `json:"reply_body,omitempty"`
 }
 
 // FinalizePayload is the typed payload for a finalize work item.

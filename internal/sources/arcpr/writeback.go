@@ -183,6 +183,21 @@ func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem
 		}()
 	}
 	writebackState := stateWithWritebackIdentity(state, prID, "")
+	if replyBody := strings.TrimSpace(payload.ReplyBody); replyBody != "" {
+		handled, err := s.handledCommentSet(ctx, prID, state.Comments)
+		if err != nil {
+			return nil, err
+		}
+		if !handled[strings.TrimSpace(payload.CommentID)] {
+			replyClient, err := s.replyCommentClient()
+			if err != nil {
+				return nil, err
+			}
+			if err := replyClient.PostCommentReply(ctx, prID, strings.TrimSpace(payload.CommentID), arcreview.WithDisclosureFooter(replyBody, state.Details.Author)); err != nil {
+				return nil, fmt.Errorf("post arc PR implementation reply %q: %w", payload.CommentID, err)
+			}
+		}
+	}
 
 	resolvePayload, err := json.Marshal(arcreview.ResolveResult{ResolvedCommentIDs: []string{payload.CommentID}})
 	if err != nil {

@@ -647,6 +647,53 @@ func TestSourceHandleResultResolvesCommentForResolvePRCommentKind(t *testing.T) 
 	}
 }
 
+func TestSourceHandleResultPostsImplementationReplyThenResolvesComment(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	client := &fakeArcPRWritebackClient{}
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7", Author: "alice"},
+			Comments: []arcreview.PRComment{{ID: "comment-1", Body: "Please resolve this once the fix lands."}},
+		},
+	}
+	src := &Source{
+		SourceName:   "arcpr-adapta",
+		State:        state,
+		StateFetcher: fetcher,
+		ReplyApplier: arcreview.ReplyApplier{Client: client, Store: state},
+		ResolveApplier: arcreview.ResolveApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindResolvePRComment,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.ResolvePRCommentPayload{
+			PRID:      "42",
+			CommentID: "comment-1",
+			ReplyBody: "Fixed in `deadbeef`.",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, workqueue.Result{Status: workqueue.ResultStatusCompleted}); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if !reflect.DeepEqual(client.replies, []arcPRWritebackReply{{
+		prID:      "42",
+		commentID: "comment-1",
+		body:      arcreview.WithDisclosureFooter("Fixed in `deadbeef`.", "alice"),
+	}}) {
+		t.Fatalf("implementation replies = %#v", client.replies)
+	}
+	if !reflect.DeepEqual(client.resolved, []arcPRWritebackResolve{{prID: "42", commentID: "comment-1"}}) {
+		t.Fatalf("resolved comments = %#v", client.resolved)
+	}
+}
+
 func TestSourceHandleResultIgnoresUnrelatedKindsForResolvePRComment(t *testing.T) {
 	ctx := context.Background()
 	state := openDiscoveryTestState(t)

@@ -32,7 +32,7 @@ const arcPRAuthorOrigin = "arcpr-author"
 // The resolve submission carries the implement item(s) as dependencies so it
 // cannot run until they are done; its idempotency key (arcpr/<prID>/resolve/
 // <commentID>/<revHash>) makes the enqueue idempotent across result retries.
-func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item workitem.Item, _ workqueue.Result) ([]workqueue.Submission, error) {
+func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -67,7 +67,7 @@ func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item work
 		return nil, nil
 	}
 
-	submission, err := resolveCommentSubmission(s.Name(), prID, commentID, item)
+	submission, err := resolveCommentSubmission(s.Name(), prID, commentID, item, result)
 	if err != nil {
 		return nil, err
 	}
@@ -102,14 +102,23 @@ func commentImplementItemsComplete(siblingItemIDs []string, completingItemID str
 // a comment. The resolve idempotency key reuses the implement item's revision
 // hash (the tail of its idempotency key) so the resolve is stamped to the same
 // PR revision that spawned the implement work.
-func resolveCommentSubmission(sourceName string, prID string, commentID string, item workitem.Item) (workqueue.Submission, error) {
+func resolveCommentSubmission(sourceName string, prID string, commentID string, item workitem.Item, result workqueue.Result) (workqueue.Submission, error) {
 	revHash, err := resolveCommentRevisionHash(item.IdempotencyKey)
 	if err != nil {
 		return workqueue.Submission{}, fmt.Errorf("derive arc PR resolve revision hash for comment %q: %w", commentID, err)
 	}
+	implementPayload, err := workitem.DecodeImplementPayload(item.Payload)
+	if err != nil {
+		return workqueue.Submission{}, fmt.Errorf("decode arc PR implement payload for comment %q: %w", commentID, err)
+	}
+	implementResult, err := workitem.DecodeImplementResult(result.Payload)
+	if err != nil {
+		return workqueue.Submission{}, fmt.Errorf("decode arc PR implement result for comment %q: %w", commentID, err)
+	}
 	payload, err := json.Marshal(workitem.ResolvePRCommentPayload{
 		PRID:      prID,
 		CommentID: commentID,
+		ReplyBody: authorImplementCompletionReply(implementPayload, implementResult),
 	})
 	if err != nil {
 		return workqueue.Submission{}, fmt.Errorf("encode arc PR resolve submission for comment %q: %w", commentID, err)
@@ -124,6 +133,16 @@ func resolveCommentSubmission(sourceName string, prID string, commentID string, 
 		Payload:        payload,
 		MaxAttempts:    item.MaxAttempts,
 	}, nil
+}
+
+func authorImplementCompletionReply(payload workitem.ImplementPayload, result workitem.ImplementResult) string {
+	if commitSHA := strings.TrimSpace(result.CommitSHA); commitSHA != "" {
+		return "Fixed in `" + commitSHA + "`."
+	}
+	if title := strings.TrimSpace(payload.Title); title != "" {
+		return "Implemented: " + title + "."
+	}
+	return "Implemented the requested change."
 }
 
 // resolveCommentRevisionHash extracts the revision hash from an implement item's

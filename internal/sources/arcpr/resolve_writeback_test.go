@@ -116,8 +116,8 @@ func TestFinalizeCommentResolveEnqueuesResolveWhenTrackedImplementItemLands(t *t
 	if err := json.Unmarshal(got.Payload, &resolvePayload); err != nil {
 		t.Fatalf("unmarshal resolve payload: %v", err)
 	}
-	if resolvePayload.PRID != "42" || resolvePayload.CommentID != "comment-1" {
-		t.Fatalf("resolve payload = %#v, want {PRID:42 CommentID:comment-1}", resolvePayload)
+	if resolvePayload.PRID != "42" || resolvePayload.CommentID != "comment-1" || resolvePayload.ReplyBody != "Fixed in `deadbeef`." {
+		t.Fatalf("resolve payload = %#v, want reply for comment-1 in PR 42", resolvePayload)
 	}
 
 	// The resolve is dependency-gated on the implement item, which is still
