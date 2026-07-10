@@ -183,23 +183,26 @@ func consumeResults(ctx context.Context, source Source, sourceName string, queue
 	if err != nil {
 		return fmt.Errorf("list unconsumed results for source %q: %w", sourceName, err)
 	}
+	var consumeErrs []error
 	for _, unconsumed := range results {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		followUps, err := source.HandleResult(ctx, unconsumed.Item, unconsumed.Result)
 		if err != nil {
-			return fmt.Errorf("handle result for item %q: %w", unconsumed.Item.ID, err)
+			consumeErrs = append(consumeErrs, fmt.Errorf("handle result for item %q: %w", unconsumed.Item.ID, err))
+			continue
 		}
 		followUps, err = normalizeSubmissions(sourceName, followUps)
 		if err != nil {
-			return fmt.Errorf("handle result for item %q follow-ups: %w", unconsumed.Item.ID, err)
+			consumeErrs = append(consumeErrs, fmt.Errorf("handle result for item %q follow-ups: %w", unconsumed.Item.ID, err))
+			continue
 		}
 		if err := queue.MarkConsumedWithFollowUps(unconsumed.Result.ItemID, procID, followUps); err != nil {
-			return fmt.Errorf("mark result %q consumed: %w", unconsumed.Result.ItemID, err)
+			consumeErrs = append(consumeErrs, fmt.Errorf("mark result %q consumed: %w", unconsumed.Result.ItemID, err))
 		}
 	}
-	return nil
+	return errors.Join(consumeErrs...)
 }
 
 func pollAndEnqueue(ctx context.Context, source Source, sourceName string, queue *workqueue.Store) error {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,64 @@ func TestRunPollsAndConsumesResultsThroughWorkqueue(t *testing.T) {
 	}
 	if followUp.IdempotencyKey != "fake-source/TASK-1/implement" {
 		t.Fatalf("follow-up idempotency key = %q, want implement key", followUp.IdempotencyKey)
+	}
+}
+
+func TestRunConsumesLaterResultsWhenEarlierWritebackFails(t *testing.T) {
+	ctx := context.Background()
+	store, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	var itemIDs []string
+	for _, ref := range []string{"PR-BLOCKED", "PR-READY"} {
+		item, submitErr := store.Submit(workitem.Submission{
+			Kind:           workitem.KindPRReview,
+			Source:         "fake-source",
+			SourceRef:      ref,
+			IdempotencyKey: "fake-source/" + ref,
+			Preset:         "arcpr",
+			Payload:        json.RawMessage(`{"pr_id":"42"}`),
+		})
+		if submitErr != nil {
+			t.Fatalf("Submit(%s) error = %v", ref, submitErr)
+		}
+		claimed, claimErr := store.Claim("runner", []string{"arcpr"}, time.Minute)
+		if claimErr != nil {
+			t.Fatalf("Claim(%s) error = %v", ref, claimErr)
+		}
+		if claimed == nil || claimed.ID != item.ID {
+			t.Fatalf("Claim(%s) = %#v, want %q", ref, claimed, item.ID)
+		}
+		if completeErr := store.Complete(item.ID, workqueue.Result{Payload: json.RawMessage(`{}`)}); completeErr != nil {
+			t.Fatalf("Complete(%s) error = %v", ref, completeErr)
+		}
+		itemIDs = append(itemIDs, item.ID)
+	}
+
+	src := &fakeSourcehostSource{
+		name:       "fake-source",
+		handleErrs: map[string]error{itemIDs[0]: errors.New("writeback blocked")},
+	}
+	err = sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true})
+	if err == nil || !strings.Contains(err.Error(), "writeback blocked") {
+		t.Fatalf("Run() error = %v, want writeback failure", err)
+	}
+	if len(src.handled) != 2 {
+		t.Fatalf("HandleResult calls = %d, want 2", len(src.handled))
+	}
+	unconsumed, listErr := store.ListUnconsumedResults("fake-source")
+	if listErr != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", listErr)
+	}
+	if len(unconsumed) != 1 || unconsumed[0].Item.ID != itemIDs[0] {
+		t.Fatalf("unconsumed results = %#v, want only %q", unconsumed, itemIDs[0])
 	}
 }
 
@@ -391,6 +450,7 @@ type fakeSourcehostSource struct {
 	handled         []handledSourcehostResult
 	polls           int
 	onPoll          func(int)
+	handleErrs      map[string]error
 }
 
 type handledSourcehostResult struct {
@@ -415,6 +475,9 @@ func (s *fakeSourcehostSource) Poll(context.Context) ([]workqueue.Submission, er
 
 func (s *fakeSourcehostSource) HandleResult(_ context.Context, item workitem.Item, result workqueue.Result) ([]workqueue.Submission, error) {
 	s.handled = append(s.handled, handledSourcehostResult{item: item, result: result})
+	if err := s.handleErrs[item.ID]; err != nil {
+		return nil, err
+	}
 	return s.followUps, nil
 }
 
