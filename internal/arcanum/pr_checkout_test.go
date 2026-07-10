@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
@@ -146,5 +147,70 @@ func TestPreparePRCheckoutConcurrentCallsUseDistinctMountsAndPerPRObjectStores(t
 	}
 	if !reflect.DeepEqual(stores, wantStores) {
 		t.Fatalf("object stores = %#v, want %#v", stores, wantStores)
+	}
+}
+
+func TestPreparePRCheckoutSerializesSamePRUntilCleanup(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var (
+		mu         sync.Mutex
+		mountCalls int
+	)
+	secondMount := make(chan struct{})
+	arcExec = func(_ context.Context, _ string, name string, args ...string) ([]byte, []byte, error) {
+		if name == "arc" && len(args) == 5 && args[0] == "mount" {
+			mu.Lock()
+			mountCalls++
+			if mountCalls == 2 {
+				close(secondMount)
+			}
+			mu.Unlock()
+		}
+		return nil, nil, nil
+	}
+
+	first, err := PreparePRCheckout("2293787")
+	if err != nil {
+		t.Fatalf("first PreparePRCheckout() error = %v", err)
+	}
+
+	type checkoutResult struct {
+		checkout *PRCheckout
+		err      error
+	}
+	secondResult := make(chan checkoutResult, 1)
+	go func() {
+		checkout, prepareErr := PreparePRCheckout("2293787")
+		secondResult <- checkoutResult{checkout: checkout, err: prepareErr}
+	}()
+
+	select {
+	case <-secondMount:
+		t.Fatal("second checkout mounted before first cleanup")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := first.Cleanup(); err != nil {
+		t.Fatalf("first Cleanup() error = %v", err)
+	}
+
+	var second checkoutResult
+	select {
+	case second = <-secondResult:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second checkout did not proceed after first cleanup")
+	}
+	if second.err != nil {
+		t.Fatalf("second PreparePRCheckout() error = %v", second.err)
+	}
+	if err := second.checkout.Cleanup(); err != nil {
+		t.Fatalf("second Cleanup() error = %v", err)
 	}
 }

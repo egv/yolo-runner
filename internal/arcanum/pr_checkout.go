@@ -61,6 +61,13 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	// isolated and parallel-safe.
 	objectStore := filepath.Join(objectsBaseDir, prID)
 	mountPath := filepath.Join(mountsBaseDir, prID)
+	releaseCheckout := acquirePRCheckoutLock(mountPath)
+	releaseOnReturn := true
+	defer func() {
+		if releaseOnReturn {
+			releaseCheckout()
+		}
+	}()
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
@@ -85,9 +92,10 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
 	}
 
-	return &PRCheckout{
+	checkout := &PRCheckout{
 		MountPath: mountPath,
 		Cleanup: oncePRCheckoutCleanup(func() error {
+			defer releaseCheckout()
 			unmountArgs := []string{"unmount", "--forget", mountPath}
 			if _, stderr, err := arcExec(context.Background(), "", "arc", unmountArgs...); err != nil {
 				return workspaceArcError(mountPath, unmountArgs, stderr, err)
@@ -100,7 +108,18 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 			}
 			return nil
 		}),
-	}, nil
+	}
+	releaseOnReturn = false
+	return checkout, nil
+}
+
+var prCheckoutLocks sync.Map
+
+func acquirePRCheckoutLock(mountPath string) func() {
+	value, _ := prCheckoutLocks.LoadOrStore(mountPath, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 func oncePRCheckoutCleanup(cleanup func() error) func() error {
