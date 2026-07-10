@@ -551,7 +551,7 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 
 	payload, err := json.Marshal(workitem.PRReviewPayload{
 		PRID:     "42",
-		Revision: "r7",
+		Revision: "34091604",
 		Mode:     workitem.PRReviewModeAuthor,
 	})
 	if err != nil {
@@ -579,11 +579,11 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 
 	fetcher := &runnerPRReviewFakeFetcher{state: arcreview.PRRuntimeState{
 		PRID:     "42",
-		Revision: "r7",
+		Revision: "19076b3f8b9c21a4bac71383698ddb880667c96a",
 		Details: arcreview.PRDetails{
 			ID:       "42",
 			Status:   "open",
-			Revision: "r7",
+			Revision: "19076b3f8b9c21a4bac71383698ddb880667c96a",
 		},
 		Comments: []arcreview.PRComment{
 			{ID: "comment-1", Body: "Can this return nil?", Answered: false},

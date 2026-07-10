@@ -189,3 +189,43 @@ func TestPRReviewCycleThreadsModeIntoModelInput(t *testing.T) {
 		}
 	}
 }
+
+func TestPRReviewCycleAuthorModeAnswersDespiteDifferentRevisionIdentifier(t *testing.T) {
+	state := PRRuntimeState{
+		PRID:     "42",
+		Revision: "19076b3f8b9c21a4bac71383698ddb880667c96a",
+		Details: PRDetails{
+			ID:       "42",
+			Status:   "open",
+			Revision: "19076b3f8b9c21a4bac71383698ddb880667c96a",
+		},
+		Comments: []PRComment{{ID: "comment-1", Body: "Please fix this", Answered: false}},
+	}
+	fetcher := &fakePRReviewCycleFetcher{state: state}
+	store := &fakePRReviewCycleRevisionStore{revision: "34091604"}
+	model := &fakePRReviewCycleModelHelper{payload: []byte("author decisions")}
+	reviewApplier := &fakePRReviewCycleReviewApplier{}
+	replyApplier := &fakePRReviewCycleReplyApplier{}
+
+	action, err := RunPRReviewCycle(context.Background(), PRReviewCycleConfig{
+		Mode:          "author",
+		PRID:          "42",
+		StateFetcher:  fetcher,
+		RevisionStore: store,
+		ModelHelper:   model,
+		ReviewApplier: reviewApplier,
+		ReplyApplier:  replyApplier,
+	})
+	if err != nil {
+		t.Fatalf("RunPRReviewCycle() error = %v", err)
+	}
+	if action != PRRunnerActionAnswer {
+		t.Fatalf("RunPRReviewCycle() action = %q, want %q", action, PRRunnerActionAnswer)
+	}
+	if len(reviewApplier.calls) != 0 {
+		t.Fatalf("review applier calls = %d, want 0", len(reviewApplier.calls))
+	}
+	if len(replyApplier.calls) != 1 {
+		t.Fatalf("reply applier calls = %d, want 1", len(replyApplier.calls))
+	}
+}

@@ -114,7 +114,7 @@ func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAct
 		return "", fmt.Errorf("get reviewed revision for PR %q: %w", prID, err)
 	}
 
-	action := PlanNextPRRunnerAction(state, handledRevision, cfg.AllowShip)
+	action := planPRReviewCycleAction(state, handledRevision, cfg.AllowShip, cfg.Mode)
 	switch action {
 	case PRRunnerActionReview:
 		if cfg.ModelHelper == nil {
@@ -166,6 +166,30 @@ func RunPRReviewCycle(ctx context.Context, cfg PRReviewCycleConfig) (PRRunnerAct
 	}
 
 	return action, nil
+}
+
+func planPRReviewCycleAction(state PRRuntimeState, handledRevision string, allowShip bool, mode string) PRRunnerAction {
+	if !strings.EqualFold(strings.TrimSpace(mode), "author") {
+		return PlanNextPRRunnerAction(state, handledRevision, allowShip)
+	}
+
+	// Author mode produces per-comment decisions, not reviewer findings. Its
+	// action therefore depends on comment state rather than revision identity;
+	// Arcanum discovery uses active_diff_set IDs while runtime state exposes
+	// from_id commit hashes, so comparing them would always select review.
+	if isTerminalPRStatus(state.Details.Status) {
+		return PRRunnerActionWait
+	}
+	if hasUnansweredPRComments(state.Comments) {
+		return PRRunnerActionAnswer
+	}
+	if hasOpenPRBlockers(state.OpenIssues) || hasFailedPRChecks(state.Checks) || hasPendingPRChecks(state.Checks) || hasUnknownPRChecks(state.Checks) {
+		return PRRunnerActionWait
+	}
+	if allowShip {
+		return PRRunnerActionShip
+	}
+	return PRRunnerActionWait
 }
 
 func prReviewCycleProjectContext(ctx context.Context, cfg PRReviewCycleConfig, state PRRuntimeState) (ProjectContext, error) {
