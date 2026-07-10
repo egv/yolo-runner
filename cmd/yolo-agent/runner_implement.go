@@ -10,6 +10,7 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/executor"
+	arcvcs "github.com/egv/yolo-runner/v2/internal/vcs/arc"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -17,6 +18,10 @@ import (
 // runnerImplementPreparePRCheckout is a seam over arcanum.PreparePRCheckout so
 // the author-mode (arcpr-author) branch can be tested without a real arc mount.
 var runnerImplementPreparePRCheckout = arcanum.PreparePRCheckout
+
+var runnerImplementPRVCS = func(path string) contracts.VCS {
+	return arcvcs.New(localGitRunner{dir: path})
+}
 
 // runnerImplementPRLanding captures the per-PR checkout used when an implement
 // item targets an existing Arc PR (metadata origin == "arcpr-author"). When
@@ -80,14 +85,19 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 		resolve = defaultRunnerImplementExecutorResolver
 	}
 	return func(ctx context.Context, item workitem.Item, workspace envpreset.Workspace) (workqueue.Result, error) {
-		if workspace.VCS == nil {
-			return workqueue.Result{}, fmt.Errorf("implement item %q requires an isolated VCS-bearing workspace; preset %q materialized none (path strategy is not allowed for code-writing kinds)", item.ID, item.Preset)
-		}
 		payload, err := workitem.DecodeImplementPayload(item.Payload)
 		if err != nil {
 			return workqueue.Result{}, fmt.Errorf("decode implement payload for item %q: %w", item.ID, err)
 		}
 
+		prLanding, err := resolveRunnerImplementPRLanding(payload, item.ID)
+		if err != nil {
+			return workqueue.Result{}, err
+		}
+		defer prLanding.cleanup()
+		if !prLanding.enabled && workspace.VCS == nil {
+			return workqueue.Result{}, fmt.Errorf("implement item %q requires an isolated VCS-bearing workspace; preset %q materialized none (path strategy is not allowed for code-writing kinds)", item.ID, item.Preset)
+		}
 		resolved, err := resolve(ctx, item, workspace)
 		if err != nil {
 			return workqueue.Result{}, err
@@ -96,13 +106,8 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			return workqueue.Result{}, fmt.Errorf("implement runner for preset %q is nil", item.Preset)
 		}
 
-		prLanding, err := resolveRunnerImplementPRLanding(payload, item.ID)
-		if err != nil {
-			return workqueue.Result{}, err
-		}
-		defer prLanding.cleanup()
-
 		repoRoot := strings.TrimSpace(workspace.Path)
+		taskVCS := workspace.VCS
 		landingMode := ""
 		mergeOnSuccess := runnerImplementShouldLand(resolved.Landing)
 		prIDForLanding := ""
@@ -113,13 +118,17 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			landingMode = executor.LandingModePushExistingPR
 			mergeOnSuccess = true
 			prIDForLanding = prLanding.prID
+			taskVCS = runnerImplementPRVCS(prLanding.mountPath)
+		}
+		if taskVCS == nil {
+			return workqueue.Result{}, fmt.Errorf("implement item %q resolved no VCS adapter", item.ID)
 		}
 
 		exec := &executor.Executor{
 			Runner:            resolved.Runner,
 			Events:            resolved.Events,
 			RepoRoot:          repoRoot,
-			VCS:               workspace.VCS,
+			VCS:               taskVCS,
 			ParentID:          strings.TrimSpace(payload.PromptContext.ParentID),
 			Backend:           resolved.Agent.Backend,
 			Model:             resolved.Agent.Model,

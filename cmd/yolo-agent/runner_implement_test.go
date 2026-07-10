@@ -383,6 +383,15 @@ func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
 	runnerImplementPreparePRCheckout = func(string) (*arcanum.PRCheckout, error) {
 		return &arcanum.PRCheckout{MountPath: prMount, Cleanup: func() error { return nil }}, nil
 	}
+	fakeVCS := &runnerImplementFakeVCS{}
+	previousPRVCS := runnerImplementPRVCS
+	t.Cleanup(func() { runnerImplementPRVCS = previousPRVCS })
+	runnerImplementPRVCS = func(path string) contracts.VCS {
+		if path != prMount {
+			t.Fatalf("PR VCS path = %q, want %q", path, prMount)
+		}
+		return fakeVCS
+	}
 
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	store, err := workqueue.Open(dbPath)
@@ -435,7 +444,6 @@ func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
 		{Status: contracts.RunnerResultCompleted, Artifacts: map[string]string{"commit_sha": "pr-fix-sha"}},
 		{Status: contracts.RunnerResultCompleted, ReviewReady: true, Artifacts: map[string]string{"review_verdict": "pass"}},
 	}}
-	fakeVCS := &runnerImplementFakeVCS{}
 	daemon := runnerDaemon{
 		store:   store,
 		runners: runners,
@@ -461,7 +469,8 @@ func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
 			},
 		},
 		materialize: func(context.Context, envpreset.Preset, string, bool) (envpreset.Workspace, error) {
-			return envpreset.Workspace{Path: prMount, VCS: fakeVCS, Cleanup: func() error { return nil }}, nil
+			t.Fatal("author-mode implement item must prepare its own PR checkout")
+			return envpreset.Workspace{}, nil
 		},
 		cfg: runnerDaemonCommandConfig{
 			presets:           []string{"arcpr"},

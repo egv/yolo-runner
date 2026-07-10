@@ -70,6 +70,20 @@ func runnerKindNeedsPresetWorkspace(kind workitem.Kind) bool {
 	return kind != workitem.KindPRReview
 }
 
+func runnerItemNeedsPresetWorkspace(item workitem.Item) bool {
+	if !runnerKindNeedsPresetWorkspace(item.Kind) {
+		return false
+	}
+	if item.Kind != workitem.KindImplement {
+		return true
+	}
+	payload, err := workitem.DecodeImplementPayload(item.Payload)
+	if err != nil {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(payload.PromptContext.Metadata["origin"]), "arcpr-author")
+}
+
 func runnerDaemonCommand(args []string) int {
 	fs := flag.NewFlagSet("yolo-agent runner", flag.ContinueOnError)
 	queuePath := fs.String("queue", "", "Path to the SQLite work queue database")
@@ -547,7 +561,7 @@ func (d runnerDaemon) materializeClaimedWorkspace(ctx context.Context, item work
 	if !ok {
 		return envpreset.Workspace{}, fmt.Errorf("environment preset %q is not defined", presetName)
 	}
-	if !runnerKindNeedsPresetWorkspace(item.Kind) {
+	if !runnerItemNeedsPresetWorkspace(item) {
 		return envpreset.Workspace{Cleanup: func() error { return nil }}, nil
 	}
 
