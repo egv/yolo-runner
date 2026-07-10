@@ -39,7 +39,7 @@ func BuildAuthorModePrompt(state PRRuntimeState, projectContexts ...ProjectConte
 		sections = append(sections, reviewRevisionProjectContextSection(projectContext))
 	}
 	sections = append(sections,
-		reviewRevisionDiffsSection(state.ChangedFiles),
+		reviewRevisionDiffsSection(state.ChangedFiles, hasProjectContext),
 		reviewRevisionCommentsSection(state.Comments),
 		reviewRevisionChecksSection(state.Checks),
 		authorModeJSONContractSection(),

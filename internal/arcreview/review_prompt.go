@@ -21,7 +21,7 @@ func BuildReviewRevisionPrompt(state PRRuntimeState, projectContexts ...ProjectC
 		sections = append(sections, reviewRevisionProjectContextSection(projectContext))
 	}
 	sections = append(sections,
-		reviewRevisionDiffsSection(state.ChangedFiles),
+		reviewRevisionDiffsSection(state.ChangedFiles, hasProjectContext),
 		reviewRevisionCommentsSection(state.Comments),
 		reviewRevisionBlockersSection(state.OpenIssues),
 		reviewRevisionChecksSection(state.Checks),
@@ -30,10 +30,9 @@ func BuildReviewRevisionPrompt(state PRRuntimeState, projectContexts ...ProjectC
 	return strings.Join(sections, "\n\n")
 }
 
-// maxDiffSectionBytes caps the total size of the Diffs section. Large PRs can
-// produce diffs exceeding 1MB, which blows past any model's context limit. The
-// truncation keeps the first N files fully, then truncates the rest so the
-// review still covers the most important changes.
+// maxDiffSectionBytes caps the total size of the Diffs section when raw diffs
+// are included (no checkout available). With a checkout, diffs are omitted
+// entirely and only the file list is shown.
 const maxDiffSectionBytes = 200 * 1024
 
 // maxCommentSectionBytes caps the total size of the Comments section. PRs with
@@ -42,7 +41,7 @@ const maxCommentSectionBytes = 150 * 1024
 
 func reviewRevisionIntroSection(hasProjectContext bool) string {
 	if hasProjectContext {
-		return "You are reviewing one Arcanum PR revision in a real checkout. Use the provided PR metadata, project context, diffs, comments, open blockers, and checks."
+		return "You are reviewing one Arcanum PR revision in a real checkout. Use the provided PR metadata, project context, changed files list, comments, open blockers, and checks. Read the actual diffs from the checkout with `arc pr changes` or by inspecting files."
 	}
 	return "You are reviewing one Arcanum PR revision. Use only the provided PR metadata, diffs, comments, open blockers, and checks."
 }
@@ -188,7 +187,24 @@ func reviewPromptLinkedTicketHeader(ticket LinkedTicketSummary) string {
 	}
 }
 
-func reviewRevisionDiffsSection(files []PRChangedFile) string {
+func reviewRevisionDiffsSection(files []PRChangedFile, hasCheckout bool) string {
+	if hasCheckout {
+		// The model is inside a real checkout. Don't stuff raw diffs into the
+		// prompt — list the changed files so the model knows what to inspect,
+		// and let it read the actual diffs from the checkout.
+		lines := []string{"Changed files (read diffs from the checkout with `arc pr changes`):"}
+		for _, file := range files {
+			lines = append(lines, fmt.Sprintf("  %s (+%d -%d) %s",
+				reviewPromptFallback(file.Path), file.Additions, file.Deletions,
+				reviewPromptFallback(file.Status)))
+		}
+		if len(lines) == 1 {
+			lines = append(lines, "None")
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	// No checkout: include raw diffs so the model can see the changes.
 	lines := []string{"Diffs:"}
 	totalSize := 0
 	truncated := 0
@@ -197,17 +213,15 @@ func reviewRevisionDiffsSection(files []PRChangedFile) string {
 			lines = append(lines, "")
 		}
 		diff := reviewPromptFallback(file.Diff)
-		// Stop adding full diffs once the section exceeds the budget; list
-		// remaining files by name only so the reviewer knows they exist.
 		if totalSize > maxDiffSectionBytes {
-			lines = append(lines, "File: "+reviewPromptFallback(file.Path)+" (diff truncated — see checkout)")
+			lines = append(lines, "File: "+reviewPromptFallback(file.Path)+" (truncated)")
 			truncated++
 			continue
 		}
 		entry := strings.Join([]string{
-			"File: "+reviewPromptFallback(file.Path),
-			"Old path: "+reviewPromptFallback(file.OldPath),
-			"Status: "+reviewPromptFallback(file.Status),
+			"File: " + reviewPromptFallback(file.Path),
+			"Old path: " + reviewPromptFallback(file.OldPath),
+			"Status: " + reviewPromptFallback(file.Status),
 			fmt.Sprintf("Additions: %d", file.Additions),
 			fmt.Sprintf("Deletions: %d", file.Deletions),
 			"Diff:",
@@ -217,7 +231,7 @@ func reviewRevisionDiffsSection(files []PRChangedFile) string {
 		lines = append(lines, entry)
 	}
 	if truncated > 0 {
-		lines = append(lines, fmt.Sprintf("\n(%d additional files truncated — review them in the checkout)", truncated))
+		lines = append(lines, fmt.Sprintf("\n(%d additional files truncated)", truncated))
 	}
 	if len(lines) == 1 {
 		lines = append(lines, "None")
