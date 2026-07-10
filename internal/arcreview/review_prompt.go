@@ -30,6 +30,16 @@ func BuildReviewRevisionPrompt(state PRRuntimeState, projectContexts ...ProjectC
 	return strings.Join(sections, "\n\n")
 }
 
+// maxDiffSectionBytes caps the total size of the Diffs section. Large PRs can
+// produce diffs exceeding 1MB, which blows past any model's context limit. The
+// truncation keeps the first N files fully, then truncates the rest so the
+// review still covers the most important changes.
+const maxDiffSectionBytes = 200 * 1024
+
+// maxCommentSectionBytes caps the total size of the Comments section. PRs with
+// long review threads can accumulate hundreds of KB of comment text.
+const maxCommentSectionBytes = 150 * 1024
+
 func reviewRevisionIntroSection(hasProjectContext bool) string {
 	if hasProjectContext {
 		return "You are reviewing one Arcanum PR revision in a real checkout. Use the provided PR metadata, project context, diffs, comments, open blockers, and checks."
@@ -180,19 +190,34 @@ func reviewPromptLinkedTicketHeader(ticket LinkedTicketSummary) string {
 
 func reviewRevisionDiffsSection(files []PRChangedFile) string {
 	lines := []string{"Diffs:"}
+	totalSize := 0
+	truncated := 0
 	for i, file := range files {
 		if i > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines,
+		diff := reviewPromptFallback(file.Diff)
+		// Stop adding full diffs once the section exceeds the budget; list
+		// remaining files by name only so the reviewer knows they exist.
+		if totalSize > maxDiffSectionBytes {
+			lines = append(lines, "File: "+reviewPromptFallback(file.Path)+" (diff truncated — see checkout)")
+			truncated++
+			continue
+		}
+		entry := strings.Join([]string{
 			"File: "+reviewPromptFallback(file.Path),
 			"Old path: "+reviewPromptFallback(file.OldPath),
 			"Status: "+reviewPromptFallback(file.Status),
 			fmt.Sprintf("Additions: %d", file.Additions),
 			fmt.Sprintf("Deletions: %d", file.Deletions),
 			"Diff:",
-			reviewPromptFallback(file.Diff),
-		)
+			diff,
+		}, "\n")
+		totalSize += len(entry)
+		lines = append(lines, entry)
+	}
+	if truncated > 0 {
+		lines = append(lines, fmt.Sprintf("\n(%d additional files truncated — review them in the checkout)", truncated))
 	}
 	if len(lines) == 1 {
 		lines = append(lines, "None")
@@ -202,24 +227,45 @@ func reviewRevisionDiffsSection(files []PRChangedFile) string {
 
 func reviewRevisionCommentsSection(comments []PRComment) string {
 	lines := []string{"Comments:"}
+	totalSize := 0
+	truncated := 0
 	for i, comment := range comments {
 		if i > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines,
-			"ID: "+reviewPromptFallback(comment.ID),
-			"Thread ID: "+reviewPromptFallback(comment.ThreadID),
-			"Author: "+reviewPromptFallback(comment.Author),
-			"Revision: "+reviewPromptFallback(comment.Revision),
-			"Path: "+reviewPromptFallback(comment.Path),
+		body := reviewPromptFallback(comment.Body)
+		entry := strings.Join([]string{
+			"ID: " + reviewPromptFallback(comment.ID),
+			"Thread ID: " + reviewPromptFallback(comment.ThreadID),
+			"Author: " + reviewPromptFallback(comment.Author),
+			"Revision: " + reviewPromptFallback(comment.Revision),
+			"Path: " + reviewPromptFallback(comment.Path),
 			fmt.Sprintf("Line: %d", comment.Line),
-			"Created at: "+reviewPromptTime(comment.CreatedAt),
-			"Updated at: "+reviewPromptTime(comment.UpdatedAt),
+			"Created at: " + reviewPromptTime(comment.CreatedAt),
+			"Updated at: " + reviewPromptTime(comment.UpdatedAt),
 			fmt.Sprintf("Resolved: %t", comment.Resolved),
 			fmt.Sprintf("Answered: %t", comment.Answered),
 			"Body:",
-			reviewPromptFallback(comment.Body),
-		)
+			body,
+		}, "\n")
+		// Truncate the body of long comments once the section exceeds the budget.
+		if totalSize > maxCommentSectionBytes {
+			body = truncatePromptText(body, 200)
+			entry = strings.Join([]string{
+				"ID: " + reviewPromptFallback(comment.ID),
+				"Author: " + reviewPromptFallback(comment.Author),
+				"Path: " + reviewPromptFallback(comment.Path),
+				fmt.Sprintf("Resolved: %t", comment.Resolved),
+				"Body (truncated):",
+				body,
+			}, "\n")
+			truncated++
+		}
+		totalSize += len(entry)
+		lines = append(lines, entry)
+	}
+	if truncated > 0 {
+		lines = append(lines, fmt.Sprintf("\n(%d additional comments truncated)", truncated))
 	}
 	if len(lines) == 1 {
 		lines = append(lines, "None")
@@ -319,6 +365,17 @@ func reviewPromptFallback(value string) string {
 		return "None"
 	}
 	return value
+}
+
+// truncatePromptText caps a string to maxBytes, keeping the beginning and
+// appending a truncation marker. Used to keep large diffs/comments within the
+// model's context budget.
+func truncatePromptText(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value
+	}
+	return value[:maxBytes] + "\n…(truncated)"
 }
 
 func reviewPromptTime(value time.Time) string {
