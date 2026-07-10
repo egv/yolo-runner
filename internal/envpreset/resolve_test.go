@@ -46,7 +46,7 @@ func TestResolveAgentAndLandingMatchConfigDefaultingSemantics(t *testing.T) {
 	if configuredAgent.Backend != "codex" {
 		t.Fatalf("expected configured backend codex, got %q", configuredAgent.Backend)
 	}
-	if configuredAgent.Model != "gpt-5.3-codex-spark" {
+	if configuredAgent.Model != "gpt-5.6-sol" {
 		t.Fatalf("expected configured backend model fallback, got %q", configuredAgent.Model)
 	}
 	if configuredAgent.RunnerTimeout != 20*time.Minute {

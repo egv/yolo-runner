@@ -221,10 +221,10 @@ func TestCatalogBuiltinCodexUsesAppServerAdapter(t *testing.T) {
 	if codex.Adapter != "codex-app-server" {
 		t.Errorf("expected codex adapter %q, got %q", "codex-app-server", codex.Adapter)
 	}
-	if len(codex.Args) == 0 || codex.Args[0] != "app-server" {
-		t.Errorf("expected codex args to start with %q, got %v", "app-server", codex.Args)
+	if len(codex.Args) != 3 || codex.Args[0] != "-c" || codex.Args[1] != `model_reasoning_effort="medium"` || codex.Args[2] != "app-server" {
+		t.Errorf("expected codex args to configure medium reasoning before app-server, got %v", codex.Args)
 	}
-	if codex.Model != "gpt-5.3-codex-spark" {
-		t.Errorf("expected supported builtin codex model %q, got %q", "gpt-5.3-codex-spark", codex.Model)
+	if codex.Model != "gpt-5.6-sol" {
+		t.Errorf("expected builtin codex model %q, got %q", "gpt-5.6-sol", codex.Model)
 	}
 }

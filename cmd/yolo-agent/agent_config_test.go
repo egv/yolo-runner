@@ -85,7 +85,7 @@ func TestResolveYoloAgentConfigDefaultsFallsBackToBackendModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected config defaults to parse, got %v", err)
 	}
-	if defaults.Model != "gpt-5.3-codex-spark" {
+	if defaults.Model != "gpt-5.6-sol" {
 		t.Fatalf("expected model fallback from backend definition, got %q", defaults.Model)
 	}
 }
