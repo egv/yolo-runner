@@ -28,6 +28,11 @@ type PRStateFetcher interface {
 	FetchPRRuntimeState(ctx context.Context, workspace string, prID string) (arcreview.PRRuntimeState, error)
 }
 
+// PRCommentFetcher reads the review threads needed for workspace-free comment
+// writeback. It keeps author-mode replies and resolutions independent from a
+// PR checkout that may be actively owned by an implementation worker.
+type PRCommentFetcher func(ctx context.Context, prID string) ([]arcreview.PRComment, error)
+
 type PRListerFunc func(context.Context) ([]arcanum.PRSummary, error)
 
 func (f PRListerFunc) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
@@ -61,6 +66,7 @@ type Source struct {
 	State               *arcreviewstate.Store
 	Lister              PRLister
 	StateFetcher        PRStateFetcher
+	CommentFetcher      PRCommentFetcher
 	APIClient           *arcanum.APIClient
 	ReplyApplier        arcreview.PRReviewCycleReplyApplier
 	ReviewApplier       arcreview.PRReviewCycleReviewApplier

@@ -167,7 +167,7 @@ func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem
 	if prID == "" {
 		return nil, errors.New("arc PR ID is required")
 	}
-	state, _, cleanup, err := s.fetchWritebackState(ctx, prID)
+	state, cleanup, err := s.fetchResolvePRCommentState(ctx, prID)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +211,34 @@ func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem
 		return nil, fmt.Errorf("apply arc PR resolve: %w", err)
 	}
 	return nil, nil
+}
+
+// fetchResolvePRCommentState obtains only the state required to post a reply
+// and resolve one comment. The usual writeback flow needs an Arc checkout for
+// revision/check information, but comment resolution is served by the
+// Arcanum API and must not contend with an active author implementation mount.
+func (s *Source) fetchResolvePRCommentState(ctx context.Context, prID string) (arcreview.PRRuntimeState, func() error, error) {
+	if s.StateFetcher != nil || len(s.writebackWorkspaces()) > 0 {
+		state, _, cleanup, err := s.fetchWritebackState(ctx, prID)
+		return state, cleanup, err
+	}
+
+	fetchComments := s.CommentFetcher
+	if fetchComments == nil {
+		fetchComments = arcanum.FetchPRComments
+	}
+	comments, err := fetchComments(ctx, prID)
+	if err != nil {
+		return arcreview.PRRuntimeState{}, nil, fmt.Errorf("fetch arc PR comments for %q: %w", prID, err)
+	}
+	return arcreview.PRRuntimeState{
+		PRID: prID,
+		Details: arcreview.PRDetails{
+			ID:     prID,
+			Author: strings.TrimSpace(s.Author),
+		},
+		Comments: comments,
+	}, nil, nil
 }
 
 func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcreview.PRRuntimeState, string, func() error, error) {
