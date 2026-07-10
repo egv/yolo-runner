@@ -224,4 +224,7 @@ func TestCatalogBuiltinCodexUsesAppServerAdapter(t *testing.T) {
 	if len(codex.Args) == 0 || codex.Args[0] != "app-server" {
 		t.Errorf("expected codex args to start with %q, got %v", "app-server", codex.Args)
 	}
+	if codex.Model != "gpt-5.3-codex-spark" {
+		t.Errorf("expected supported builtin codex model %q, got %q", "gpt-5.3-codex-spark", codex.Model)
+	}
 }

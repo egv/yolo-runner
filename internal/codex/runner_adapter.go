@@ -138,6 +138,7 @@ func (a *CLIRunnerAdapter) Run(ctx context.Context, request contracts.RunnerRequ
 	} else {
 		runErr, completion = a.runAppServerMode(runCtx, request, stdoutFile, stderrFile, protocolFile)
 	}
+	runErr = errors.Join(runErr, appServerCompletionError(completion))
 	runErr = contracts.FinalizeRunError(runCtx, runErr)
 
 	finishedAt := a.now().UTC()

@@ -11,6 +11,7 @@ import (
 
 type AppServerCompletion struct {
 	Reason           string
+	FailureReason    string
 	ReviewReady      bool
 	HasReviewVerdict bool
 	Artifacts        map[string]string
@@ -62,17 +63,34 @@ func NormalizeAppServerNotification(message contracts.JSONRPCMessage, mode contr
 		event.Lifecycle = &contracts.TaskSessionLifecycleEvent{State: contracts.TaskSessionLifecycleRunning}
 		return event, nil, true
 	case "turn/completed":
-		reason := lookupString(params, "stopReason", "stop_reason", "reason")
+		turn := lookupMap(params, "turn")
+		turnStatus := strings.ToLower(coalesceMessage(
+			lookupString(turn, "status", "state"),
+			lookupString(params, "status", "state"),
+		))
+		failureReason := appServerTurnFailureReason(params, turn, turnStatus)
+		reason := coalesceMessage(
+			lookupString(params, "stopReason", "stop_reason", "reason"),
+			turnStatus,
+		)
 		metadata = setMetadataValue(metadata, "reason", reason)
+		metadata = setMetadataValue(metadata, "turn_status", turnStatus)
+		metadata = setMetadataValue(metadata, "detail", failureReason)
 		metadata = setMetadataValue(metadata, "completion_json", marshalCompletionJSON(params))
 		event.Metadata = metadata
 		event.Type = contracts.TaskSessionEventTypeLifecycle
 		event.Message = "turn completed"
-		event.Lifecycle = &contracts.TaskSessionLifecycleEvent{State: contracts.TaskSessionLifecycleStopped}
+		lifecycleState := contracts.TaskSessionLifecycleStopped
+		if failureReason != "" {
+			lifecycleState = contracts.TaskSessionLifecycleFailed
+			event.Message = "turn failed"
+		}
+		event.Lifecycle = &contracts.TaskSessionLifecycleEvent{State: lifecycleState}
 		completion := &AppServerCompletion{
-			Reason:    reason,
-			Artifacts: map[string]string{},
-			Metadata:  cloneStringMap(metadata),
+			Reason:        reason,
+			FailureReason: failureReason,
+			Artifacts:     map[string]string{},
+			Metadata:      cloneStringMap(metadata),
 		}
 		if mode == contracts.RunnerModeReview {
 			if verdict, ok := extractReviewVerdict(params); ok {
@@ -334,6 +352,9 @@ func mergeAppServerCompletion(target *AppServerCompletion, fallback *AppServerCo
 		target.HasReviewVerdict = true
 		target.ReviewReady = fallback.ReviewReady
 	}
+	if strings.TrimSpace(target.FailureReason) == "" {
+		target.FailureReason = strings.TrimSpace(fallback.FailureReason)
+	}
 	if len(fallback.Artifacts) > 0 {
 		if target.Artifacts == nil {
 			target.Artifacts = map[string]string{}
@@ -344,6 +365,35 @@ func mergeAppServerCompletion(target *AppServerCompletion, fallback *AppServerCo
 			}
 		}
 	}
+}
+
+func appServerCompletionError(completion *AppServerCompletion) error {
+	if completion == nil || strings.TrimSpace(completion.FailureReason) == "" {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.TrimSpace(completion.FailureReason))
+}
+
+func appServerTurnFailureReason(params map[string]any, turn map[string]any, status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "cancelled", "canceled", "interrupted":
+	default:
+		return ""
+	}
+
+	errorInfo := lookupMap(turn, "error")
+	if errorInfo == nil {
+		errorInfo = lookupMap(params, "error")
+	}
+	detail := coalesceMessage(
+		extractText(errorInfo),
+		lookupString(turn, "message", "reason"),
+		lookupString(params, "message", "reason"),
+	)
+	if detail == "" {
+		return fmt.Sprintf("codex app-server turn %s", status)
+	}
+	return fmt.Sprintf("codex app-server turn %s: %s", status, detail)
 }
 
 func cloneStringMap(src map[string]string) map[string]string {

@@ -369,7 +369,7 @@ func (s *AppServerTaskSession) handleExecuteMessage(ctx context.Context, request
 			}
 		}
 		if completion != nil {
-			return true, nil
+			return true, appServerCompletionError(completion)
 		}
 	}
 

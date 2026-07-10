@@ -654,7 +654,7 @@ agent:
 	if !called {
 		t.Fatalf("expected run function to be called")
 	}
-	if got.model != "gpt-5.3-codex" {
+	if got.model != "gpt-5.3-codex-spark" {
 		t.Fatalf("expected model fallback from backend, got %q", got.model)
 	}
 }

@@ -1794,6 +1794,110 @@ func TestNormalizeAppServerNotificationMapsCompletionIntoReviewArtifacts(t *test
 	}
 }
 
+func TestNormalizeAppServerNotificationMapsFailedTurnCompletion(t *testing.T) {
+	message := contracts.JSONRPCMessage{
+		Method: "turn/completed",
+		Params: map[string]any{
+			"threadId": "thread-failed",
+			"turn": map[string]any{
+				"id":     "turn-failed",
+				"status": "failed",
+				"error": map[string]any{
+					"message":        "the requested model is not supported",
+					"codexErrorInfo": "other",
+				},
+			},
+		},
+	}
+
+	event, completion, ok := NormalizeAppServerNotification(message, contracts.RunnerModeReview)
+	if !ok {
+		t.Fatal("expected failed completion notification to normalize")
+	}
+	if event.Type != contracts.TaskSessionEventTypeLifecycle || event.Lifecycle == nil || event.Lifecycle.State != contracts.TaskSessionLifecycleFailed {
+		t.Fatalf("expected failed lifecycle event, got %#v", event)
+	}
+	if event.Metadata["turn_status"] != "failed" {
+		t.Fatalf("expected failed turn status metadata, got %#v", event.Metadata)
+	}
+	if completion == nil || !strings.Contains(completion.FailureReason, "requested model is not supported") {
+		t.Fatalf("expected completion failure reason, got %#v", completion)
+	}
+}
+
+func TestCLIRunnerAdapterMapsFailedAppServerTurnToFailedResult(t *testing.T) {
+	adapter := NewCLIRunnerAdapter("codex-bin", commandRunnerFunc(func(_ context.Context, spec CommandSpec) error {
+		encoder := json.NewEncoder(spec.Stdout)
+		if err := encoder.Encode(contracts.JSONRPCMessage{
+			Method: "error",
+			Params: map[string]any{
+				"threadId": "thread-failed",
+				"turnId":   "turn-failed",
+				"error": map[string]any{
+					"message":        "the requested model is not supported",
+					"codexErrorInfo": "other",
+				},
+				"willRetry": false,
+			},
+		}); err != nil {
+			return err
+		}
+		return encoder.Encode(contracts.JSONRPCMessage{
+			Method: "turn/completed",
+			Params: map[string]any{
+				"threadId": "thread-failed",
+				"turn": map[string]any{
+					"id":     "turn-failed",
+					"status": "failed",
+					"error": map[string]any{
+						"message":        "the requested model is not supported",
+						"codexErrorInfo": "other",
+					},
+				},
+			},
+		})
+	}))
+
+	result, err := adapter.Run(context.Background(), contracts.RunnerRequest{
+		TaskID:   "failed-review",
+		RepoRoot: t.TempDir(),
+		Prompt:   "review",
+		Mode:     contracts.RunnerModeReview,
+	})
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+	if result.Status != contracts.RunnerResultFailed {
+		t.Fatalf("expected failed result, got %q (%s)", result.Status, result.Reason)
+	}
+	if !strings.Contains(result.Reason, "requested model is not supported") {
+		t.Fatalf("expected model failure reason, got %q", result.Reason)
+	}
+}
+
+func TestAppServerTaskSessionHandleExecuteMessageReturnsFailedTurnError(t *testing.T) {
+	session := &AppServerTaskSession{}
+	completed, err := session.handleExecuteMessage(context.Background(), contracts.TaskSessionExecuteRequest{}, contracts.JSONRPCMessage{
+		Method: "turn/completed",
+		Params: map[string]any{
+			"threadId": "thread-failed",
+			"turn": map[string]any{
+				"id":     "turn-failed",
+				"status": "failed",
+				"error": map[string]any{
+					"message": "the requested model is not supported",
+				},
+			},
+		},
+	})
+	if !completed {
+		t.Fatal("expected failed turn to complete the execute loop")
+	}
+	if err == nil || !strings.Contains(err.Error(), "requested model is not supported") {
+		t.Fatalf("expected failed turn error, got %v", err)
+	}
+}
+
 func TestCLIRunnerAdapterImplementsContract(t *testing.T) {
 	var _ contracts.AgentRunner = (*CLIRunnerAdapter)(nil)
 }
