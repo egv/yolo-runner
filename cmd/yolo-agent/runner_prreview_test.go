@@ -592,7 +592,9 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 			{Path: "taxi/backend-cpp/services/ai_minion/main.cpp", Status: "modified"},
 		},
 	}}
-	runner := &fakeArcPRReviewModelRunner{payload: []byte(`{
+	runner := &fakeArcPRReviewModelRunner{payload: []byte(`Проверил комментарии.
+` + "```json" + `
+{
 		"comment_decisions": [
 			{
 				"comment_id": "comment-1",
@@ -602,7 +604,9 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 				"rationale": "Question answered by the guard."
 			}
 		]
-	}`)}
+	}
+` + "```" + `
+Готово.`)}
 
 	daemon := runnerDaemon{
 		store: store,

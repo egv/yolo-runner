@@ -189,10 +189,16 @@ func TestParseAuthorDecisionResult(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing JSON content is rejected", func(t *testing.T) {
-		payload := []byte(`{"comment_decisions":[{"comment_id":"c1","decision":"resolve"}]}{"extra":1}`)
-		if _, err := ParseAuthorDecisionResult(payload); err == nil {
-			t.Fatalf("expected error for trailing JSON content, got nil")
+	t.Run("extracts decisions from noisy output", func(t *testing.T) {
+		payload := []byte("Проверил комментарии.\n```json\n" +
+			`{"comment_decisions":[{"comment_id":"c1","decision":"resolve"}]}` +
+			"\n```\nГотово.")
+		result, err := ParseAuthorDecisionResult(payload)
+		if err != nil {
+			t.Fatalf("ParseAuthorDecisionResult() error = %v", err)
+		}
+		if len(result.Decisions) != 1 || result.Decisions[0].CommentID != "c1" {
+			t.Fatalf("ParseAuthorDecisionResult() = %#v", result)
 		}
 	})
 

@@ -255,12 +255,12 @@ func (c *runnerPRReviewResultCapture) captureReview(state arcreview.PRRuntimeSta
 	c.result.RevisionReviewed = runnerPRReviewCurrentRevision(state)
 }
 
-func (c *runnerPRReviewResultCapture) captureReply(result arcreview.ReplyResult, mode string, payload []byte) {
-	if runnerPRReviewIsAuthorMode(mode) {
-		c.result.CommentDecisions = runnerPRReviewCommentDecisions(payload)
-		return
-	}
+func (c *runnerPRReviewResultCapture) captureReply(result arcreview.ReplyResult) {
 	c.result.Replies = runnerPRReviewReplies(result.Replies)
+}
+
+func (c *runnerPRReviewResultCapture) captureAuthorDecisions(result arcreview.AuthorDecisionResult) {
+	c.result.CommentDecisions = runnerPRReviewCommentDecisions(result.Decisions)
 }
 
 // runnerPRReviewIsAuthorMode reports whether a pr-review payload selects author
@@ -272,13 +272,12 @@ func runnerPRReviewIsAuthorMode(mode string) bool {
 
 // runnerPRReviewCommentDecisions maps the author-mode model output into the
 // queue result schema, mirroring runnerPRReviewReplies for the reviewer path.
-func runnerPRReviewCommentDecisions(payload []byte) []workitem.PRReviewCommentDecision {
-	decisions, err := arcreview.ParseAuthorDecisionResult(payload)
-	if err != nil || len(decisions.Decisions) == 0 {
+func runnerPRReviewCommentDecisions(decisions []arcreview.AuthorCommentDecision) []workitem.PRReviewCommentDecision {
+	if len(decisions) == 0 {
 		return nil
 	}
-	out := make([]workitem.PRReviewCommentDecision, 0, len(decisions.Decisions))
-	for _, decision := range decisions.Decisions {
+	out := make([]workitem.PRReviewCommentDecision, 0, len(decisions))
+	for _, decision := range decisions {
 		out = append(out, workitem.PRReviewCommentDecision{
 			CommentID: strings.TrimSpace(decision.CommentID),
 			Decision:  strings.TrimSpace(decision.Decision),
@@ -331,12 +330,23 @@ type runnerPRReviewCapturingReplyApplier struct {
 }
 
 func (a runnerPRReviewCapturingReplyApplier) Apply(ctx context.Context, state arcreview.PRRuntimeState, payload []byte) (arcreview.ReplyResult, error) {
+	if runnerPRReviewIsAuthorMode(a.mode) {
+		decisions, err := arcreview.ParseAuthorDecisionResult(payload)
+		if err != nil {
+			return arcreview.ReplyResult{}, err
+		}
+		if a.capture != nil {
+			a.capture.captureAuthorDecisions(decisions)
+		}
+		return arcreview.ReplyResult{}, nil
+	}
+
 	result, err := a.inner.Apply(ctx, state, payload)
 	if err != nil {
 		return arcreview.ReplyResult{}, err
 	}
 	if a.capture != nil {
-		a.capture.captureReply(result, a.mode, payload)
+		a.capture.captureReply(result)
 	}
 	return result, nil
 }

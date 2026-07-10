@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 )
 
@@ -123,21 +122,42 @@ type AuthorImplementScope struct {
 	TargetFiles  []string `json:"target_files,omitempty"`
 }
 
-// ParseAuthorDecisionResult parses the author-mode model output. It mirrors
-// ParseReplyResult: it decodes a single JSON object and rejects any trailing
-// JSON content after it.
+// ParseAuthorDecisionResult parses the author-mode model output. Codex output
+// can include progress prose before the required JSON object, so this mirrors
+// ParseReviewResult's balanced-object extraction.
 func ParseAuthorDecisionResult(payload []byte) (AuthorDecisionResult, error) {
 	if strings.TrimSpace(string(payload)) == "" {
 		return AuthorDecisionResult{}, fmt.Errorf("author decision result payload is required")
 	}
 
-	var result AuthorDecisionResult
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	if err := decoder.Decode(&result); err != nil {
+	result, err := extractAuthorDecisionResultJSON(payload)
+	if err != nil {
 		return AuthorDecisionResult{}, fmt.Errorf("parse author decision result: %w", err)
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return AuthorDecisionResult{}, fmt.Errorf("parse author decision result: trailing JSON content")
-	}
 	return result, nil
+}
+
+func extractAuthorDecisionResultJSON(payload []byte) (AuthorDecisionResult, error) {
+	candidate := stripMarkdownFences(bytes.TrimSpace(payload))
+
+	var lastErr error
+	for i := 0; i < len(candidate); i++ {
+		if candidate[i] != '{' {
+			continue
+		}
+		object, ok := balancedJSONObject(candidate[i:])
+		if !ok || !bytes.Contains(object, []byte(`"comment_decisions"`)) {
+			continue
+		}
+		var result AuthorDecisionResult
+		if err := json.Unmarshal(object, &result); err != nil {
+			lastErr = err
+			continue
+		}
+		return result, nil
+	}
+	if lastErr != nil {
+		return AuthorDecisionResult{}, lastErr
+	}
+	return AuthorDecisionResult{}, fmt.Errorf("no JSON object found in author decision output")
 }
