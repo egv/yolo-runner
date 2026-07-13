@@ -154,10 +154,11 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 }
 
 // handleResolvePRCommentResult consumes a resolve-pr-comment result: it decodes
-// the payload, fetches writeback state for the PR, and resolves the single
-// comment via the resolve applier. Unlike author-mode resolve decisions, this
-// kind only resolves - the reply or implement task that addressed the comment
-// has already landed (or the comment is to be closed without a reply).
+// the payload, fetches writeback state for the PR, posts the implementation
+// reply when supplied, and resolves the single comment. A completion reply is
+// still useful when another actor resolved the thread first, so it is gated on
+// a reply previously recorded by this runner rather than the remote issue
+// status.
 func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem.Item) (submissions []workqueue.Submission, err error) {
 	payload, err := workitem.DecodeResolvePRCommentPayload(item.Payload)
 	if err != nil {
@@ -183,18 +184,28 @@ func (s *Source) handleResolvePRCommentResult(ctx context.Context, item workitem
 		}()
 	}
 	writebackState := stateWithWritebackIdentity(state, prID, "")
+	commentID := strings.TrimSpace(payload.CommentID)
 	if replyBody := strings.TrimSpace(payload.ReplyBody); replyBody != "" {
-		handled, err := s.handledCommentSet(ctx, prID, state.Comments)
+		answered, err := s.persistedAnsweredCommentSet(ctx, prID)
 		if err != nil {
 			return nil, err
 		}
-		if !handled[strings.TrimSpace(payload.CommentID)] {
+		if !answered[commentID] {
 			replyClient, err := s.replyCommentClient()
 			if err != nil {
 				return nil, err
 			}
-			if err := replyClient.PostCommentReply(ctx, prID, strings.TrimSpace(payload.CommentID), arcreview.WithDisclosureFooter(replyBody, state.Details.Author)); err != nil {
+			if err := replyClient.PostCommentReply(ctx, prID, commentID, arcreview.WithDisclosureFooter(replyBody, state.Details.Author)); err != nil {
 				return nil, fmt.Errorf("post arc PR implementation reply %q: %w", payload.CommentID, err)
+			}
+			// ResolveApplier persists an answered marker after it resolves an open
+			// thread. When the comment was already resolved by another actor it
+			// deliberately skips that call, so persist the reply here to make an
+			// explicit replay idempotent.
+			if commentIsResolved(state.Comments, commentID) {
+				if err := s.State.StoreAnsweredCommentIDs(ctx, prID, []string{commentID}); err != nil {
+					return nil, fmt.Errorf("store posted implementation reply %q: %w", commentID, err)
+				}
 			}
 		}
 	}
@@ -383,15 +394,9 @@ func (s *Source) replyCommentClient() (arcreview.ReplyArcanumClient, error) {
 // state. Resolve decisions skip these so a retry never double-posts or
 // double-resolves.
 func (s *Source) handledCommentSet(ctx context.Context, prID string, comments []arcreview.PRComment) (map[string]bool, error) {
-	answeredIDs, err := s.State.ListAnsweredCommentIDs(ctx, prID)
+	handled, err := s.persistedAnsweredCommentSet(ctx, prID)
 	if err != nil {
-		return nil, fmt.Errorf("list answered comment IDs: %w", err)
-	}
-	handled := make(map[string]bool, len(answeredIDs)+len(comments))
-	for _, id := range answeredIDs {
-		if id = strings.TrimSpace(id); id != "" {
-			handled[id] = true
-		}
+		return nil, err
 	}
 	for _, comment := range comments {
 		id := strings.TrimSpace(comment.ID)
@@ -400,6 +405,30 @@ func (s *Source) handledCommentSet(ctx context.Context, prID string, comments []
 		}
 	}
 	return handled, nil
+}
+
+func (s *Source) persistedAnsweredCommentSet(ctx context.Context, prID string) (map[string]bool, error) {
+	answeredIDs, err := s.State.ListAnsweredCommentIDs(ctx, prID)
+	if err != nil {
+		return nil, fmt.Errorf("list answered comment IDs: %w", err)
+	}
+	answered := make(map[string]bool, len(answeredIDs))
+	for _, id := range answeredIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			answered[id] = true
+		}
+	}
+	return answered, nil
+}
+
+func commentIsResolved(comments []arcreview.PRComment, commentID string) bool {
+	commentID = strings.TrimSpace(commentID)
+	for _, comment := range comments {
+		if strings.TrimSpace(comment.ID) == commentID {
+			return comment.Resolved
+		}
+	}
+	return false
 }
 
 // authorResolveReplies builds disclosure-footer'd replies for each "resolve"

@@ -134,7 +134,10 @@ WHERE state = ? AND source_ref = ? AND attempt < max_attempts AND updated_at >= 
 // RecoverRetryableFailure moves one exact retryable terminal item back to
 // pending and clears its obsolete result. Unlike source-ref recovery, callers
 // explicitly name the item, so a blocked runner-side failure can be retried
-// without reviving unrelated blocked work.
+// without reviving unrelated blocked work. It also permits an explicit replay
+// of a completed resolve-pr-comment item: source-side delivery repairs must be
+// able to rerun their idempotent writeback without resurrecting implementation
+// work.
 func (s *Store) RecoverRetryableFailure(itemID string) (bool, error) {
 	if err := ensureOpenStore(s); err != nil {
 		return false, err
@@ -159,12 +162,19 @@ SET state = ?,
 	lease_expires_at = '',
 	heartbeat_at = '',
 	updated_at = ?
-WHERE id = ? AND state IN (?, ?) AND attempt < max_attempts`,
+WHERE id = ?
+  AND attempt < max_attempts
+  AND (
+	state IN (?, ?)
+	OR (state = ? AND kind = ?)
+  )`,
 		itemStatePending,
 		now,
 		itemID,
 		itemStateFailed,
 		itemStateBlocked,
+		itemStateDone,
+		string(workitem.KindResolvePRComment),
 	)
 	if err != nil {
 		return false, fmt.Errorf("recover failed item %q: %w", itemID, err)

@@ -390,6 +390,71 @@ func TestRecoverRetryableFailureRequeuesNamedBlockedItem(t *testing.T) {
 	assertNoWorkQueueResult(t, store, item.ID)
 }
 
+func TestRecoverRetryableFailureRequeuesNamedCompletedResolveItem(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	resolve, err := store.Submit(Submission{
+		Kind:           workitem.KindResolvePRComment,
+		Source:         "arcpr",
+		SourceRef:      "pr:14330209",
+		IdempotencyKey: "arcpr/14330209/resolve/comment-1/replay",
+		Preset:         "arcpr",
+		Payload:        json.RawMessage(`{"pr_id":"14330209","comment_id":"comment-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit(resolve) error = %v", err)
+	}
+	claimed, err := store.ClaimForItemID("runner", []string{"arcpr"}, resolve.ID, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimForItemID(resolve) = %#v, %v", claimed, err)
+	}
+	if err := store.Complete(resolve.ID, Result{Status: ResultStatusCompleted, Payload: json.RawMessage(`{"comment_id":"comment-1"}`)}); err != nil {
+		t.Fatalf("Complete(resolve) error = %v", err)
+	}
+
+	implement, err := store.Submit(Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "arcpr",
+		SourceRef:      "pr:14330209",
+		IdempotencyKey: "arcpr/14330209/implement/comment-1/replay",
+		Preset:         "arcpr",
+		Payload:        json.RawMessage(`{"task_id":"comment-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit(implement) error = %v", err)
+	}
+	claimed, err = store.ClaimForItemID("runner", []string{"arcpr"}, implement.ID, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimForItemID(implement) = %#v, %v", claimed, err)
+	}
+	if err := store.Complete(implement.ID, Result{Status: ResultStatusCompleted, Payload: json.RawMessage(`{"task_id":"comment-1"}`)}); err != nil {
+		t.Fatalf("Complete(implement) error = %v", err)
+	}
+
+	recovered, err := store.RecoverRetryableFailure(resolve.ID)
+	if err != nil {
+		t.Fatalf("RecoverRetryableFailure(resolve) error = %v", err)
+	}
+	if !recovered {
+		t.Fatal("RecoverRetryableFailure(resolve) = false, want true")
+	}
+	assertWorkQueueState(t, store.db, resolve.ID, "pending")
+	assertNoWorkQueueResult(t, store, resolve.ID)
+
+	recovered, err = store.RecoverRetryableFailure(implement.ID)
+	if err != nil {
+		t.Fatalf("RecoverRetryableFailure(implement) error = %v", err)
+	}
+	if recovered {
+		t.Fatal("RecoverRetryableFailure(implement) = true, want false")
+	}
+	assertWorkQueueState(t, store.db, implement.ID, "done")
+}
+
 type staleItem struct {
 	id             string
 	attempt        int

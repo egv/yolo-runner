@@ -694,6 +694,60 @@ func TestSourceHandleResultPostsImplementationReplyThenResolvesComment(t *testin
 	}
 }
 
+func TestSourceHandleResultPostsImplementationReplyForAlreadyResolvedComment(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	client := &fakeArcPRWritebackClient{}
+	fetcher := &fakeArcPRWritebackStateFetcher{
+		state: arcreview.PRRuntimeState{
+			PRID:     "42",
+			Revision: "r7",
+			Details:  arcreview.PRDetails{ID: "42", Status: "open", Revision: "r7", Author: "alice"},
+			Comments: []arcreview.PRComment{{ID: "comment-1", Body: "Please resolve this once the fix lands.", Resolved: true}},
+		},
+	}
+	src := &Source{
+		SourceName:   "arcpr-adapta",
+		State:        state,
+		StateFetcher: fetcher,
+		ReplyApplier: arcreview.ReplyApplier{Client: client, Store: state},
+		ResolveApplier: arcreview.ResolveApplier{
+			Client: client,
+			Store:  state,
+		},
+	}
+	item := workitem.Item{
+		Kind:      workitem.KindResolvePRComment,
+		SourceRef: "pr:42",
+		Payload: mustMarshalArcPRWriteback(t, workitem.ResolvePRCommentPayload{
+			PRID:      "42",
+			CommentID: "comment-1",
+			ReplyBody: "Fixed in `deadbeef`.",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, workqueue.Result{Status: workqueue.ResultStatusCompleted}); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+	if !reflect.DeepEqual(client.replies, []arcPRWritebackReply{{
+		prID:      "42",
+		commentID: "comment-1",
+		body:      arcreview.WithDisclosureFooter("Fixed in `deadbeef`.", "alice"),
+	}}) {
+		t.Fatalf("implementation replies = %#v", client.replies)
+	}
+	if len(client.resolved) != 0 {
+		t.Fatalf("resolved an already resolved comment: %#v", client.resolved)
+	}
+	answered, err := state.ListAnsweredCommentIDs(ctx, "42")
+	if err != nil {
+		t.Fatalf("ListAnsweredCommentIDs() error = %v", err)
+	}
+	if !reflect.DeepEqual(answered, []string{"comment-1"}) {
+		t.Fatalf("answered comments = %#v, want [comment-1]", answered)
+	}
+}
+
 func TestSourceHandleResultResolvesImplementationCommentWithoutCheckout(t *testing.T) {
 	ctx := context.Background()
 	state := openDiscoveryTestState(t)
