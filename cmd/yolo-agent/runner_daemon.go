@@ -32,6 +32,7 @@ type runnerDaemonCommandConfig struct {
 	environmentsPath  string
 	presets           []string
 	sourceRef         string
+	itemID            string
 	runnerID          string
 	lockPath          string
 	once              bool
@@ -97,6 +98,7 @@ func runnerDaemonCommand(args []string) int {
 	environmentsPath := fs.String("environments", "", "Path to the environment presets file")
 	presets := fs.String("presets", "", "Comma-separated environment preset names this runner serves")
 	sourceRef := fs.String("source-ref", "", "Only claim items with this exact source reference")
+	itemID := fs.String("item-id", "", "Only claim this exact work item")
 	runnerID := fs.String("runner-id", "", "Stable runner ID for registration and singleton locking")
 	once := fs.Bool("once", false, "Claim and run at most one item, then exit")
 	capacity := fs.Int("capacity", 1, "Runner capacity to register in the queue")
@@ -120,6 +122,7 @@ func runnerDaemonCommand(args []string) int {
 		environmentsPath:  *environmentsPath,
 		presets:           parseRunnerPresets(*presets),
 		sourceRef:         *sourceRef,
+		itemID:            *itemID,
 		runnerID:          *runnerID,
 		once:              *once,
 		capacity:          *capacity,
@@ -156,7 +159,11 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		return err
 	}
 	defer store.Close()
-	if cfg.sourceRef != "" {
+	if cfg.itemID != "" {
+		if _, err := store.RecoverRetryableFailure(cfg.itemID); err != nil {
+			return err
+		}
+	} else if cfg.sourceRef != "" {
 		failedSince := time.Now().UTC().Add(-runnerRetryableFailureRecoveryWindow)
 		if _, err := store.RecoverRecentRetryableFailuresForSourceRef(cfg.sourceRef, failedSince); err != nil {
 			return err
@@ -297,7 +304,13 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 				break
 			}
 
-			item, err := d.store.ClaimForSourceRef(d.cfg.runnerID, claimPresets, d.cfg.sourceRef, d.cfg.leaseTTL)
+			var item *workitem.Item
+			var err error
+			if d.cfg.itemID != "" {
+				item, err = d.store.ClaimForItemID(d.cfg.runnerID, claimPresets, d.cfg.itemID, d.cfg.leaseTTL)
+			} else {
+				item, err = d.store.ClaimForSourceRef(d.cfg.runnerID, claimPresets, d.cfg.sourceRef, d.cfg.leaseTTL)
+			}
 			if err != nil {
 				return err
 			}
@@ -762,6 +775,7 @@ func normalizeRunnerDaemonConfig(cfg runnerDaemonCommandConfig) (runnerDaemonCom
 		return runnerDaemonCommandConfig{}, fmt.Errorf("--presets is required")
 	}
 	cfg.sourceRef = strings.TrimSpace(cfg.sourceRef)
+	cfg.itemID = strings.TrimSpace(cfg.itemID)
 	cfg.runnerID = strings.TrimSpace(cfg.runnerID)
 	if cfg.runnerID == "" {
 		cfg.runnerID = defaultRunnerID(cfg.presets)

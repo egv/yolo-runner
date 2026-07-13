@@ -20,12 +20,22 @@ const (
 // of the runner's presets whose dependencies are all done and whose not_before
 // timestamp has passed.
 func (s *Store) Claim(runnerID string, presets []string, leaseTTL time.Duration) (*workitem.Item, error) {
-	return s.ClaimForSourceRef(runnerID, presets, "", leaseTTL)
+	return s.claim(runnerID, presets, "", "", leaseTTL)
 }
 
 // ClaimForSourceRef atomically leases the next runnable item for an exact
 // source reference. An empty sourceRef leaves the claim unscoped.
 func (s *Store) ClaimForSourceRef(runnerID string, presets []string, sourceRef string, leaseTTL time.Duration) (*workitem.Item, error) {
+	return s.claim(runnerID, presets, sourceRef, "", leaseTTL)
+}
+
+// ClaimForItemID atomically leases one exact runnable item. The item must also
+// match one of the runner's presets.
+func (s *Store) ClaimForItemID(runnerID string, presets []string, itemID string, leaseTTL time.Duration) (*workitem.Item, error) {
+	return s.claim(runnerID, presets, "", itemID, leaseTTL)
+}
+
+func (s *Store) claim(runnerID string, presets []string, sourceRef string, itemID string, leaseTTL time.Duration) (*workitem.Item, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("workqueue store is not open")
 	}
@@ -51,6 +61,11 @@ func (s *Store) ClaimForSourceRef(runnerID string, presets []string, sourceRef s
 	if sourceRef != "" {
 		sourceRefClause = "AND wi.source_ref = ?"
 	}
+	itemID = strings.TrimSpace(itemID)
+	itemIDClause := ""
+	if itemID != "" {
+		itemIDClause = "AND wi.id = ?"
+	}
 
 	query := fmt.Sprintf(`
 UPDATE work_items
@@ -66,6 +81,7 @@ WHERE id = (
 	WHERE wi.state = ?
 		AND wi.preset IN (%s)
 		%s
+		%s
 		AND (wi.not_before = '' OR wi.not_before <= ?)
 		AND NOT EXISTS (
 			SELECT 1
@@ -79,7 +95,7 @@ WHERE id = (
 )
 RETURNING id, kind, source, source_ref, idempotency_key, preset, priority,
 	payload, state, attempt, max_attempts, not_before, claimed_by,
-	lease_expires_at, heartbeat_at, created_at, updated_at`, presetPlaceholders, sourceRefClause)
+	lease_expires_at, heartbeat_at, created_at, updated_at`, presetPlaceholders, sourceRefClause, itemIDClause)
 
 	args := []any{
 		itemStateClaimed,
@@ -94,6 +110,9 @@ RETURNING id, kind, source, source_ref, idempotency_key, preset, priority,
 	}
 	if sourceRef != "" {
 		args = append(args, sourceRef)
+	}
+	if itemID != "" {
+		args = append(args, itemID)
 	}
 	args = append(args, formattedNow, itemStateDone)
 

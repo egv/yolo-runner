@@ -224,6 +224,27 @@ func TestClaimForSourceRefLeavesOtherRunnableItemsPending(t *testing.T) {
 	assertWorkQueueState(t, store.db, "other-pr", "pending")
 }
 
+func TestClaimForItemIDLeavesOtherRunnableItemsPending(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	createdAt := time.Now().UTC()
+	insertWorkQueueItem(t, store.db, testQueueItem{id: "other-item", priority: 10, state: "pending", createdAt: createdAt})
+	insertWorkQueueItem(t, store.db, testQueueItem{id: "target-item", state: "pending", createdAt: createdAt.Add(time.Second)})
+
+	claimed, err := store.ClaimForItemID("runner", []string{"linux"}, "target-item", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimForItemID() error = %v", err)
+	}
+	if claimed == nil || claimed.ID != "target-item" {
+		t.Fatalf("ClaimForItemID() = %#v, want target-item", claimed)
+	}
+	assertWorkQueueState(t, store.db, "other-item", "pending")
+}
+
 type testQueueItem struct {
 	id        string
 	preset    string

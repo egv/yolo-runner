@@ -146,7 +146,7 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	}
 }
 
-func TestRunnerDaemonOnceCanScopeClaimToSourceRef(t *testing.T) {
+func TestRunnerDaemonOnceCanScopeClaimToSourceRefAndItemID(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
@@ -185,7 +185,7 @@ func TestRunnerDaemonOnceCanScopeClaimToSourceRef(t *testing.T) {
 
 	code := RunMain([]string{
 		"runner", "--queue", dbPath, "--environments", environmentsPath, "--presets", "linux",
-		"--source-ref", "pr:14330209", "--runner-id", "runner-target", "--once",
+		"--source-ref", "pr:14330209", "--item-id", target.ID, "--runner-id", "runner-target", "--once",
 	}, func(context.Context, runConfig) error {
 		t.Fatalf("legacy run path should not be called")
 		return nil

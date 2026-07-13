@@ -131,6 +131,58 @@ WHERE state = ? AND source_ref = ? AND attempt < max_attempts AND updated_at >= 
 	return int(affected), nil
 }
 
+// RecoverRetryableFailure moves one exact failed item back to pending and
+// clears its obsolete terminal result. Unlike source-ref recovery, callers
+// explicitly name the item, so no time window is needed.
+func (s *Store) RecoverRetryableFailure(itemID string) (bool, error) {
+	if err := ensureOpenStore(s); err != nil {
+		return false, err
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return false, fmt.Errorf("item ID is required")
+	}
+
+	now := formatQueueTime(time.Now().UTC())
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin recover failed item %q: %w", itemID, err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`
+UPDATE work_items
+SET state = ?,
+	not_before = '',
+	claimed_by = '',
+	lease_expires_at = '',
+	heartbeat_at = '',
+	updated_at = ?
+WHERE id = ? AND state = ? AND attempt < max_attempts`,
+		itemStatePending,
+		now,
+		itemID,
+		itemStateFailed,
+	)
+	if err != nil {
+		return false, fmt.Errorf("recover failed item %q: %w", itemID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count recovered failed item %q: %w", itemID, err)
+	}
+	if affected == 0 {
+		return false, nil
+	}
+	if _, err := tx.Exec("DELETE FROM work_results WHERE item_id = ?", itemID); err != nil {
+		return false, fmt.Errorf("clear failed result for item %q: %w", itemID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit recover failed item %q: %w", itemID, err)
+	}
+	return true, nil
+}
+
 func (s *Store) finishItem(itemID string, terminalState string, result Result) error {
 	if err := ensureOpenStore(s); err != nil {
 		return err

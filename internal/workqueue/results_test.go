@@ -312,6 +312,47 @@ func TestRecoverRecentRetryableFailuresForSourceRefRequeuesOnlyRecentResults(t *
 	}
 }
 
+func TestRecoverRetryableFailureRequeuesOnlyNamedItem(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	var failedIDs []string
+	for _, sourceRef := range []string{"pr:other", "pr:target"} {
+		item, err := store.Submit(Submission{
+			Kind:           workitem.KindPRReview,
+			Source:         "arcpr",
+			SourceRef:      sourceRef,
+			IdempotencyKey: "arcpr/" + sourceRef,
+			Preset:         "arcpr",
+			Payload:        json.RawMessage(`{"pr_id":"1"}`),
+		})
+		if err != nil {
+			t.Fatalf("Submit(%s) error = %v", sourceRef, err)
+		}
+		claimed, err := store.ClaimForItemID("runner", []string{"arcpr"}, item.ID, time.Minute)
+		if err != nil || claimed == nil {
+			t.Fatalf("ClaimForItemID(%s) = %#v, %v", item.ID, claimed, err)
+		}
+		if err := store.Fail(item.ID, Result{Payload: json.RawMessage(`{"reason":"retry"}`)}); err != nil {
+			t.Fatalf("Fail(%s) error = %v", item.ID, err)
+		}
+		failedIDs = append(failedIDs, item.ID)
+	}
+
+	recovered, err := store.RecoverRetryableFailure(failedIDs[1])
+	if err != nil {
+		t.Fatalf("RecoverRetryableFailure() error = %v", err)
+	}
+	if !recovered {
+		t.Fatal("RecoverRetryableFailure() = false, want true")
+	}
+	assertWorkQueueState(t, store.db, failedIDs[0], "failed")
+	assertWorkQueueState(t, store.db, failedIDs[1], "pending")
+}
+
 type staleItem struct {
 	id             string
 	attempt        int
