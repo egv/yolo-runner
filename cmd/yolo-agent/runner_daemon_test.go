@@ -146,6 +146,70 @@ WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heart
 	}
 }
 
+func TestRunnerDaemonOnceCanScopeClaimToSourceRef(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	dbPath := filepath.Join(t.TempDir(), "queue.db")
+	environmentsPath := writeRunnerEnvironmentFile(t, "linux")
+	store, err := workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for _, submission := range []workitem.Submission{
+		{
+			Kind: workitem.KindSplit, Source: "test-source", SourceRef: "pr:other", IdempotencyKey: "test-source/other/split", Preset: "linux", Priority: 10,
+			Payload: json.RawMessage(`{"task_id":"OTHER"}`),
+		},
+		{
+			Kind: workitem.KindSplit, Source: "test-source", SourceRef: "pr:14330209", IdempotencyKey: "test-source/14330209/split", Preset: "linux",
+			Payload: json.RawMessage(`{"task_id":"TARGET"}`),
+		},
+	} {
+		if _, err := store.Submit(submission); err != nil {
+			t.Fatalf("Submit(%s) error = %v", submission.SourceRef, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	code := RunMain([]string{
+		"runner", "--queue", dbPath, "--environments", environmentsPath, "--presets", "linux",
+		"--source-ref", "pr:14330209", "--runner-id", "runner-target", "--once",
+	}, func(context.Context, runConfig) error {
+		t.Fatalf("legacy run path should not be called")
+		return nil
+	})
+	if code != 0 {
+		t.Fatalf("RunMain(runner scoped) exit code = %d, want 0", code)
+	}
+
+	store, err = workqueue.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open(after scoped run) error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	results, err := store.ListUnconsumedResults("test-source")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 1 || results[0].Item.SourceRef != "pr:14330209" {
+		t.Fatalf("scoped result = %#v, want only pr:14330209", results)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	var state string
+	if err := db.QueryRow("SELECT state FROM work_items WHERE source_ref = ?", "pr:other").Scan(&state); err != nil {
+		t.Fatalf("read other item state: %v", err)
+	}
+	if state != "pending" {
+		t.Fatalf("other source ref state = %q, want pending", state)
+	}
+}
+
 func writeRunnerEnvironmentFile(t *testing.T, presetName string) string {
 	t.Helper()
 

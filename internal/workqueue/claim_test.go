@@ -192,6 +192,38 @@ func TestClaimAndHeartbeatAreAtomicAcrossConnections(t *testing.T) {
 	}
 }
 
+func TestClaimForSourceRefLeavesOtherRunnableItemsPending(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	createdAt := time.Now().UTC()
+	for _, item := range []testQueueItem{
+		{id: "other-pr", priority: 10, state: "pending", createdAt: createdAt},
+		{id: "target-pr", priority: 0, state: "pending", createdAt: createdAt.Add(time.Second)},
+	} {
+		insertWorkQueueItem(t, store.db, item)
+	}
+	if _, err := store.db.Exec("UPDATE work_items SET source_ref = ? WHERE id = ?", "pr:14330209", "target-pr"); err != nil {
+		t.Fatalf("set target source ref: %v", err)
+	}
+
+	claimed, err := store.ClaimForSourceRef("runner", []string{"linux"}, "pr:14330209", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimForSourceRef() error = %v", err)
+	}
+	if claimed == nil || claimed.ID != "target-pr" {
+		t.Fatalf("ClaimForSourceRef() = %#v, want target-pr", claimed)
+	}
+	assertWorkQueueState(t, store.db, "other-pr", "pending")
+}
+
 type testQueueItem struct {
 	id        string
 	preset    string

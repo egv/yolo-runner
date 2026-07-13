@@ -20,6 +20,12 @@ const (
 // of the runner's presets whose dependencies are all done and whose not_before
 // timestamp has passed.
 func (s *Store) Claim(runnerID string, presets []string, leaseTTL time.Duration) (*workitem.Item, error) {
+	return s.ClaimForSourceRef(runnerID, presets, "", leaseTTL)
+}
+
+// ClaimForSourceRef atomically leases the next runnable item for an exact
+// source reference. An empty sourceRef leaves the claim unscoped.
+func (s *Store) ClaimForSourceRef(runnerID string, presets []string, sourceRef string, leaseTTL time.Duration) (*workitem.Item, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("workqueue store is not open")
 	}
@@ -40,6 +46,11 @@ func (s *Store) Claim(runnerID string, presets []string, leaseTTL time.Duration)
 	formattedNow := formatQueueTime(now)
 	leaseExpiresAt := formatQueueTime(now.Add(leaseTTL))
 	presetPlaceholders := strings.TrimRight(strings.Repeat("?,", len(presets)), ",")
+	sourceRef = strings.TrimSpace(sourceRef)
+	sourceRefClause := ""
+	if sourceRef != "" {
+		sourceRefClause = "AND wi.source_ref = ?"
+	}
 
 	query := fmt.Sprintf(`
 UPDATE work_items
@@ -54,6 +65,7 @@ WHERE id = (
 	FROM work_items wi
 	WHERE wi.state = ?
 		AND wi.preset IN (%s)
+		%s
 		AND (wi.not_before = '' OR wi.not_before <= ?)
 		AND NOT EXISTS (
 			SELECT 1
@@ -67,7 +79,7 @@ WHERE id = (
 )
 RETURNING id, kind, source, source_ref, idempotency_key, preset, priority,
 	payload, state, attempt, max_attempts, not_before, claimed_by,
-	lease_expires_at, heartbeat_at, created_at, updated_at`, presetPlaceholders)
+	lease_expires_at, heartbeat_at, created_at, updated_at`, presetPlaceholders, sourceRefClause)
 
 	args := []any{
 		itemStateClaimed,
@@ -79,6 +91,9 @@ RETURNING id, kind, source, source_ref, idempotency_key, preset, priority,
 	}
 	for _, preset := range presets {
 		args = append(args, preset)
+	}
+	if sourceRef != "" {
+		args = append(args, sourceRef)
 	}
 	args = append(args, formattedNow, itemStateDone)
 

@@ -30,6 +30,7 @@ type runnerDaemonCommandConfig struct {
 	queuePath         string
 	environmentsPath  string
 	presets           []string
+	sourceRef         string
 	runnerID          string
 	lockPath          string
 	once              bool
@@ -94,6 +95,7 @@ func runnerDaemonCommand(args []string) int {
 	queuePath := fs.String("queue", "", "Path to the SQLite work queue database")
 	environmentsPath := fs.String("environments", "", "Path to the environment presets file")
 	presets := fs.String("presets", "", "Comma-separated environment preset names this runner serves")
+	sourceRef := fs.String("source-ref", "", "Only claim items with this exact source reference")
 	runnerID := fs.String("runner-id", "", "Stable runner ID for registration and singleton locking")
 	once := fs.Bool("once", false, "Claim and run at most one item, then exit")
 	capacity := fs.Int("capacity", 1, "Runner capacity to register in the queue")
@@ -116,6 +118,7 @@ func runnerDaemonCommand(args []string) int {
 		queuePath:         *queuePath,
 		environmentsPath:  *environmentsPath,
 		presets:           parseRunnerPresets(*presets),
+		sourceRef:         *sourceRef,
 		runnerID:          *runnerID,
 		once:              *once,
 		capacity:          *capacity,
@@ -287,7 +290,7 @@ func (d runnerDaemon) Run(ctx context.Context) error {
 				break
 			}
 
-			item, err := d.store.Claim(d.cfg.runnerID, claimPresets, d.cfg.leaseTTL)
+			item, err := d.store.ClaimForSourceRef(d.cfg.runnerID, claimPresets, d.cfg.sourceRef, d.cfg.leaseTTL)
 			if err != nil {
 				return err
 			}
@@ -751,6 +754,7 @@ func normalizeRunnerDaemonConfig(cfg runnerDaemonCommandConfig) (runnerDaemonCom
 	if len(cfg.presets) == 0 {
 		return runnerDaemonCommandConfig{}, fmt.Errorf("--presets is required")
 	}
+	cfg.sourceRef = strings.TrimSpace(cfg.sourceRef)
 	cfg.runnerID = strings.TrimSpace(cfg.runnerID)
 	if cfg.runnerID == "" {
 		cfg.runnerID = defaultRunnerID(cfg.presets)
