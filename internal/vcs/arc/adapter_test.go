@@ -113,7 +113,6 @@ func TestCommitAllRunsArcAddCommitAndReturnsHead(t *testing.T) {
 	runner := &sequenceRunner{responses: []sequenceResponse{
 		{output: "", err: nil},
 		{output: "", err: nil},
-		{output: "", err: nil},
 		{output: "abc123\n", err: nil},
 	}}
 	adapter := New(runner)
@@ -127,7 +126,6 @@ func TestCommitAllRunsArcAddCommitAndReturnsHead(t *testing.T) {
 	}
 
 	want := []call{
-		{name: "arc", args: []string{"add", "-u", "."}},
 		{name: "arc", args: []string{"status", "--short"}},
 		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
@@ -139,7 +137,6 @@ func TestCommitAllRunsArcAddCommitAndReturnsHead(t *testing.T) {
 
 func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
 	runner := &sequenceRunner{responses: []sequenceResponse{
-		{output: "", err: nil},
 		{output: "", err: nil},
 		{output: "On branch task/TASK-123\nnothing to commit, working tree clean", err: errors.New("exit status 1")},
 		{output: "abc123\n", err: nil},
@@ -155,7 +152,6 @@ func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
 	}
 
 	want := []call{
-		{name: "arc", args: []string{"add", "-u", "."}},
 		{name: "arc", args: []string{"status", "--short"}},
 		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
@@ -167,8 +163,8 @@ func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
 
 func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 	runner := &sequenceRunner{responses: []sequenceResponse{
-		{output: "", err: nil},
 		{output: " M tracked.py\n?? new.py\n?? new-dir/\n", err: nil},
+		{output: "", err: nil},
 		{output: "", err: nil},
 		{output: "", err: nil},
 		{output: "", err: nil},
@@ -185,8 +181,8 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 	}
 
 	want := []call{
-		{name: "arc", args: []string{"add", "-u", "."}},
 		{name: "arc", args: []string{"status", "--short"}},
+		{name: "arc", args: []string{"add", "-u", "tracked.py"}},
 		{name: "arc", args: []string{"add", "new.py"}},
 		{name: "arc", args: []string{"add", "new-dir/"}},
 		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
@@ -199,7 +195,6 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 
 func TestCommitAllSkipsMissingUntrackedStatusPaths(t *testing.T) {
 	runner := &sequenceRunner{responses: []sequenceResponse{
-		{output: "", err: nil},
 		{output: "?? stale-generated\n?? real.py\n", err: nil},
 		{output: "can't open stale-generated: No such file or directory", err: errors.New("exit status 1")},
 		{output: "", err: nil},
@@ -217,7 +212,6 @@ func TestCommitAllSkipsMissingUntrackedStatusPaths(t *testing.T) {
 	}
 
 	want := []call{
-		{name: "arc", args: []string{"add", "-u", "."}},
 		{name: "arc", args: []string{"status", "--short"}},
 		{name: "arc", args: []string{"add", "stale-generated"}},
 		{name: "arc", args: []string{"add", "real.py"}},

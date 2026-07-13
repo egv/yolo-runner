@@ -100,12 +100,17 @@ func (a *Adapter) CommitAll(_ context.Context, message string) (string, error) {
 }
 
 func (a *Adapter) stageAll() error {
-	if _, err := a.runArc("add", "-u", "."); err != nil {
-		return err
-	}
 	status, err := a.runArc("status", "--short")
 	if err != nil {
 		return err
+	}
+	for _, path := range trackedStatusPaths(status) {
+		if _, err := a.runArc("add", "-u", path); err != nil {
+			if isMissingWorkingTreePathError(err) {
+				continue
+			}
+			return err
+		}
 	}
 	for _, path := range untrackedStatusPaths(status) {
 		if _, err := a.runArc("add", path); err != nil {
@@ -193,13 +198,24 @@ func isNoChangesCommitError(err error) bool {
 }
 
 func untrackedStatusPaths(status string) []string {
+	return statusPaths(status, func(prefix string) bool { return prefix == "??" })
+}
+
+func trackedStatusPaths(status string) []string {
+	return statusPaths(status, func(prefix string) bool {
+		return prefix != "??" && strings.TrimSpace(prefix) != ""
+	})
+}
+
+func statusPaths(status string, include func(string) bool) []string {
 	var paths []string
 	for _, line := range strings.Split(status, "\n") {
 		line = strings.TrimRight(line, "\r")
-		if strings.HasPrefix(line, "?? ") {
-			if path := strings.TrimSpace(strings.TrimPrefix(line, "?? ")); path != "" {
-				paths = append(paths, path)
-			}
+		if len(line) < 4 || line[2] != ' ' || !include(line[:2]) {
+			continue
+		}
+		if path := strings.TrimSpace(line[3:]); path != "" {
+			paths = append(paths, path)
 		}
 	}
 	return paths
