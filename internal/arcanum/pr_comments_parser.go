@@ -97,7 +97,7 @@ func prCommentIsAnswered(item map[string]json.RawMessage, issueStatus string) bo
 	}
 
 	switch issueStatus {
-	case "open", "resolved":
+	case "", "open", "resolved":
 		return false
 	default:
 		return true

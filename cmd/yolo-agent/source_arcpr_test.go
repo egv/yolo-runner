@@ -345,7 +345,7 @@ done
 printf '\n' >> "$ARC_SOURCE_TEST_CALLS"
 case "$*" in
 "-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments")
-  printf '%s\n' '{"data":[{"id":"c1","content":"please address","issue_status":"open"}]}'
+  printf '%s\n' '{"data":[{"id":"c1","content":"please address"}]}'
   ;;
 *)
   printf 'unexpected curl args: %s\n' "$*" >&2

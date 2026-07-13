@@ -59,6 +59,13 @@ func TestParsePRCommentsJSONMapsArcanumCommentsFixture(t *testing.T) {
       "reply_to_id": -3614781,
       "created_at": "2021-03-14T10:05:00Z",
       "updated_at": "2021-03-14T10:05:00Z"
+    },
+    {
+      "id": -3614777,
+      "user": {"name": "reviewer"},
+      "content": "Please make the terminology consistent.",
+      "created_at": "2021-03-14T10:06:00Z",
+      "updated_at": "2021-03-14T10:06:00Z"
     }
   ]
 }`)
@@ -103,6 +110,13 @@ func TestParsePRCommentsJSONMapsArcanumCommentsFixture(t *testing.T) {
 			CreatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:05:00Z"),
 			UpdatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:05:00Z"),
 			Answered:  true,
+		},
+		{
+			ID:        "-3614777",
+			Author:    "reviewer",
+			Body:      "Please make the terminology consistent.",
+			CreatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:06:00Z"),
+			UpdatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:06:00Z"),
 		},
 	}
 
