@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 )
 
 type fakeRunner struct {
@@ -262,6 +264,13 @@ func TestCreatePRParsesArcJSONOutput(t *testing.T) {
 }
 
 func TestPushPRBranchRunsArcPushForce(t *testing.T) {
+	oldPublishAndVerify := publishAndVerifyPR
+	t.Cleanup(func() { publishAndVerifyPR = oldPublishAndVerify })
+	verifiedPR := ""
+	publishAndVerifyPR = func(ctx context.Context, prID string, publish arcanum.PRPublishFunc, _ arcanum.PRPublicationVerifier) error {
+		verifiedPR = prID
+		return publish(ctx, prID)
+	}
 	runner := &fakeRunner{}
 	adapter := New(runner)
 
@@ -274,6 +283,9 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
+	if verifiedPR != "123456" {
+		t.Fatalf("verified PR = %q, want 123456", verifiedPR)
 	}
 }
 

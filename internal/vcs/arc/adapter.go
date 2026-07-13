@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 )
 
 type Runner interface {
@@ -32,6 +34,8 @@ func (a *ArcCommandAdapter) Run(name string, args ...string) (string, error) {
 type Adapter struct {
 	runner Runner
 }
+
+var publishAndVerifyPR = arcanum.PublishAndVerifyPR
 
 var prURLPattern = regexp.MustCompile(`https?://[^\s"']*/review/[^\s"']+`)
 
@@ -142,7 +146,7 @@ func (a *Adapter) PushMain(context.Context) error {
 // PushPRBranch force-pushes the current branch and publishes the resulting PR
 // version. A bare force-push leaves an Arcanum draft version invisible to
 // reviewers, so author-mode work is not complete until both operations succeed.
-func (a *Adapter) PushPRBranch(_ context.Context, prID string) error {
+func (a *Adapter) PushPRBranch(ctx context.Context, prID string) error {
 	prID = strings.TrimSpace(prID)
 	if prID == "" {
 		return fmt.Errorf("PR ID is required")
@@ -150,8 +154,10 @@ func (a *Adapter) PushPRBranch(_ context.Context, prID string) error {
 	if _, err := a.runArc("push", "-f"); err != nil {
 		return err
 	}
-	_, err := a.runArc("pr", "publish", prID)
-	return err
+	return publishAndVerifyPR(ctx, prID, func(_ context.Context, prID string) error {
+		_, err := a.runArc("pr", "publish", prID)
+		return err
+	}, arcanum.VerifyActiveDiffSetPublished)
 }
 
 func parsePRURL(output string) (string, error) {

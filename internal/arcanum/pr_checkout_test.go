@@ -118,9 +118,14 @@ func TestPreparePRCheckoutReusesAlreadyMountedWorkspace(t *testing.T) {
 
 func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 	oldExec := arcExec
+	oldPublishAndVerify := publishAndVerifyPRCheckout
 	t.Cleanup(func() {
 		arcExec = oldExec
+		publishAndVerifyPRCheckout = oldPublishAndVerify
 	})
+	publishAndVerifyPRCheckout = func(ctx context.Context, prID string, publish PRPublishFunc, _ PRPublicationVerifier) error {
+		return publish(ctx, prID)
+	}
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
