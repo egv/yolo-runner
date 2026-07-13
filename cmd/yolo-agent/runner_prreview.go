@@ -68,10 +68,15 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q returned empty mount path", item.ID, strings.TrimSpace(payload.PRID))
 	}
 	defer func() {
-		if checkout.Cleanup == nil {
-			return
+		cleanupCtx, cancel := context.WithTimeout(ctx, runnerImplementPRCleanupTimeout)
+		defer cancel()
+		var cleanupErr error
+		if checkout.CleanupContext != nil {
+			cleanupErr = checkout.CleanupContext(cleanupCtx)
+		} else if checkout.Cleanup != nil {
+			cleanupErr = checkout.Cleanup()
 		}
-		if cleanupErr := checkout.Cleanup(); cleanupErr != nil {
+		if cleanupErr != nil {
 			if err != nil {
 				err = errors.Join(err, cleanupErr)
 				return

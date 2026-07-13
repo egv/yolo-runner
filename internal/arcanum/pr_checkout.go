@@ -10,8 +10,9 @@ import (
 )
 
 type PRCheckout struct {
-	MountPath string
-	Cleanup   func() error
+	MountPath      string
+	Cleanup        func() error
+	CleanupContext func(context.Context) error
 }
 
 type PRCheckoutConfig struct {
@@ -111,22 +112,26 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		}
 	}
 
+	cleanup := oncePRCheckoutCleanup(func(ctx context.Context) error {
+		defer releaseCheckout()
+		unmountArgs := []string{"unmount", "--force", "--forget", mountPath}
+		if _, stderr, err := arcExec(ctx, "", "arc", unmountArgs...); err != nil {
+			return workspaceArcError(mountPath, unmountArgs, stderr, err)
+		}
+		if err := os.RemoveAll(mountPath); err != nil {
+			return fmt.Errorf("remove arc PR mount %s: %w", mountPath, err)
+		}
+		if err := os.RemoveAll(objectStore); err != nil {
+			return fmt.Errorf("remove arc PR object store %s: %w", objectStore, err)
+		}
+		return nil
+	})
 	checkout := &PRCheckout{
-		MountPath: mountPath,
-		Cleanup: oncePRCheckoutCleanup(func() error {
-			defer releaseCheckout()
-			unmountArgs := []string{"unmount", "--force", "--forget", mountPath}
-			if _, stderr, err := arcExec(context.Background(), "", "arc", unmountArgs...); err != nil {
-				return workspaceArcError(mountPath, unmountArgs, stderr, err)
-			}
-			if err := os.RemoveAll(mountPath); err != nil {
-				return fmt.Errorf("remove arc PR mount %s: %w", mountPath, err)
-			}
-			if err := os.RemoveAll(objectStore); err != nil {
-				return fmt.Errorf("remove arc PR object store %s: %w", objectStore, err)
-			}
-			return nil
-		}),
+		MountPath:      mountPath,
+		CleanupContext: cleanup,
+		Cleanup: func() error {
+			return cleanup(context.Background())
+		},
 	}
 	releaseOnReturn = false
 	return checkout, nil
@@ -188,12 +193,15 @@ func acquirePRCheckoutLock(mountPath string) func() {
 	return lock.Unlock
 }
 
-func oncePRCheckoutCleanup(cleanup func() error) func() error {
+func oncePRCheckoutCleanup(cleanup func(context.Context) error) func(context.Context) error {
 	var once sync.Once
 	var cleanupErr error
-	return func() error {
+	return func(ctx context.Context) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		once.Do(func() {
-			cleanupErr = cleanup()
+			cleanupErr = cleanup(ctx)
 		})
 		return cleanupErr
 	}

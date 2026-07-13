@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
@@ -29,13 +30,22 @@ var runnerImplementPRVCS = func(path string) contracts.VCS {
 // item targets an existing Arc PR (metadata origin == "arcpr-author"). When
 // disabled, the handler uses the normal materialized workspace + task branch.
 type runnerImplementPRLanding struct {
-	enabled   bool
-	prID      string
-	mountPath string
-	cleanupFn func() error
+	enabled          bool
+	prID             string
+	mountPath        string
+	cleanupFn        func() error
+	cleanupContextFn func(context.Context) error
 }
 
-func (l runnerImplementPRLanding) cleanup() {
+const runnerImplementPRCleanupTimeout = 30 * time.Second
+
+func (l runnerImplementPRLanding) cleanup(ctx context.Context) {
+	cleanupCtx, cancel := context.WithTimeout(ctx, runnerImplementPRCleanupTimeout)
+	defer cancel()
+	if l.cleanupContextFn != nil {
+		_ = l.cleanupContextFn(cleanupCtx)
+		return
+	}
 	if l.cleanupFn != nil {
 		_ = l.cleanupFn()
 	}
@@ -66,10 +76,11 @@ func resolveRunnerImplementPRLanding(payload workitem.ImplementPayload, itemID s
 		return none, fmt.Errorf("arc PR checkout for %q returned empty mount path", prID)
 	}
 	return runnerImplementPRLanding{
-		enabled:   true,
-		prID:      prID,
-		mountPath: mountPath,
-		cleanupFn: checkout.Cleanup,
+		enabled:          true,
+		prID:             prID,
+		mountPath:        mountPath,
+		cleanupFn:        checkout.Cleanup,
+		cleanupContextFn: checkout.CleanupContext,
 	}, nil
 }
 
@@ -96,7 +107,7 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 		if err != nil {
 			return workqueue.Result{}, err
 		}
-		defer prLanding.cleanup()
+		defer prLanding.cleanup(ctx)
 		if !prLanding.enabled && workspace.VCS == nil {
 			return workqueue.Result{}, fmt.Errorf("implement item %q requires an isolated VCS-bearing workspace; preset %q materialized none (path strategy is not allowed for code-writing kinds)", item.ID, item.Preset)
 		}

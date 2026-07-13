@@ -367,7 +367,7 @@ func TestResolveRunnerImplementPRLanding(t *testing.T) {
 		if !got.enabled || got.prID != "123" || got.mountPath != "/tmp/pr-mount" {
 			t.Fatalf("landing = %+v", got)
 		}
-		got.cleanup()
+		got.cleanup(context.Background())
 		if !cleanupCalled {
 			t.Fatal("checkout Cleanup must be wired through")
 		}
