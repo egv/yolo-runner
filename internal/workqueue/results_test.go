@@ -353,6 +353,43 @@ func TestRecoverRetryableFailureRequeuesOnlyNamedItem(t *testing.T) {
 	assertWorkQueueState(t, store.db, failedIDs[1], "pending")
 }
 
+func TestRecoverRetryableFailureRequeuesNamedBlockedItem(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	item, err := store.Submit(Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "arcpr",
+		SourceRef:      "pr:14330209",
+		IdempotencyKey: "arcpr/14330209/retry-blocked",
+		Preset:         "arcpr",
+		Payload:        json.RawMessage(`{"task_id":"retry-blocked"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	claimed, err := store.ClaimForItemID("runner", []string{"arcpr"}, item.ID, time.Minute)
+	if err != nil || claimed == nil {
+		t.Fatalf("ClaimForItemID() = %#v, %v", claimed, err)
+	}
+	if err := store.Block(item.ID, Result{Payload: json.RawMessage(`{"reason":"runner-side failure"}`)}); err != nil {
+		t.Fatalf("Block() error = %v", err)
+	}
+
+	recovered, err := store.RecoverRetryableFailure(item.ID)
+	if err != nil {
+		t.Fatalf("RecoverRetryableFailure() error = %v", err)
+	}
+	if !recovered {
+		t.Fatal("RecoverRetryableFailure() = false, want true")
+	}
+	assertWorkQueueState(t, store.db, item.ID, "pending")
+	assertNoWorkQueueResult(t, store, item.ID)
+}
+
 type staleItem struct {
 	id             string
 	attempt        int
