@@ -140,6 +140,9 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 		if reflect.DeepEqual(args, []string{"pr", "status", "--json", "2293787"}) {
 			return []byte(`{"id":2293787,"status":"open","from_id":"head","to_branch":"trunk"}`), nil, nil
 		}
+		if reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
+			return []byte("head\n"), nil, nil
+		}
 		return nil, nil, nil
 	}
 
@@ -159,6 +162,7 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 		{workspace: mountPath, args: []string{"pr", "status", "--json", "2293787"}},
 		{workspace: mountPath, args: []string{"rebase", "trunk"}},
 		{workspace: mountPath, args: []string{"push", "-f"}},
+		{workspace: mountPath, args: []string{"rev-parse", "HEAD"}},
 		{workspace: mountPath, args: []string{"pr", "publish", "2293787"}},
 		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
 	}

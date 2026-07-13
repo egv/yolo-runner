@@ -77,3 +77,24 @@ func TestVerifyActiveDiffSetPublishedWithClientAcceptsPublished(t *testing.T) {
 		t.Fatalf("VerifyActiveDiffSetPublishedWithClient() error = %v", err)
 	}
 }
+
+func TestVerifyActiveDiffSetPublishedForRevisionWithClientRejectsPreviousPublishedVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"active_diff_set":{"id":30,"status":"published","patch_vcs_ids":{"arc_branch_heads":{"from_id":"old-head"}}}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL: server.URL,
+		TokenSource: func(context.Context) (string, error) {
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+	err = VerifyActiveDiffSetPublishedForRevisionWithClient(context.Background(), client, "123", "new-head")
+	if err == nil || !strings.Contains(err.Error(), "does not match pushed revision") {
+		t.Fatalf("VerifyActiveDiffSetPublishedForRevisionWithClient() error = %v, want revision mismatch", err)
+	}
+}

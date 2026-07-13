@@ -265,7 +265,11 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 		verifiedPR = prID
 		return publish(ctx, prID)
 	}
-	runner := &fakeRunner{}
+	runner := &sequenceRunner{responses: []sequenceResponse{
+		{output: "", err: nil},
+		{output: "head\n", err: nil},
+		{output: "", err: nil},
+	}}
 	adapter := New(runner)
 
 	if err := adapter.PushPRBranch(context.Background(), "123456"); err != nil {
@@ -273,6 +277,7 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 	}
 	want := []call{
 		{name: "arc", args: []string{"push", "-f"}},
+		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 		{name: "arc", args: []string{"pr", "publish", "123456"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {

@@ -159,10 +159,20 @@ func (a *Adapter) PushPRBranch(ctx context.Context, prID string) error {
 	if _, err := a.runArc("push", "-f"); err != nil {
 		return err
 	}
+	head, err := a.runArc("rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return fmt.Errorf("read PR %q head: empty revision", prID)
+	}
 	return publishAndVerifyPR(ctx, prID, func(_ context.Context, prID string) error {
 		_, err := a.runArc("pr", "publish", prID)
 		return err
-	}, arcanum.VerifyActiveDiffSetPublished)
+	}, func(ctx context.Context, prID string) error {
+		return arcanum.VerifyActiveDiffSetPublishedForRevision(ctx, prID, head)
+	})
 }
 
 func parsePRURL(output string) (string, error) {

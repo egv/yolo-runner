@@ -159,13 +159,24 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error 
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
 		return workspaceArcError(mountPath, pushArgs, stderr, err)
 	}
+	headArgs := []string{"rev-parse", "HEAD"}
+	headOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
+	if err != nil {
+		return workspaceArcError(mountPath, headArgs, stderr, err)
+	}
+	head := strings.TrimSpace(string(headOutput))
+	if head == "" {
+		return fmt.Errorf("read rebased PR %q head: empty revision", prID)
+	}
 	return publishAndVerifyPRCheckout(ctx, prID, func(ctx context.Context, prID string) error {
 		publishArgs := []string{"pr", "publish", prID}
 		if _, stderr, err := arcExec(ctx, mountPath, "arc", publishArgs...); err != nil {
 			return workspaceArcError(mountPath, publishArgs, stderr, err)
 		}
 		return nil
-	}, VerifyActiveDiffSetPublished)
+	}, func(ctx context.Context, prID string) error {
+		return VerifyActiveDiffSetPublishedForRevision(ctx, prID, head)
+	})
 }
 
 var prCheckoutLocks sync.Map

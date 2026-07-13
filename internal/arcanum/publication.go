@@ -67,16 +67,30 @@ func PublishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc,
 // VerifyActiveDiffSetPublished checks Arcanum's active diff set for a PR using
 // the same authenticated API client the Arc PR source already uses.
 func VerifyActiveDiffSetPublished(ctx context.Context, prID string) error {
+	return VerifyActiveDiffSetPublishedForRevision(ctx, prID, "")
+}
+
+// VerifyActiveDiffSetPublishedForRevision checks that Arcanum has made the
+// expected branch revision active and published. Matching the revision avoids
+// accepting a previous published diff set while a newly pushed draft is still
+// being materialized asynchronously.
+func VerifyActiveDiffSetPublishedForRevision(ctx context.Context, prID string, revision string) error {
 	client, err := NewAPIClient(APIClientConfig{BaseURL: DefaultAPIBaseURL})
 	if err != nil {
 		return err
 	}
-	return VerifyActiveDiffSetPublishedWithClient(ctx, client, prID)
+	return VerifyActiveDiffSetPublishedForRevisionWithClient(ctx, client, prID, revision)
 }
 
 // VerifyActiveDiffSetPublishedWithClient is the testable variant of
 // VerifyActiveDiffSetPublished.
 func VerifyActiveDiffSetPublishedWithClient(ctx context.Context, client *APIClient, prID string) error {
+	return VerifyActiveDiffSetPublishedForRevisionWithClient(ctx, client, prID, "")
+}
+
+// VerifyActiveDiffSetPublishedForRevisionWithClient is the testable variant
+// of VerifyActiveDiffSetPublishedForRevision.
+func VerifyActiveDiffSetPublishedForRevisionWithClient(ctx context.Context, client *APIClient, prID string, revision string) error {
 	if client == nil {
 		return fmt.Errorf("Arcanum API client is required")
 	}
@@ -92,6 +106,10 @@ func VerifyActiveDiffSetPublishedWithClient(ctx context.Context, client *APIClie
 	active := response.Data.ActiveDiffSet
 	if active.xid() == "" {
 		return fmt.Errorf("PR %q has no active diff set", prID)
+	}
+	revision = strings.TrimSpace(revision)
+	if revision != "" && !active.matchesRevision(revision) {
+		return fmt.Errorf("PR %q active diff set %q does not match pushed revision %q", prID, active.xid(), revision)
 	}
 	if !strings.EqualFold(strings.TrimSpace(active.Status), "published") {
 		return fmt.Errorf("PR %q active diff set %q status is %q", prID, active.xid(), active.Status)
