@@ -40,6 +40,8 @@ type runnerPRReviewRuntime struct {
 
 type runnerPRReviewRuntimeResolver func(context.Context, workitem.Item, envpreset.Workspace, workitem.PRReviewPayload) (runnerPRReviewRuntime, error)
 
+var prepareRunnerPRReviewCheckout = arcanum.PreparePRCheckoutWithConfig
+
 func newRunnerPRReviewKindHandler(resolve runnerPRReviewRuntimeResolver) runnerKindHandler {
 	if resolve == nil {
 		resolve = defaultRunnerPRReviewRuntimeResolver
@@ -86,7 +88,7 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		}
 	}
 
-	checkout, err := arcanum.PreparePRCheckoutWithConfig(ctx, payload.PRID, arcanum.PRCheckoutConfig{
+	checkout, err := prepareRunnerPRReviewCheckout(ctx, payload.PRID, arcanum.PRCheckoutConfig{
 		Rebase: runnerPRReviewIsAuthorMode(payload.Mode),
 	})
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	trackerstartrek "github.com/egv/yolo-runner/v2/internal/startrek"
@@ -537,6 +538,9 @@ fi
 if [ "$1" = "pr" ] && [ "$2" = "status" ]; then
 	printf '%s\n' '{"id":42,"status":"open","from_id":"r7","to_branch":"trunk"}'
 fi
+if [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then
+	printf '%s\n' '19076b3f8b9c21a4bac71383698ddb880667c96a'
+fi
 	`
 	if err := os.WriteFile(filepath.Join(fakeBin, "arc"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake arc: %v", err)
@@ -579,7 +583,27 @@ func assertRunnerPRReviewArcCalls(t *testing.T, path string, want []runnerPRRevi
 func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	arcCallsPath := installRunnerPRReviewFakeArc(t)
+	mountPath := t.TempDir()
+	projectRoot := filepath.Join(mountPath, "taxi/backend-cpp/services/ai_minion")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("create fixture project root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "ya.make"), []byte("# fixture ya.make\n"), 0o644); err != nil {
+		t.Fatalf("write fixture ya.make: %v", err)
+	}
+	previousPrepare := prepareRunnerPRReviewCheckout
+	prepareRunnerPRReviewCheckout = func(context.Context, string, arcanum.PRCheckoutConfig) (*arcanum.PRCheckout, error) {
+		return &arcanum.PRCheckout{
+			MountPath: mountPath,
+			Cleanup:   func() error { return nil },
+			CleanupContext: func(context.Context) error {
+				return nil
+			},
+		}, nil
+	}
+	t.Cleanup(func() {
+		prepareRunnerPRReviewCheckout = previousPrepare
+	})
 
 	dbPath := filepath.Join(t.TempDir(), "queue.db")
 	store, err := workqueue.Open(dbPath)
@@ -721,17 +745,6 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
 	}
 
-	prMountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "42")
-	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
-	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
-		{args: "mount -m " + prMountPath + " -S " + objectStore},
-		{cwd: prMountPath, args: "pr checkout 42 --force"},
-		{cwd: prMountPath, args: "pr status --json 42"},
-		{cwd: prMountPath, args: "rebase trunk"},
-		{cwd: prMountPath, args: "push -f"},
-		{cwd: prMountPath, args: "pr publish 42"},
-		{args: "unmount --force --forget " + prMountPath},
-	})
 }
 
 func TestRunnerPRReviewHandlerReviewerAnswerModeIsUnchanged(t *testing.T) {

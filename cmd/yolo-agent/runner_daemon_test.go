@@ -106,28 +106,12 @@ func TestRunnerDaemonOnceClaimsStubHandlerAndWritesResult(t *testing.T) {
 	}
 	defer db.Close()
 
-	var pid int
-	var presets string
-	var capacity int
-	var startedAt string
-	var heartbeatAt string
-	if err := db.QueryRow(`
-SELECT pid, presets, capacity, started_at, heartbeat_at
-FROM runners
-WHERE id = ?`, "runner-test").Scan(&pid, &presets, &capacity, &startedAt, &heartbeatAt); err != nil {
-		t.Fatalf("read registered runner: %v", err)
+	var remainingRunners int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runners WHERE id = ?`, "runner-test").Scan(&remainingRunners); err != nil {
+		t.Fatalf("count runner registrations: %v", err)
 	}
-	if pid <= 0 {
-		t.Fatalf("runner pid = %d, want positive", pid)
-	}
-	if presets != "linux" {
-		t.Fatalf("runner presets = %q, want linux", presets)
-	}
-	if capacity != 1 {
-		t.Fatalf("runner capacity = %d, want 1", capacity)
-	}
-	if startedAt == "" || heartbeatAt == "" {
-		t.Fatalf("runner timestamps not populated: started_at=%q heartbeat_at=%q", startedAt, heartbeatAt)
+	if remainingRunners != 0 {
+		t.Fatalf("runner registration remained after exit: %d", remainingRunners)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".yolo-runner", "events", "runner-test.jsonl"))

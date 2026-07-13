@@ -179,6 +179,12 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 	if err := runners.Register(cfg.runnerID, cfg.presets, cfg.capacity); err != nil {
 		return err
 	}
+	defer func() {
+		// A runner registry row is a liveness signal, not a historical record.
+		// Remove it immediately on normal worker shutdown so the autoscaler can
+		// schedule the next item without waiting for its heartbeat to expire.
+		_ = runners.Unregister(cfg.runnerID)
+	}()
 
 	environmentPresets, err := loadRunnerEnvironmentPresets(cfg.environmentsPath, cfg.presets)
 	if err != nil {
@@ -1008,6 +1014,16 @@ WHERE id = ?`,
 	}
 	if affected == 0 {
 		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *runnerRegistry) Unregister(runnerID string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("runner registry is not open")
+	}
+	if _, err := r.db.Exec(`DELETE FROM runners WHERE id = ?`, strings.TrimSpace(runnerID)); err != nil {
+		return fmt.Errorf("unregister runner %q: %w", runnerID, err)
 	}
 	return nil
 }
