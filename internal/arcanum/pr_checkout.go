@@ -88,7 +88,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 		return nil, workspaceArcError("", mountArgs, stderr, err)
 	}
 
-	checkoutArgs := []string{"pr", "checkout", prID, "--detached", "--force"}
+	// Keep the PR branch attached: `arc push -f` from a detached checkout only
+	// uploads a dangling commit and leaves the pull request unchanged.
+	checkoutArgs := []string{"pr", "checkout", prID, "--force"}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
 		// Best-effort unmount so a failed checkout does not leak a mount.
 		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)

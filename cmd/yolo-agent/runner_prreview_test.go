@@ -177,7 +177,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
-		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
+		{cwd: prMountPath, args: "pr checkout 42 --force"},
 		{args: "unmount --force --forget " + prMountPath},
 	})
 }
@@ -425,7 +425,7 @@ func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
-		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
+		{cwd: prMountPath, args: "pr checkout 42 --force"},
 		{args: "unmount --force --forget " + prMountPath},
 	})
 }
@@ -686,7 +686,7 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "42")
 	assertRunnerPRReviewArcCalls(t, arcCallsPath, []runnerPRReviewArcCall{
 		{args: "mount -m " + prMountPath + " -S " + objectStore},
-		{cwd: prMountPath, args: "pr checkout 42 --detached --force"},
+		{cwd: prMountPath, args: "pr checkout 42 --force"},
 		{cwd: prMountPath, args: "pr status --json 42"},
 		{cwd: prMountPath, args: "rebase trunk"},
 		{cwd: prMountPath, args: "push -f"},

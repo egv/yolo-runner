@@ -61,7 +61,7 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 		{
 			workspace: mountPath,
 			name:      "arc",
-			args:      []string{"pr", "checkout", "2293787", "--detached", "--force"},
+			args:      []string{"pr", "checkout", "2293787", "--force"},
 		},
 		{
 			workspace: "",
@@ -108,7 +108,7 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
 	want := []arcCall{
 		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
-		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--detached", "--force"}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
 		{workspace: mountPath, args: []string{"pr", "status", "--json", "2293787"}},
 		{workspace: mountPath, args: []string{"rebase", "trunk"}},
 		{workspace: mountPath, args: []string{"push", "-f"}},

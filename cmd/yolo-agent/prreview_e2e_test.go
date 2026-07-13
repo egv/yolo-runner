@@ -166,7 +166,7 @@ func TestPRReviewEndToEndOffline(t *testing.T) {
 	}
 	assertPRReviewE2EArcCalls(t, arcCallsPath, []string{
 		testCWD + "\tarc mount -m " + prMountPath + " -S " + filepath.Join(home, ".yolo-runner", "pr-objects", "777"),
-		prMountPath + "\tarc pr checkout 777 --detached --force",
+		prMountPath + "\tarc pr checkout 777 --force",
 		testCWD + "\tarc unmount --force --forget " + prMountPath,
 	})
 
@@ -322,7 +322,7 @@ case "$*" in
 "mount -m "*)
   mkdir -p "$3"
   ;;
-"pr checkout 777 --detached --force")
+"pr checkout 777 --force")
   mkdir -p taxi/backend-cpp/services/ai_minion
   printf '# fixture ya.make\n' > taxi/backend-cpp/services/ai_minion/ya.make
   printf 'Use service-specific AI minion review conventions.\n' > taxi/backend-cpp/services/ai_minion/AGENTS.md

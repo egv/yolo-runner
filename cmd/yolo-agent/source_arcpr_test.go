@@ -318,7 +318,7 @@ case "$*" in
 "mount -m "*)
   mkdir -p "$3"
   ;;
-"pr checkout 777 --detached --force")
+"pr checkout 777 --force")
   mkdir -p project
   printf 'fixture\n' > project/README.md
   ;;
@@ -424,7 +424,7 @@ esac
 	calls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
 	assertSourceArcPRCallsContain(t, calls,
 		"arc mount -m "+mountPath+" -S "+filepath.Join(home, ".yolo-runner", "pr-objects", "777"),
-		mountPath+"\tarc pr checkout 777 --detached --force",
+		mountPath+"\tarc pr checkout 777 --force",
 		mountPath+"\tarc pr status --json 777",
 		mountPath+"\tcurl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 		mountPath+"\tarc pr changes 777",
