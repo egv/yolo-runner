@@ -67,6 +67,23 @@ func TestSourcePollCancelsSupersededPendingAuthorImplementItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue current implement: %v", err)
 	}
+	emptyAuthorReviewPayload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID: "42", Revision: "active", Mode: workitem.PRReviewModeAuthor,
+	})
+	if err != nil {
+		t.Fatalf("marshal empty author review payload: %v", err)
+	}
+	emptyAuthorReview, err := queue.Enqueue(workqueue.Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcpr-adapta",
+		SourceRef:      "pr:42",
+		IdempotencyKey: "arcpr-adapta/pr-review/42/active/author",
+		Preset:         "adapta",
+		Payload:        emptyAuthorReviewPayload,
+	})
+	if err != nil {
+		t.Fatalf("enqueue empty author review: %v", err)
+	}
 	if err := state.RecordCommentImplementItem(ctx, CommentImplementItemRecord{
 		PRID:            "42",
 		CommentID:       "comment-1",
@@ -106,6 +123,13 @@ func TestSourcePollCancelsSupersededPendingAuthorImplementItem(t *testing.T) {
 	}
 	if currentDetail.Item.State != "pending" {
 		t.Fatalf("current item state = %q, want pending", currentDetail.Item.State)
+	}
+	reviewDetail, err := queue.GetItem(emptyAuthorReview.ID)
+	if err != nil {
+		t.Fatalf("GetItem(empty review): %v", err)
+	}
+	if reviewDetail.Item.State != "cancelled" {
+		t.Fatalf("empty author review state = %q, want cancelled", reviewDetail.Item.State)
 	}
 }
 

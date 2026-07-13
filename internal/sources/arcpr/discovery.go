@@ -196,6 +196,9 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 				return nil, err
 			}
 			if len(unansweredCommentIDs) == 0 {
+				if err := s.cancelPendingAuthorPRReviews(prID); err != nil {
+					return nil, err
+				}
 				continue
 			}
 		} else {
@@ -331,6 +334,35 @@ func (s *Source) reconcileSupersededAuthorImplementItems(ctx context.Context, di
 			if _, err := s.Queue.CancelPendingItem(candidate.ID); err != nil {
 				return fmt.Errorf("cancel superseded arc PR implement item %q: %w", candidate.ID, err)
 			}
+		}
+	}
+	return nil
+}
+
+// cancelPendingAuthorPRReviews removes author-mode review jobs once there is
+// nothing left to triage. Without this cleanup, a job queued for the just-
+// published version would rebase and republish the PR merely to discover an
+// empty comment set.
+func (s *Source) cancelPendingAuthorPRReviews(prID string) error {
+	if s.Queue == nil {
+		return nil
+	}
+	pending, err := s.Queue.ListItems(workqueue.ListItemsFilter{
+		Source:    s.Name(),
+		SourceRef: "pr:" + strings.TrimSpace(prID),
+		State:     "pending",
+		Kind:      string(workitem.KindPRReview),
+	})
+	if err != nil {
+		return fmt.Errorf("list pending author PR reviews for %q: %w", prID, err)
+	}
+	for _, candidate := range pending {
+		payload, err := workitem.DecodePRReviewPayload(candidate.Payload)
+		if err != nil || !strings.EqualFold(strings.TrimSpace(payload.Mode), workitem.PRReviewModeAuthor) {
+			continue
+		}
+		if _, err := s.Queue.CancelPendingItem(candidate.ID); err != nil {
+			return fmt.Errorf("cancel empty author PR review item %q: %w", candidate.ID, err)
 		}
 	}
 	return nil
