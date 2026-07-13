@@ -68,6 +68,62 @@ func (s *Store) Fail(itemID string, result Result) error {
 	return s.finishItem(itemID, itemStateFailed, result)
 }
 
+// RecoverRetryableFailuresForSourceRef moves previously failed, retryable items
+// for one exact source reference back to pending. It clears their obsolete
+// terminal result so the owning source will not write back a failure while a
+// restarted runner is retrying the item.
+func (s *Store) RecoverRetryableFailuresForSourceRef(sourceRef string) (int, error) {
+	if err := ensureOpenStore(s); err != nil {
+		return 0, err
+	}
+	sourceRef = strings.TrimSpace(sourceRef)
+	if sourceRef == "" {
+		return 0, fmt.Errorf("source ref is required")
+	}
+
+	now := formatQueueTime(time.Now().UTC())
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin recover failed items for source ref %q: %w", sourceRef, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+DELETE FROM work_results
+WHERE item_id IN (
+	SELECT id
+	FROM work_items
+	WHERE state = ? AND source_ref = ? AND attempt < max_attempts
+)`, itemStateFailed, sourceRef); err != nil {
+		return 0, fmt.Errorf("clear failed results for source ref %q: %w", sourceRef, err)
+	}
+	result, err := tx.Exec(`
+UPDATE work_items
+SET state = ?,
+	not_before = '',
+	claimed_by = '',
+	lease_expires_at = '',
+	heartbeat_at = '',
+	updated_at = ?
+WHERE state = ? AND source_ref = ? AND attempt < max_attempts`,
+		itemStatePending,
+		now,
+		itemStateFailed,
+		sourceRef,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recover failed items for source ref %q: %w", sourceRef, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count recovered failed items for source ref %q: %w", sourceRef, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit recover failed items for source ref %q: %w", sourceRef, err)
+	}
+	return int(affected), nil
+}
+
 func (s *Store) finishItem(itemID string, terminalState string, result Result) error {
 	if err := ensureOpenStore(s); err != nil {
 		return err

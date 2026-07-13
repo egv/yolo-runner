@@ -155,6 +155,11 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 		return err
 	}
 	defer store.Close()
+	if cfg.sourceRef != "" {
+		if _, err := store.RecoverRetryableFailuresForSourceRef(cfg.sourceRef); err != nil {
+			return err
+		}
+	}
 
 	runners, err := openRunnerRegistry(cfg.queuePath)
 	if err != nil {

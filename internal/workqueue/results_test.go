@@ -235,6 +235,59 @@ func TestRequeueStaleRequeuesThenFailsWithSynthesizedResult(t *testing.T) {
 	}
 }
 
+func TestRecoverRetryableFailuresForSourceRefRequeuesAndClearsResult(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	item, err := store.Submit(Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcpr",
+		SourceRef:      "pr:14330209",
+		IdempotencyKey: "arcpr/14330209/review",
+		Preset:         "arcpr",
+		Payload:        json.RawMessage(`{"pr_id":"14330209"}`),
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v", err)
+	}
+	claimed, err := store.Claim("runner-a", []string{"arcpr"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if claimed == nil || claimed.ID != item.ID {
+		t.Fatalf("Claim() = %#v, want %q", claimed, item.ID)
+	}
+	if err := store.Fail(item.ID, Result{Payload: json.RawMessage(`{"reason":"temporary mount failure"}`)}); err != nil {
+		t.Fatalf("Fail() error = %v", err)
+	}
+
+	recovered, err := store.RecoverRetryableFailuresForSourceRef("pr:14330209")
+	if err != nil {
+		t.Fatalf("RecoverRetryableFailuresForSourceRef() error = %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1", recovered)
+	}
+	assertWorkQueueState(t, store.db, item.ID, "pending")
+	results, err := store.ListUnconsumedResults("arcpr")
+	if err != nil {
+		t.Fatalf("ListUnconsumedResults() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("unconsumed results = %#v, want none after recovery", results)
+	}
+	reclaimed, err := store.Claim("runner-b", []string{"arcpr"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(recovered) error = %v", err)
+	}
+	if reclaimed == nil || reclaimed.ID != item.ID || reclaimed.Attempt != 2 {
+		t.Fatalf("Claim(recovered) = %#v, want attempt 2 for %q", reclaimed, item.ID)
+	}
+}
+
 type staleItem struct {
 	id             string
 	attempt        int

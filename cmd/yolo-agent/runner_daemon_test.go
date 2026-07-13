@@ -169,6 +169,16 @@ func TestRunnerDaemonOnceCanScopeClaimToSourceRef(t *testing.T) {
 			t.Fatalf("Submit(%s) error = %v", submission.SourceRef, err)
 		}
 	}
+	target, err := store.ClaimForSourceRef("failed-runner", []string{"linux"}, "pr:14330209", time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(target) error = %v", err)
+	}
+	if target == nil {
+		t.Fatal("Claim(target) = nil")
+	}
+	if err := store.Fail(target.ID, workqueue.Result{Payload: json.RawMessage(`{"reason":"temporary runner failure"}`)}); err != nil {
+		t.Fatalf("Fail(target) error = %v", err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}

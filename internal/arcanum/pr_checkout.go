@@ -74,7 +74,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
-	// arc mounts onto an existing empty dir; start clean.
+	// arc mounts onto an existing empty dir; start clean when no prior runner
+	// process owns this path. RemoveAll cannot remove an active Arc mount, so a
+	// later "already mounted" response is handled by reusing that checkout.
 	_ = os.RemoveAll(mountPath)
 	if err := os.MkdirAll(mountPath, 0o755); err != nil {
 		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
@@ -85,7 +87,9 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	// and rejects this form).
 	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
 	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
-		return nil, workspaceArcError("", mountArgs, stderr, err)
+		if !arcMountAlreadyMounted(stderr) {
+			return nil, workspaceArcError("", mountArgs, stderr, err)
+		}
 	}
 
 	// Keep the PR branch attached: `arc push -f` from a detached checkout only
@@ -124,6 +128,10 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	}
 	releaseOnReturn = false
 	return checkout, nil
+}
+
+func arcMountAlreadyMounted(stderr []byte) bool {
+	return strings.Contains(strings.ToLower(string(stderr)), "already mounted")
 }
 
 func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error {

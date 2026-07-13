@@ -2,6 +2,7 @@ package arcanum
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -71,6 +72,47 @@ func TestPreparePRCheckoutInitializesChecksOutAndCleansUp(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("arc calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
+func TestPreparePRCheckoutReusesAlreadyMountedWorkspace(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	type arcCall struct {
+		workspace string
+		args      []string
+	}
+	var calls []arcCall
+	arcExec = func(_ context.Context, workspace string, _ string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, arcCall{workspace: workspace, args: append([]string{}, args...)})
+		if len(args) > 0 && args[0] == "mount" {
+			return nil, []byte("mount path is already mounted"), errors.New("arc mount failed")
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckout("2293787")
+	if err != nil {
+		t.Fatalf("PreparePRCheckout() error = %v", err)
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
+	want := []arcCall{
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("arc calls = %#v, want %#v", calls, want)
 	}
 }
 
