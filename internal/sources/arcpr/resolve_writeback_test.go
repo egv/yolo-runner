@@ -3,6 +3,7 @@ package arcpr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -146,6 +147,32 @@ func TestFinalizeCommentResolveEnqueuesResolveWhenTrackedImplementItemLands(t *t
 	// The comment is not resolved until the resolve-pr-comment item itself runs.
 	if len(client.resolved) != 0 {
 		t.Fatalf("comment resolved before the resolve item ran, want none: %#v", client.resolved)
+	}
+}
+
+func TestFinalizeCommentResolveWaitsForPublishedVersion(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, true, true)
+	src.PublicationVerifier = func(context.Context, string) error {
+		return errors.New("active diff set is draft")
+	}
+	implementItem, _ := fanOutAuthorImplement(t, src)
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.ImplementResult{
+			Status:    "completed",
+			CommitSHA: "deadbeef",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, implementItem, result); err == nil {
+		t.Fatal("HandleResult() error = nil, want publication gate failure")
+	}
+	if claimed, err := src.Queue.Claim("runner-b", []string{"adapta"}, time.Minute); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	} else if claimed != nil {
+		t.Fatalf("resolve was enqueued before publication: %#v", claimed)
 	}
 }
 

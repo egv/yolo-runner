@@ -33,6 +33,10 @@ type PRStateFetcher interface {
 // PR checkout that may be actively owned by an implementation worker.
 type PRCommentFetcher func(ctx context.Context, prID string) ([]arcreview.PRComment, error)
 
+// PRPublicationVerifier confirms that the active Arcanum version is visible to
+// reviewers before author-mode implementation writeback posts a fix reply.
+type PRPublicationVerifier func(ctx context.Context, prID string) error
+
 type PRListerFunc func(context.Context) ([]arcanum.PRSummary, error)
 
 func (f PRListerFunc) ListReviewPRs(ctx context.Context) ([]arcanum.PRSummary, error) {
@@ -68,6 +72,7 @@ type Source struct {
 	StateFetcher        PRStateFetcher
 	CommentFetcher      PRCommentFetcher
 	APIClient           *arcanum.APIClient
+	PublicationVerifier PRPublicationVerifier
 	ReplyApplier        arcreview.PRReviewCycleReplyApplier
 	ReviewApplier       arcreview.PRReviewCycleReviewApplier
 	ResolveApplier      arcreview.PRReviewCycleResolveApplier

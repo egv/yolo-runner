@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/egv/yolo-runner/v2/internal/arcanum"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
@@ -50,6 +51,9 @@ func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item work
 	if commentID == "" || prID == "" {
 		return nil, nil
 	}
+	if err := s.verifyAuthorImplementPublished(ctx, prID); err != nil {
+		return nil, fmt.Errorf("verify published active version before resolving comment %q: %w", commentID, err)
+	}
 
 	record, ok, err := s.GetCommentImplementItem(ctx, prID, commentID)
 	if err != nil {
@@ -78,6 +82,18 @@ func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item work
 		return nil, fmt.Errorf("enqueue arc PR resolve for comment %q: %w", commentID, err)
 	}
 	return []workqueue.Submission{submission}, nil
+}
+
+func (s *Source) verifyAuthorImplementPublished(ctx context.Context, prID string) error {
+	if s.PublicationVerifier != nil {
+		return s.PublicationVerifier(ctx, prID)
+	}
+	// Unit-test sources can be intentionally API-free. The real arcpr command
+	// always wires APIClient, so production writeback must verify publication.
+	if s.APIClient == nil {
+		return nil
+	}
+	return arcanum.VerifyActiveDiffSetPublishedWithClient(ctx, s.APIClient, prID)
 }
 
 // commentImplementItemsComplete reports whether every tracked implement item for
