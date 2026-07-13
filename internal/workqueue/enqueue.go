@@ -18,7 +18,105 @@ type Submission = workitem.Submission
 const defaultMaxAttempts = 3
 
 func (s *Store) Enqueue(submission Submission) (Item, error) {
+	if submission.SupersedePending {
+		return s.EnqueueSupersedingPending(submission)
+	}
 	return s.EnqueueWithDeps(submission, nil)
+}
+
+// EnqueueSupersedingPending atomically queues a PR-review submission and
+// cancels any older pending review of the same PR in the same mode. Running
+// work is deliberately left alone: its lease and result handling already have
+// stale-result guards, while cancelling an active coding task would be unsafe.
+func (s *Store) EnqueueSupersedingPending(submission Submission) (Item, error) {
+	if s == nil || s.db == nil {
+		return Item{}, fmt.Errorf("workqueue store is not open")
+	}
+
+	normalized, err := normalizeSubmission(submission)
+	if err != nil {
+		return Item{}, err
+	}
+	if normalized.Kind != workitem.KindPRReview {
+		return Item{}, fmt.Errorf("superseding pending work is only supported for pr-review items")
+	}
+	modePayload, err := workitem.DecodePRReviewPayload(normalized.Payload)
+	if err != nil {
+		return Item{}, fmt.Errorf("decode superseding PR-review payload: %w", err)
+	}
+	if err := s.enableForeignKeys(); err != nil {
+		return Item{}, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Item{}, fmt.Errorf("begin enqueue superseding work item: %w", err)
+	}
+	defer tx.Rollback()
+
+	item, _, err := enqueueItem(tx, normalized)
+	if err != nil {
+		return Item{}, err
+	}
+	if err := cancelOlderPendingPRReviewsTx(tx, normalized, item.ID, modePayload.Mode); err != nil {
+		return Item{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("commit enqueue superseding work item: %w", err)
+	}
+	return item, nil
+}
+
+func cancelOlderPendingPRReviewsTx(tx *sql.Tx, submission Submission, currentItemID string, mode string) error {
+	rows, err := tx.Query(`
+SELECT id, payload
+FROM work_items
+WHERE source = ?
+	AND source_ref = ?
+	AND kind = ?
+	AND state = ?
+	AND id != ?`,
+		submission.Source,
+		submission.SourceRef,
+		string(workitem.KindPRReview),
+		itemStatePending,
+		currentItemID,
+	)
+	if err != nil {
+		return fmt.Errorf("list older pending PR reviews for %q: %w", submission.SourceRef, err)
+	}
+	defer rows.Close()
+
+	var staleIDs []string
+	for rows.Next() {
+		var id string
+		var rawPayload []byte
+		if err := rows.Scan(&id, &rawPayload); err != nil {
+			return fmt.Errorf("scan older pending PR review for %q: %w", submission.SourceRef, err)
+		}
+		candidate, err := workitem.DecodePRReviewPayload(rawPayload)
+		if err != nil {
+			// A malformed legacy item must not prevent delivery of current work.
+			// Leave it for normal runner error handling rather than guessing its
+			// review mode and cancelling it incorrectly.
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(candidate.Mode), strings.TrimSpace(mode)) {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate older pending PR reviews for %q: %w", submission.SourceRef, err)
+	}
+	for _, id := range staleIDs {
+		if _, err := tx.Exec(`
+UPDATE work_items
+SET state = ?, updated_at = ?
+WHERE id = ? AND state = ?`, itemStateCancelled, formatQueueTime(time.Now().UTC()), id, itemStatePending); err != nil {
+			return fmt.Errorf("cancel superseded PR review item %q: %w", id, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) EnqueueWithDeps(submission Submission, deps []string) (Item, error) {

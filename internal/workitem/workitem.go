@@ -78,4 +78,8 @@ type Submission struct {
 	Priority       int             `json:"priority"`
 	Payload        json.RawMessage `json:"payload"`
 	MaxAttempts    int             `json:"max_attempts"`
+	// SupersedePending is a queue-delivery hint. When set for a PR review,
+	// enqueueing the submission atomically cancels older pending reviews for the
+	// same PR and mode. It is intentionally not persisted in the work item.
+	SupersedePending bool `json:"-"`
 }

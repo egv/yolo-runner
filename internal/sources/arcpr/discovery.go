@@ -161,6 +161,9 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.reconcileSupersededAuthorImplementItems(ctx, discovered); err != nil {
+		return nil, err
+	}
 
 	submissions := make([]workqueue.Submission, 0, len(discovered))
 	for _, pr := range discovered {
@@ -222,6 +225,10 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			Priority:       s.Priority,
 			Payload:        payload,
 			MaxAttempts:    s.MaxAttempts,
+			// A newer author-mode revision supersedes any pending older
+			// author-mode review. The queue applies this atomically with the
+			// enqueue, so an older revision cannot later rebase the PR.
+			SupersedePending: mode == workitem.PRReviewModeAuthor,
 		})
 	}
 	return submissions, nil
@@ -252,6 +259,68 @@ func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 		})
 	}
 	return discovered, nil
+}
+
+// reconcileSupersededAuthorImplementItems removes pending implementation work
+// that a newer author-mode triage has replaced. The state store keeps the one
+// current implement item for each comment; a queue item that carries the same
+// comment but no longer matches that mapping can never be allowed to alter the
+// PR branch. Claimed and running items are intentionally left untouched.
+func (s *Source) reconcileSupersededAuthorImplementItems(ctx context.Context, discovered []discoveredPR) error {
+	if s.Queue == nil || strings.TrimSpace(s.Author) == "" {
+		return nil
+	}
+	for _, pr := range discovered {
+		prID := strings.TrimSpace(pr.ID)
+		if prID == "" || !strings.EqualFold(strings.TrimSpace(pr.Author), strings.TrimSpace(s.Author)) {
+			continue
+		}
+		mappings, err := s.ListCommentImplementItems(ctx, prID)
+		if err != nil {
+			return fmt.Errorf("list arc PR implement mappings for %q: %w", prID, err)
+		}
+		if len(mappings) == 0 {
+			continue
+		}
+		currentByComment := make(map[string]string, len(mappings))
+		for _, mapping := range mappings {
+			commentID := strings.TrimSpace(mapping.CommentID)
+			itemID := strings.TrimSpace(mapping.ImplementItemID)
+			if commentID != "" && itemID != "" {
+				currentByComment[commentID] = itemID
+			}
+		}
+		pending, err := s.Queue.ListItems(workqueue.ListItemsFilter{
+			Source:    s.Name(),
+			SourceRef: "pr:" + prID,
+			State:     "pending",
+			Kind:      string(workitem.KindImplement),
+		})
+		if err != nil {
+			return fmt.Errorf("list pending arc PR implement items for %q: %w", prID, err)
+		}
+		for _, candidate := range pending {
+			implement, err := workitem.DecodeImplementPayload(candidate.Payload)
+			if err != nil {
+				// A malformed task is left to normal runner error reporting; it is
+				// not safe to infer a comment identity from corrupt metadata.
+				continue
+			}
+			metadata := implement.PromptContext.Metadata
+			if strings.TrimSpace(metadata["origin"]) != "arcpr-author" || strings.TrimSpace(metadata["arc_pr_id"]) != prID {
+				continue
+			}
+			commentID := strings.TrimSpace(metadata["arc_comment_id"])
+			currentItemID, tracked := currentByComment[commentID]
+			if !tracked || currentItemID == candidate.ID {
+				continue
+			}
+			if _, err := s.Queue.CancelPendingItem(candidate.ID); err != nil {
+				return fmt.Errorf("cancel superseded arc PR implement item %q: %w", candidate.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments []arcreview.PRComment) ([]string, map[string]string, error) {

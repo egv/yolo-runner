@@ -100,6 +100,30 @@ func TestVerifyActiveDiffSetPublishedWithClientAcceptsPublished(t *testing.T) {
 	}
 }
 
+func TestActiveDiffSetMatchesRevisionWithClientDetectsSupersededVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"active_diff_set":{"id":30,"status":"published"}}}`))
+	}))
+	defer server.Close()
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL: server.URL,
+		TokenSource: func(context.Context) (string, error) {
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+	current, err := ActiveDiffSetMatchesRevisionWithClient(context.Background(), client, "123", "30")
+	if err != nil || !current {
+		t.Fatalf("ActiveDiffSetMatchesRevisionWithClient(current) = (%t, %v), want (true, nil)", current, err)
+	}
+	current, err = ActiveDiffSetMatchesRevisionWithClient(context.Background(), client, "123", "29")
+	if err != nil || current {
+		t.Fatalf("ActiveDiffSetMatchesRevisionWithClient(stale) = (%t, %v), want (false, nil)", current, err)
+	}
+}
+
 func TestVerifyActiveDiffSetPublishedForRevisionWithClientRejectsPreviousPublishedVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":{"active_diff_set":{"id":30,"status":"published","patch_vcs_ids":{"arc_branch_heads":{"from_id":"old-head"}}}}}`))

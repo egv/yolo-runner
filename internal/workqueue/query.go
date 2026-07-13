@@ -41,6 +41,36 @@ SELECT EXISTS (
 	return exists != 0, nil
 }
 
+// CancelPendingItem cancels one exact pending item. It never interrupts a
+// claimed or running worker, so callers can safely use it for superseded
+// queue entries without risking a partial implementation.
+func (s *Store) CancelPendingItem(itemID string) (bool, error) {
+	if err := ensureOpenStore(s); err != nil {
+		return false, err
+	}
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return false, fmt.Errorf("item ID is required")
+	}
+	result, err := s.db.Exec(`
+UPDATE work_items
+SET state = ?, updated_at = ?
+WHERE id = ? AND state = ?`,
+		itemStateCancelled,
+		formatQueueTime(time.Now().UTC()),
+		itemID,
+		itemStatePending,
+	)
+	if err != nil {
+		return false, fmt.Errorf("cancel pending work item %q: %w", itemID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count cancelled pending work item %q: %w", itemID, err)
+	}
+	return affected != 0, nil
+}
+
 // PendingDepth counts currently claimable pending items for a source and set of
 // presets. It mirrors Claim's eligibility checks without mutating the queue.
 func (s *Store) PendingDepth(source string, presets []string) (int, error) {

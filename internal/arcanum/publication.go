@@ -83,6 +83,40 @@ func VerifyActiveDiffSetPublished(ctx context.Context, prID string) error {
 	return VerifyActiveDiffSetPublishedForRevision(ctx, prID, "")
 }
 
+// ActiveDiffSetMatchesRevision reports whether the active Arcanum diff set is
+// still the revision represented by a queued review item. Unlike publication
+// verification, draft status is not an error here: a current draft may still
+// need the normal rebase-and-publish path. A false result means that a newer
+// version has already superseded the queued item.
+func ActiveDiffSetMatchesRevision(ctx context.Context, prID string, revision string) (bool, error) {
+	client, err := NewAPIClient(APIClientConfig{BaseURL: DefaultAPIBaseURL})
+	if err != nil {
+		return false, err
+	}
+	return ActiveDiffSetMatchesRevisionWithClient(ctx, client, prID, revision)
+}
+
+// ActiveDiffSetMatchesRevisionWithClient is the testable variant of
+// ActiveDiffSetMatchesRevision.
+func ActiveDiffSetMatchesRevisionWithClient(ctx context.Context, client *APIClient, prID string, revision string) (bool, error) {
+	if client == nil {
+		return false, fmt.Errorf("Arcanum API client is required")
+	}
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return false, fmt.Errorf("PR ID is required")
+	}
+	revision = strings.TrimSpace(revision)
+	if revision == "" {
+		return false, fmt.Errorf("revision is required")
+	}
+	var response reviewRequestResponse
+	if err := client.GetJSON(ctx, reviewRequestDiffSetsPath(prID), &response); err != nil {
+		return false, fmt.Errorf("fetch active diff set for PR %q: %w", prID, err)
+	}
+	return response.Data.ActiveDiffSet.matchesRevision(revision), nil
+}
+
 // VerifyActiveDiffSetPublishedForRevision checks that Arcanum has made the
 // expected branch revision active and published. Matching the revision avoids
 // accepting a previous published diff set while a newly pushed draft is still

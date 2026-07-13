@@ -27,11 +27,15 @@ type runnerPRReviewRuntime struct {
 	StateFetcher        arcPRReviewCycleStateFetcher
 	ModelHelper         arcPRReviewCycleModelHelper
 	LinkedTicketTracker arcreview.LinkedTicketTracker
-	Model               string
-	RepoRoot            string
-	Timeout             time.Duration
-	MaxRetries          int
-	Metadata            map[string]string
+	// ActiveDiffSetMatchesRevision lets author-mode work confirm it is still
+	// queued for the active Arcanum version before it checks out and rebases the
+	// PR. A false result is a safe no-op for an obsolete queue item.
+	ActiveDiffSetMatchesRevision func(context.Context, string, string) (bool, error)
+	Model                        string
+	RepoRoot                     string
+	Timeout                      time.Duration
+	MaxRetries                   int
+	Metadata                     map[string]string
 }
 
 type runnerPRReviewRuntimeResolver func(context.Context, workitem.Item, envpreset.Workspace, workitem.PRReviewPayload) (runnerPRReviewRuntime, error)
@@ -56,6 +60,30 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 	payload, err := workitem.DecodePRReviewPayload(item.Payload)
 	if err != nil {
 		return workqueue.Result{}, fmt.Errorf("decode PR review payload for item %q: %w", item.ID, err)
+	}
+
+	// Resolve the author runtime before preparing a checkout so an obsolete
+	// queue item can exit without rebasing or publishing a newer PR version.
+	// Reviewer mode preserves the existing checkout-first behavior.
+	var preflightRuntime runnerPRReviewRuntime
+	if runnerPRReviewIsAuthorMode(payload.Mode) {
+		preflightRuntime, err = resolve(ctx, item, workspace, payload)
+		if err != nil {
+			return workqueue.Result{}, err
+		}
+		if matcher := preflightRuntime.ActiveDiffSetMatchesRevision; matcher != nil && strings.TrimSpace(payload.Revision) != "" {
+			current, err := matcher(ctx, strings.TrimSpace(payload.PRID), strings.TrimSpace(payload.Revision))
+			if err != nil {
+				return workqueue.Result{}, fmt.Errorf("check active diff set for author PR review item %q: %w", item.ID, err)
+			}
+			if !current {
+				emptyResult, err := json.Marshal(workitem.PRReviewResult{})
+				if err != nil {
+					return workqueue.Result{}, fmt.Errorf("marshal stale PR review result for item %q: %w", item.ID, err)
+				}
+				return workqueue.Result{Payload: emptyResult}, nil
+			}
+		}
 	}
 
 	checkout, err := arcanum.PreparePRCheckoutWithConfig(ctx, payload.PRID, arcanum.PRCheckoutConfig{
@@ -92,6 +120,8 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 	reviewWorkspace := workspace
 	reviewWorkspace.Path = prMountPath
 
+	// Resolve again after checkout so the normal model setup continues to use
+	// the PR mount. The first author-mode resolution above is preflight-only.
 	runtime, err := resolve(ctx, item, reviewWorkspace, payload)
 	if err != nil {
 		return workqueue.Result{}, err
@@ -179,10 +209,11 @@ func defaultRunnerPRReviewRuntimeResolver(_ context.Context, item workitem.Item,
 		ModelHelper: arcPRReviewCycleModelHelperFunc(func(ctx context.Context, input arcPRReviewModelInput) ([]byte, error) {
 			return runArcPRReviewModel(ctx, runner, input)
 		}),
-		LinkedTicketTracker: defaultRunnerPRReviewLinkedTicketTracker(),
-		Model:               resolvedAgent.Model,
-		RepoRoot:            repoRoot,
-		Timeout:             resolvedAgent.RunnerTimeout,
+		LinkedTicketTracker:          defaultRunnerPRReviewLinkedTicketTracker(),
+		ActiveDiffSetMatchesRevision: arcanum.ActiveDiffSetMatchesRevision,
+		Model:                        resolvedAgent.Model,
+		RepoRoot:                     repoRoot,
+		Timeout:                      resolvedAgent.RunnerTimeout,
 		Metadata: map[string]string{
 			"backend": strings.TrimSpace(resolvedAgent.Backend),
 		},

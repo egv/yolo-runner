@@ -1147,6 +1147,62 @@ func TestSourceHandleResultFansOutImplementSubmissionForAuthorImplementDecision(
 	}
 }
 
+func TestSourceHandleResultCancelsSupersededPendingImplementItem(t *testing.T) {
+	ctx := context.Background()
+	src := arcPRAuthorImplementTestSource(t, &fakeArcPRWritebackClient{}, true, true)
+	decision := workitem.PRReviewCommentDecision{CommentID: "comment-1", Decision: workitem.PRReviewCommentDecisionImplement}
+	result := workqueue.Result{
+		Status:  workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{CommentDecisions: []workitem.PRReviewCommentDecision{decision}}),
+	}
+	firstReview := workitem.Item{
+		ID:        "review-r7",
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Preset:    "adapta",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID: "42", Revision: "r7", Mode: workitem.PRReviewModeAuthor,
+		}),
+	}
+	if _, err := src.HandleResult(ctx, firstReview, result); err != nil {
+		t.Fatalf("HandleResult(first): %v", err)
+	}
+	oldMapping, ok, err := src.GetCommentImplementItem(ctx, "42", "comment-1")
+	if err != nil || !ok {
+		t.Fatalf("GetCommentImplementItem(first) = (%#v, %t, %v), want mapping", oldMapping, ok, err)
+	}
+
+	secondReview := firstReview
+	secondReview.ID = "review-r8"
+	secondReview.Payload = mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+		PRID: "42", Revision: "r8", Mode: workitem.PRReviewModeAuthor,
+	})
+	if _, err := src.HandleResult(ctx, secondReview, result); err != nil {
+		t.Fatalf("HandleResult(second): %v", err)
+	}
+	currentMapping, ok, err := src.GetCommentImplementItem(ctx, "42", "comment-1")
+	if err != nil || !ok {
+		t.Fatalf("GetCommentImplementItem(second) = (%#v, %t, %v), want mapping", currentMapping, ok, err)
+	}
+	if currentMapping.ImplementItemID == oldMapping.ImplementItemID {
+		t.Fatalf("implement mapping was not replaced: %#v", currentMapping)
+	}
+	oldItem, err := src.Queue.GetItem(oldMapping.ImplementItemID)
+	if err != nil {
+		t.Fatalf("GetItem(old): %v", err)
+	}
+	if oldItem.Item.State != "cancelled" {
+		t.Fatalf("old implement state = %q, want cancelled", oldItem.Item.State)
+	}
+	currentItem, err := src.Queue.GetItem(currentMapping.ImplementItemID)
+	if err != nil {
+		t.Fatalf("GetItem(current): %v", err)
+	}
+	if currentItem.Item.State != "pending" {
+		t.Fatalf("current implement state = %q, want pending", currentItem.Item.State)
+	}
+}
+
 func TestSourceHandleResultSkipsImplementFanOutWhenDisabled(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeArcPRWritebackClient{}

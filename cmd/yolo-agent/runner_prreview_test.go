@@ -182,6 +182,46 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 	})
 }
 
+func TestRunnerPRReviewSkipsStaleAuthorVersionBeforeRebase(t *testing.T) {
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:     "42",
+		Revision: "stale-diff",
+		Mode:     workitem.PRReviewModeAuthor,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	matcherCalls := 0
+	result, err := runRunnerPRReview(context.Background(), workitem.Item{
+		ID:      "stale-author-review",
+		Kind:    workitem.KindPRReview,
+		Payload: payload,
+	}, envpreset.Workspace{}, func(context.Context, workitem.Item, envpreset.Workspace, workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+		return runnerPRReviewRuntime{
+			ActiveDiffSetMatchesRevision: func(_ context.Context, prID string, revision string) (bool, error) {
+				matcherCalls++
+				if prID != "42" || revision != "stale-diff" {
+					t.Fatalf("matcher identity = (%q, %q), want (42, stale-diff)", prID, revision)
+				}
+				return false, nil
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("runRunnerPRReview() error = %v", err)
+	}
+	if matcherCalls != 1 {
+		t.Fatalf("matcher calls = %d, want 1", matcherCalls)
+	}
+	got, err := workitem.DecodePRReviewResult(result.Payload)
+	if err != nil {
+		t.Fatalf("DecodePRReviewResult() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, workitem.PRReviewResult{}) {
+		t.Fatalf("stale result = %#v, want empty result", got)
+	}
+}
+
 func TestRunnerPRReviewHandlerPassesProjectContextIntoPrompt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -638,7 +678,6 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 	if err := daemon.runClaimedItem(context.Background(), *claimed); err != nil {
 		t.Fatalf("runClaimedItem() error = %v", err)
 	}
-
 	// Author mode builds the author prompt, not the reviewer prompt.
 	if len(runner.requests) != 1 {
 		t.Fatalf("runner requests = %d, want 1", len(runner.requests))

@@ -94,6 +94,70 @@ func TestEnqueueWithDepsDedupesByIdempotencyKeyAndWritesDeps(t *testing.T) {
 	assertItemCountForKey(t, store, "st/ADAPTABOT-13/implement/1", 0)
 }
 
+func TestEnqueueSupersedingPendingCancelsOnlyOlderAuthorPRReviews(t *testing.T) {
+	store := openEnqueueTestStore(t)
+	authorPayload := func(revision string) json.RawMessage {
+		raw, err := json.Marshal(workitem.PRReviewPayload{PRID: "42", Revision: revision, Mode: workitem.PRReviewModeAuthor})
+		if err != nil {
+			t.Fatalf("marshal author payload: %v", err)
+		}
+		return raw
+	}
+	reviewerPayload := json.RawMessage(`{"pr_id":"42","revision":"reviewer-r1","ship":false}`)
+
+	olderAuthor, err := store.Enqueue(Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcpr-adapta",
+		SourceRef:      "pr:42",
+		IdempotencyKey: "arcpr-adapta/pr-review/42/old/author",
+		Preset:         "adapta",
+		Payload:        authorPayload("old"),
+	})
+	if err != nil {
+		t.Fatalf("enqueue older author review: %v", err)
+	}
+	reviewer, err := store.Enqueue(Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcpr-adapta",
+		SourceRef:      "pr:42",
+		IdempotencyKey: "arcpr-adapta/pr-review/42/reviewer",
+		Preset:         "adapta",
+		Payload:        reviewerPayload,
+	})
+	if err != nil {
+		t.Fatalf("enqueue reviewer review: %v", err)
+	}
+	currentAuthor, err := store.Enqueue(Submission{
+		Kind:             workitem.KindPRReview,
+		Source:           "arcpr-adapta",
+		SourceRef:        "pr:42",
+		IdempotencyKey:   "arcpr-adapta/pr-review/42/new/author",
+		Preset:           "adapta",
+		Payload:          authorPayload("new"),
+		SupersedePending: true,
+	})
+	if err != nil {
+		t.Fatalf("enqueue current author review: %v", err)
+	}
+
+	for _, tc := range []struct {
+		id   string
+		want string
+	}{
+		{id: olderAuthor.ID, want: itemStateCancelled},
+		{id: reviewer.ID, want: itemStatePending},
+		{id: currentAuthor.ID, want: itemStatePending},
+	} {
+		detail, err := store.GetItem(tc.id)
+		if err != nil {
+			t.Fatalf("GetItem(%q): %v", tc.id, err)
+		}
+		if detail.Item.State != tc.want {
+			t.Fatalf("item %q state = %q, want %q", tc.id, detail.Item.State, tc.want)
+		}
+	}
+}
+
 func openEnqueueTestStore(t *testing.T) *Store {
 	t.Helper()
 

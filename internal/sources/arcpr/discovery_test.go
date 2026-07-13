@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,89 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workitem"
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
+
+func TestSourcePollCancelsSupersededPendingAuthorImplementItem(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	queue, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("workqueue.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = queue.Close() })
+	payload := func(title string) json.RawMessage {
+		raw, err := json.Marshal(workitem.ImplementPayload{
+			Title: title,
+			PromptContext: workitem.ImplementPromptContext{Metadata: map[string]string{
+				"origin":         "arcpr-author",
+				"arc_pr_id":      "42",
+				"arc_comment_id": "comment-1",
+			}},
+		})
+		if err != nil {
+			t.Fatalf("marshal implement payload: %v", err)
+		}
+		return raw
+	}
+	oldItem, err := queue.Enqueue(workqueue.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "arcpr-adapta",
+		SourceRef:      "pr:42",
+		IdempotencyKey: "arcpr/42/implement/comment-1/old",
+		Preset:         "adapta",
+		Payload:        payload("old"),
+	})
+	if err != nil {
+		t.Fatalf("enqueue old implement: %v", err)
+	}
+	currentItem, err := queue.Enqueue(workqueue.Submission{
+		Kind:           workitem.KindImplement,
+		Source:         "arcpr-adapta",
+		SourceRef:      "pr:42",
+		IdempotencyKey: "arcpr/42/implement/comment-1/current",
+		Preset:         "adapta",
+		Payload:        payload("current"),
+	})
+	if err != nil {
+		t.Fatalf("enqueue current implement: %v", err)
+	}
+	if err := state.RecordCommentImplementItem(ctx, CommentImplementItemRecord{
+		PRID:            "42",
+		CommentID:       "comment-1",
+		ImplementItemID: currentItem.ID,
+		IdempotencyKey:  "arcpr/42/implement/comment-1/current",
+		ReviewItemID:    "review-current",
+	}); err != nil {
+		t.Fatalf("RecordCommentImplementItem() error = %v", err)
+	}
+
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Author:     "alice",
+		State:      state,
+		Queue:      queue,
+		Lister: PRListerFunc(func(context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{{ID: "42", FromID: "active", Author: "alice"}}, nil
+		}),
+	}
+	if _, err := src.Poll(ctx); err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	oldDetail, err := queue.GetItem(oldItem.ID)
+	if err != nil {
+		t.Fatalf("GetItem(old): %v", err)
+	}
+	if oldDetail.Item.State != "cancelled" {
+		t.Fatalf("old item state = %q, want cancelled", oldDetail.Item.State)
+	}
+	currentDetail, err := queue.GetItem(currentItem.ID)
+	if err != nil {
+		t.Fatalf("GetItem(current): %v", err)
+	}
+	if currentDetail.Item.State != "pending" {
+		t.Fatalf("current item state = %q, want pending", currentDetail.Item.State)
+	}
+}
 
 func TestSourcePollSubmitsPRReviewItemsAndKeepsStableKeysAcrossPolls(t *testing.T) {
 	ctx := context.Background()

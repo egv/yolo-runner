@@ -13,6 +13,7 @@ const defaultListItemsLimit = 500
 
 type ListItemsFilter struct {
 	Source    string
+	SourceRef string
 	State     string
 	Preset    string
 	Kind      string
@@ -50,6 +51,7 @@ func (s *Store) ListItems(filter ListItemsFilter) ([]workitem.Item, error) {
 		args = append(args, value)
 	}
 	addStringFilter("source", filter.Source)
+	addStringFilter("source_ref", filter.SourceRef)
 	addStringFilter("state", filter.State)
 	addStringFilter("preset", filter.Preset)
 	addStringFilter("kind", filter.Kind)

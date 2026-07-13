@@ -513,6 +513,10 @@ func (s *Source) enqueueAuthorImplementSubmissions(ctx context.Context, item wor
 		if commentID == "" {
 			return nil, errors.New("arc PR implement decision comment ID is required")
 		}
+		previous, hadPrevious, err := s.GetCommentImplementItem(ctx, prID, commentID)
+		if err != nil {
+			return nil, err
+		}
 		submission, err := authorImplementSubmission(s.Name(), prID, commentID, revHash, item, decision, branch, author)
 		if err != nil {
 			return nil, err
@@ -529,6 +533,11 @@ func (s *Source) enqueueAuthorImplementSubmissions(ctx context.Context, item wor
 			ReviewItemID:    item.ID,
 		}); err != nil {
 			return nil, err
+		}
+		if hadPrevious && strings.TrimSpace(previous.ImplementItemID) != "" && previous.ImplementItemID != queued.ID {
+			if _, err := s.Queue.CancelPendingItem(previous.ImplementItemID); err != nil {
+				return nil, fmt.Errorf("cancel superseded arc PR implement item %q for comment %q: %w", previous.ImplementItemID, commentID, err)
+			}
 		}
 		submissions = append(submissions, submission)
 	}
