@@ -176,16 +176,20 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			return nil, fmt.Errorf("arc PR %q head commit is required", prID)
 		}
 
-		reviewedRevision, err := s.State.GetReviewedRevision(ctx, prID)
-		if err != nil {
-			return nil, err
+		// Author mode exists to respond to review threads on the user's own PR.
+		// A new push without an actionable comment must not enqueue a review
+		// simply to rebase and republish the same PR version: that created a
+		// self-sustaining stream of empty author reviews and draft versions.
+		mode := workitem.PRReviewModeReviewer
+		if s.Author != "" && strings.EqualFold(strings.TrimSpace(pr.Author), s.Author) {
+			mode = workitem.PRReviewModeAuthor
 		}
 		var unansweredCommentIDs []string
 		var triggeringReplies map[string]string
-		if strings.TrimSpace(reviewedRevision) == revision {
+		if mode == workitem.PRReviewModeAuthor {
 			state, err := s.stateFetcher().FetchPRRuntimeState(ctx, "", prID)
 			if err != nil {
-				return nil, fmt.Errorf("fetch arc PR runtime state for comments for %q: %w", prID, err)
+				return nil, fmt.Errorf("fetch arc PR runtime state for author comments for %q: %w", prID, err)
 			}
 			unansweredCommentIDs, triggeringReplies, err = s.unansweredCommentIDs(ctx, prID, state.Comments)
 			if err != nil {
@@ -194,15 +198,24 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 			if len(unansweredCommentIDs) == 0 {
 				continue
 			}
-		}
-
-		// Select the review mode per-PR: PRs authored by the configured author
-		// login run in author mode (triage review comments); all others run in
-		// reviewer mode. Author mode is skipped entirely when no author login is
-		// configured.
-		mode := workitem.PRReviewModeReviewer
-		if s.Author != "" && strings.EqualFold(strings.TrimSpace(pr.Author), s.Author) {
-			mode = workitem.PRReviewModeAuthor
+		} else {
+			reviewedRevision, err := s.State.GetReviewedRevision(ctx, prID)
+			if err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(reviewedRevision) == revision {
+				state, err := s.stateFetcher().FetchPRRuntimeState(ctx, "", prID)
+				if err != nil {
+					return nil, fmt.Errorf("fetch arc PR runtime state for comments for %q: %w", prID, err)
+				}
+				unansweredCommentIDs, triggeringReplies, err = s.unansweredCommentIDs(ctx, prID, state.Comments)
+				if err != nil {
+					return nil, err
+				}
+				if len(unansweredCommentIDs) == 0 {
+					continue
+				}
+			}
 		}
 
 		payload, err := json.Marshal(workitem.PRReviewPayload{

@@ -86,6 +86,9 @@ func TestSourcePollCancelsSupersededPendingAuthorImplementItem(t *testing.T) {
 		Lister: PRListerFunc(func(context.Context) ([]arcanum.PRSummary, error) {
 			return []arcanum.PRSummary{{ID: "42", FromID: "active", Author: "alice"}}, nil
 		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}, nil
+		}),
 	}
 	if _, err := src.Poll(ctx); err != nil {
 		t.Fatalf("Poll() error = %v", err)
@@ -384,12 +387,10 @@ esac
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("Poll() was not stable across polls\nfirst:  %#v\nsecond: %#v", first, second)
 	}
-	if len(first) != 3 {
-		t.Fatalf("Poll() returned %d submissions, want 3: %#v", len(first), first)
+	if len(first) != 1 {
+		t.Fatalf("Poll() returned %d submissions, want 1: %#v", len(first), first)
 	}
 	assertPRReviewSubmission(t, first[0], "arcpr-adapta", "adapta", "101", "rev-1", workitem.PRReviewModeReviewer, []string{"c-new"}, false)
-	assertPRReviewSubmission(t, first[1], "arcpr-adapta", "adapta", "102", "rev-2", workitem.PRReviewModeAuthor, nil, false)
-	assertPRReviewSubmission(t, first[2], "arcpr-adapta", "adapta", "103", "rev-3", workitem.PRReviewModeAuthor, nil, false)
 
 	for _, submission := range first {
 		payload, err := workitem.DecodePRReviewPayload(submission.Payload)
@@ -720,7 +721,11 @@ func TestSourcePollSelectsAuthorModeForPRsAuthoredByConfiguredAuthor(t *testing.
 			}, nil
 		}),
 		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
-			return arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}, nil
+			state := arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}
+			if prID == "101" || prID == "103" {
+				state.Comments = []arcreview.PRComment{{ID: "comment-" + prID, Body: "Please address this", Answered: false}}
+			}
+			return state, nil
 		}),
 	}
 
