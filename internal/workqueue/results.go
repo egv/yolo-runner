@@ -68,11 +68,12 @@ func (s *Store) Fail(itemID string, result Result) error {
 	return s.finishItem(itemID, itemStateFailed, result)
 }
 
-// RecoverRetryableFailuresForSourceRef moves previously failed, retryable items
-// for one exact source reference back to pending. It clears their obsolete
-// terminal result so the owning source will not write back a failure while a
-// restarted runner is retrying the item.
-func (s *Store) RecoverRetryableFailuresForSourceRef(sourceRef string) (int, error) {
+// RecoverRecentRetryableFailuresForSourceRef moves recently failed, retryable
+// items for one exact source reference back to pending. It clears their
+// obsolete terminal result so the owning source will not write back a failure
+// while a restarted runner is retrying the item. The cutoff prevents a worker
+// restart from resurrecting historical failed work.
+func (s *Store) RecoverRecentRetryableFailuresForSourceRef(sourceRef string, failedSince time.Time) (int, error) {
 	if err := ensureOpenStore(s); err != nil {
 		return 0, err
 	}
@@ -80,8 +81,13 @@ func (s *Store) RecoverRetryableFailuresForSourceRef(sourceRef string) (int, err
 	if sourceRef == "" {
 		return 0, fmt.Errorf("source ref is required")
 	}
+	if failedSince.IsZero() {
+		return 0, fmt.Errorf("failed-since time is required")
+	}
 
 	now := formatQueueTime(time.Now().UTC())
+	failedSince = failedSince.UTC()
+	formattedFailedSince := formatQueueTime(failedSince)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin recover failed items for source ref %q: %w", sourceRef, err)
@@ -93,8 +99,8 @@ DELETE FROM work_results
 WHERE item_id IN (
 	SELECT id
 	FROM work_items
-	WHERE state = ? AND source_ref = ? AND attempt < max_attempts
-)`, itemStateFailed, sourceRef); err != nil {
+WHERE state = ? AND source_ref = ? AND attempt < max_attempts AND updated_at >= ?
+)`, itemStateFailed, sourceRef, formattedFailedSince); err != nil {
 		return 0, fmt.Errorf("clear failed results for source ref %q: %w", sourceRef, err)
 	}
 	result, err := tx.Exec(`
@@ -105,11 +111,12 @@ SET state = ?,
 	lease_expires_at = '',
 	heartbeat_at = '',
 	updated_at = ?
-WHERE state = ? AND source_ref = ? AND attempt < max_attempts`,
+WHERE state = ? AND source_ref = ? AND attempt < max_attempts AND updated_at >= ?`,
 		itemStatePending,
 		now,
 		itemStateFailed,
 		sourceRef,
+		formattedFailedSince,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("recover failed items for source ref %q: %w", sourceRef, err)

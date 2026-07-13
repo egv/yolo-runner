@@ -21,6 +21,7 @@ import (
 
 const defaultRunnerDaemonPollInterval = time.Second
 const defaultRunnerDaemonEnvironmentsPath = "~/.yolo-runner/environments.yaml"
+const runnerRetryableFailureRecoveryWindow = 30 * time.Minute
 
 var errRunnerDaemonLockHeld = errors.New("runner daemon lock held")
 
@@ -156,7 +157,8 @@ func defaultRunRunnerDaemon(ctx context.Context, cfg runnerDaemonCommandConfig) 
 	}
 	defer store.Close()
 	if cfg.sourceRef != "" {
-		if _, err := store.RecoverRetryableFailuresForSourceRef(cfg.sourceRef); err != nil {
+		failedSince := time.Now().UTC().Add(-runnerRetryableFailureRecoveryWindow)
+		if _, err := store.RecoverRecentRetryableFailuresForSourceRef(cfg.sourceRef, failedSince); err != nil {
 			return err
 		}
 	}

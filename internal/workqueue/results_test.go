@@ -235,7 +235,7 @@ func TestRequeueStaleRequeuesThenFailsWithSynthesizedResult(t *testing.T) {
 	}
 }
 
-func TestRecoverRetryableFailuresForSourceRefRequeuesAndClearsResult(t *testing.T) {
+func TestRecoverRecentRetryableFailuresForSourceRefRequeuesOnlyRecentResults(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -263,10 +263,34 @@ func TestRecoverRetryableFailuresForSourceRefRequeuesAndClearsResult(t *testing.
 	if err := store.Fail(item.ID, Result{Payload: json.RawMessage(`{"reason":"temporary mount failure"}`)}); err != nil {
 		t.Fatalf("Fail() error = %v", err)
 	}
-
-	recovered, err := store.RecoverRetryableFailuresForSourceRef("pr:14330209")
+	old, err := store.Submit(Submission{
+		Kind:           workitem.KindPRReview,
+		Source:         "arcpr",
+		SourceRef:      "pr:14330209",
+		IdempotencyKey: "arcpr/14330209/old-review",
+		Preset:         "arcpr",
+		Payload:        json.RawMessage(`{"pr_id":"14330209"}`),
+	})
 	if err != nil {
-		t.Fatalf("RecoverRetryableFailuresForSourceRef() error = %v", err)
+		t.Fatalf("Submit(old) error = %v", err)
+	}
+	oldClaimed, err := store.Claim("runner-a", []string{"arcpr"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(old) error = %v", err)
+	}
+	if oldClaimed == nil || oldClaimed.ID != old.ID {
+		t.Fatalf("Claim(old) = %#v, want %q", oldClaimed, old.ID)
+	}
+	if err := store.Fail(old.ID, Result{Payload: json.RawMessage(`{"reason":"old failure"}`)}); err != nil {
+		t.Fatalf("Fail(old) error = %v", err)
+	}
+	if _, err := store.db.Exec("UPDATE work_items SET updated_at = ? WHERE id = ?", formatQueueTime(time.Now().UTC().Add(-time.Hour)), old.ID); err != nil {
+		t.Fatalf("age old failure: %v", err)
+	}
+
+	recovered, err := store.RecoverRecentRetryableFailuresForSourceRef("pr:14330209", time.Now().UTC().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RecoverRecentRetryableFailuresForSourceRef() error = %v", err)
 	}
 	if recovered != 1 {
 		t.Fatalf("recovered = %d, want 1", recovered)
@@ -276,8 +300,8 @@ func TestRecoverRetryableFailuresForSourceRefRequeuesAndClearsResult(t *testing.
 	if err != nil {
 		t.Fatalf("ListUnconsumedResults() error = %v", err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("unconsumed results = %#v, want none after recovery", results)
+	if len(results) != 1 || results[0].Item.ID != old.ID {
+		t.Fatalf("unconsumed results = %#v, want only old failure", results)
 	}
 	reclaimed, err := store.Claim("runner-b", []string{"arcpr"}, time.Minute)
 	if err != nil {
