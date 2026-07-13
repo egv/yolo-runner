@@ -169,13 +169,12 @@ func runIteration(ctx context.Context, source Source, sourceName string, queue *
 		})
 	}
 
-	if err := consumeResults(ctx, source, sourceName, queue, procID); err != nil {
-		return err
-	}
-	if err := pollAndEnqueue(ctx, source, sourceName, queue); err != nil {
-		return err
-	}
-	return nil
+	// A failed writeback must remain retryable, but it must not stop this source
+	// from discovering new work. Otherwise one stale PR result can indefinitely
+	// prevent unrelated, actionable review comments from ever reaching a runner.
+	consumeErr := consumeResults(ctx, source, sourceName, queue, procID)
+	pollErr := pollAndEnqueue(ctx, source, sourceName, queue)
+	return errors.Join(consumeErr, pollErr)
 }
 
 func consumeResults(ctx context.Context, source Source, sourceName string, queue *workqueue.Store, procID string) error {

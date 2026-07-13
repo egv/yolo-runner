@@ -150,8 +150,18 @@ func TestRunConsumesLaterResultsWhenEarlierWritebackFails(t *testing.T) {
 	}
 
 	src := &fakeSourcehostSource{
-		name:       "fake-source",
+		name: "fake-source",
 		handleErrs: map[string]error{itemIDs[0]: errors.New("writeback blocked")},
+		pollSubmissions: []workqueue.Submission{
+			{
+				Kind:           workitem.KindPRReview,
+				Source:         "fake-source",
+				SourceRef:      "PR-DISCOVERED",
+				IdempotencyKey: "fake-source/PR-DISCOVERED",
+				Preset:         "arcpr",
+				Payload:        json.RawMessage(`{"pr_id":"43"}`),
+			},
+		},
 	}
 	err = sourcehost.Run(ctx, src, store, sourcehost.Options{Once: true})
 	if err == nil || !strings.Contains(err.Error(), "writeback blocked") {
@@ -166,6 +176,13 @@ func TestRunConsumesLaterResultsWhenEarlierWritebackFails(t *testing.T) {
 	}
 	if len(unconsumed) != 1 || unconsumed[0].Item.ID != itemIDs[0] {
 		t.Fatalf("unconsumed results = %#v, want only %q", unconsumed, itemIDs[0])
+	}
+	discovered, claimErr := store.Claim("runner-discovered", []string{"arcpr"}, time.Minute)
+	if claimErr != nil {
+		t.Fatalf("Claim(discovered work) error = %v", claimErr)
+	}
+	if discovered == nil || discovered.IdempotencyKey != "fake-source/PR-DISCOVERED" {
+		t.Fatalf("discovered work = %#v, want fake-source/PR-DISCOVERED", discovered)
 	}
 }
 
