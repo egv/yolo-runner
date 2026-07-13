@@ -185,7 +185,7 @@ func TestRunnerDaemonOnceCanScopeClaimToSourceRefAndItemID(t *testing.T) {
 
 	code := RunMain([]string{
 		"runner", "--queue", dbPath, "--environments", environmentsPath, "--presets", "linux",
-		"--source-ref", "pr:14330209", "--item-id", target.ID, "--runner-id", "runner-target", "--once",
+		"--source-ref", "pr:14330209", "--item-id", target.ID, "--runner-id", "runner-target",
 	}, func(context.Context, runConfig) error {
 		t.Fatalf("legacy run path should not be called")
 		return nil

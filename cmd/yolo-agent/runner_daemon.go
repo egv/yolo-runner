@@ -776,6 +776,13 @@ func normalizeRunnerDaemonConfig(cfg runnerDaemonCommandConfig) (runnerDaemonCom
 	}
 	cfg.sourceRef = strings.TrimSpace(cfg.sourceRef)
 	cfg.itemID = strings.TrimSpace(cfg.itemID)
+	// An item-scoped runner is a dispatch worker, not a long-lived pool member.
+	// Once its exact item reaches a terminal state there is nothing else it can
+	// claim, so keeping it alive only leaves a stale heartbeat in the registry
+	// and can make the autoscaler believe all capacity is occupied.
+	if cfg.itemID != "" {
+		cfg.once = true
+	}
 	cfg.runnerID = strings.TrimSpace(cfg.runnerID)
 	if cfg.runnerID == "" {
 		cfg.runnerID = defaultRunnerID(cfg.presets)
