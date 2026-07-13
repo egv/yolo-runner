@@ -268,7 +268,13 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 	if err := adapter.PushPRBranch(context.Background(), "123456"); err != nil {
 		t.Fatalf("expected push to succeed, got %v", err)
 	}
-	assertCalls(t, runner.calls, call{name: "arc", args: []string{"push", "-f"}})
+	want := []call{
+		{name: "arc", args: []string{"push", "-f"}},
+		{name: "arc", args: []string{"pr", "publish", "123456"}},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
 }
 
 func TestPushPRBranchPropagatesError(t *testing.T) {

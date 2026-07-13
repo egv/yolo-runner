@@ -112,6 +112,7 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 		{workspace: mountPath, args: []string{"pr", "status", "--json", "2293787"}},
 		{workspace: mountPath, args: []string{"rebase", "trunk"}},
 		{workspace: mountPath, args: []string{"push", "-f"}},
+		{workspace: mountPath, args: []string{"pr", "publish", "2293787"}},
 		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
 	}
 	if !reflect.DeepEqual(calls, want) {

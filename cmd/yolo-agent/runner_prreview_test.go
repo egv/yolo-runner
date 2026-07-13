@@ -690,6 +690,7 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 		{cwd: prMountPath, args: "pr status --json 42"},
 		{cwd: prMountPath, args: "rebase trunk"},
 		{cwd: prMountPath, args: "push -f"},
+		{cwd: prMountPath, args: "pr publish 42"},
 		{args: "unmount --force --forget " + prMountPath},
 	})
 }

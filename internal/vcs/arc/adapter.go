@@ -68,9 +68,9 @@ func (a *Adapter) Checkout(_ context.Context, ref string) error {
 }
 
 // CheckoutPRBranch returns a stable landing identity for a PR checkout. The
-// working tree is already prepared by `arc pr checkout --detached`; unlike Git,
-// Arc's rev-parse does not support --abbrev-ref, and landing only needs a
-// non-empty identity before committing and force-pushing the current checkout.
+// working tree is already prepared by `arc pr checkout`; unlike Git, Arc's
+// rev-parse does not support --abbrev-ref, and landing only needs a non-empty
+// identity before committing and force-pushing the current checkout.
 func (a *Adapter) CheckoutPRBranch(_ context.Context, prID string) (string, error) {
 	prID = strings.TrimSpace(prID)
 	if prID == "" {
@@ -139,11 +139,18 @@ func (a *Adapter) PushMain(context.Context) error {
 	return nil
 }
 
-// PushPRBranch force-pushes the current branch to update an existing Arc PR.
-// Per Arcanum conventions an existing PR is updated by re-checking it out,
-// amending the commit, and pushing with -f.
-func (a *Adapter) PushPRBranch(context.Context, string) error {
-	_, err := a.runArc("push", "-f")
+// PushPRBranch force-pushes the current branch and publishes the resulting PR
+// version. A bare force-push leaves an Arcanum draft version invisible to
+// reviewers, so author-mode work is not complete until both operations succeed.
+func (a *Adapter) PushPRBranch(_ context.Context, prID string) error {
+	prID = strings.TrimSpace(prID)
+	if prID == "" {
+		return fmt.Errorf("PR ID is required")
+	}
+	if _, err := a.runArc("push", "-f"); err != nil {
+		return err
+	}
+	_, err := a.runArc("pr", "publish", prID)
 	return err
 }
 

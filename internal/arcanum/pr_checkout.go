@@ -149,6 +149,10 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error 
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
 		return workspaceArcError(mountPath, pushArgs, stderr, err)
 	}
+	publishArgs := []string{"pr", "publish", prID}
+	if _, stderr, err := arcExec(ctx, mountPath, "arc", publishArgs...); err != nil {
+		return workspaceArcError(mountPath, publishArgs, stderr, err)
+	}
 	return nil
 }
 
