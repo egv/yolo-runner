@@ -8,8 +8,11 @@ import (
 )
 
 const (
-	publishVerificationAttempts = 3
-	publishVerificationDelay    = time.Second
+	// Arcanum creates the active diff set asynchronously after arc push.  In
+	// practice the branch revision can take tens of seconds to become active,
+	// so a handful of one-second checks is not a reliable publication check.
+	publishVerificationAttempts = 10
+	publishVerificationDelay    = 3 * time.Second
 )
 
 // PRPublishFunc performs one Arc publication attempt for an existing PR.
@@ -24,6 +27,10 @@ type PRPublicationVerifier func(context.Context, string) error
 // diff set is published. A task must not be considered landed while its latest
 // version remains a draft.
 func PublishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc, verify PRPublicationVerifier) error {
+	return publishAndVerifyPR(ctx, prID, publish, verify, publishVerificationAttempts, publishVerificationDelay)
+}
+
+func publishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc, verify PRPublicationVerifier, attempts int, delay time.Duration) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -37,9 +44,15 @@ func PublishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc,
 	if verify == nil {
 		return fmt.Errorf("PR publication verifier is required")
 	}
+	if attempts < 1 {
+		return fmt.Errorf("PR publication attempts must be positive")
+	}
+	if delay < 0 {
+		return fmt.Errorf("PR publication retry delay cannot be negative")
+	}
 
 	var lastErr error
-	for attempt := 1; attempt <= publishVerificationAttempts; attempt++ {
+	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := publish(ctx, prID); err != nil {
 			return fmt.Errorf("publish PR %q attempt %d: %w", prID, attempt, err)
 		}
@@ -48,10 +61,10 @@ func PublishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc,
 		} else {
 			lastErr = err
 		}
-		if attempt == publishVerificationAttempts {
+		if attempt == attempts {
 			break
 		}
-		timer := time.NewTimer(publishVerificationDelay)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -61,7 +74,7 @@ func PublishAndVerifyPR(ctx context.Context, prID string, publish PRPublishFunc,
 		case <-timer.C:
 		}
 	}
-	return fmt.Errorf("PR %q active diff set remained draft after %d publish attempts: %w", prID, publishVerificationAttempts, lastErr)
+	return fmt.Errorf("PR %q active diff set remained draft after %d publish attempts: %w", prID, attempts, lastErr)
 }
 
 // VerifyActiveDiffSetPublished checks Arcanum's active diff set for a PR using

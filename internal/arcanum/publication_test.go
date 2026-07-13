@@ -7,12 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublishAndVerifyPRRetriesUntilArcanumReportsPublished(t *testing.T) {
 	publishCalls := 0
 	verifyCalls := 0
-	err := PublishAndVerifyPR(context.Background(), "123", func(context.Context, string) error {
+	err := publishAndVerifyPR(context.Background(), "123", func(context.Context, string) error {
 		publishCalls++
 		return nil
 	}, func(context.Context, string) error {
@@ -21,12 +22,33 @@ func TestPublishAndVerifyPRRetriesUntilArcanumReportsPublished(t *testing.T) {
 			return errors.New("active diff set is draft")
 		}
 		return nil
-	})
+	}, 2, 0)
 	if err != nil {
 		t.Fatalf("PublishAndVerifyPR() error = %v", err)
 	}
 	if publishCalls != 2 || verifyCalls != 2 {
 		t.Fatalf("publish/verify calls = %d/%d, want 2/2", publishCalls, verifyCalls)
+	}
+}
+
+func TestPublishAndVerifyPRWaitsForAsynchronouslyMaterializedRevision(t *testing.T) {
+	publishCalls := 0
+	verifyCalls := 0
+	err := publishAndVerifyPR(context.Background(), "123", func(context.Context, string) error {
+		publishCalls++
+		return nil
+	}, func(context.Context, string) error {
+		verifyCalls++
+		if verifyCalls < 5 {
+			return errors.New("active diff set does not yet match pushed revision")
+		}
+		return nil
+	}, 5, time.Millisecond)
+	if err != nil {
+		t.Fatalf("publishAndVerifyPR() error = %v", err)
+	}
+	if publishCalls != 5 || verifyCalls != 5 {
+		t.Fatalf("publish/verify calls = %d/%d, want 5/5", publishCalls, verifyCalls)
 	}
 }
 
