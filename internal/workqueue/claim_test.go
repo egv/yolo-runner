@@ -224,6 +224,61 @@ func TestClaimForSourceRefLeavesOtherRunnableItemsPending(t *testing.T) {
 	assertWorkQueueState(t, store.db, "other-pr", "pending")
 }
 
+// One worker per PR/checkout: while any item for a source ref is claimed, no
+// other item sharing that ref is claimable — author-mode items for the same PR
+// share a mount and must not rebase or push concurrently.
+func TestClaimSerializesItemsSharingSourceRef(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	insertWorkQueueItem(t, store.db, testQueueItem{id: "pr-a-first", sourceRef: "pr:1", createdAt: createdAt})
+	insertWorkQueueItem(t, store.db, testQueueItem{id: "pr-a-second", sourceRef: "pr:1", createdAt: createdAt.Add(time.Second)})
+	insertWorkQueueItem(t, store.db, testQueueItem{id: "pr-b-first", sourceRef: "pr:2", createdAt: createdAt.Add(2 * time.Second)})
+
+	first, err := store.Claim("runner-1", []string{"linux"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(runner-1) error = %v", err)
+	}
+	if first == nil || first.ID != "pr-a-first" {
+		t.Fatalf("Claim(runner-1) = %#v, want pr-a-first", first)
+	}
+
+	// A second worker must skip pr-a-second (its PR is busy) and take pr:2.
+	second, err := store.Claim("runner-2", []string{"linux"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(runner-2) error = %v", err)
+	}
+	if second == nil || second.ID != "pr-b-first" {
+		t.Fatalf("Claim(runner-2) = %#v, want pr-b-first", second)
+	}
+
+	// No runnable work remains: the only pending item shares pr:1 with a
+	// claimed item. Even pinning the exact item or ref must not bypass this.
+	if item, err := store.Claim("runner-3", []string{"linux"}, time.Minute); err != nil || item != nil {
+		t.Fatalf("Claim(runner-3) = %#v, %v; want nil while pr:1 is busy", item, err)
+	}
+	if item, err := store.ClaimForItemID("runner-3", []string{"linux"}, "pr-a-second", time.Minute); err != nil || item != nil {
+		t.Fatalf("ClaimForItemID(pr-a-second) = %#v, %v; want nil while pr:1 is busy", item, err)
+	}
+	if item, err := store.ClaimForSourceRef("runner-3", []string{"linux"}, "pr:1", time.Minute); err != nil || item != nil {
+		t.Fatalf("ClaimForSourceRef(pr:1) = %#v, %v; want nil while pr:1 is busy", item, err)
+	}
+
+	// Finishing the first pr:1 item releases the ref for the next one.
+	updateWorkQueueState(t, store.db, "pr-a-first", "done")
+	third, err := store.Claim("runner-3", []string{"linux"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Claim(runner-3 after done) error = %v", err)
+	}
+	if third == nil || third.ID != "pr-a-second" {
+		t.Fatalf("Claim(runner-3 after done) = %#v, want pr-a-second", third)
+	}
+}
+
 func TestClaimForItemIDLeavesOtherRunnableItemsPending(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "queue.db"))
 	if err != nil {
@@ -247,6 +302,7 @@ func TestClaimForItemIDLeavesOtherRunnableItemsPending(t *testing.T) {
 
 type testQueueItem struct {
 	id        string
+	sourceRef string
 	preset    string
 	priority  int
 	state     string
@@ -266,6 +322,9 @@ func insertWorkQueueItem(t *testing.T, db *sql.DB, item testQueueItem) {
 	if item.preset == "" {
 		item.preset = "linux"
 	}
+	if item.sourceRef == "" {
+		item.sourceRef = item.id
+	}
 
 	_, err := db.Exec(`
 INSERT INTO work_items (
@@ -274,7 +333,7 @@ INSERT INTO work_items (
 	heartbeat_at, created_at, updated_at
 ) VALUES (?, 'implement', 'test-source', ?, ?, ?, ?, '{}', ?, 0, 3, ?, '', '', '', ?, ?)`,
 		item.id,
-		item.id,
+		item.sourceRef,
 		"test-key/"+item.id,
 		item.preset,
 		item.priority,

@@ -447,6 +447,90 @@ esac
 	listCallsMu.Unlock()
 }
 
+// The reviewer role covers only PRs where the login is an assigned reviewer.
+// PRs the login merely watches as a subscriber must never be discovered,
+// fetched, or submitted — Arcanum has no reviewer() DSL predicate, so the
+// lister fetches the subscriber() superset and must narrow it client-side.
+func TestSourcePollNeverSubmitsSubscriberOnlyPRs(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		switch q := query.Get("query"); q {
+		case "subscriber(alice);open()":
+			// PR 201: alice is an assigned reviewer. PR 202: alice only
+			// subscribes — other people are the reviewers.
+			if _, err := w.Write([]byte(`{"data":{"review_requests":[
+  {"id":201,"status":"open","summary":"assigned to alice","author":{"name":"bob"},"reviewers":[{"user":{"name":"alice"}}],"active_diff_set":{"id":"rev-a"}},
+  {"id":202,"status":"open","summary":"alice merely subscribes","author":{"name":"carol"},"reviewers":[{"user":{"name":"dave"}}],"active_diff_set":{"id":"rev-b"}}
+]}}`)); err != nil {
+				t.Fatalf("write reviewer response: %v", err)
+			}
+		case "author(alice);open()":
+			if _, err := w.Write([]byte(`{"data":{"review_requests":[]}}`)); err != nil {
+				t.Fatalf("write author response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected query: %s", r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{
+		BaseURL:    server.URL + "/api",
+		HTTPClient: server.Client(),
+		TokenSource: func(context.Context) (string, error) {
+			return "test-token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
+set -eu
+printf 'unexpected arc args: %s\n' "$*" >&2
+exit 7
+`)
+	// The comments endpoint may be called only for the assigned PR; a fetch
+	// for the subscriber-only PR 202 fails the poll via the default case.
+	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
+set -eu
+case "$*" in
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/201/comments")
+  printf '%s\n' '{"data":[]}'
+  ;;
+*)
+  printf 'unexpected curl args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	t.Setenv("ARC_TOKEN", "test-token")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Reviewer:   "alice",
+		Author:     "alice",
+		APIClient:  apiClient,
+		State:      state,
+	}
+
+	submissions, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(submissions) != 1 {
+		t.Fatalf("Poll() returned %d submissions, want only the assigned-reviewer PR: %#v", len(submissions), submissions)
+	}
+	assertPRReviewSubmission(t, submissions[0], "arcpr-adapta", "adapta", "201", "rev-a", workitem.PRReviewModeReviewer, nil, false)
+}
+
 func TestSourcePollUsesAPIDefaultDiscoveryWhenReviewerMissing(t *testing.T) {
 	ctx := context.Background()
 	state := openDiscoveryTestState(t)

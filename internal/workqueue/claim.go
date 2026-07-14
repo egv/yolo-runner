@@ -19,6 +19,11 @@ const (
 // Claim atomically leases the oldest highest-priority pending item matching one
 // of the runner's presets whose dependencies are all done and whose not_before
 // timestamp has passed.
+//
+// Items sharing a non-empty source_ref (e.g. one PR's checkout) are exclusive:
+// while any of them is claimed, the rest are not claimable by any worker. This
+// keeps exactly one worker per PR/checkout — concurrent rebase/push against a
+// shared mount is never safe.
 func (s *Store) Claim(runnerID string, presets []string, leaseTTL time.Duration) (*workitem.Item, error) {
 	return s.claim(runnerID, presets, "", "", leaseTTL)
 }
@@ -83,6 +88,12 @@ WHERE id = (
 		%s
 		%s
 		AND (wi.not_before = '' OR wi.not_before <= ?)
+		AND (wi.source_ref = '' OR NOT EXISTS (
+			SELECT 1
+			FROM work_items active
+			WHERE active.source_ref = wi.source_ref
+				AND active.state = ?
+		))
 		AND NOT EXISTS (
 			SELECT 1
 			FROM item_deps dep
@@ -114,7 +125,7 @@ RETURNING id, kind, source, source_ref, idempotency_key, preset, priority,
 	if itemID != "" {
 		args = append(args, itemID)
 	}
-	args = append(args, formattedNow, itemStateDone)
+	args = append(args, formattedNow, itemStateClaimed, itemStateDone)
 
 	item, err := scanQueueItem(s.db.QueryRow(query, args...))
 	if err == sql.ErrNoRows {
