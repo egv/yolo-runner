@@ -256,6 +256,17 @@ func (s *Source) fetchWritebackState(ctx context.Context, prID string) (arcrevie
 	workspaces := s.writebackWorkspaces()
 	fetcher := s.stateFetcher()
 	if len(workspaces) == 0 {
+		if s.StateFetcher == nil && s.APIClient != nil {
+			// Fetch state purely over the API. Preparing a checkout here would
+			// take the per-PR lock, and an implement worker holding it for the
+			// duration of an agent run would block the whole source — no polls,
+			// no discovery — until the run ends.
+			state, err := arcanum.FetchPRRuntimeStateWithClient(ctx, s.APIClient, prID)
+			if err != nil {
+				return arcreview.PRRuntimeState{}, "", nil, fmt.Errorf("fetch arc PR runtime state for %q: %w", prID, err)
+			}
+			return state, "", nil, nil
+		}
 		if s.StateFetcher == nil {
 			checkout, err := arcanum.PreparePRCheckoutWithConfig(ctx, prID, arcanum.PRCheckoutConfig{
 				ObjectsBaseDir: s.ObjectsBaseDir,

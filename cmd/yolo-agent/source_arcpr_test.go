@@ -211,7 +211,7 @@ func TestSourceArcPROnceSubmitsAndConsumesOnePRReview(t *testing.T) {
 	}
 }
 
-func TestSourceArcPROnceUsesSimplifiedConfigIncomingDiscoveryAndMountWriteback(t *testing.T) {
+func TestSourceArcPROnceUsesSimplifiedConfigIncomingDiscoveryAndAPIWriteback(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -261,6 +261,20 @@ arc_review_watch:
 		if got := r.Method; got != http.MethodGet {
 			t.Fatalf("method = %s, want GET", got)
 		}
+		// Writeback fetches per-PR state over the API (never via an Arc
+		// checkout — that would block on the per-PR lock during agent runs).
+		if r.URL.Path == "/api/v1/review-requests/777" {
+			w.Header().Set("Content-Type", "application/json")
+			if _, err := w.Write([]byte(`{"data":{
+  "id":777,"summary":"Ready for review","author":{"name":"bob"},"state":"open",
+  "vcs":{"from_branch":"users/alice/pr","to_branch":"trunk"},
+  "active_diff_set":{"id":"rev-777"},
+  "checks":[{"system":"CI","type":"ci","required":true,"status":"success"}]
+}}`)); err != nil {
+				t.Fatalf("write PR state response: %v", err)
+			}
+			return
+		}
 		if got := r.URL.Path; got != "/api/v1/review-requests" {
 			t.Fatalf("path = %q, want /api/v1/review-requests", got)
 		}
@@ -307,6 +321,8 @@ arc_review_watch:
 
 	binDir := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "calls.log")
+	// The source must never shell out to arc: discovery and writeback are both
+	// API-backed. Any arc invocation fails the run and therefore the test.
 	writeSourceArcPRFakeExecutable(t, binDir, "arc", `#!/bin/sh
 set -eu
 printf '%s	arc' "$PWD" >> "$ARC_SOURCE_TEST_CALLS"
@@ -314,27 +330,8 @@ for arg in "$@"; do
   printf ' %s' "$arg" >> "$ARC_SOURCE_TEST_CALLS"
 done
 printf '\n' >> "$ARC_SOURCE_TEST_CALLS"
-case "$*" in
-"mount -m "*)
-  mkdir -p "$3"
-  ;;
-"pr checkout 777 --force")
-  mkdir -p project
-  printf 'fixture\n' > project/README.md
-  ;;
-"pr status --json 777")
-  printf '%s\n' '{"id":777,"summary":"Ready for review","status":"open","from_id":"rev-777","from_branch":"users/alice/pr","to_branch":"trunk","checks":[{"name":"ci","status":"SUCCESS"}]}'
-  ;;
-"pr changes 777")
-  printf '%s\n' 'diff --git a/project/README.md b/project/README.md'
-  ;;
-"unmount --force --forget "*)
-  ;;
-*)
-  printf 'unexpected arc args: %s\n' "$*" >&2
-  exit 7
-  ;;
-esac
+printf 'source arcpr must not invoke arc (got: %s)\n' "$*" >&2
+exit 7
 `)
 	writeSourceArcPRFakeExecutable(t, binDir, "curl", `#!/bin/sh
 set -eu
@@ -412,7 +409,6 @@ esac
 	if len(reviewStates) != 1 {
 		t.Fatalf("review applier calls = %d, want 1", len(reviewStates))
 	}
-	mountPath := filepath.Join(mountsBaseDir, "777")
 	if replyStates[0].PRID != "777" || reviewStates[0].Revision != "rev-777" {
 		t.Fatalf("writeback states = %#v %#v, want PR 777 revision rev-777", replyStates[0], reviewStates[0])
 	}
@@ -423,18 +419,13 @@ esac
 	}
 	calls := strings.Split(strings.TrimSpace(string(rawCalls)), "\n")
 	assertSourceArcPRCallsContain(t, calls,
-		"arc mount -m "+mountPath+" -S "+filepath.Join(home, ".yolo-runner", "pr-objects", "777"),
-		mountPath+"\tarc pr checkout 777 --force",
-		mountPath+"\tarc pr status --json 777",
-		mountPath+"\tcurl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
-		mountPath+"\tarc pr changes 777",
-		"arc unmount --force --forget "+mountPath,
+		"curl -fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/777/comments",
 	)
-	assertSourceArcPRCallsDoNotContain(t, calls,
-		"arc mount --list --json",
-		"arc pr list --json --reviewer alice --status open",
-		"arc pr list --json --author alice --status open",
-	)
+	for _, call := range calls {
+		if strings.Contains(call, "\tarc ") {
+			t.Fatalf("source arcpr invoked arc (%q); discovery and writeback must be API-only", call)
+		}
+	}
 
 	state, err := arcreviewstate.Open(statePath)
 	if err != nil {
@@ -613,18 +604,6 @@ func assertSourceArcPRCallsContain(t *testing.T, calls []string, want ...string)
 		}
 		if !found {
 			t.Fatalf("source arcpr calls missing %q in %#v", expected, calls)
-		}
-	}
-}
-
-func assertSourceArcPRCallsDoNotContain(t *testing.T, calls []string, banned ...string) {
-	t.Helper()
-
-	for _, bad := range banned {
-		for _, call := range calls {
-			if call == bad || strings.HasSuffix(call, "\t"+bad) {
-				t.Fatalf("source arcpr calls contained disallowed command %q in %#v", bad, calls)
-			}
 		}
 	}
 }
