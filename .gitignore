@@ -24,3 +24,5 @@ __pycache__/
 # Claude settings (may contain auth tokens; per-clone copies are guarded by .git/info/exclude)
 .claude/
 .zcode/
+.codex/
+.playwright-mcp/
