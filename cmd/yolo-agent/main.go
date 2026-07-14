@@ -1301,11 +1301,24 @@ func (r localRunner) Run(args ...string) (string, error) {
 
 type localGitRunner struct{ dir string }
 
+// localGitRunnerCommandTimeout bounds one VCS command. An arc command on a
+// damaged FUSE mount can hang forever — observed live: `arc add -u` during a
+// landing parked the worker for over an hour while heartbeats kept the queue
+// lease alive. A bounded wait turns that hang into a failed landing the queue
+// can retry. Variable so tests can shorten it.
+var localGitRunnerCommandTimeout = 10 * time.Minute
+
 func (r localGitRunner) Run(name string, args ...string) (string, error) {
-	all := append([]string{name}, args...)
-	cmd := exec.Command(all[0], all[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), localGitRunnerCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = r.dir
+	// Collect output even if a killed child left the pipe open.
+	cmd.WaitDelay = 10 * time.Second
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return string(out), fmt.Errorf("%s %s timed out after %s", name, strings.Join(args, " "), localGitRunnerCommandTimeout)
+	}
 	return string(out), err
 }
 
