@@ -104,16 +104,40 @@ func (a *Adapter) stageAll() error {
 	if err != nil {
 		return err
 	}
-	for _, path := range trackedStatusPaths(status) {
-		if _, err := a.runArc("add", "-u", path); err != nil {
-			if isMissingWorkingTreePathError(err) {
-				continue
+	tracked := trackedStatusPaths(status)
+	untracked := untrackedStatusPaths(status)
+
+	// Stage with as few arc invocations as possible: per-path `arc add -u
+	// <path>` repeatedly wedged inside the FUSE mount in production (hanging
+	// until the command timeout killed it), while the pathless and batched
+	// forms are arc's common path. Per-path staging remains only as a fallback
+	// so a single unstageable path (e.g. deleted after status) skips instead of
+	// aborting the landing.
+	if len(tracked) > 0 {
+		if _, err := a.runArc("add", "-u"); err != nil {
+			if err := a.stagePathsIndividually(tracked, true); err != nil {
+				return err
 			}
-			return err
 		}
 	}
-	for _, path := range untrackedStatusPaths(status) {
-		if _, err := a.runArc("add", path); err != nil {
+	if len(untracked) > 0 {
+		if _, err := a.runArc(append([]string{"add"}, untracked...)...); err != nil {
+			if err := a.stagePathsIndividually(untracked, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) stagePathsIndividually(paths []string, updateOnly bool) error {
+	for _, path := range paths {
+		args := []string{"add"}
+		if updateOnly {
+			args = append(args, "-u")
+		}
+		args = append(args, path)
+		if _, err := a.runArc(args...); err != nil {
 			if isMissingWorkingTreePathError(err) {
 				continue
 			}

@@ -167,7 +167,6 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 		{output: "", err: nil},
 		{output: "", err: nil},
 		{output: "", err: nil},
-		{output: "", err: nil},
 		{output: "abc123\n", err: nil},
 	}}
 	adapter := New(runner)
@@ -180,11 +179,12 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 		t.Fatalf("expected sha abc123, got %q", sha)
 	}
 
+	// Tracked changes stage with one pathless `add -u`; untracked paths stage
+	// in one batched `add`. Per-path invocations wedged on FUSE mounts.
 	want := []call{
 		{name: "arc", args: []string{"status", "--short"}},
-		{name: "arc", args: []string{"add", "-u", "tracked.py"}},
-		{name: "arc", args: []string{"add", "new.py"}},
-		{name: "arc", args: []string{"add", "new-dir/"}},
+		{name: "arc", args: []string{"add", "-u"}},
+		{name: "arc", args: []string{"add", "new.py", "new-dir/"}},
 		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 	}
@@ -196,6 +196,9 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 func TestCommitAllSkipsMissingUntrackedStatusPaths(t *testing.T) {
 	runner := &sequenceRunner{responses: []sequenceResponse{
 		{output: "?? stale-generated\n?? real.py\n", err: nil},
+		// Batched add fails on the missing path...
+		{output: "can't open stale-generated: No such file or directory", err: errors.New("exit status 1")},
+		// ...so staging falls back to per-path adds, skipping the missing one.
 		{output: "can't open stale-generated: No such file or directory", err: errors.New("exit status 1")},
 		{output: "", err: nil},
 		{output: "", err: nil},
@@ -213,6 +216,7 @@ func TestCommitAllSkipsMissingUntrackedStatusPaths(t *testing.T) {
 
 	want := []call{
 		{name: "arc", args: []string{"status", "--short"}},
+		{name: "arc", args: []string{"add", "stale-generated", "real.py"}},
 		{name: "arc", args: []string{"add", "stale-generated"}},
 		{name: "arc", args: []string{"add", "real.py"}},
 		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
