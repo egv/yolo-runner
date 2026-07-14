@@ -14,6 +14,91 @@ import (
 	"github.com/egv/yolo-runner/v2/internal/workqueue"
 )
 
+// A ship-ready review verdict with shipping disabled (allow_ship: false) must
+// consume cleanly without a ship gate: the gate exists solely to ship, and its
+// arc client needs a workspace that API-only writeback does not have. This
+// exact combination poisoned result consumption and killed the sourcehost in
+// production on 2026-07-14.
+func TestSourceHandleResultShipReadyWithShipDisabledSkipsShipGate(t *testing.T) {
+	ctx := context.Background()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/review-requests/42" {
+			t.Fatalf("unexpected API path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"data":{
+  "id":42,"summary":"the PR","author":{"name":"bob"},"state":"open",
+  "vcs":{"from_branch":"users/bob/pr-42","to_branch":"trunk"},
+  "active_diff_set":{"id":"r7"}
+}}`)); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	apiClient, err := arcanum.NewAPIClient(arcanum.APIClientConfig{
+		BaseURL:     server.URL + "/api",
+		HTTPClient:  server.Client(),
+		TokenSource: func(context.Context) (string, error) { return "test-token", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	binDir := t.TempDir()
+	writeDiscoveryFakeExecutable(t, binDir, "arc", `#!/bin/sh
+printf 'writeback must not invoke arc (got: %s)\n' "$*" >&2
+exit 7
+`)
+	writeDiscoveryFakeExecutable(t, binDir, "curl", `#!/bin/sh
+set -eu
+case "$*" in
+"-fsSL -H Authorization: OAuth test-token https://a.yandex-team.ru/api/v1/public/review-requests/42/comments")
+  printf '%s\n' '{"data":[]}'
+  ;;
+*)
+  printf 'unexpected curl args: %s\n' "$*" >&2
+  exit 7
+  ;;
+esac
+`)
+	t.Setenv("ARC_TOKEN", "test-token")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, false, false)
+	src.StateFetcher = nil
+	src.APIClient = apiClient
+	src.ShipGate = nil // no gate configured: consumption must not need one
+	src.ReviewApplier = arcreview.ReviewApplier{Client: client, Store: src.State}
+	src.ReplyApplier = arcreview.ReplyApplier{Client: client, Store: src.State}
+
+	item := workitem.Item{
+		ID:        "review-item-ship",
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Preset:    "adapta",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeReviewer,
+			Ship:     false,
+		}),
+	}
+	result := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			ReviewVerdict:    "ship",
+			ShipReady:        true,
+			RevisionReviewed: "r7",
+		}),
+	}
+
+	if _, err := src.HandleResult(ctx, item, result); err != nil {
+		t.Fatalf("HandleResult(ship-ready, ship disabled) error = %v", err)
+	}
+}
+
 // Writeback must fetch PR state over the API, never by preparing an Arc
 // checkout: a checkout takes the per-PR lock, and while an implement worker
 // holds it for a full agent run, a source blocked on it stops polling and

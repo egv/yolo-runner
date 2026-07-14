@@ -134,7 +134,13 @@ func (s *Source) HandleResult(ctx context.Context, item workitem.Item, result wo
 		}
 	}
 
-	if resultPayload.ShipReady {
+	// The ship gate exists solely to ship; when the work item was submitted
+	// with shipping disabled (allow_ship: false) there is nothing it can do.
+	// Constructing it anyway is not harmless: the gate's arc client needs a
+	// workspace, API-only writeback has none, and the resulting error poisons
+	// the item — repeated consumption failures killed the sourcehost on
+	// 2026-07-14.
+	if resultPayload.ShipReady && payload.Ship {
 		gateState, err := s.shipGateState(ctx, gateStateBase, prID, repliedCommentIDs)
 		if err != nil {
 			return nil, err
