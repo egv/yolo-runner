@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/executor"
@@ -20,6 +21,60 @@ import (
 // the author-mode (arcpr-author) branch can be tested without a real arc mount.
 var runnerImplementPreparePRCheckout = func(prID string) (*arcanum.PRCheckout, error) {
 	return arcanum.PreparePRCheckoutWithConfig(context.Background(), prID, arcanum.PRCheckoutConfig{Rebase: true})
+}
+
+// runnerImplementFetchPRComments is a seam over arcanum.FetchPRComments for the
+// landing-applicability check.
+var runnerImplementFetchPRComments = arcanum.FetchPRComments
+
+// runnerImplementImplementSkippedStatus marks an implement result whose comment
+// no longer needed a fix at landing time. The arcpr source treats it as
+// terminal without posting a reply or resolving the thread.
+const runnerImplementSkippedStatus = "skipped"
+
+// runnerImplementCommentObsoleteReason re-checks an author-mode comment against
+// the live PR right before landing. An implement item can sit in the queue long
+// after triage (backlog, crash requeue, retries); by the time it runs, the
+// comment may be resolved, deleted, or already answered by the PR author — in
+// each case landing again would duplicate work and post a bogus reply. Returns
+// a human-readable reason to skip, or "" when the fix is still applicable.
+func runnerImplementCommentObsoleteReason(ctx context.Context, payload workitem.ImplementPayload) (string, error) {
+	meta := payload.PromptContext.Metadata
+	if strings.TrimSpace(meta["origin"]) != "arcpr-author" {
+		return "", nil
+	}
+	prID := strings.TrimSpace(meta["arc_pr_id"])
+	commentID := strings.TrimSpace(meta["arc_comment_id"])
+	if prID == "" || commentID == "" {
+		return "", nil
+	}
+	comments, err := runnerImplementFetchPRComments(ctx, prID)
+	if err != nil {
+		return "", fmt.Errorf("check arc PR comment %q applicability before landing: %w", commentID, err)
+	}
+
+	var root *arcreview.PRComment
+	for i := range comments {
+		if strings.TrimSpace(comments[i].ID) == commentID {
+			root = &comments[i]
+			break
+		}
+	}
+	if root == nil {
+		return fmt.Sprintf("comment %s no longer exists on PR %s", commentID, prID), nil
+	}
+	if root.Resolved {
+		return fmt.Sprintf("comment %s on PR %s is already resolved", commentID, prID), nil
+	}
+	if author := strings.TrimSpace(meta["arc_pr_author"]); author != "" {
+		for _, comment := range comments {
+			if strings.TrimSpace(comment.ThreadID) == commentID &&
+				strings.EqualFold(strings.TrimSpace(comment.Author), author) {
+				return fmt.Sprintf("comment %s on PR %s was already answered by %s", commentID, prID, author), nil
+			}
+		}
+	}
+	return "", nil
 }
 
 var runnerImplementPRVCS = func(path string) contracts.VCS {
@@ -101,6 +156,23 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 		payload, err := workitem.DecodeImplementPayload(item.Payload)
 		if err != nil {
 			return workqueue.Result{}, fmt.Errorf("decode implement payload for item %q: %w", item.ID, err)
+		}
+
+		// Landing applicability gate: run before the checkout is prepared so an
+		// obsolete comment costs one API call, not a mount + rebase + publish.
+		obsoleteReason, err := runnerImplementCommentObsoleteReason(ctx, payload)
+		if err != nil {
+			return workqueue.Result{}, err
+		}
+		if obsoleteReason != "" {
+			skipped, err := json.Marshal(workitem.ImplementResult{
+				Status: runnerImplementSkippedStatus,
+				Reason: obsoleteReason,
+			})
+			if err != nil {
+				return workqueue.Result{}, fmt.Errorf("encode skipped implement result for item %q: %w", item.ID, err)
+			}
+			return workqueue.Result{Status: workqueue.ResultStatusCompleted, Payload: skipped}, nil
 		}
 
 		prLanding, err := resolveRunnerImplementPRLanding(payload, item.ID)

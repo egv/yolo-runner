@@ -17,6 +17,11 @@ import (
 // authorImplementMetadata).
 const arcPRAuthorOrigin = "arcpr-author"
 
+// implementSkippedStatus is the implement-result status the runner reports when
+// the landing-applicability gate found the comment already handled. Must match
+// runnerImplementSkippedStatus in cmd/yolo-agent.
+const implementSkippedStatus = "skipped"
+
 // finalizeCommentResolveIfComplete enqueues a resolve-pr-comment follow-up for a
 // review comment once the author-mode implement item spawned to address it lands.
 // It mirrors startrek's finalizeFollowUpIfSplitComplete: the comment's tracked
@@ -49,6 +54,24 @@ func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item work
 	commentID := strings.TrimSpace(metadata["arc_comment_id"])
 	prID := fallbackText(metadata["arc_pr_id"], strings.TrimPrefix(strings.TrimSpace(item.SourceRef), "pr:"))
 	if commentID == "" || prID == "" {
+		return nil, nil
+	}
+	skipped := false
+	if len(strings.TrimSpace(string(result.Payload))) > 0 {
+		implementResult, err := workitem.DecodeImplementResult(result.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("decode arc PR implement result for comment %q: %w", commentID, err)
+		}
+		skipped = strings.EqualFold(strings.TrimSpace(implementResult.Status), implementSkippedStatus)
+	}
+	if skipped {
+		// The runner found the comment no longer applicable at landing time
+		// (resolved, deleted, or already answered): nothing landed, so no reply
+		// or thread resolution must be posted. Record the comment as answered so
+		// the next triage does not enqueue the same obsolete work again.
+		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, []string{commentID}); err != nil {
+			return nil, fmt.Errorf("record skipped arc PR comment %q as answered: %w", commentID, err)
+		}
 		return nil, nil
 	}
 	if err := s.verifyAuthorImplementPublished(ctx, prID); err != nil {

@@ -68,6 +68,55 @@ func fanOutAuthorImplement(t *testing.T, src *Source) (workitem.Item, string) {
 	return *claimed, implementKey
 }
 
+// A skipped implement result means the runner's landing gate found the comment
+// already handled (resolved, deleted, or answered): nothing landed, so no
+// reply is posted and no resolve is enqueued. The comment is recorded as
+// answered so the next triage does not enqueue the same obsolete work again.
+func TestFinalizeCommentResolveSkippedImplementResolvesNothing(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, true, true)
+
+	implementItem, _ := fanOutAuthorImplement(t, src)
+	skippedResult := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.ImplementResult{
+			Status: "skipped",
+			Reason: "comment comment-1 on PR 42 is already resolved",
+		}),
+	}
+
+	submissions, err := src.HandleResult(ctx, implementItem, skippedResult)
+	if err != nil {
+		t.Fatalf("HandleResult(skipped implement) error = %v", err)
+	}
+	if len(submissions) != 0 {
+		t.Fatalf("submissions = %#v, want none for a skipped implement", submissions)
+	}
+	if err := src.Queue.Complete(implementItem.ID, skippedResult); err != nil {
+		t.Fatalf("Complete() implement item error = %v", err)
+	}
+	if claimed, err := src.Queue.Claim("runner-a", []string{"adapta"}, time.Minute); err != nil {
+		t.Fatalf("Claim() after skipped implement error = %v", err)
+	} else if claimed != nil {
+		t.Fatalf("a resolve item was enqueued for a skipped implement: %#v", claimed)
+	}
+
+	answered, err := src.State.ListAnsweredCommentIDs(ctx, "42")
+	if err != nil {
+		t.Fatalf("ListAnsweredCommentIDs() error = %v", err)
+	}
+	found := false
+	for _, id := range answered {
+		if id == "comment-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("answered comments = %#v, want comment-1 recorded to stop re-triage", answered)
+	}
+}
+
 // TestFinalizeCommentResolveEnqueuesResolveWhenTrackedImplementItemLands asserts
 // that completing the comment's tracked implement item enqueues exactly one
 // KindResolvePRComment follow-up, dependency-gated on that implement item, and

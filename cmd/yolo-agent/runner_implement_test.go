@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
+	"github.com/egv/yolo-runner/v2/internal/arcreview"
 	"github.com/egv/yolo-runner/v2/internal/contracts"
 	"github.com/egv/yolo-runner/v2/internal/envpreset"
 	"github.com/egv/yolo-runner/v2/internal/workitem"
@@ -372,6 +374,156 @@ func TestResolveRunnerImplementPRLanding(t *testing.T) {
 			t.Fatal("checkout Cleanup must be wired through")
 		}
 	})
+}
+
+// Landing applicability: an author-mode implement item re-checks its comment
+// against the live PR right before landing. A comment that is resolved,
+// deleted, or already answered by the PR author must be skipped without
+// preparing a checkout or running the agent.
+func TestRunnerImplementSkipsObsoleteAuthorComment(t *testing.T) {
+	cases := []struct {
+		name       string
+		comments   []arcreview.PRComment
+		wantReason string
+	}{
+		{
+			name: "comment already resolved",
+			comments: []arcreview.PRComment{
+				{ID: "c-1", Body: "please fix", Resolved: true},
+			},
+			wantReason: "already resolved",
+		},
+		{
+			name:       "comment deleted",
+			comments:   []arcreview.PRComment{{ID: "c-other", Body: "unrelated"}},
+			wantReason: "no longer exists",
+		},
+		{
+			name: "author already replied in thread",
+			comments: []arcreview.PRComment{
+				{ID: "c-1", Body: "please fix"},
+				{ID: "c-9", ThreadID: "c-1", Author: "alice", Body: "Fixed in `abc`."},
+			},
+			wantReason: "already answered by alice",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prevFetch := runnerImplementFetchPRComments
+			prevPrepare := runnerImplementPreparePRCheckout
+			t.Cleanup(func() {
+				runnerImplementFetchPRComments = prevFetch
+				runnerImplementPreparePRCheckout = prevPrepare
+			})
+			fetchedPR := ""
+			runnerImplementFetchPRComments = func(_ context.Context, prID string) ([]arcreview.PRComment, error) {
+				fetchedPR = prID
+				return tc.comments, nil
+			}
+			runnerImplementPreparePRCheckout = func(string) (*arcanum.PRCheckout, error) {
+				t.Fatal("prepare checkout must not run for an obsolete comment")
+				return nil, nil
+			}
+
+			handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+				t.Fatal("executor must not be resolved for an obsolete comment")
+				return runnerImplementExecutor{}, nil
+			})
+			item := workitem.Item{
+				ID:   "item-obsolete",
+				Kind: workitem.KindImplement,
+				Payload: marshalRunnerImplementPayload(t, workitem.ImplementPayload{
+					TaskID: "PR-42-c-1",
+					Title:  "Fix comment c-1",
+					PromptContext: workitem.ImplementPromptContext{
+						Prompt: "Apply the fix.",
+						Metadata: map[string]string{
+							"origin":         "arcpr-author",
+							"arc_pr_id":      "42",
+							"arc_comment_id": "c-1",
+							"arc_pr_author":  "alice",
+						},
+					},
+				}),
+			}
+
+			result, err := handler(context.Background(), item, envpreset.Workspace{})
+			if err != nil {
+				t.Fatalf("handler() error = %v", err)
+			}
+			if fetchedPR != "42" {
+				t.Fatalf("fetched comments for PR %q, want 42", fetchedPR)
+			}
+			if result.Status != workqueue.ResultStatusCompleted {
+				t.Fatalf("result status = %q, want completed", result.Status)
+			}
+			implementResult, err := workitem.DecodeImplementResult(result.Payload)
+			if err != nil {
+				t.Fatalf("DecodeImplementResult() error = %v", err)
+			}
+			if implementResult.Status != runnerImplementSkippedStatus {
+				t.Fatalf("implement result status = %q, want %q", implementResult.Status, runnerImplementSkippedStatus)
+			}
+			if !strings.Contains(implementResult.Reason, tc.wantReason) {
+				t.Fatalf("implement result reason = %q, want it to contain %q", implementResult.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// A live comment — open thread, replies only from reviewers — must pass the
+// applicability gate and proceed to the normal landing path.
+func TestRunnerImplementProceedsWhenAuthorCommentStillApplicable(t *testing.T) {
+	prevFetch := runnerImplementFetchPRComments
+	prevPrepare := runnerImplementPreparePRCheckout
+	t.Cleanup(func() {
+		runnerImplementFetchPRComments = prevFetch
+		runnerImplementPreparePRCheckout = prevPrepare
+	})
+	runnerImplementFetchPRComments = func(context.Context, string) ([]arcreview.PRComment, error) {
+		return []arcreview.PRComment{
+			{ID: "c-1", Body: "please fix"},
+			{ID: "c-9", ThreadID: "c-1", Author: "reviewer-bob", Body: "still waiting"},
+		}, nil
+	}
+	prepareCalled := false
+	sentinel := errors.New("prepare checkout sentinel")
+	runnerImplementPreparePRCheckout = func(prID string) (*arcanum.PRCheckout, error) {
+		prepareCalled = true
+		if prID != "42" {
+			t.Fatalf("prepare checkout PR = %q, want 42", prID)
+		}
+		return nil, sentinel
+	}
+
+	handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+		return runnerImplementExecutor{}, nil
+	})
+	item := workitem.Item{
+		ID:   "item-live",
+		Kind: workitem.KindImplement,
+		Payload: marshalRunnerImplementPayload(t, workitem.ImplementPayload{
+			TaskID: "PR-42-c-1",
+			Title:  "Fix comment c-1",
+			PromptContext: workitem.ImplementPromptContext{
+				Prompt: "Apply the fix.",
+				Metadata: map[string]string{
+					"origin":         "arcpr-author",
+					"arc_pr_id":      "42",
+					"arc_comment_id": "c-1",
+					"arc_pr_author":  "alice",
+				},
+			},
+		}),
+	}
+
+	_, err := handler(context.Background(), item, envpreset.Workspace{})
+	if !prepareCalled {
+		t.Fatal("prepare checkout was not reached for a still-applicable comment")
+	}
+	if err == nil || !strings.Contains(err.Error(), sentinel.Error()) {
+		t.Fatalf("handler() error = %v, want the prepare checkout sentinel", err)
+	}
 }
 
 func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
