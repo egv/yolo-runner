@@ -74,42 +74,23 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 			releaseCheckout()
 		}
 	}()
-	if err := os.MkdirAll(objectStore, 0o755); err != nil {
-		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
-	}
-	// arc mounts onto an existing empty dir; start clean when no prior runner
-	// process owns this path. RemoveAll cannot remove an active Arc mount, so a
-	// later "already mounted" response is handled by reusing that checkout.
-	_ = os.RemoveAll(mountPath)
-	if err := os.MkdirAll(mountPath, 0o755); err != nil {
-		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
-	}
 
-	// A fresh isolated arc working copy per PR: `arc mount -m <mount> -S <store>`
-	// (verified against the arc CLI; `arc init` is for bare/path-filtered repos
-	// and rejects this form).
-	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
-	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
-		if !arcMountAlreadyMounted(stderr) {
-			return nil, workspaceArcError("", mountArgs, stderr, err)
+	// A crashed runner leaves a dead FUSE mount ("Device not configured") or a
+	// damaged object store behind; neither self-heals, so a stale-state failure
+	// gets one full reset (force unmount, drop mount dir and store) and retry
+	// before the task is declared failed.
+	err = mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
+	if err != nil {
+		resetPRCheckoutState(mountPath, objectStore)
+		if arcStaleCheckoutError(err) {
+			err = mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
+			if err != nil {
+				resetPRCheckoutState(mountPath, objectStore)
+			}
 		}
 	}
-
-	// Keep the PR branch attached: `arc push -f` from a detached checkout only
-	// uploads a dangling commit and leaves the pull request unchanged.
-	checkoutArgs := []string{"pr", "checkout", prID, "--force"}
-	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
-		// Best-effort unmount so a failed checkout does not leak a mount.
-		_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
-		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
-	}
-	if cfg.Rebase {
-		if err := rebasePRCheckout(ctx, mountPath, prID); err != nil {
-			_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
-			_ = os.RemoveAll(mountPath)
-			_ = os.RemoveAll(objectStore)
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	cleanup := oncePRCheckoutCleanup(func(ctx context.Context) error {
@@ -135,6 +116,81 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	}
 	releaseOnReturn = false
 	return checkout, nil
+}
+
+// mountAndCheckoutPR runs one full preparation attempt: fresh mount dir,
+// arc mount, PR checkout, and the optional rebase-and-publish pass.
+func mountAndCheckoutPR(ctx context.Context, prID string, cfg PRCheckoutConfig, objectStore string, mountPath string) error {
+	if err := os.MkdirAll(objectStore, 0o755); err != nil {
+		return fmt.Errorf("create arc object store %s: %w", objectStore, err)
+	}
+	// arc mounts onto an existing empty dir; start clean when no prior runner
+	// process owns this path. RemoveAll cannot remove an active Arc mount, so a
+	// later "already mounted" response is handled by reusing that checkout.
+	_ = os.RemoveAll(mountPath)
+	if err := os.MkdirAll(mountPath, 0o755); err != nil {
+		return fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
+	}
+
+	// A fresh isolated arc working copy per PR: `arc mount -m <mount> -S <store>`
+	// (verified against the arc CLI; `arc init` is for bare/path-filtered repos
+	// and rejects this form).
+	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
+	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
+		if !arcMountAlreadyMounted(stderr) {
+			return workspaceArcError("", mountArgs, stderr, err)
+		}
+	}
+
+	// Keep the PR branch attached: `arc push -f` from a detached checkout only
+	// uploads a dangling commit and leaves the pull request unchanged. The
+	// checkout also doubles as liveness verification for a reused mount: a dead
+	// FUSE mount fails here with a stale-state error and triggers the reset.
+	checkoutArgs := []string{"pr", "checkout", prID, "--force"}
+	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
+		return workspaceArcError(mountPath, checkoutArgs, stderr, err)
+	}
+	if cfg.Rebase {
+		return rebasePRCheckout(ctx, mountPath, prID)
+	}
+	return nil
+}
+
+// resetPRCheckoutState best-effort releases everything a previous attempt may
+// have left behind: the FUSE mount (dead or alive), the mount dir, and the
+// per-PR object store. Uses a background context so cleanup still runs when
+// the caller's context is already cancelled.
+func resetPRCheckoutState(mountPath string, objectStore string) {
+	_, _, _ = arcExec(context.Background(), "", "arc", "unmount", "--force", "--forget", mountPath)
+	_ = os.RemoveAll(mountPath)
+	_ = os.RemoveAll(objectStore)
+}
+
+// arcStaleCheckoutError reports whether a preparation failure looks like
+// leftover mount/store damage from an earlier abnormal termination — the cases
+// where wiping the mount and object store and retrying can succeed, as opposed
+// to genuine failures (rebase conflicts, unknown PR, auth) that would only
+// repeat.
+func arcStaleCheckoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	staleMarkers := []string{
+		"device not configured",
+		"transport endpoint is not connected",
+		"not a mounted arc repository",
+		"abnormal mount termination",
+		"previously mounted into different repository",
+		"failed to opendir",
+		"can't open",
+	}
+	for _, marker := range staleMarkers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func arcMountAlreadyMounted(stderr []byte) bool {

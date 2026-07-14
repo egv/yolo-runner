@@ -116,6 +116,175 @@ func TestPreparePRCheckoutReusesAlreadyMountedWorkspace(t *testing.T) {
 	}
 }
 
+func TestPreparePRCheckoutRecoversFromStaleMountState(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	type arcCall struct {
+		workspace string
+		args      []string
+	}
+	var calls []arcCall
+	mountAttempts := 0
+	arcExec = func(_ context.Context, workspace string, _ string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, arcCall{workspace: workspace, args: append([]string{}, args...)})
+		if len(args) > 0 && args[0] == "mount" {
+			mountAttempts++
+			if mountAttempts == 1 {
+				return nil, []byte("Caught (Error 6: Device not configured) util/folder/path.cpp:285: failed to opendir"), errors.New("arc mount failed")
+			}
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckout("2293787")
+	if err != nil {
+		t.Fatalf("PreparePRCheckout() error = %v", err)
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
+	want := []arcCall{
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("arc calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestPreparePRCheckoutRecoversWhenReusedMountIsDead(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	type arcCall struct {
+		workspace string
+		args      []string
+	}
+	var calls []arcCall
+	mountAttempts := 0
+	checkoutAttempts := 0
+	arcExec = func(_ context.Context, workspace string, _ string, args ...string) ([]byte, []byte, error) {
+		calls = append(calls, arcCall{workspace: workspace, args: append([]string{}, args...)})
+		if len(args) > 0 && args[0] == "mount" {
+			mountAttempts++
+			if mountAttempts == 1 {
+				// A stale registry entry reports the path as mounted even though
+				// the FUSE process behind it is gone.
+				return nil, []byte("mount path is already mounted"), errors.New("arc mount failed")
+			}
+		}
+		if len(args) > 1 && args[0] == "pr" && args[1] == "checkout" {
+			checkoutAttempts++
+			if checkoutAttempts == 1 {
+				return nil, []byte("Not a mounted arc repository. Did you forget to mount arcadia?"), errors.New("arc pr checkout failed")
+			}
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckout("2293787")
+	if err != nil {
+		t.Fatalf("PreparePRCheckout() error = %v", err)
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mountPath := filepath.Join(home, ".yolo-runner", "pr-mounts", "2293787")
+	objectStore := filepath.Join(home, ".yolo-runner", "pr-objects", "2293787")
+	want := []arcCall{
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
+		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
+		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("arc calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestPreparePRCheckoutRetriesStaleStateOnlyOnce(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	mountAttempts := 0
+	arcExec = func(_ context.Context, _ string, _ string, args ...string) ([]byte, []byte, error) {
+		if len(args) > 0 && args[0] == "mount" {
+			mountAttempts++
+			return nil, []byte("Caught (Error 6: Device not configured)"), errors.New("arc mount failed")
+		}
+		return nil, nil, nil
+	}
+
+	if _, err := PreparePRCheckout("2293787"); err == nil {
+		t.Fatal("PreparePRCheckout() error = nil, want persistent stale-state failure")
+	}
+	if mountAttempts != 2 {
+		t.Fatalf("mount attempts = %d, want 2", mountAttempts)
+	}
+}
+
+func TestPreparePRCheckoutDoesNotRetryNonStaleFailures(t *testing.T) {
+	oldExec := arcExec
+	t.Cleanup(func() {
+		arcExec = oldExec
+	})
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	checkoutAttempts := 0
+	arcExec = func(_ context.Context, _ string, _ string, args ...string) ([]byte, []byte, error) {
+		if len(args) > 1 && args[0] == "pr" && args[1] == "checkout" {
+			checkoutAttempts++
+			return nil, []byte("pull request 2293787 not found"), errors.New("arc pr checkout failed")
+		}
+		return nil, nil, nil
+	}
+
+	if _, err := PreparePRCheckout("2293787"); err == nil {
+		t.Fatal("PreparePRCheckout() error = nil, want checkout failure")
+	}
+	if checkoutAttempts != 1 {
+		t.Fatalf("checkout attempts = %d, want 1", checkoutAttempts)
+	}
+}
+
+func TestArcStaleCheckoutErrorClassifiesRebaseConflictAsGenuine(t *testing.T) {
+	conflict := errors.New("arc rebase trunk in workspace /mounts/1 failed: there are some conflicts:\n    content  services/x/ya.make\nrebase wasn't performed.")
+	if arcStaleCheckoutError(conflict) {
+		t.Fatal("arcStaleCheckoutError() = true for a rebase conflict, want false")
+	}
+	stale := errors.New("arc push -f in workspace /mounts/1 failed: Not a mounted arc repository. Did you forget to mount arcadia?")
+	if !arcStaleCheckoutError(stale) {
+		t.Fatal("arcStaleCheckoutError() = false for a dead mount error, want true")
+	}
+}
+
 func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 	oldExec := arcExec
 	oldPublishAndVerify := publishAndVerifyPRCheckout
