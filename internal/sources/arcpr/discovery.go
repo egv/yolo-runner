@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -406,6 +407,16 @@ func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments
 		if comment.Resolved {
 			continue
 		}
+		// Automated reviewers stamp their per-revision status summaries with a
+		// machine marker (observed: robot-auto-ai-minion posts one "checked
+		// revision X" summary per push, each embedding
+		// `<!-- ai-reviewer: reviewed_from_id=<sha> -->`). Those summaries ask
+		// for nothing — answering each one had the agent posting a thank-you
+		// reply per push, indefinitely. The same bot's genuine review comments
+		// carry no marker and stay fully in scope.
+		if isAIReviewerStatusSummary(comment.Body) {
+			continue
+		}
 
 		// Genuinely unanswered comment: surface it for triage.
 		if !comment.Answered && !answered[id] {
@@ -426,6 +437,15 @@ func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments
 	}
 	sort.Strings(unanswered)
 	return unanswered, triggering, nil
+}
+
+// aiReviewerStatusSummaryMarker matches the HTML comment automated reviewers
+// embed in per-revision status summaries, e.g.
+// `<!-- ai-reviewer: reviewed_from_id=deadbeef -->`.
+var aiReviewerStatusSummaryMarker = regexp.MustCompile(`<!--\s*ai-reviewer:`)
+
+func isAIReviewerStatusSummary(body string) bool {
+	return aiReviewerStatusSummaryMarker.MatchString(body)
 }
 
 func (s *Source) lister() PRLister {

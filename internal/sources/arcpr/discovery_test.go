@@ -288,6 +288,75 @@ func TestSourcePollSubmitsReviewedIncomingPRWhenUnansweredCommentsRemain(t *test
 	}
 }
 
+// Automated reviewers stamp per-revision status summaries with
+// `<!-- ai-reviewer: ... -->`. Those summaries ask for nothing and must never
+// be triaged (each one answered = one thank-you reply posted per push,
+// forever). The same bot's genuine review comments carry no marker and stay
+// fully in scope — they must keep triggering triage.
+func TestSourcePollIgnoresAIReviewerStatusSummaries(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+
+	src := &Source{
+		SourceName:        "arcpr-adapta",
+		Preset:            "adapta",
+		Author:            "alice",
+		AuthorModeEnabled: true,
+		State:             state,
+		Lister: PRListerFunc(func(_ context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{
+				{ID: "42", FromID: "rev-1", Status: "open", Author: "alice"},
+			}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{
+				PRID:     prID,
+				Revision: "rev-1",
+				Details:  arcreview.PRDetails{ID: prID, Status: "open", Revision: "rev-1", Author: "alice"},
+				Comments: []arcreview.PRComment{
+					{
+						ID:     "summary-1",
+						Author: "robot-auto-ai-minion",
+						Body:   "Глянул новую ревизию, всё норм.\n\n<!-- ai-reviewer: reviewed_from_id=deadbeef -->",
+					},
+					{
+						ID:     "real-1",
+						Author: "robot-auto-ai-minion",
+						Body:   "скрипт не идемпотентен, на втором прогоне упадёт",
+					},
+				},
+			}, nil
+		}),
+	}
+
+	submissions, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+	if len(submissions) != 1 {
+		t.Fatalf("Poll() = %d submissions, want 1: %#v", len(submissions), submissions)
+	}
+	payload, err := workitem.DecodePRReviewPayload(submissions[0].Payload)
+	if err != nil {
+		t.Fatalf("DecodePRReviewPayload() error = %v", err)
+	}
+	if !reflect.DeepEqual(payload.UnansweredCommentIDs, []string{"real-1"}) {
+		t.Fatalf("unanswered = %#v, want only the genuine comment real-1 (summary-1 must be ignored)", payload.UnansweredCommentIDs)
+	}
+
+	// A poll where ONLY the marker summary remains unanswered enqueues nothing.
+	if err := state.StoreAnsweredCommentIDs(ctx, "42", []string{"real-1"}); err != nil {
+		t.Fatalf("StoreAnsweredCommentIDs() error = %v", err)
+	}
+	after, err := src.Poll(ctx)
+	if err != nil {
+		t.Fatalf("Poll(after answer) error = %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("Poll(after answer) = %#v, want none — the ai-reviewer summary alone must not trigger triage", after)
+	}
+}
+
 func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePinning(t *testing.T) {
 	ctx := context.Background()
 	state := openDiscoveryTestState(t)
