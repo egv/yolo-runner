@@ -211,7 +211,33 @@ func (c *PRListArcanumClient) listReviewRequestsByFilter(ctx context.Context, fi
 	if err := apiClient.GetJSON(ctx, reviewRequestsPath(filter, user), &raw); err != nil {
 		return nil, fmt.Errorf("list %s review requests: %w", filter, err)
 	}
-	return ParsePRListJSON(raw)
+	prs, err := ParsePRListJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	if filter == "reviewer" {
+		return keepAssignedReviewerPRs(prs, user), nil
+	}
+	return prs, nil
+}
+
+// keepAssignedReviewerPRs drops PRs where the login is only a subscriber
+// (watching the PR) and not an assigned reviewer. The subscriber() DSL
+// predicate is the closest server-side selection Arcanum offers, so the
+// reviewer-role listing fetches that superset and narrows it here using the
+// projected reviewers list.
+func keepAssignedReviewerPRs(prs []PRSummary, login string) []PRSummary {
+	login = strings.TrimSpace(login)
+	kept := make([]PRSummary, 0, len(prs))
+	for _, pr := range prs {
+		for _, reviewer := range pr.Reviewers {
+			if strings.EqualFold(strings.TrimSpace(reviewer), login) {
+				kept = append(kept, pr)
+				break
+			}
+		}
+	}
+	return kept
 }
 
 func (c *PRListArcanumClient) api() (*APIClient, error) {
@@ -235,9 +261,10 @@ const arcReviewRequestListLimit = "1000"
 // empty {"data":{}} unless BOTH (a) the row selection is expressed in Arcanum's
 // query DSL via the `query` param and (b) the columns are projected via
 // `fields=review_requests(...)`. The DSL predicate selecting authored PRs is
-// author(<login>); there is no reviewer(<login>) predicate, so PRs the user is
-// asked to review are selected with subscriber(<login>). open() keeps only open
-// review requests.
+// author(<login>); reviewer(<login>) is rejected as a bad filter, so the
+// reviewer role fetches the subscriber(<login>) superset and the caller narrows
+// it to assigned reviewers via the projected reviewers(user(name)) list. open()
+// keeps only open review requests.
 //
 // active_diff_set(id) is the only per-push identifier the list API exposes (no
 // commit SHA is available in list projection); it changes on every push, so it
@@ -252,7 +279,7 @@ func reviewRequestsPath(filter string, user string) string {
 
 	query := url.Values{}
 	query.Set("query", predicate+"("+user+");open()")
-	query.Set("fields", "review_requests(id,author,summary,status,active_diff_set(id),vcs(from_branch,to_branch))")
+	query.Set("fields", "review_requests(id,author,summary,status,reviewers(user(name)),active_diff_set(id),vcs(from_branch,to_branch))")
 	query.Set("order", "-updated_at")
 	query.Set("limit", arcReviewRequestListLimit)
 	query.Set("offset", "0")

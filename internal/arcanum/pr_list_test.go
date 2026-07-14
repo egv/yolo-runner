@@ -115,6 +115,50 @@ func TestPRListArcanumClientAuthorQueryUsesOAuthAndFilters(t *testing.T) {
 	}
 }
 
+func TestListReviewerReviewPRsDropsSubscriberOnlyPRs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if got := query.Get("query"); got != "subscriber(alice);open()" {
+			t.Fatalf("query = %q, want subscriber(alice);open()", got)
+		}
+		if fields := query.Get("fields"); !strings.Contains(fields, "reviewers(user(name))") {
+			t.Fatalf("fields = %q, want reviewers(user(name)) projected", fields)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// PR 100: alice is an assigned reviewer (Arcanum nests entries as
+		// {"user":{"name":...}}). PR 150: alice is only a subscriber — the
+		// reviewers list names other people. PR 175: no reviewers projected.
+		if _, err := w.Write([]byte(`{"data":{"review_requests":[
+  {"id":100,"status":"open","summary":"assigned","author":{"name":"dave"},"reviewers":[{"user":{"name":"Alice"}},{"user":{"name":"bob"},"action":"comment"}],"active_diff_set":{"id":11}},
+  {"id":150,"status":"open","summary":"subscribed only","author":{"name":"mivihan"},"reviewers":[{"user":{"name":"bob"}},{"user":{"name":"carol"}}],"active_diff_set":{"id":12}},
+  {"id":175,"status":"open","summary":"no reviewers","author":{"name":"erin"},"active_diff_set":{"id":13}}
+]}}`)); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewAPIClient(APIClientConfig{
+		BaseURL:     server.URL + "/api",
+		HTTPClient:  server.Client(),
+		TokenSource: func(context.Context) (string, error) { return "token", nil },
+	})
+	if err != nil {
+		t.Fatalf("NewAPIClient() error = %v", err)
+	}
+
+	got, err := NewPRListArcanumClient(client).ListReviewerReviewPRs(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("ListReviewerReviewPRs() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "100" {
+		t.Fatalf("ListReviewerReviewPRs() = %#v, want only PR 100 (assigned reviewer)", got)
+	}
+	if !reflect.DeepEqual(got[0].Reviewers, []string{"Alice", "bob"}) {
+		t.Fatalf("PR 100 reviewers = %#v, want [Alice bob]", got[0].Reviewers)
+	}
+}
+
 func TestListReviewPRsWithClientDedupeReviewerThenAuthor(t *testing.T) {
 	requests := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

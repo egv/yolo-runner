@@ -236,7 +236,14 @@ func personValue(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return ""
 	}
-	return firstScalar(object, "login", "username", "uid", "id", "name", "display")
+	if value := firstScalar(object, "login", "username", "uid", "id", "name", "display"); value != "" {
+		return value
+	}
+	// Arcanum's HTTP list API wraps reviewer entries as {"user":{"name":...}}.
+	if nested, ok := object["user"]; ok {
+		return personValue(nested)
+	}
+	return ""
 }
 
 func issueValue(raw json.RawMessage) string {

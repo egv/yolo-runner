@@ -315,9 +315,9 @@ func TestSourcePollUsesDefaultIncomingDiscoveryAndRuntimeStateWithoutWorkspacePi
 			listCalls = append(listCalls, "reviewer")
 			w.Header().Set("Content-Type", "application/json")
 			if _, err := w.Write([]byte(`[
-  {"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment","author":"bob"},
-  {"id":"102","from_id":"rev-2","status":"open","summary":"new head","author":"alice"},
-  {"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head","author":"alice"}
+  {"id":"101","from_id":"rev-1","status":"open","summary":"reviewed head with comment","author":"bob","reviewers":[{"user":{"name":"alice"}}]},
+  {"id":"102","from_id":"rev-2","status":"open","summary":"new head","author":"alice","reviewers":[{"user":{"name":"alice"}}]},
+  {"id":"101","from_id":"rev-1","status":"open","summary":"duplicate reviewed head","author":"alice","reviewers":[{"user":{"name":"alice"}}]}
 ]`)); err != nil {
 				t.Fatalf("write reviewer response: %v", err)
 			}
