@@ -1,5 +1,7 @@
 # Arc Review Watch Deprecation Runbook
 
+> **Current operational status:** Read [Arc PR runner: system description and current operational status](arcpr-system-status.md) before starting or reporting a live run. It records the 2026-07-14 evidence: source-only runs do not execute queued PRs, stale Arc mounts are not self-healed, and rebase conflicts currently fail before agent remediation. Do not claim these paths are automatic until those gaps are fixed and verified.
+
 `yolo-agent arc-review-watch` is a compatibility shim. It prints a deprecation notice and delegates to `yolo-agent source arcpr` with the same `--repo`, `--profile`, `--once`, `--events`, and `--stream` values.
 
 Use `yolo-agent watch` for normal long-running Arc PR review. Use `source arcpr` for focused debugging:

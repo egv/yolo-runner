@@ -19,6 +19,8 @@ AI-powered task execution system with pluggable storage backends (GitHub, Linear
 
 See `MIGRATION.md` for historical command mapping.
 
+For the Arc/Arcanum review runner, see [the live system description and operational status](docs/arcpr-system-status.md). It distinguishes the supported watch supervisor from debugging-only split-process commands and lists currently verified failure modes.
+
 ## Installation
 
 ### One-Line Install
