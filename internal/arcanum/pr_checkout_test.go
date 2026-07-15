@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -386,6 +387,70 @@ func TestPreparePRCheckoutSkipsPushAndPublishWhenRebaseIsNoOp(t *testing.T) {
 	}
 	if pushed {
 		t.Fatal("arc push ran for a no-op rebase")
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+}
+
+// A rebase that stops on merge conflicts is the coding agent's job, not a
+// terminal failure: the checkout is returned usable (rebase aborted, clean
+// tree on the PR head) with the conflict attached, and nothing is pushed or
+// published.
+func TestPreparePRCheckoutSurfacesRebaseConflictInsteadOfFailing(t *testing.T) {
+	oldExec := arcExec
+	oldPublishAndVerify := publishAndVerifyPRCheckout
+	t.Cleanup(func() {
+		arcExec = oldExec
+		publishAndVerifyPRCheckout = oldPublishAndVerify
+	})
+	publishAndVerifyPRCheckout = func(ctx context.Context, prID string, publish PRPublishFunc, _ PRPublicationVerifier) error {
+		t.Fatal("publish must not run when the rebase conflicted")
+		return nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	aborted := false
+	pushed := false
+	arcExec = func(_ context.Context, _ string, _ string, args ...string) ([]byte, []byte, error) {
+		if reflect.DeepEqual(args, []string{"pr", "status", "--json", "2293787"}) {
+			return []byte(`{"id":2293787,"status":"open","from_id":"head","to_branch":"trunk"}`), nil, nil
+		}
+		if reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
+			return []byte("head\n"), nil, nil
+		}
+		if reflect.DeepEqual(args, []string{"rebase", "trunk"}) {
+			return nil, []byte("there are some conflicts:\n    content  services/x/ya.make  068544fc\nrebase wasn't performed.\n"), errors.New("exit status 1")
+		}
+		if reflect.DeepEqual(args, []string{"rebase", "--abort"}) {
+			aborted = true
+		}
+		if len(args) > 0 && args[0] == "push" {
+			pushed = true
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckoutWithConfig(context.Background(), "2293787", PRCheckoutConfig{Rebase: true})
+	if err != nil {
+		t.Fatalf("PreparePRCheckoutWithConfig() error = %v, want conflict surfaced on the checkout", err)
+	}
+	if checkout.RebaseConflict == nil {
+		t.Fatal("checkout.RebaseConflict = nil, want conflict details")
+	}
+	if checkout.RebaseConflict.TargetBranch != "trunk" {
+		t.Fatalf("conflict target = %q, want trunk", checkout.RebaseConflict.TargetBranch)
+	}
+	if !strings.Contains(checkout.RebaseConflict.Details, "services/x/ya.make") {
+		t.Fatalf("conflict details = %q, want the conflicted path", checkout.RebaseConflict.Details)
+	}
+	if !aborted {
+		t.Fatal("arc rebase --abort was not run after the conflict")
+	}
+	if pushed {
+		t.Fatal("arc push ran despite the conflicted rebase")
 	}
 	if err := checkout.Cleanup(); err != nil {
 		t.Fatalf("Cleanup() error = %v", err)

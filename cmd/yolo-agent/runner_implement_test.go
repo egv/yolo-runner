@@ -526,6 +526,83 @@ func TestRunnerImplementProceedsWhenAuthorCommentStillApplicable(t *testing.T) {
 	}
 }
 
+// When the automatic trunk rebase stops on merge conflicts, the implement item
+// must still run — with the agent briefed to redo the rebase and resolve the
+// conflicts before the task. Terminal failure was the old behavior.
+func TestRunnerImplementBriefsAgentOnRebaseConflict(t *testing.T) {
+	prMount := t.TempDir()
+	prevPrepare := runnerImplementPreparePRCheckout
+	prevVCS := runnerImplementPRVCS
+	prevFetch := runnerImplementFetchPRComments
+	t.Cleanup(func() {
+		runnerImplementPreparePRCheckout = prevPrepare
+		runnerImplementPRVCS = prevVCS
+		runnerImplementFetchPRComments = prevFetch
+	})
+	runnerImplementPreparePRCheckout = func(string) (*arcanum.PRCheckout, error) {
+		return &arcanum.PRCheckout{
+			MountPath: prMount,
+			RebaseConflict: &arcanum.PRRebaseConflict{
+				TargetBranch: "trunk",
+				Details:      "there are some conflicts:\n    content  services/x/ya.make  068544fc",
+			},
+			Cleanup: func() error { return nil },
+		}, nil
+	}
+	runnerImplementPRVCS = func(string) contracts.VCS { return &runnerImplementFakeVCS{} }
+	runnerImplementFetchPRComments = func(context.Context, string) ([]arcreview.PRComment, error) {
+		return []arcreview.PRComment{{ID: "c-1", Body: "please fix", IssueStatus: "open"}}, nil
+	}
+
+	fakeRunner := &runnerImplementFakeAgent{}
+	handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+		return runnerImplementExecutor{
+			Runner: fakeRunner,
+			Agent: envpreset.ResolvedAgent{
+				Backend:          "fake",
+				Model:            "m",
+				RunnerTimeout:    3 * time.Second,
+				WatchdogTimeout:  7 * time.Second,
+				WatchdogInterval: time.Second,
+			},
+			Landing: envpreset.LandingTypeGitMerge,
+		}, nil
+	})
+
+	item := workitem.Item{
+		ID:   "item-conflict",
+		Kind: workitem.KindImplement,
+		Payload: marshalRunnerImplementPayload(t, workitem.ImplementPayload{
+			TaskID: "PR-42-c-1",
+			Title:  "Fix comment c-1",
+			PromptContext: workitem.ImplementPromptContext{
+				Prompt: "Apply the reviewer's suggestion.",
+				Metadata: map[string]string{
+					"origin":         "arcpr-author",
+					"arc_pr_id":      "42",
+					"arc_comment_id": "c-1",
+				},
+			},
+		}),
+	}
+
+	if _, err := handler(context.Background(), item, envpreset.Workspace{}); err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+	if len(fakeRunner.requests) == 0 {
+		t.Fatal("agent was never invoked")
+	}
+	prompt := fakeRunner.requests[0].Prompt
+	for _, want := range []string{"arc rebase trunk", "arc rebase --continue", "services/x/ya.make", "Apply the reviewer's suggestion."} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("agent prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Index(prompt, "resolve the rebase first") > strings.Index(prompt, "Apply the reviewer's suggestion.") {
+		t.Fatal("rebase briefing must precede the task instruction in the prompt")
+	}
+}
+
 func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
 	// Override PreparePRCheckout so author-mode items use an in-process mount
 	// path instead of a real arc mount.

@@ -88,6 +88,7 @@ type runnerImplementPRLanding struct {
 	enabled          bool
 	prID             string
 	mountPath        string
+	rebaseConflict   *arcanum.PRRebaseConflict
 	cleanupFn        func() error
 	cleanupContextFn func(context.Context) error
 }
@@ -134,9 +135,46 @@ func resolveRunnerImplementPRLanding(payload workitem.ImplementPayload, itemID s
 		enabled:          true,
 		prID:             prID,
 		mountPath:        mountPath,
+		rebaseConflict:   checkout.RebaseConflict,
 		cleanupFn:        checkout.Cleanup,
 		cleanupContextFn: checkout.CleanupContext,
 	}, nil
+}
+
+// runnerImplementRebaseConflictPreamble briefs the coding agent when the
+// automatic trunk rebase stopped on merge conflicts: the agent must redo the
+// rebase and resolve the conflicts before implementing the task, so the fix
+// lands on a fresh base instead of failing terminally (the pre-agent rebase
+// used to be a hard failure — docs/arcpr-system-status.md failure #2).
+func runnerImplementRebaseConflictPreamble(conflict *arcanum.PRRebaseConflict) string {
+	if conflict == nil {
+		return ""
+	}
+	target := strings.TrimSpace(conflict.TargetBranch)
+	if target == "" {
+		target = "trunk"
+	}
+	var b strings.Builder
+	b.WriteString("IMPORTANT — resolve the rebase first. This PR branch could not be rebased onto `")
+	b.WriteString(target)
+	b.WriteString("` automatically because of merge conflicts")
+	if details := strings.TrimSpace(conflict.Details); details != "" {
+		b.WriteString(":\n\n```\n")
+		b.WriteString(details)
+		b.WriteString("\n```")
+	} else {
+		b.WriteString(".")
+	}
+	b.WriteString("\n\nBefore the task below:\n")
+	b.WriteString("1. Run `arc rebase ")
+	b.WriteString(target)
+	b.WriteString("`.\n")
+	b.WriteString("2. For every conflicted file (`arc status` lists them), resolve the conflict preserving both this PR's intent and the current `")
+	b.WriteString(target)
+	b.WriteString("` behavior, then `arc add <file>`.\n")
+	b.WriteString("3. Run `arc rebase --continue`; repeat resolve/add/continue until the rebase completes.\n")
+	b.WriteString("Never use `arc rebase --abort`. Only after the rebase completes, implement the task below.")
+	return b.String()
 }
 
 type runnerImplementExecutor struct {
@@ -204,6 +242,9 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			mergeOnSuccess = true
 			prIDForLanding = prLanding.prID
 			taskVCS = runnerImplementPRVCS(prLanding.mountPath)
+			if preamble := runnerImplementRebaseConflictPreamble(prLanding.rebaseConflict); preamble != "" {
+				payload.PromptContext.Prompt = preamble + "\n\n" + payload.PromptContext.Prompt
+			}
 		}
 		if taskVCS == nil {
 			return workqueue.Result{}, fmt.Errorf("implement item %q resolved no VCS adapter", item.ID)

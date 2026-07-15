@@ -10,9 +10,21 @@ import (
 )
 
 type PRCheckout struct {
-	MountPath      string
+	MountPath string
+	// RebaseConflict is set when the requested rebase hit merge conflicts.
+	// The checkout is still fully usable — the failed rebase was aborted and
+	// the tree is clean on the PR head. The caller decides how to resolve:
+	// the implement path instructs its coding agent to redo the rebase and
+	// resolve the conflicts before making changes.
+	RebaseConflict *PRRebaseConflict
 	Cleanup        func() error
 	CleanupContext func(context.Context) error
+}
+
+// PRRebaseConflict describes a rebase that stopped on merge conflicts.
+type PRRebaseConflict struct {
+	TargetBranch string
+	Details      string
 }
 
 type PRCheckoutConfig struct {
@@ -79,11 +91,11 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	// damaged object store behind; neither self-heals, so a stale-state failure
 	// gets one full reset (force unmount, drop mount dir and store) and retry
 	// before the task is declared failed.
-	err = mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
+	rebaseConflict, err := mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
 	if err != nil {
 		resetPRCheckoutState(mountPath, objectStore)
 		if arcStaleCheckoutError(err) {
-			err = mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
+			rebaseConflict, err = mountAndCheckoutPR(ctx, prID, cfg, objectStore, mountPath)
 			if err != nil {
 				resetPRCheckoutState(mountPath, objectStore)
 			}
@@ -109,6 +121,7 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 	})
 	checkout := &PRCheckout{
 		MountPath:      mountPath,
+		RebaseConflict: rebaseConflict,
 		CleanupContext: cleanup,
 		Cleanup: func() error {
 			return cleanup(context.Background())
@@ -119,17 +132,19 @@ func preparePRCheckout(ctx context.Context, prID string, cfg PRCheckoutConfig) (
 }
 
 // mountAndCheckoutPR runs one full preparation attempt: fresh mount dir,
-// arc mount, PR checkout, and the optional rebase-and-publish pass.
-func mountAndCheckoutPR(ctx context.Context, prID string, cfg PRCheckoutConfig, objectStore string, mountPath string) error {
+// arc mount, PR checkout, and the optional rebase-and-publish pass. A rebase
+// that stops on merge conflicts is not an error: the conflict description is
+// returned and the checkout stays usable (rebase aborted, clean tree).
+func mountAndCheckoutPR(ctx context.Context, prID string, cfg PRCheckoutConfig, objectStore string, mountPath string) (*PRRebaseConflict, error) {
 	if err := os.MkdirAll(objectStore, 0o755); err != nil {
-		return fmt.Errorf("create arc object store %s: %w", objectStore, err)
+		return nil, fmt.Errorf("create arc object store %s: %w", objectStore, err)
 	}
 	// arc mounts onto an existing empty dir; start clean when no prior runner
 	// process owns this path. RemoveAll cannot remove an active Arc mount, so a
 	// later "already mounted" response is handled by reusing that checkout.
 	_ = os.RemoveAll(mountPath)
 	if err := os.MkdirAll(mountPath, 0o755); err != nil {
-		return fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
+		return nil, fmt.Errorf("create arc PR mount %s: %w", mountPath, err)
 	}
 
 	// A fresh isolated arc working copy per PR: `arc mount -m <mount> -S <store>`
@@ -138,7 +153,7 @@ func mountAndCheckoutPR(ctx context.Context, prID string, cfg PRCheckoutConfig, 
 	mountArgs := []string{"mount", "-m", mountPath, "-S", objectStore}
 	if _, stderr, err := arcExec(ctx, "", "arc", mountArgs...); err != nil {
 		if !arcMountAlreadyMounted(stderr) {
-			return workspaceArcError("", mountArgs, stderr, err)
+			return nil, workspaceArcError("", mountArgs, stderr, err)
 		}
 	}
 
@@ -148,12 +163,12 @@ func mountAndCheckoutPR(ctx context.Context, prID string, cfg PRCheckoutConfig, 
 	// FUSE mount fails here with a stale-state error and triggers the reset.
 	checkoutArgs := []string{"pr", "checkout", prID, "--force"}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", checkoutArgs...); err != nil {
-		return workspaceArcError(mountPath, checkoutArgs, stderr, err)
+		return nil, workspaceArcError(mountPath, checkoutArgs, stderr, err)
 	}
 	if cfg.Rebase {
 		return rebasePRCheckout(ctx, mountPath, prID)
 	}
-	return nil
+	return nil, nil
 }
 
 // resetPRCheckoutState best-effort releases everything a previous attempt may
@@ -197,52 +212,63 @@ func arcMountAlreadyMounted(stderr []byte) bool {
 	return strings.Contains(strings.ToLower(string(stderr)), "already mounted")
 }
 
-func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error {
+func rebasePRCheckout(ctx context.Context, mountPath string, prID string) (*PRRebaseConflict, error) {
 	statusArgs := []string{"pr", "status", "--json", prID}
 	statusOutput, stderr, err := arcExec(ctx, mountPath, "arc", statusArgs...)
 	if err != nil {
-		return workspaceArcError(mountPath, statusArgs, stderr, err)
+		return nil, workspaceArcError(mountPath, statusArgs, stderr, err)
 	}
 	details, err := ParsePRDetailsJSON(statusOutput)
 	if err != nil {
-		return fmt.Errorf("parse PR %q status before rebase: %w", prID, err)
+		return nil, fmt.Errorf("parse PR %q status before rebase: %w", prID, err)
 	}
 	targetBranch := strings.TrimSpace(details.TargetBranch)
 	if targetBranch == "" {
-		return fmt.Errorf("PR %q target branch is required before rebase", prID)
+		return nil, fmt.Errorf("PR %q target branch is required before rebase", prID)
 	}
 
 	headArgs := []string{"rev-parse", "HEAD"}
 	beforeOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
 	if err != nil {
-		return workspaceArcError(mountPath, headArgs, stderr, err)
+		return nil, workspaceArcError(mountPath, headArgs, stderr, err)
 	}
 	headBefore := strings.TrimSpace(string(beforeOutput))
 
 	rebaseArgs := []string{"rebase", targetBranch}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", rebaseArgs...); err != nil {
-		return workspaceArcError(mountPath, rebaseArgs, stderr, err)
+		if arcRebaseConflictError(stderr) {
+			// Merge conflicts are the coding agent's job, not a terminal
+			// failure. Leave a deterministic starting state (abort whatever
+			// arc left half-done; tree back on the PR head) and report the
+			// conflict so the caller can brief the agent.
+			_, _, _ = arcExec(ctx, mountPath, "arc", "rebase", "--abort")
+			return &PRRebaseConflict{
+				TargetBranch: targetBranch,
+				Details:      strings.TrimSpace(string(stderr)),
+			}, nil
+		}
+		return nil, workspaceArcError(mountPath, rebaseArgs, stderr, err)
 	}
 	headOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
 	if err != nil {
-		return workspaceArcError(mountPath, headArgs, stderr, err)
+		return nil, workspaceArcError(mountPath, headArgs, stderr, err)
 	}
 	head := strings.TrimSpace(string(headOutput))
 	if head == "" {
-		return fmt.Errorf("read rebased PR %q head: empty revision", prID)
+		return nil, fmt.Errorf("read rebased PR %q head: empty revision", prID)
 	}
 	// No-op rebase (branch already based on the target head): the remote PR
 	// already has this exact revision published by its author. Pushing and
 	// republishing anyway would mint a new Arcanum iteration with zero
 	// changes and re-trigger every automated reviewer watching the PR.
 	if headBefore != "" && head == headBefore {
-		return nil
+		return nil, nil
 	}
 	pushArgs := []string{"push", "-f"}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
-		return workspaceArcError(mountPath, pushArgs, stderr, err)
+		return nil, workspaceArcError(mountPath, pushArgs, stderr, err)
 	}
-	return publishAndVerifyPRCheckout(ctx, prID, func(ctx context.Context, prID string) error {
+	return nil, publishAndVerifyPRCheckout(ctx, prID, func(ctx context.Context, prID string) error {
 		publishArgs := []string{"pr", "publish", prID}
 		if _, stderr, err := arcExec(ctx, mountPath, "arc", publishArgs...); err != nil {
 			return workspaceArcError(mountPath, publishArgs, stderr, err)
@@ -251,6 +277,14 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error 
 	}, func(ctx context.Context, prID string) error {
 		return VerifyActiveDiffSetPublishedForRevision(ctx, prID, head)
 	})
+}
+
+// arcRebaseConflictError reports whether an arc rebase failure is a merge
+// conflict (observed: "there are some conflicts:\n content <file> <blob>\n
+// rebase wasn't performed.") rather than an infrastructure error.
+func arcRebaseConflictError(stderr []byte) bool {
+	message := strings.ToLower(string(stderr))
+	return strings.Contains(message, "conflict")
 }
 
 var prCheckoutLocks sync.Map
