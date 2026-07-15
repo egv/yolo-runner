@@ -417,6 +417,13 @@ func (s *Source) unansweredCommentIDs(ctx context.Context, prID string, comments
 		if isAIReviewerStatusSummary(comment.Body) {
 			continue
 		}
+		// The AI reviewer expresses dissatisfaction by opening an issue
+		// (`--issue-status open`); its comments without one are commentary
+		// that asks for nothing. React to the bot only when it is not
+		// satisfied — everything a human posts stays in scope regardless.
+		if isAIMinionAuthor(comment.Author) && !strings.EqualFold(strings.TrimSpace(comment.IssueStatus), "open") {
+			continue
+		}
 
 		// Genuinely unanswered comment: surface it for triage.
 		if !comment.Answered && !answered[id] {
@@ -446,6 +453,14 @@ var aiReviewerStatusSummaryMarker = regexp.MustCompile(`<!--\s*ai-reviewer:`)
 
 func isAIReviewerStatusSummary(body string) bool {
 	return aiReviewerStatusSummaryMarker.MatchString(body)
+}
+
+// isAIMinionAuthor matches the ai_minion reviewer bot's service accounts
+// (mirrors the bot's own detection convention in
+// taxi/tplatform/ai_infra/ai_minion/pr_review_poller).
+func isAIMinionAuthor(author string) bool {
+	author = strings.ToLower(strings.TrimSpace(author))
+	return strings.Contains(author, "ai-minion") || strings.Contains(author, "ai_minion")
 }
 
 func (s *Source) lister() PRLister {

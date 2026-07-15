@@ -72,8 +72,9 @@ func parseArcanumPRComment(raw json.RawMessage) (arcreview.PRComment, error) {
 		Body:      firstScalar(item, "content"),
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
-		Resolved:  issueStatus == "resolved",
-		Answered:  prCommentIsAnswered(item, issueStatus),
+		Resolved:    issueStatus == "resolved",
+		Answered:    prCommentIsAnswered(item, issueStatus),
+		IssueStatus: issueStatus,
 	}
 	applyPRCommentAnchor(&comment, item)
 

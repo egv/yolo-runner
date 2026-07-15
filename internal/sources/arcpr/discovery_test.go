@@ -320,9 +320,20 @@ func TestSourcePollIgnoresAIReviewerStatusSummaries(t *testing.T) {
 						Body:   "Глянул новую ревизию, всё норм.\n\n<!-- ai-reviewer: reviewed_from_id=deadbeef -->",
 					},
 					{
-						ID:     "real-1",
+						ID:          "real-1",
+						Author:      "robot-auto-ai-minion",
+						Body:        "скрипт не идемпотентен, на втором прогоне упадёт",
+						IssueStatus: "open",
+					},
+					{
+						ID:     "musing-1",
 						Author: "robot-auto-ai-minion",
-						Body:   "скрипт не идемпотентен, на втором прогоне упадёт",
+						Body:   "просто мысли вслух, без issue — реагировать не нужно",
+					},
+					{
+						ID:     "human-1",
+						Author: "colleague-bob",
+						Body:   "а можно тут комментарий поправить?",
 					},
 				},
 			}, nil
@@ -340,12 +351,15 @@ func TestSourcePollIgnoresAIReviewerStatusSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodePRReviewPayload() error = %v", err)
 	}
-	if !reflect.DeepEqual(payload.UnansweredCommentIDs, []string{"real-1"}) {
-		t.Fatalf("unanswered = %#v, want only the genuine comment real-1 (summary-1 must be ignored)", payload.UnansweredCommentIDs)
+	// The bot's open issue and the human comment need answers; the bot's
+	// marker summary and issue-less musing must be invisible to triage.
+	if !reflect.DeepEqual(payload.UnansweredCommentIDs, []string{"human-1", "real-1"}) {
+		t.Fatalf("unanswered = %#v, want [human-1 real-1] (summary and issue-less bot musing ignored)", payload.UnansweredCommentIDs)
 	}
 
-	// A poll where ONLY the marker summary remains unanswered enqueues nothing.
-	if err := state.StoreAnsweredCommentIDs(ctx, "42", []string{"real-1"}); err != nil {
+	// A poll where only the marker summary and the issue-less bot musing
+	// remain unanswered enqueues nothing.
+	if err := state.StoreAnsweredCommentIDs(ctx, "42", []string{"real-1", "human-1"}); err != nil {
 		t.Fatalf("StoreAnsweredCommentIDs() error = %v", err)
 	}
 	after, err := src.Poll(ctx)
@@ -353,7 +367,7 @@ func TestSourcePollIgnoresAIReviewerStatusSummaries(t *testing.T) {
 		t.Fatalf("Poll(after answer) error = %v", err)
 	}
 	if len(after) != 0 {
-		t.Fatalf("Poll(after answer) = %#v, want none — the ai-reviewer summary alone must not trigger triage", after)
+		t.Fatalf("Poll(after answer) = %#v, want none — bot summaries and issue-less musings alone must not trigger triage", after)
 	}
 }
 

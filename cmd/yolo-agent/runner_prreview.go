@@ -88,9 +88,12 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 		}
 	}
 
-	checkout, err := prepareRunnerPRReviewCheckout(ctx, payload.PRID, arcanum.PRCheckoutConfig{
-		Rebase: runnerPRReviewIsAuthorMode(payload.Mode),
-	})
+	// Reviews (both modes) only read the checkout: rebasing here rebased the
+	// author's PR onto current trunk and force-published it on EVERY triage
+	// cycle, minting a new Arcanum iteration with zero content changes and
+	// re-triggering automated reviewers. Rebase-first belongs solely to the
+	// implement path, which is about to land commits.
+	checkout, err := prepareRunnerPRReviewCheckout(ctx, payload.PRID, arcanum.PRCheckoutConfig{})
 	if err != nil {
 		return workqueue.Result{}, fmt.Errorf("prepare PR checkout for item %q PR %q: %w", item.ID, strings.TrimSpace(payload.PRID), err)
 	}

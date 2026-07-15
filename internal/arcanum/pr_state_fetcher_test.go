@@ -149,14 +149,15 @@ index 0000000..1111111
 		},
 		Comments: []arcreview.PRComment{
 			{
-				ID:        "-3614781",
-				Author:    "reviewer",
-				Body:      "Please include checks in the state.",
-				Path:      "internal/arcanum/pr_state_fetcher.go",
-				Line:      27,
-				Revision:  "rev-42",
-				CreatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:02:21.087070Z"),
-				UpdatedAt: mustParsePRCommentTestTime(t, "2021-03-14T10:03:46.848536Z"),
+				ID:          "-3614781",
+				Author:      "reviewer",
+				Body:        "Please include checks in the state.",
+				IssueStatus: "open",
+				Path:        "internal/arcanum/pr_state_fetcher.go",
+				Line:        27,
+				Revision:    "rev-42",
+				CreatedAt:   mustParsePRCommentTestTime(t, "2021-03-14T10:02:21.087070Z"),
+				UpdatedAt:   mustParsePRCommentTestTime(t, "2021-03-14T10:03:46.848536Z"),
 			},
 		},
 		OpenIssues: []arcreview.PRIssue{

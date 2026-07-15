@@ -212,15 +212,17 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error 
 		return fmt.Errorf("PR %q target branch is required before rebase", prID)
 	}
 
+	headArgs := []string{"rev-parse", "HEAD"}
+	beforeOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
+	if err != nil {
+		return workspaceArcError(mountPath, headArgs, stderr, err)
+	}
+	headBefore := strings.TrimSpace(string(beforeOutput))
+
 	rebaseArgs := []string{"rebase", targetBranch}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", rebaseArgs...); err != nil {
 		return workspaceArcError(mountPath, rebaseArgs, stderr, err)
 	}
-	pushArgs := []string{"push", "-f"}
-	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
-		return workspaceArcError(mountPath, pushArgs, stderr, err)
-	}
-	headArgs := []string{"rev-parse", "HEAD"}
 	headOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
 	if err != nil {
 		return workspaceArcError(mountPath, headArgs, stderr, err)
@@ -228,6 +230,17 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) error 
 	head := strings.TrimSpace(string(headOutput))
 	if head == "" {
 		return fmt.Errorf("read rebased PR %q head: empty revision", prID)
+	}
+	// No-op rebase (branch already based on the target head): the remote PR
+	// already has this exact revision published by its author. Pushing and
+	// republishing anyway would mint a new Arcanum iteration with zero
+	// changes and re-trigger every automated reviewer watching the PR.
+	if headBefore != "" && head == headBefore {
+		return nil
+	}
+	pushArgs := []string{"push", "-f"}
+	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
+		return workspaceArcError(mountPath, pushArgs, stderr, err)
 	}
 	return publishAndVerifyPRCheckout(ctx, prID, func(ctx context.Context, prID string) error {
 		publishArgs := []string{"pr", "publish", prID}

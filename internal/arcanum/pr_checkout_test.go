@@ -304,12 +304,18 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 		args      []string
 	}
 	var calls []arcCall
+	revParseCalls := 0
 	arcExec = func(_ context.Context, workspace string, _ string, args ...string) ([]byte, []byte, error) {
 		calls = append(calls, arcCall{workspace: workspace, args: append([]string{}, args...)})
 		if reflect.DeepEqual(args, []string{"pr", "status", "--json", "2293787"}) {
 			return []byte(`{"id":2293787,"status":"open","from_id":"head","to_branch":"trunk"}`), nil, nil
 		}
 		if reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
+			// The rebase moves HEAD: pre-rebase and post-rebase revisions differ.
+			revParseCalls++
+			if revParseCalls == 1 {
+				return []byte("old-head\n"), nil, nil
+			}
 			return []byte("head\n"), nil, nil
 		}
 		return nil, nil, nil
@@ -329,14 +335,60 @@ func TestPreparePRCheckoutRebasesAndPushesAuthorPRBeforeUse(t *testing.T) {
 		{workspace: "", args: []string{"mount", "-m", mountPath, "-S", objectStore}},
 		{workspace: mountPath, args: []string{"pr", "checkout", "2293787", "--force"}},
 		{workspace: mountPath, args: []string{"pr", "status", "--json", "2293787"}},
-		{workspace: mountPath, args: []string{"rebase", "trunk"}},
-		{workspace: mountPath, args: []string{"push", "-f"}},
 		{workspace: mountPath, args: []string{"rev-parse", "HEAD"}},
+		{workspace: mountPath, args: []string{"rebase", "trunk"}},
+		{workspace: mountPath, args: []string{"rev-parse", "HEAD"}},
+		{workspace: mountPath, args: []string{"push", "-f"}},
 		{workspace: mountPath, args: []string{"pr", "publish", "2293787"}},
 		{workspace: "", args: []string{"unmount", "--force", "--forget", mountPath}},
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("arc calls = %#v, want %#v", calls, want)
+	}
+}
+
+// A rebase that does not move HEAD means the remote PR already has exactly
+// this revision published. Pushing and republishing anyway would mint a new
+// Arcanum iteration with zero content changes and re-trigger every automated
+// reviewer watching the PR.
+func TestPreparePRCheckoutSkipsPushAndPublishWhenRebaseIsNoOp(t *testing.T) {
+	oldExec := arcExec
+	oldPublishAndVerify := publishAndVerifyPRCheckout
+	t.Cleanup(func() {
+		arcExec = oldExec
+		publishAndVerifyPRCheckout = oldPublishAndVerify
+	})
+	publishAndVerifyPRCheckout = func(ctx context.Context, prID string, publish PRPublishFunc, _ PRPublicationVerifier) error {
+		t.Fatal("publish must not run for a no-op rebase")
+		return nil
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	var pushed bool
+	arcExec = func(_ context.Context, _ string, _ string, args ...string) ([]byte, []byte, error) {
+		if reflect.DeepEqual(args, []string{"pr", "status", "--json", "2293787"}) {
+			return []byte(`{"id":2293787,"status":"open","from_id":"head","to_branch":"trunk"}`), nil, nil
+		}
+		if reflect.DeepEqual(args, []string{"rev-parse", "HEAD"}) {
+			return []byte("same-head\n"), nil, nil
+		}
+		if len(args) > 0 && args[0] == "push" {
+			pushed = true
+		}
+		return nil, nil, nil
+	}
+
+	checkout, err := PreparePRCheckoutWithConfig(context.Background(), "2293787", PRCheckoutConfig{Rebase: true})
+	if err != nil {
+		t.Fatalf("PreparePRCheckoutWithConfig() error = %v", err)
+	}
+	if pushed {
+		t.Fatal("arc push ran for a no-op rebase")
+	}
+	if err := checkout.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
 	}
 }
 

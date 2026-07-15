@@ -41,6 +41,11 @@ type PRComment struct {
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 	Resolved  bool      `json:"resolved,omitempty"`
 	Answered  bool      `json:"answered,omitempty"`
+	// IssueStatus is the normalized Arcanum issue_status of the comment
+	// ("open", "resolved", or "" when the comment opened no issue). Automated
+	// reviewers express dissatisfaction by opening an issue; comments without
+	// one are informational.
+	IssueStatus string `json:"issue_status,omitempty"`
 }
 
 type PRIssue struct {
