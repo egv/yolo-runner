@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/egv/yolo-runner/v2/internal/arcanum"
@@ -270,6 +271,8 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 		return publish(ctx, prID)
 	}
 	runner := &sequenceRunner{responses: []sequenceResponse{
+		{output: `{"id":123456,"status":"open","from_branch":"users/alice/pr","to_branch":"trunk"}`, err: nil},
+		{output: " normalize.ts | 12 ++++++------\n 1 file changed\n", err: nil},
 		{output: "", err: nil},
 		{output: "head\n", err: nil},
 		{output: "", err: nil},
@@ -280,6 +283,8 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 		t.Fatalf("expected push to succeed, got %v", err)
 	}
 	want := []call{
+		{name: "arc", args: []string{"pr", "status", "--json", "123456"}},
+		{name: "arc", args: []string{"diff", "--stat", "arcadia/users/alice/pr", "HEAD"}},
 		{name: "arc", args: []string{"push", "-f"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 		{name: "arc", args: []string{"pr", "publish", "123456"}},
@@ -293,13 +298,47 @@ func TestPushPRBranchRunsArcPushForce(t *testing.T) {
 }
 
 func TestPushPRBranchPropagatesError(t *testing.T) {
+	// Every command errors, so the content gate cannot resolve the remote ref
+	// and falls through to the push, whose error must propagate.
 	runner := &fakeRunner{err: errors.New("boom")}
 	adapter := New(runner)
 
 	if err := adapter.PushPRBranch(context.Background(), "123456"); err == nil {
 		t.Fatal("expected push error to propagate")
 	}
-	assertCalls(t, runner.calls, call{name: "arc", args: []string{"push", "-f"}})
+	want := []call{
+		{name: "arc", args: []string{"pr", "status", "--json", "123456"}},
+		{name: "arc", args: []string{"push", "-f"}},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
+}
+
+// A run whose agent produced no fix leaves HEAD content-identical to the
+// remote PR branch (rebase-only state). Pushing would publish an empty
+// Arcanum iteration and re-trigger automated reviewers — refuse instead.
+func TestPushPRBranchRefusesRebaseOnlyStateWithoutContentChanges(t *testing.T) {
+	runner := &sequenceRunner{responses: []sequenceResponse{
+		{output: `{"id":123456,"status":"open","from_branch":"users/alice/pr","to_branch":"trunk"}`, err: nil},
+		{output: "\n", err: nil}, // empty diff vs remote branch
+	}}
+	adapter := New(runner)
+
+	err := adapter.PushPRBranch(context.Background(), "123456")
+	if err == nil {
+		t.Fatal("expected no-landable-changes refusal")
+	}
+	if !strings.Contains(err.Error(), "no landable changes") {
+		t.Fatalf("error = %v, want no-landable-changes refusal", err)
+	}
+	want := []call{
+		{name: "arc", args: []string{"pr", "status", "--json", "123456"}},
+		{name: "arc", args: []string{"diff", "--stat", "arcadia/users/alice/pr", "HEAD"}},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("unexpected calls: got %#v want %#v", runner.calls, want)
+	}
 }
 
 func TestCheckoutPRBranchReturnsStablePRIdentity(t *testing.T) {

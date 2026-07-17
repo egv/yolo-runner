@@ -185,6 +185,19 @@ func (a *Adapter) PushPRBranch(ctx context.Context, prID string) error {
 	if prID == "" {
 		return fmt.Errorf("PR ID is required")
 	}
+	// Landable-content gate: push only when HEAD actually differs in CONTENT
+	// from the remote PR branch. The checkout is rebased locally at prepare
+	// time, so HEAD always has fresh SHAs; force-pushing a rebase-only state
+	// publishes an Arcanum iteration with zero changes, which re-triggers
+	// every automated reviewer watching the PR. A run whose agent produced no
+	// fix must leave the remote PR untouched.
+	if remoteRef := a.remotePRBranchRef(prID); remoteRef != "" {
+		if diffOut, err := a.runArc("diff", "--stat", remoteRef, "HEAD"); err == nil && strings.TrimSpace(diffOut) == "" {
+			return fmt.Errorf("no landable changes: HEAD has no content difference from %s (rebase-only state); refusing to publish an empty PR iteration", remoteRef)
+		}
+		// A diff failure is not a reason to brick the landing: fall through
+		// and push.
+	}
 	if _, err := a.runArc("push", "-f"); err != nil {
 		return err
 	}
@@ -202,6 +215,25 @@ func (a *Adapter) PushPRBranch(ctx context.Context, prID string) error {
 	}, func(ctx context.Context, prID string) error {
 		return arcanum.VerifyActiveDiffSetPublishedForRevision(ctx, prID, head)
 	})
+}
+
+// remotePRBranchRef resolves the remote ref of the PR's source branch
+// (arcadia/<from_branch>) for the landable-content comparison. Returns ""
+// when the branch cannot be determined; callers then push unconditionally.
+func (a *Adapter) remotePRBranchRef(prID string) string {
+	statusOut, err := a.runArc("pr", "status", "--json", prID)
+	if err != nil {
+		return ""
+	}
+	details, err := arcanum.ParsePRDetailsJSON([]byte(statusOut))
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(details.SourceBranch)
+	if branch == "" {
+		return ""
+	}
+	return "arcadia/" + branch
 }
 
 func parsePRURL(output string) (string, error) {
