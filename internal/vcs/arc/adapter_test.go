@@ -127,7 +127,7 @@ func TestCommitAllRunsArcAddCommitAndReturnsHead(t *testing.T) {
 
 	want := []call{
 		{name: "arc", args: []string{"status", "--short"}},
-		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"commit", "--no-verify", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
@@ -153,7 +153,7 @@ func TestCommitAllTreatsNothingToCommitAsSuccess(t *testing.T) {
 
 	want := []call{
 		{name: "arc", args: []string{"status", "--short"}},
-		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"commit", "--no-verify", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
@@ -185,7 +185,7 @@ func TestCommitAllAddsUntrackedPathsFromStatus(t *testing.T) {
 		{name: "arc", args: []string{"status", "--short"}},
 		{name: "arc", args: []string{"add", "-u"}},
 		{name: "arc", args: []string{"add", "new.py", "new-dir/"}},
-		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"commit", "--no-verify", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
@@ -219,7 +219,7 @@ func TestCommitAllSkipsMissingUntrackedStatusPaths(t *testing.T) {
 		{name: "arc", args: []string{"add", "stale-generated", "real.py"}},
 		{name: "arc", args: []string{"add", "stale-generated"}},
 		{name: "arc", args: []string{"add", "real.py"}},
-		{name: "arc", args: []string{"commit", "-m", "feat: test"}},
+		{name: "arc", args: []string{"commit", "--no-verify", "-m", "feat: test"}},
 		{name: "arc", args: []string{"rev-parse", "HEAD"}},
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
