@@ -593,7 +593,7 @@ func TestRunnerImplementBriefsAgentOnRebaseConflict(t *testing.T) {
 		t.Fatal("agent was never invoked")
 	}
 	prompt := fakeRunner.requests[0].Prompt
-	for _, want := range []string{"arc rebase trunk", "arc rebase --continue", "services/x/ya.make", "Apply the reviewer's suggestion."} {
+	for _, want := range []string{"arc rebase trunk", "arc rebase --continue", "services/x/ya.make", "Apply the reviewer's suggestion.", "COLD build cache"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("agent prompt missing %q:\n%s", want, prompt)
 		}

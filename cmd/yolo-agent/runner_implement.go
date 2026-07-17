@@ -141,6 +141,16 @@ func resolveRunnerImplementPRLanding(payload workitem.ImplementPayload, itemID s
 	}, nil
 }
 
+// runnerImplementAuthorWorkspacePreamble is prepended to every author-mode
+// implement prompt. The per-PR checkout is a disposable monorepo mount with a
+// cold build cache: an agent that launches the service's full testsuite there
+// burns the entire runner timeout on toolchain downloads and builds (observed:
+// a 45m run spent 24m inside `ya make -t` and landed nothing).
+const runnerImplementAuthorWorkspacePreamble = "Workspace policy: you are in a disposable per-PR checkout of the Arcadia monorepo with a COLD build cache. " +
+	"Do NOT run the full service testsuite, `ya make -t` at service scope, or anything that builds the world — a cold-cache run exceeds your whole time budget, and CI validates the pushed revision anyway. " +
+	"Validate with the smallest sufficient check only (compile the affected package, or a single targeted test with a tight filter), keeping total validation under ~5 minutes. " +
+	"Your priority is to make the requested change and get it committed."
+
 // runnerImplementRebaseConflictPreamble briefs the coding agent when the
 // automatic trunk rebase stopped on merge conflicts: the agent must redo the
 // rebase and resolve the conflicts before implementing the task, so the fix
@@ -245,6 +255,7 @@ func newRunnerImplementKindHandler(resolve runnerImplementExecutorResolver) runn
 			if preamble := runnerImplementRebaseConflictPreamble(prLanding.rebaseConflict); preamble != "" {
 				payload.PromptContext.Prompt = preamble + "\n\n" + payload.PromptContext.Prompt
 			}
+			payload.PromptContext.Prompt = strings.TrimSpace(runnerImplementAuthorWorkspacePreamble + "\n\n" + payload.PromptContext.Prompt)
 		}
 		if taskVCS == nil {
 			return workqueue.Result{}, fmt.Errorf("implement item %q resolved no VCS adapter", item.ID)
