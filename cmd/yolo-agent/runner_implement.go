@@ -44,15 +44,29 @@ func runnerImplementCommentObsoleteReason(ctx context.Context, payload workitem.
 		return "", nil
 	}
 	prID := strings.TrimSpace(meta["arc_pr_id"])
-	commentID := strings.TrimSpace(meta["arc_comment_id"])
-	if prID == "" || commentID == "" {
+	commentIDs := workitem.ImplementCommentIDs(meta)
+	if prID == "" || len(commentIDs) == 0 {
 		return "", nil
 	}
 	comments, err := runnerImplementFetchPRComments(ctx, prID)
 	if err != nil {
-		return "", fmt.Errorf("check arc PR comment %q applicability before landing: %w", commentID, err)
+		return "", fmt.Errorf("check arc PR comments %v applicability before landing: %w", commentIDs, err)
 	}
 
+	// The batch is skipped only when EVERY covered comment is obsolete; a
+	// single still-live comment keeps the whole run worthwhile.
+	var reasons []string
+	for _, commentID := range commentIDs {
+		reason := runnerImplementSingleCommentObsoleteReason(comments, prID, commentID, strings.TrimSpace(meta["arc_pr_author"]))
+		if reason == "" {
+			return "", nil
+		}
+		reasons = append(reasons, reason)
+	}
+	return strings.Join(reasons, "; "), nil
+}
+
+func runnerImplementSingleCommentObsoleteReason(comments []arcreview.PRComment, prID string, commentID string, author string) string {
 	var root *arcreview.PRComment
 	for i := range comments {
 		if strings.TrimSpace(comments[i].ID) == commentID {
@@ -61,20 +75,20 @@ func runnerImplementCommentObsoleteReason(ctx context.Context, payload workitem.
 		}
 	}
 	if root == nil {
-		return fmt.Sprintf("comment %s no longer exists on PR %s", commentID, prID), nil
+		return fmt.Sprintf("comment %s no longer exists on PR %s", commentID, prID)
 	}
 	if root.Resolved {
-		return fmt.Sprintf("comment %s on PR %s is already resolved", commentID, prID), nil
+		return fmt.Sprintf("comment %s on PR %s is already resolved", commentID, prID)
 	}
-	if author := strings.TrimSpace(meta["arc_pr_author"]); author != "" {
+	if author != "" {
 		for _, comment := range comments {
 			if strings.TrimSpace(comment.ThreadID) == commentID &&
 				strings.EqualFold(strings.TrimSpace(comment.Author), author) {
-				return fmt.Sprintf("comment %s on PR %s was already answered by %s", commentID, prID, author), nil
+				return fmt.Sprintf("comment %s on PR %s was already answered by %s", commentID, prID, author)
 			}
 		}
 	}
-	return "", nil
+	return ""
 }
 
 var runnerImplementPRVCS = func(path string) contracts.VCS {

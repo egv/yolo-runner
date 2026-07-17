@@ -524,23 +524,31 @@ func (s *Source) enqueueAuthorImplementSubmissions(ctx context.Context, item wor
 	branch := strings.TrimSpace(state.Details.Branch)
 	author := strings.TrimSpace(state.Details.Author)
 	revHash := revisionHash(payload.Revision)
-	submissions := make([]workqueue.Submission, 0, len(decisions))
+
+	// All implement decisions land as ONE batched item: one agent run, one
+	// commit, one push, one Arcanum iteration. Per-comment items landed one
+	// push per fix, and every push re-triggers every automated reviewer
+	// watching the PR — three fixes meant three review cycles of noise.
+	commentIDs := make([]string, 0, len(decisions))
 	for _, decision := range decisions {
 		commentID := strings.TrimSpace(decision.CommentID)
 		if commentID == "" {
 			return nil, errors.New("arc PR implement decision comment ID is required")
 		}
+		commentIDs = append(commentIDs, commentID)
+	}
+	submission, err := authorImplementBatchSubmission(s.Name(), prID, commentIDs, revHash, item, decisions, branch, author)
+	if err != nil {
+		return nil, err
+	}
+	queued, err := s.Queue.EnqueueWithDeps(submission, nil)
+	if err != nil {
+		return nil, fmt.Errorf("enqueue arc PR implement item for comments %v: %w", commentIDs, err)
+	}
+	for _, commentID := range commentIDs {
 		previous, hadPrevious, err := s.GetCommentImplementItem(ctx, prID, commentID)
 		if err != nil {
 			return nil, err
-		}
-		submission, err := authorImplementSubmission(s.Name(), prID, commentID, revHash, item, decision, branch, author)
-		if err != nil {
-			return nil, err
-		}
-		queued, err := s.Queue.EnqueueWithDeps(submission, nil)
-		if err != nil {
-			return nil, fmt.Errorf("enqueue arc PR implement item for comment %q: %w", commentID, err)
 		}
 		if err := s.RecordCommentImplementItem(ctx, CommentImplementItemRecord{
 			PRID:            prID,
@@ -556,32 +564,60 @@ func (s *Source) enqueueAuthorImplementSubmissions(ctx context.Context, item wor
 				return nil, fmt.Errorf("cancel superseded arc PR implement item %q for comment %q: %w", previous.ImplementItemID, commentID, err)
 			}
 		}
-		submissions = append(submissions, submission)
 	}
+	submissions := []workqueue.Submission{submission}
 	return submissions, nil
 }
 
-// authorImplementSubmission builds the implement work item submission for a
-// single "implement" decision. Title and Description come from the decision
-// scope; the prompt metadata carries the Arc PR context the runner needs to land
-// the fix on the PR branch.
-func authorImplementSubmission(sourceName string, prID string, commentID string, revHash string, item workitem.Item, decision workitem.PRReviewCommentDecision, branch string, author string) (workqueue.Submission, error) {
-	title, description := authorImplementScopeText(decision.Scope, commentID)
+// authorImplementBatchSubmission builds ONE implement work item covering every
+// "implement" decision of a triage: all fixes are made in a single agent run
+// and land as a single push/iteration. Title and Description aggregate the
+// per-comment scopes; the metadata carries the full comment-ID list so the
+// runner's applicability gate and the resolve writeback can address each
+// comment individually.
+func authorImplementBatchSubmission(sourceName string, prID string, commentIDs []string, revHash string, item workitem.Item, decisions []workitem.PRReviewCommentDecision, branch string, author string) (workqueue.Submission, error) {
+	var title, description string
+	if len(decisions) == 1 {
+		title, description = authorImplementScopeText(decisions[0].Scope, commentIDs[0])
+	} else {
+		title = fmt.Sprintf("Address %d review comments", len(decisions))
+		var b strings.Builder
+		b.WriteString("Fix ALL of the following review comments in this single task. Each fix must fully address its comment.\n")
+		for i, decision := range decisions {
+			scopeTitle, instructions := authorImplementScopeText(decision.Scope, commentIDs[i])
+			b.WriteString(fmt.Sprintf("\n%d. Comment %s — %s", i+1, commentIDs[i], scopeTitle))
+			if instructions != "" {
+				b.WriteString("\n" + instructions)
+			}
+		}
+		description = b.String()
+	}
+
+	metadata := authorImplementMetadata(prID, commentIDs[0], branch, author)
+	metadata["arc_comment_ids"] = strings.Join(commentIDs, ",")
+
 	payload, err := json.Marshal(workitem.ImplementPayload{
 		Title:       title,
 		Description: description,
 		PromptContext: workitem.ImplementPromptContext{
-			Metadata: authorImplementMetadata(prID, commentID, branch, author),
+			Metadata: metadata,
 		},
 	})
 	if err != nil {
-		return workqueue.Submission{}, fmt.Errorf("encode arc PR implement submission for comment %q: %w", commentID, err)
+		return workqueue.Submission{}, fmt.Errorf("encode arc PR implement submission for comments %v: %w", commentIDs, err)
+	}
+	// Single-comment batches keep the historic key shape so an unchanged
+	// triage does not re-enqueue existing work; multi-comment batches key on
+	// the digest of the comment set.
+	keyComment := commentIDs[0]
+	if len(commentIDs) > 1 {
+		keyComment = "batch-" + revisionHash(strings.Join(commentIDs, ","))
 	}
 	return workqueue.Submission{
 		Kind:           workitem.KindImplement,
 		Source:         sourceName,
 		SourceRef:      "pr:" + prID,
-		IdempotencyKey: "arcpr/" + prID + "/implement/" + commentID + "/" + revHash,
+		IdempotencyKey: "arcpr/" + prID + "/implement/" + keyComment + "/" + revHash,
 		Preset:         strings.TrimSpace(item.Preset),
 		Priority:       item.Priority,
 		Payload:        payload,

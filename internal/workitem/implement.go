@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // ImplementPayload is the typed payload for an implement work item.
@@ -52,6 +53,27 @@ type ImplementPromptContext struct {
 	Prompt   string            `json:"prompt"`
 	ParentID string            `json:"parent_id,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// ImplementCommentIDs returns the review comment IDs an arcpr author-mode
+// implement item addresses. Batched items carry the full list in
+// arc_comment_ids (comma-separated); older single-comment items only set
+// arc_comment_id. Order is preserved, blanks dropped.
+func ImplementCommentIDs(metadata map[string]string) []string {
+	raw := strings.TrimSpace(metadata["arc_comment_ids"])
+	if raw == "" {
+		raw = strings.TrimSpace(metadata["arc_comment_id"])
+	}
+	if raw == "" {
+		return nil
+	}
+	var ids []string
+	for _, id := range strings.Split(raw, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // ImplementRetryContext carries prior-attempt context for retry prompts.

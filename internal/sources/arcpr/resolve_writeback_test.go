@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,97 @@ func fanOutAuthorImplement(t *testing.T, src *Source) (workitem.Item, string) {
 		t.Fatalf("claimed implement idempotency key = %q, want %q", claimed.IdempotencyKey, implementKey)
 	}
 	return *claimed, implementKey
+}
+
+// All implement decisions of one triage land as ONE batched item (one agent
+// run, one push, one Arcanum iteration), and its completion resolves EVERY
+// covered comment with its own reply.
+func TestFanOutBatchesDecisionsAndResolveCoversEveryComment(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeArcPRWritebackClient{}
+	src := arcPRAuthorImplementTestSource(t, client, true, true)
+
+	reviewItem := workitem.Item{
+		ID:        "review-item-1",
+		Kind:      workitem.KindPRReview,
+		SourceRef: "pr:42",
+		Preset:    "adapta",
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewPayload{
+			PRID:     "42",
+			Revision: "r7",
+			Mode:     workitem.PRReviewModeAuthor,
+		}),
+	}
+	reviewResult := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.PRReviewResult{
+			CommentDecisions: []workitem.PRReviewCommentDecision{
+				{
+					CommentID: "comment-1",
+					Decision:  workitem.PRReviewCommentDecisionImplement,
+					Scope:     &workitem.PRReviewImplementScope{Title: "Add nil guard", Instructions: "Return early when nil."},
+				},
+				{
+					CommentID: "comment-2",
+					Decision:  workitem.PRReviewCommentDecisionImplement,
+					Scope:     &workitem.PRReviewImplementScope{Title: "Fix filter", Instructions: "Apply the filter to the export endpoint too."},
+				},
+			},
+		}),
+	}
+	submissions, err := src.HandleResult(ctx, reviewItem, reviewResult)
+	if err != nil {
+		t.Fatalf("HandleResult(review) error = %v", err)
+	}
+	if len(submissions) != 1 {
+		t.Fatalf("fan-out submissions = %d, want ONE batched implement: %#v", len(submissions), submissions)
+	}
+	var implementPayload workitem.ImplementPayload
+	if err := json.Unmarshal(submissions[0].Payload, &implementPayload); err != nil {
+		t.Fatalf("unmarshal implement payload: %v", err)
+	}
+	meta := implementPayload.PromptContext.Metadata
+	if meta["arc_comment_ids"] != "comment-1,comment-2" {
+		t.Fatalf("arc_comment_ids = %q, want both comments", meta["arc_comment_ids"])
+	}
+	for _, want := range []string{"comment-1", "comment-2", "Add nil guard", "Fix filter", "Return early when nil.", "Apply the filter to the export endpoint too."} {
+		if !strings.Contains(implementPayload.Description, want) {
+			t.Fatalf("batched description missing %q:\n%s", want, implementPayload.Description)
+		}
+	}
+
+	implementItem, err := src.Queue.Claim("runner-a", []string{"adapta"}, time.Minute)
+	if err != nil || implementItem == nil {
+		t.Fatalf("Claim() = %#v, %v; want the batched implement item", implementItem, err)
+	}
+	implementResult := workqueue.Result{
+		Status: workqueue.ResultStatusCompleted,
+		Payload: mustMarshalArcPRWriteback(t, workitem.ImplementResult{
+			Status:    "completed",
+			CommitSHA: "beefcafe",
+		}),
+	}
+	resolves, err := src.HandleResult(ctx, *implementItem, implementResult)
+	if err != nil {
+		t.Fatalf("HandleResult(implement) error = %v", err)
+	}
+	if len(resolves) != 2 {
+		t.Fatalf("resolve submissions = %d, want one per comment: %#v", len(resolves), resolves)
+	}
+	seen := map[string]bool{}
+	for _, sub := range resolves {
+		var rp workitem.ResolvePRCommentPayload
+		if err := json.Unmarshal(sub.Payload, &rp); err != nil {
+			t.Fatalf("unmarshal resolve payload: %v", err)
+		}
+		seen[rp.CommentID] = true
+		if rp.ReplyBody != "Fixed in `beefcafe`." {
+			t.Fatalf("resolve reply = %q, want Fixed in beefcafe", rp.ReplyBody)
+		}
+	}
+	if !seen["comment-1"] || !seen["comment-2"] {
+		t.Fatalf("resolves cover %v, want both comments", seen)
+	}
 }
 
 // A skipped implement result means the runner's landing gate found the comment

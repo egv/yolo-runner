@@ -327,9 +327,19 @@ func (s *Source) reconcileSupersededAuthorImplementItems(ctx context.Context, di
 			if strings.TrimSpace(metadata["origin"]) != "arcpr-author" || strings.TrimSpace(metadata["arc_pr_id"]) != prID {
 				continue
 			}
-			commentID := strings.TrimSpace(metadata["arc_comment_id"])
-			currentItemID, tracked := currentByComment[commentID]
-			if !tracked || currentItemID == candidate.ID {
+			// A batched item is superseded once every comment it covers is
+			// tracked by a different (newer) item; if any covered comment
+			// still maps to this candidate, it remains the current work.
+			commentIDs := workitem.ImplementCommentIDs(metadata)
+			superseded := len(commentIDs) > 0
+			for _, commentID := range commentIDs {
+				currentItemID, tracked := currentByComment[commentID]
+				if !tracked || currentItemID == candidate.ID {
+					superseded = false
+					break
+				}
+			}
+			if !superseded {
 				continue
 			}
 			if _, err := s.Queue.CancelPendingItem(candidate.ID); err != nil {

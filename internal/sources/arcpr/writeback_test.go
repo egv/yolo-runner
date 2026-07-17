@@ -1101,11 +1101,12 @@ func TestSourceHandleResultFansOutImplementSubmissionForAuthorImplementDecision(
 		t.Fatalf("implement description = %q, want the decision scope instructions", payload.Description)
 	}
 	wantMeta := map[string]string{
-		"arc_pr_id":      "42",
-		"arc_comment_id": "comment-1",
-		"arc_pr_branch":  "users/alice/pr-42",
-		"arc_pr_author":  "alice",
-		"origin":         "arcpr-author",
+		"arc_pr_id":       "42",
+		"arc_comment_id":  "comment-1",
+		"arc_comment_ids": "comment-1",
+		"arc_pr_branch":   "users/alice/pr-42",
+		"arc_pr_author":   "alice",
+		"origin":          "arcpr-author",
 	}
 	if !reflect.DeepEqual(payload.PromptContext.Metadata, wantMeta) {
 		t.Fatalf("implement metadata mismatch:\n got: %#v\nwant: %#v", payload.PromptContext.Metadata, wantMeta)

@@ -51,60 +51,64 @@ func (s *Source) finalizeCommentResolveIfComplete(ctx context.Context, item work
 		// Not an arcpr author-mode fan-out: nothing for this source to finalize.
 		return nil, nil
 	}
-	commentID := strings.TrimSpace(metadata["arc_comment_id"])
+	commentIDs := workitem.ImplementCommentIDs(metadata)
 	prID := fallbackText(metadata["arc_pr_id"], strings.TrimPrefix(strings.TrimSpace(item.SourceRef), "pr:"))
-	if commentID == "" || prID == "" {
+	if len(commentIDs) == 0 || prID == "" {
 		return nil, nil
 	}
 	skipped := false
 	if len(strings.TrimSpace(string(result.Payload))) > 0 {
 		implementResult, err := workitem.DecodeImplementResult(result.Payload)
 		if err != nil {
-			return nil, fmt.Errorf("decode arc PR implement result for comment %q: %w", commentID, err)
+			return nil, fmt.Errorf("decode arc PR implement result for comments %v: %w", commentIDs, err)
 		}
 		skipped = strings.EqualFold(strings.TrimSpace(implementResult.Status), implementSkippedStatus)
 	}
 	if skipped {
-		// The runner found the comment no longer applicable at landing time
+		// The runner found the comments no longer applicable at landing time
 		// (resolved, deleted, or already answered): nothing landed, so no reply
-		// or thread resolution must be posted. Record the comment as answered so
-		// the next triage does not enqueue the same obsolete work again.
-		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, []string{commentID}); err != nil {
-			return nil, fmt.Errorf("record skipped arc PR comment %q as answered: %w", commentID, err)
+		// or thread resolution must be posted. Record them as answered so the
+		// next triage does not enqueue the same obsolete work again.
+		if err := s.State.StoreAnsweredCommentIDs(ctx, prID, commentIDs); err != nil {
+			return nil, fmt.Errorf("record skipped arc PR comments %v as answered: %w", commentIDs, err)
 		}
 		return nil, nil
 	}
 	if err := s.verifyAuthorImplementPublished(ctx, prID); err != nil {
-		return nil, fmt.Errorf("verify published active version before resolving comment %q: %w", commentID, err)
-	}
-
-	record, ok, err := s.GetCommentImplementItem(ctx, prID, commentID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		// The comment is not tracked for implement fan-out; leave it open.
-		return nil, nil
-	}
-
-	// The comment's sibling implement item(s). With the 1:1 mapping there is one,
-	// and it is complete only when it is the item whose result we are handling.
-	siblingItemIDs := []string{strings.TrimSpace(record.ImplementItemID)}
-	if !commentImplementItemsComplete(siblingItemIDs, item.ID) {
-		return nil, nil
-	}
-
-	submission, err := resolveCommentSubmission(s.Name(), prID, commentID, item, result)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("verify published active version before resolving comments %v: %w", commentIDs, err)
 	}
 	if s.Queue == nil {
 		return nil, errors.New("arcpr source: work queue is required to enqueue comment resolve")
 	}
-	if _, err := s.Queue.EnqueueWithDeps(submission, siblingItemIDs); err != nil {
-		return nil, fmt.Errorf("enqueue arc PR resolve for comment %q: %w", commentID, err)
+
+	// One landed batch resolves every comment it covered: each tracked comment
+	// gets its own dependency-gated resolve submission.
+	var submissions []workqueue.Submission
+	for _, commentID := range commentIDs {
+		record, ok, err := s.GetCommentImplementItem(ctx, prID, commentID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			// The comment is not tracked for implement fan-out; leave it open.
+			continue
+		}
+		siblingItemIDs := []string{strings.TrimSpace(record.ImplementItemID)}
+		if !commentImplementItemsComplete(siblingItemIDs, item.ID) {
+			// The comment was re-triaged and now tracks a newer item; a stale
+			// completion must not resolve it prematurely.
+			continue
+		}
+		submission, err := resolveCommentSubmission(s.Name(), prID, commentID, item, result)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.Queue.EnqueueWithDeps(submission, siblingItemIDs); err != nil {
+			return nil, fmt.Errorf("enqueue arc PR resolve for comment %q: %w", commentID, err)
+		}
+		submissions = append(submissions, submission)
 	}
-	return []workqueue.Submission{submission}, nil
+	return submissions, nil
 }
 
 func (s *Source) verifyAuthorImplementPublished(ctx context.Context, prID string) error {
