@@ -35,8 +35,6 @@ type PRCheckoutConfig struct {
 	Rebase bool
 }
 
-var publishAndVerifyPRCheckout = PublishAndVerifyPR
-
 func PreparePRCheckout(prID string) (*PRCheckout, error) {
 	return PreparePRCheckoutWithConfig(context.Background(), prID, PRCheckoutConfig{})
 }
@@ -227,13 +225,6 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) (*PRRe
 		return nil, fmt.Errorf("PR %q target branch is required before rebase", prID)
 	}
 
-	headArgs := []string{"rev-parse", "HEAD"}
-	beforeOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
-	if err != nil {
-		return nil, workspaceArcError(mountPath, headArgs, stderr, err)
-	}
-	headBefore := strings.TrimSpace(string(beforeOutput))
-
 	rebaseArgs := []string{"rebase", targetBranch}
 	if _, stderr, err := arcExec(ctx, mountPath, "arc", rebaseArgs...); err != nil {
 		if arcRebaseConflictError(stderr) {
@@ -249,34 +240,13 @@ func rebasePRCheckout(ctx context.Context, mountPath string, prID string) (*PRRe
 		}
 		return nil, workspaceArcError(mountPath, rebaseArgs, stderr, err)
 	}
-	headOutput, stderr, err := arcExec(ctx, mountPath, "arc", headArgs...)
-	if err != nil {
-		return nil, workspaceArcError(mountPath, headArgs, stderr, err)
-	}
-	head := strings.TrimSpace(string(headOutput))
-	if head == "" {
-		return nil, fmt.Errorf("read rebased PR %q head: empty revision", prID)
-	}
-	// No-op rebase (branch already based on the target head): the remote PR
-	// already has this exact revision published by its author. Pushing and
-	// republishing anyway would mint a new Arcanum iteration with zero
-	// changes and re-trigger every automated reviewer watching the PR.
-	if headBefore != "" && head == headBefore {
-		return nil, nil
-	}
-	pushArgs := []string{"push", "-f"}
-	if _, stderr, err := arcExec(ctx, mountPath, "arc", pushArgs...); err != nil {
-		return nil, workspaceArcError(mountPath, pushArgs, stderr, err)
-	}
-	return nil, publishAndVerifyPRCheckout(ctx, prID, func(ctx context.Context, prID string) error {
-		publishArgs := []string{"pr", "publish", prID}
-		if _, stderr, err := arcExec(ctx, mountPath, "arc", publishArgs...); err != nil {
-			return workspaceArcError(mountPath, publishArgs, stderr, err)
-		}
-		return nil
-	}, func(ctx context.Context, prID string) error {
-		return VerifyActiveDiffSetPublishedForRevision(ctx, prID, head)
-	})
+	// The rebase stays LOCAL. Pushing and publishing here — before the agent
+	// produced anything — minted a zero-change Arcanum iteration on every
+	// implement attempt (trunk always moves, so every rebase rewrites SHAs)
+	// and re-triggered every automated reviewer watching the PR. Landing
+	// pushes and publishes the rebased branch once, together with the actual
+	// fix commit; a failed or skipped item leaves the remote PR untouched.
+	return nil, nil
 }
 
 // arcRebaseConflictError reports whether an arc rebase failure is a merge
