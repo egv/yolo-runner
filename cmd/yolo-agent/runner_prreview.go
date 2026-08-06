@@ -42,6 +42,10 @@ type runnerPRReviewRuntimeResolver func(context.Context, workitem.Item, envprese
 
 var prepareRunnerPRReviewCheckout = arcanum.PreparePRCheckoutWithConfig
 
+// runnerPRReviewFetchPRState is a seam over arcanum.FetchReviewRequestState
+// for the closed-PR preflight.
+var runnerPRReviewFetchPRState = arcanum.FetchReviewRequestState
+
 func newRunnerPRReviewKindHandler(resolve runnerPRReviewRuntimeResolver) runnerKindHandler {
 	if resolve == nil {
 		resolve = defaultRunnerPRReviewRuntimeResolver
@@ -62,6 +66,22 @@ func runRunnerPRReview(ctx context.Context, item workitem.Item, workspace envpre
 	payload, err := workitem.DecodePRReviewPayload(item.Payload)
 	if err != nil {
 		return workqueue.Result{}, fmt.Errorf("decode PR review payload for item %q: %w", item.ID, err)
+	}
+
+	// A merged or discarded PR needs no review in either mode. Discovery
+	// cancels pending items for closed PRs, but an item claimed before the PR
+	// closed (or reaped from a dead runner's lease) still reaches this
+	// handler; exit before any checkout or model work.
+	prState, err := runnerPRReviewFetchPRState(ctx, strings.TrimSpace(payload.PRID))
+	if err != nil {
+		return workqueue.Result{}, fmt.Errorf("check arc PR %q state for review item %q: %w", strings.TrimSpace(payload.PRID), item.ID, err)
+	}
+	if arcanum.ReviewRequestStateClosed(prState) {
+		emptyResult, err := json.Marshal(workitem.PRReviewResult{})
+		if err != nil {
+			return workqueue.Result{}, fmt.Errorf("marshal closed-PR review result for item %q: %w", item.ID, err)
+		}
+		return workqueue.Result{Payload: emptyResult}, nil
 	}
 
 	// Resolve the author runtime before preparing a checkout so an obsolete

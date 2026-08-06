@@ -990,3 +990,104 @@ func TestSourcePollDefaultsToReviewerModeWhenAuthorNotConfigured(t *testing.T) {
 		t.Fatalf("mode = %q, want reviewer (empty) when Author unset", payload.Mode)
 	}
 }
+
+// A PR that disappeared from the open-PR discovery queries has its queued work
+// cancelled once the server confirms the PR is closed (merged/discarded) or
+// deleted. Still-open PRs that are merely absent from discovery (e.g. the user
+// was unassigned) keep their items, and claimed items are never interrupted.
+func TestSourcePollCancelsPendingItemsForClosedPRs(t *testing.T) {
+	ctx := context.Background()
+	state := openDiscoveryTestState(t)
+	queue, err := workqueue.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("workqueue.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = queue.Close() })
+
+	enqueue := func(kind workitem.Kind, sourceRef string, key string) string {
+		t.Helper()
+		item, err := queue.Enqueue(workqueue.Submission{
+			Kind:           kind,
+			Source:         "arcpr-adapta",
+			SourceRef:      sourceRef,
+			IdempotencyKey: key,
+			Preset:         "adapta",
+			Payload:        json.RawMessage(`{}`),
+		})
+		if err != nil {
+			t.Fatalf("enqueue %s: %v", key, err)
+		}
+		return item.ID
+	}
+
+	claimedMerged := enqueue(workitem.KindImplement, "pr:100", "closed/claimed")
+	claimed, err := queue.ClaimForSourceRef("runner-live", []string{"adapta"}, "pr:100", time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimForSourceRef() error = %v", err)
+	}
+	if claimed == nil || claimed.ID != claimedMerged {
+		t.Fatalf("claimed item = %#v, want %s", claimed, claimedMerged)
+	}
+	mergedImplement := enqueue(workitem.KindImplement, "pr:100", "closed/implement")
+	mergedResolve := enqueue(workitem.KindResolvePRComment, "pr:100", "closed/resolve")
+	openAbsent := enqueue(workitem.KindPRReview, "pr:200", "absent-open/review")
+	deletedImplement := enqueue(workitem.KindImplement, "pr:300", "deleted/implement")
+	discoveredImplement := enqueue(workitem.KindImplement, "pr:42", "discovered/implement")
+
+	stateCalls := map[string]int{}
+	src := &Source{
+		SourceName: "arcpr-adapta",
+		Preset:     "adapta",
+		Author:     "alice",
+		State:      state,
+		Queue:      queue,
+		Lister: PRListerFunc(func(context.Context) ([]arcanum.PRSummary, error) {
+			return []arcanum.PRSummary{{ID: "42", FromID: "active", Author: "alice"}}, nil
+		}),
+		StateFetcher: PRStateFetcherFunc(func(_ context.Context, _ string, prID string) (arcreview.PRRuntimeState, error) {
+			return arcreview.PRRuntimeState{PRID: prID, Details: arcreview.PRDetails{ID: prID}}, nil
+		}),
+		ReviewRequestState: func(_ context.Context, prID string) (string, error) {
+			stateCalls[prID]++
+			switch prID {
+			case "100":
+				return "merged", nil
+			case "200":
+				return "open", nil
+			case "300":
+				return "", &arcanum.APIStatusError{Method: "GET", Path: "/v1/review-requests/300", StatusCode: 404, Body: "not found"}
+			}
+			t.Fatalf("unexpected state fetch for PR %q", prID)
+			return "", nil
+		},
+	}
+	if _, err := src.Poll(ctx); err != nil {
+		t.Fatalf("Poll() error = %v", err)
+	}
+
+	wantStates := map[string]string{
+		claimedMerged:       "claimed",
+		mergedImplement:     "cancelled",
+		mergedResolve:       "cancelled",
+		openAbsent:          "pending",
+		deletedImplement:    "cancelled",
+		discoveredImplement: "pending",
+	}
+	for itemID, want := range wantStates {
+		detail, err := queue.GetItem(itemID)
+		if err != nil {
+			t.Fatalf("GetItem(%s): %v", itemID, err)
+		}
+		if detail.Item.State != want {
+			t.Fatalf("item %s state = %q, want %q", itemID, detail.Item.State, want)
+		}
+	}
+	for prID, calls := range stateCalls {
+		if calls != 1 {
+			t.Fatalf("state fetch for PR %q ran %d times, want 1", prID, calls)
+		}
+	}
+	if len(stateCalls) != 3 {
+		t.Fatalf("state fetches = %v, want exactly PRs 100, 200, 300", stateCalls)
+	}
+}

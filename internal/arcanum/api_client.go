@@ -164,13 +164,12 @@ func (c *APIClient) doJSON(ctx context.Context, method string, path string, requ
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf(
-			"Arcanum API request %s %s failed: status %d: %s",
-			method,
-			path,
-			resp.StatusCode,
-			apiErrorBodyExcerpt(raw, resp.StatusCode),
-		)
+		return &APIStatusError{
+			Method:     method,
+			Path:       path,
+			StatusCode: resp.StatusCode,
+			Body:       apiErrorBodyExcerpt(raw, resp.StatusCode),
+		}
 	}
 
 	if responseBody == nil || len(bytes.TrimSpace(raw)) == 0 {
@@ -180,6 +179,32 @@ func (c *APIClient) doJSON(ctx context.Context, method string, path string, requ
 		return fmt.Errorf("decode Arcanum API response: %w", err)
 	}
 	return nil
+}
+
+// APIStatusError is a non-2xx Arcanum API response. It carries the status code
+// so callers can branch on it (e.g. treat 404 as a deleted review request)
+// instead of matching error strings.
+type APIStatusError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *APIStatusError) Error() string {
+	return fmt.Sprintf(
+		"Arcanum API request %s %s failed: status %d: %s",
+		e.Method,
+		e.Path,
+		e.StatusCode,
+		e.Body,
+	)
+}
+
+// IsAPINotFound reports whether an error is an Arcanum API 404 response.
+func IsAPINotFound(err error) bool {
+	var statusErr *APIStatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound
 }
 
 func normalizeAPIBaseURL(raw string) (string, error) {

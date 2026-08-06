@@ -27,6 +27,10 @@ var runnerImplementPreparePRCheckout = func(prID string) (*arcanum.PRCheckout, e
 // landing-applicability check.
 var runnerImplementFetchPRComments = arcanum.FetchPRComments
 
+// runnerImplementFetchPRState is a seam over arcanum.FetchReviewRequestState
+// for the landing-applicability check.
+var runnerImplementFetchPRState = arcanum.FetchReviewRequestState
+
 // runnerImplementImplementSkippedStatus marks an implement result whose comment
 // no longer needed a fix at landing time. The arcpr source treats it as
 // terminal without posting a reply or resolving the thread.
@@ -47,6 +51,18 @@ func runnerImplementCommentObsoleteReason(ctx context.Context, payload workitem.
 	commentIDs := workitem.ImplementCommentIDs(meta)
 	if prID == "" || len(commentIDs) == 0 {
 		return "", nil
+	}
+	// A merged or discarded PR can take no landings at all — check it first so
+	// a closed PR costs one API call regardless of how many comments the item
+	// covers. Discovery cancels pending items for closed PRs, but an item that
+	// was already claimed (e.g. reaped from a dead runner's lease) still
+	// reaches this gate.
+	prState, err := runnerImplementFetchPRState(ctx, prID)
+	if err != nil {
+		return "", fmt.Errorf("check arc PR %q state before landing: %w", prID, err)
+	}
+	if arcanum.ReviewRequestStateClosed(prState) {
+		return fmt.Sprintf("PR %s is %s — nothing can land on a closed review request", prID, strings.TrimSpace(prState)), nil
 	}
 	comments, err := runnerImplementFetchPRComments(ctx, prID)
 	if err != nil {
