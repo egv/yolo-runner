@@ -329,7 +329,12 @@ func (s *Source) cancelItemsForClosedPRs(ctx context.Context, discovered []disco
 		prID := strings.TrimPrefix(ref, "pr:")
 		state, err := s.reviewRequestState(ctx, prID)
 		if err != nil && !arcanum.IsAPINotFound(err) {
-			return fmt.Errorf("verify state of undiscovered arc PR %q: %w", prID, err)
+			// Best-effort per PR: an unverifiable PR (restricted review,
+			// transient API failure) keeps its items and is retried next
+			// poll. Failing the whole Poll here would let one bad PR exhaust
+			// the sourcehost's consecutive-failure budget and kill discovery;
+			// the runner-side gates still prevent work landing on a closed PR.
+			continue
 		}
 		if err == nil && !arcanum.ReviewRequestStateClosed(state) {
 			continue

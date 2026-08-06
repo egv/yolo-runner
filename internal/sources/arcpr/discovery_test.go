@@ -1032,6 +1032,7 @@ func TestSourcePollCancelsPendingItemsForClosedPRs(t *testing.T) {
 	mergedResolve := enqueue(workitem.KindResolvePRComment, "pr:100", "closed/resolve")
 	openAbsent := enqueue(workitem.KindPRReview, "pr:200", "absent-open/review")
 	deletedImplement := enqueue(workitem.KindImplement, "pr:300", "deleted/implement")
+	unverifiableImplement := enqueue(workitem.KindImplement, "pr:400", "unverifiable/implement")
 	discoveredImplement := enqueue(workitem.KindImplement, "pr:42", "discovered/implement")
 
 	stateCalls := map[string]int{}
@@ -1056,6 +1057,11 @@ func TestSourcePollCancelsPendingItemsForClosedPRs(t *testing.T) {
 				return "open", nil
 			case "300":
 				return "", &arcanum.APIStatusError{Method: "GET", Path: "/v1/review-requests/300", StatusCode: 404, Body: "not found"}
+			case "400":
+				// A persistently erroring PR must not fail the poll: one
+				// unverifiable PR would otherwise exhaust the sourcehost's
+				// consecutive-failure budget and kill discovery entirely.
+				return "", &arcanum.APIStatusError{Method: "GET", Path: "/v1/review-requests/400", StatusCode: 403, Body: "forbidden"}
 			}
 			t.Fatalf("unexpected state fetch for PR %q", prID)
 			return "", nil
@@ -1069,9 +1075,10 @@ func TestSourcePollCancelsPendingItemsForClosedPRs(t *testing.T) {
 		claimedMerged:       "claimed",
 		mergedImplement:     "cancelled",
 		mergedResolve:       "cancelled",
-		openAbsent:          "pending",
-		deletedImplement:    "cancelled",
-		discoveredImplement: "pending",
+		openAbsent:            "pending",
+		deletedImplement:      "cancelled",
+		unverifiableImplement: "pending",
+		discoveredImplement:   "pending",
 	}
 	for itemID, want := range wantStates {
 		detail, err := queue.GetItem(itemID)
@@ -1087,7 +1094,7 @@ func TestSourcePollCancelsPendingItemsForClosedPRs(t *testing.T) {
 			t.Fatalf("state fetch for PR %q ran %d times, want 1", prID, calls)
 		}
 	}
-	if len(stateCalls) != 3 {
-		t.Fatalf("state fetches = %v, want exactly PRs 100, 200, 300", stateCalls)
+	if len(stateCalls) != 4 {
+		t.Fatalf("state fetches = %v, want exactly PRs 100, 200, 300, 400", stateCalls)
 	}
 }
