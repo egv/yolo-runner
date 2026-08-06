@@ -82,6 +82,12 @@ type Source struct {
 	// into. It is optional at the Source/discovery layer (wired by cmd) and
 	// discovery must never assume it is present.
 	Queue *workqueue.Store
+	// ReviewRequestState reports a PR's lifecycle state ("open", "merged",
+	// "discarded"). Discovery uses it to verify that a PR which vanished from
+	// the open-PR queries really closed before cancelling its queued work — a
+	// PR can also disappear because the user was merely unassigned. Nil falls
+	// back to the Arcanum API via APIClient.
+	ReviewRequestState func(ctx context.Context, prID string) (string, error)
 	// Author-mode gates default to true (enforced by NewSource). Each gate opts
 	// the author-mode triage into one behavior; clearing one disables only that
 	// behavior while leaving the rest on.
@@ -160,6 +166,9 @@ func (s *Source) Poll(ctx context.Context) ([]workqueue.Submission, error) {
 
 	discovered, err := s.discoverPRs(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.cancelItemsForClosedPRs(ctx, discovered); err != nil {
 		return nil, err
 	}
 	if err := s.reconcileSupersededAuthorImplementItems(ctx, discovered); err != nil {
@@ -276,6 +285,69 @@ func (s *Source) discoverPRs(ctx context.Context) ([]discoveredPR, error) {
 		})
 	}
 	return discovered, nil
+}
+
+// cancelItemsForClosedPRs cancels pending queue items whose PR is no longer
+// open. Discovery only iterates over PRs the open() queries return, so a
+// merged or discarded PR simply vanishes and its leftover items would sit in
+// the queue until a runner claimed them — churning checkout retries against a
+// closed PR or, worse, posting late replies to it (this includes queued
+// resolve-pr-comment follow-ups: resolving threads on a closed review is
+// noise). Absence from discovery alone is not proof of closure, so each
+// absent PR's state is verified against the server; a deleted review request
+// (404) counts as closed. Claimed and running items are never interrupted —
+// the runner-side gates re-check PR state before landing anything.
+func (s *Source) cancelItemsForClosedPRs(ctx context.Context, discovered []discoveredPR) error {
+	if s.Queue == nil {
+		return nil
+	}
+	if s.ReviewRequestState == nil && s.APIClient == nil {
+		// No way to verify server state; leave the queue alone rather than
+		// guess. The cmd wiring always provides an API client.
+		return nil
+	}
+	open := make(map[string]bool, len(discovered))
+	for _, pr := range discovered {
+		open["pr:"+strings.TrimSpace(pr.ID)] = true
+	}
+	pending, err := s.Queue.ListItems(workqueue.ListItemsFilter{
+		Source: s.Name(),
+		State:  "pending",
+	})
+	if err != nil {
+		return fmt.Errorf("list pending arc PR items for closed-PR sweep: %w", err)
+	}
+	itemsByRef := map[string][]workitem.Item{}
+	for _, item := range pending {
+		ref := strings.TrimSpace(item.SourceRef)
+		if !strings.HasPrefix(ref, "pr:") || open[ref] {
+			continue
+		}
+		itemsByRef[ref] = append(itemsByRef[ref], item)
+	}
+	for ref, items := range itemsByRef {
+		prID := strings.TrimPrefix(ref, "pr:")
+		state, err := s.reviewRequestState(ctx, prID)
+		if err != nil && !arcanum.IsAPINotFound(err) {
+			return fmt.Errorf("verify state of undiscovered arc PR %q: %w", prID, err)
+		}
+		if err == nil && !arcanum.ReviewRequestStateClosed(state) {
+			continue
+		}
+		for _, item := range items {
+			if _, err := s.Queue.CancelPendingItem(item.ID); err != nil {
+				return fmt.Errorf("cancel work item %q for closed arc PR %q: %w", item.ID, prID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Source) reviewRequestState(ctx context.Context, prID string) (string, error) {
+	if s.ReviewRequestState != nil {
+		return s.ReviewRequestState(ctx, prID)
+	}
+	return arcanum.FetchReviewRequestStateWithClient(ctx, s.APIClient, prID)
 }
 
 // reconcileSupersededAuthorImplementItems removes pending implementation work

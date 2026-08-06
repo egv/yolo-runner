@@ -20,6 +20,7 @@ import (
 )
 
 func TestPRReviewEndToEndOffline(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	ctx := context.Background()
 	home := t.TempDir()
 	t.Setenv("HOME", home)

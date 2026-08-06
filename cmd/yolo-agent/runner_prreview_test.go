@@ -19,6 +19,7 @@ import (
 )
 
 func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	arcCallsPath := installRunnerPRReviewFakeArc(t)
@@ -184,6 +185,7 @@ func TestRunnerPRReviewHandlerWritesPRReviewResultRow(t *testing.T) {
 }
 
 func TestRunnerPRReviewSkipsStaleAuthorVersionBeforeRebase(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	payload, err := json.Marshal(workitem.PRReviewPayload{
 		PRID:     "42",
 		Revision: "stale-diff",
@@ -224,6 +226,7 @@ func TestRunnerPRReviewSkipsStaleAuthorVersionBeforeRebase(t *testing.T) {
 }
 
 func TestRunnerPRReviewHandlerPassesProjectContextIntoPrompt(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	installRunnerPRReviewFakeArc(t)
@@ -367,6 +370,7 @@ func TestRunnerPRReviewHandlerPassesProjectContextIntoPrompt(t *testing.T) {
 }
 
 func TestRunnerPRReviewSkipsPresetArcSharedMaterialization(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	arcCallsPath := installRunnerPRReviewFakeArc(t)
@@ -581,6 +585,7 @@ func assertRunnerPRReviewArcCalls(t *testing.T, path string, want []runnerPRRevi
 }
 
 func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	mountPath := t.TempDir()
@@ -748,6 +753,7 @@ func TestRunnerPRReviewHandlerAuthorModeBuildsAuthorPromptAndCapturesDecisions(t
 }
 
 func TestRunnerPRReviewHandlerReviewerAnswerModeIsUnchanged(t *testing.T) {
+	stubRunnerPRReviewPRState(t, "open")
 	// The default reviewer mode on the answer path must keep building the
 	// reviewer prompt and capturing replies (not author comment decisions).
 	home := t.TempDir()
@@ -870,5 +876,66 @@ func TestRunnerPRReviewHandlerReviewerAnswerModeIsUnchanged(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result, want) {
 		t.Fatalf("PR review result mismatch:\n got: %#v\nwant: %#v", result, want)
+	}
+}
+
+// stubRunnerPRReviewPRState pins the PR-state seam to a fixed state for the
+// duration of a test so the handler never reaches the real Arcanum API.
+func stubRunnerPRReviewPRState(t *testing.T, state string) {
+	t.Helper()
+	prev := runnerPRReviewFetchPRState
+	t.Cleanup(func() { runnerPRReviewFetchPRState = prev })
+	runnerPRReviewFetchPRState = func(context.Context, string) (string, error) {
+		return state, nil
+	}
+}
+
+// A merged/discarded PR needs no review in either mode: the handler must exit
+// with an empty result before resolving a runtime or preparing a checkout.
+func TestRunnerPRReviewSkipsClosedPR(t *testing.T) {
+	prevState := runnerPRReviewFetchPRState
+	prevPrepare := prepareRunnerPRReviewCheckout
+	t.Cleanup(func() {
+		runnerPRReviewFetchPRState = prevState
+		prepareRunnerPRReviewCheckout = prevPrepare
+	})
+	statePR := ""
+	runnerPRReviewFetchPRState = func(_ context.Context, prID string) (string, error) {
+		statePR = prID
+		return "discarded", nil
+	}
+	prepareRunnerPRReviewCheckout = func(context.Context, string, arcanum.PRCheckoutConfig) (*arcanum.PRCheckout, error) {
+		t.Fatal("checkout must not be prepared for a closed PR")
+		return nil, nil
+	}
+
+	payload, err := json.Marshal(workitem.PRReviewPayload{
+		PRID:     "42",
+		Revision: "final-diff",
+		Mode:     workitem.PRReviewModeAuthor,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	result, err := runRunnerPRReview(context.Background(), workitem.Item{
+		ID:      "closed-pr-review",
+		Kind:    workitem.KindPRReview,
+		Payload: payload,
+	}, envpreset.Workspace{}, func(context.Context, workitem.Item, envpreset.Workspace, workitem.PRReviewPayload) (runnerPRReviewRuntime, error) {
+		t.Fatal("runtime must not be resolved for a closed PR")
+		return runnerPRReviewRuntime{}, nil
+	})
+	if err != nil {
+		t.Fatalf("runRunnerPRReview() error = %v", err)
+	}
+	if statePR != "42" {
+		t.Fatalf("fetched state for PR %q, want 42", statePR)
+	}
+	got, err := workitem.DecodePRReviewResult(result.Payload)
+	if err != nil {
+		t.Fatalf("DecodePRReviewResult() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, workitem.PRReviewResult{}) {
+		t.Fatalf("closed-PR result = %#v, want empty result", got)
 	}
 }

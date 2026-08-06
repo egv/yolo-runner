@@ -415,6 +415,7 @@ func TestRunnerImplementSkipsObsoleteAuthorComment(t *testing.T) {
 				runnerImplementFetchPRComments = prevFetch
 				runnerImplementPreparePRCheckout = prevPrepare
 			})
+			stubRunnerImplementPRState(t, "open")
 			fetchedPR := ""
 			runnerImplementFetchPRComments = func(_ context.Context, prID string) ([]arcreview.PRComment, error) {
 				fetchedPR = prID
@@ -480,6 +481,7 @@ func TestRunnerImplementProceedsWhenAuthorCommentStillApplicable(t *testing.T) {
 		runnerImplementFetchPRComments = prevFetch
 		runnerImplementPreparePRCheckout = prevPrepare
 	})
+	stubRunnerImplementPRState(t, "open")
 	runnerImplementFetchPRComments = func(context.Context, string) ([]arcreview.PRComment, error) {
 		return []arcreview.PRComment{
 			{ID: "c-1", Body: "please fix"},
@@ -550,6 +552,7 @@ func TestRunnerImplementBriefsAgentOnRebaseConflict(t *testing.T) {
 		}, nil
 	}
 	runnerImplementPRVCS = func(string) contracts.VCS { return &runnerImplementFakeVCS{} }
+	stubRunnerImplementPRState(t, "open")
 	runnerImplementFetchPRComments = func(context.Context, string) ([]arcreview.PRComment, error) {
 		return []arcreview.PRComment{{ID: "c-1", Body: "please fix", IssueStatus: "open"}}, nil
 	}
@@ -736,5 +739,85 @@ func TestRunnerImplementAuthorModeLandsOnExistingPR(t *testing.T) {
 	}
 	if fakeVCS.pushPRBranchPR != "PR-999" {
 		t.Fatalf("PushPRBranch pr = %q, want PR-999", fakeVCS.pushPRBranchPR)
+	}
+}
+
+// stubRunnerImplementPRState pins the PR-state seam to a fixed state for the
+// duration of a test so the gate never reaches the real Arcanum API.
+func stubRunnerImplementPRState(t *testing.T, state string) {
+	t.Helper()
+	prev := runnerImplementFetchPRState
+	t.Cleanup(func() { runnerImplementFetchPRState = prev })
+	runnerImplementFetchPRState = func(context.Context, string) (string, error) {
+		return state, nil
+	}
+}
+
+// A closed (merged/discarded) PR can take no landings: the applicability gate
+// must skip the item before fetching comments or preparing a checkout.
+func TestRunnerImplementSkipsWhenPRClosed(t *testing.T) {
+	prevState := runnerImplementFetchPRState
+	prevFetch := runnerImplementFetchPRComments
+	prevPrepare := runnerImplementPreparePRCheckout
+	t.Cleanup(func() {
+		runnerImplementFetchPRState = prevState
+		runnerImplementFetchPRComments = prevFetch
+		runnerImplementPreparePRCheckout = prevPrepare
+	})
+	statePR := ""
+	runnerImplementFetchPRState = func(_ context.Context, prID string) (string, error) {
+		statePR = prID
+		return "merged", nil
+	}
+	runnerImplementFetchPRComments = func(context.Context, string) ([]arcreview.PRComment, error) {
+		t.Fatal("comments must not be fetched for a closed PR")
+		return nil, nil
+	}
+	runnerImplementPreparePRCheckout = func(string) (*arcanum.PRCheckout, error) {
+		t.Fatal("prepare checkout must not run for a closed PR")
+		return nil, nil
+	}
+
+	handler := newRunnerImplementKindHandler(func(context.Context, workitem.Item, envpreset.Workspace) (runnerImplementExecutor, error) {
+		t.Fatal("executor must not be resolved for a closed PR")
+		return runnerImplementExecutor{}, nil
+	})
+	item := workitem.Item{
+		ID:   "item-closed-pr",
+		Kind: workitem.KindImplement,
+		Payload: marshalRunnerImplementPayload(t, workitem.ImplementPayload{
+			TaskID: "PR-42-c-1",
+			Title:  "Fix comment c-1",
+			PromptContext: workitem.ImplementPromptContext{
+				Prompt: "Apply the fix.",
+				Metadata: map[string]string{
+					"origin":         "arcpr-author",
+					"arc_pr_id":      "42",
+					"arc_comment_id": "c-1",
+					"arc_pr_author":  "alice",
+				},
+			},
+		}),
+	}
+
+	result, err := handler(context.Background(), item, envpreset.Workspace{})
+	if err != nil {
+		t.Fatalf("handler() error = %v", err)
+	}
+	if statePR != "42" {
+		t.Fatalf("fetched state for PR %q, want 42", statePR)
+	}
+	if result.Status != workqueue.ResultStatusCompleted {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	implementResult, err := workitem.DecodeImplementResult(result.Payload)
+	if err != nil {
+		t.Fatalf("DecodeImplementResult() error = %v", err)
+	}
+	if implementResult.Status != runnerImplementSkippedStatus {
+		t.Fatalf("implement result status = %q, want %q", implementResult.Status, runnerImplementSkippedStatus)
+	}
+	if !strings.Contains(implementResult.Reason, "merged") {
+		t.Fatalf("implement result reason = %q, want it to mention the merged state", implementResult.Reason)
 	}
 }
